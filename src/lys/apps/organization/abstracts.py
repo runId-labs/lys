@@ -1,0 +1,77 @@
+import abc
+from typing import Self, Any
+
+from sqlalchemy import ForeignKey
+from sqlalchemy.orm import Mapped, mapped_column
+
+from lys.core.entities import Entity
+
+
+class AbstractOrganizationEntity(Entity):
+    __abstract__ = True
+
+    name: Mapped[str] = mapped_column(nullable=False)
+
+    @property
+    @abc.abstractmethod
+    def parent_organization(self) -> Self | None:
+        raise NotImplementedError
+
+    @property
+    @abc.abstractmethod
+    def owner(self) -> Any:
+        raise NotImplementedError
+
+
+    def accessing_users(self):
+        return []
+
+    def accessing_organizations(self):
+        new_accessing_organizations = {
+            self.__tablename__: [self]
+        }
+
+        # parent organization has access to the child organization
+        if isinstance(self.parent_organization, AbstractOrganizationEntity):
+            new_accessing_organizations = {
+                **self.parent_organization.accessing_organizations(),
+                **new_accessing_organizations
+            }
+
+        return new_accessing_organizations
+
+
+class AbstractUserOrganizationRoleEntity(Entity):
+    __abstract__ = True
+
+    client_user_id: Mapped[str] = mapped_column(ForeignKey("client_user.id", ondelete='CASCADE'), nullable=False)
+    role_id: Mapped[str] = mapped_column(ForeignKey("role.id", ondelete='CASCADE'), nullable=False)
+
+    @property
+    @abc.abstractmethod
+    def organization(self) -> AbstractOrganizationEntity:
+        raise NotImplementedError
+
+    @property
+    @abc.abstractmethod
+    def client_user(self) -> Any:
+        raise NotImplementedError
+
+
+    def accessing_users(self):
+        return []
+
+    def accessing_organizations(self):
+        table_name = self.organization.__tablename__
+        new_accessing_organizations = {
+            table_name: [self.organization]
+        }
+
+        # parent organization has access to the child organization
+        if isinstance(self.organization.parent_organization, AbstractOrganizationEntity):
+            new_accessing_organizations = {
+                **self.organization.parent_organization.accessing_organizations(),
+                **new_accessing_organizations
+            }
+
+        return new_accessing_organizations

@@ -1,0 +1,3 @@
+ACCESS_LEVEL_TABLENAME = 'access_level'
+LOG_TABLENAME = "log"
+WEBSERVICE_TABLENAME = "webservice"

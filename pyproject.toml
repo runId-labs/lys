@@ -1,0 +1,33 @@
+[project]
+name = "lys"
+version = "0.0.1"
+description = ""
+authors = [
+  { name="THEVENIN Anthony", email = "thevenin.anthony@gmail.com" },
+]
+license = { file = "LICENSE" }
+readme = "README.md"
+requires-python = ">=3.13"
+
+dependencies = [
+    "asyncpg==0.30.0",
+    "bcrypt==4.3.0",
+    "dogpile.cache==1.4.0",
+    "fastapi[all]==0.116.1",
+    "psycopg2-binary==2.9.10",
+    "pydantic[email]==2.11.7",
+    "PyJWT==2.10.1",
+    "sqlalchemy[asyncio]==2.0.43",
+    "strawberry-graphql[fastapi]>=0.275.5",
+    "graphene>=3.4.1"
+]
+
+[project.optional-dependencies]
+dev = ["pytest", "pytest-asyncio", "pytest-cov"]
+
+[build-system]
+requires = ["setuptools", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]

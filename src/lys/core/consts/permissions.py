@@ -1,0 +1,3 @@
+ROLE_ACCESS_KEY = "role"
+OWNER_ACCESS_KEY = "owner"
+ORGANIZATION_ROLE_ACCESS_KEY = "organization_role"

@@ -1,0 +1,333 @@
+import logging
+from collections import defaultdict, deque
+from typing import Type, Dict, List, Callable, Set
+
+from strawberry.types.field import StrawberryField
+
+from lys.core.consts.component_types import AppComponentTypeEnum
+from lys.core.graphql.interfaces import NodeInterface
+from lys.core.interfaces.entities import EntityInterface
+from lys.core.interfaces.fixtures import EntityFixtureInterface
+from lys.core.interfaces.services import ServiceInterface
+from lys.core.managers.database import Base
+from lys.core.utils.decorators import singleton
+from lys.core.utils.webservice import WebserviceIsPublicType, generate_webservice_fixture
+
+
+class AppRegister:
+    def __init__(self):
+        self.entities: Dict[str, Type[EntityInterface]] = {}
+        self.services: Dict[str, Type[ServiceInterface]] = {}
+        self.fixtures: List[Type[EntityFixtureInterface]] = []
+        self._fixture_dependencies: Dict[str, List[str]] = {}  # fixture_name -> [dependencies]
+        self.webservices: dict[str, dict] = {}
+        self.nodes: Dict[str, Type[NodeInterface]] = {}
+
+        # When True, prevents further registrations to ensure consistency
+        self._locked_component_types: Set[AppComponentTypeEnum] = set()
+
+    def is_locked(self, component_type: AppComponentTypeEnum):
+        return component_type in self._locked_component_types
+
+    def lock(self, component_type: AppComponentTypeEnum):
+        self._locked_component_types.add(component_type)
+
+    def register_entity(self, name: str, entity_class: Type[EntityInterface]):
+        """
+        Register an entity class with the register.
+
+        Args:
+            name: Entity name for lookup (typically __tablename__ attribute)
+            entity_class: Entity class implementing EntityInterface (must be a proper class)
+
+        Raises:
+            TypeError: If entity_class doesn't implement EntityInterface
+        """
+        if not self.is_locked(AppComponentTypeEnum.ENTITIES):
+
+            if not issubclass(entity_class, EntityInterface):
+                raise TypeError(f"Entity '{name}' must be a subclass of EntityInterface")
+
+            # Store the entity in the register for later retrieval
+            self.entities[name] = entity_class
+
+            logging.info(f"✓ Registered entity: {name} -> {entity_class.__name__}")
+
+    def get_entity(self, name: str) -> Type[EntityInterface]:
+        """
+        Retrieve a registered entity by name.
+
+        Args:
+            name: Entity name to lookup
+
+        Returns:
+            Entity class
+
+        Raises:
+            KeyError: If entity is not found
+        """
+        if name not in self.entities:
+            raise KeyError(f"Entity '{name}' not found. Available: {list(self.entities.keys())}")
+        return self.entities[name]
+
+    def finalize_entities(self):
+        """
+        Transform abstract entities into concrete SQLAlchemy entities for database creation.
+
+        This critical method solves two fundamental problems in the lys framework:
+
+        1. **Abstract Entity Problem**: Base entities (BaseEntity, ParametricEntity) are marked
+           as abstract (__abstract__ = True) to prevent SQLAlchemy from creating tables for them.
+           However, concrete entities inheriting from these bases remain abstract by default,
+           preventing table creation.
+
+        2. **Relationship Naming Convention**: SQLAlchemy relationships use table names, not
+           class names. By creating new classes with __tablename__ as the class name, we ensure
+           that relationship declarations like relationship("webservice_public_type") work
+           seamlessly without complex mapping.
+
+        The solution:
+        - Creates a new class dynamically using type() with __tablename__ as class name
+        - Forces __abstract__ = False to make entities concrete for SQLAlchemy
+        - Maintains inheritance chain while enabling table creation
+        - Unifies class names with table names for intuitive relationship declarations
+
+        Example transformation:
+        - Original: class AuthWebservice(BaseEntity) with __tablename__ = "auth_webservices"
+        - Result: class auth_webservices(AuthWebservice) with __abstract__ = False
+
+        This enables natural relationship syntax:
+        relationship("auth_webservices", lazy="selectin") # Works intuitively
+        """
+        for table_name, entity in self.entities.items():
+            # Create concrete entity class with table name as class name
+            new_entity = type(entity.get_tablename(), (entity, Base), {})
+            new_entity.__abstract__ = False
+            self.entities[table_name] = new_entity  # type: ignore[assignment]
+
+    def register_service(self, name: str, service_class: Type[ServiceInterface]):
+        if not self.is_locked(AppComponentTypeEnum.SERVICES):
+
+            if not issubclass(service_class, ServiceInterface):
+                raise TypeError(f"Service '{name}' must be a subclass of ServiceInterface")
+
+            # Store the service in the register for later retrieval
+            self.services[name] = service_class
+
+            logging.info(f"✓ Registered service: {name} -> {service_class.__name__}")
+
+    def get_service(self, name: str) -> Type[ServiceInterface]:
+        """
+        Retrieve a registered service by name.
+
+        Args:
+            name: Service name to lookup
+
+        Returns:
+            Service class
+
+        Raises:
+            KeyError: If service is not found
+        """
+        if name not in self.services:
+            raise KeyError(f"Service '{name}' not found. Available: {list(self.services.keys())}")
+        return self.services[name]
+
+    def register_fixture(self, fixture_class: Type[EntityFixtureInterface], depends_on: List[str] = None):
+        """
+        Register a fixture class with dependency tracking.
+
+        Args:
+            fixture_class: Fixture class implementing EntityFixtureInterface
+            depends_on: List of fixture class names this fixture depends on
+        """
+        if not self.is_locked(AppComponentTypeEnum.FIXTURES):
+            fixture_name = fixture_class.__name__
+
+            # Check if already registered
+            for existing_fixture in self.fixtures:
+                if existing_fixture.__name__ == fixture_name:
+                    raise ValueError(f"Fixture '{fixture_name}' already registered.")
+
+            self.fixtures.append(fixture_class)
+            self._fixture_dependencies[fixture_name] = depends_on or []
+            logging.info(f"✓ Registered fixture: {fixture_name} (depends on: {depends_on or 'none'})")
+
+    def get_fixtures_in_dependency_order(self) -> List[EntityFixtureInterface]:
+        """
+        Get fixtures sorted by dependency order using topological sort.
+
+        Returns:
+            List of fixture classes in dependency order
+
+        Raises:
+            ValueError: If circular dependencies are detected
+        """
+        if not self.fixtures:
+            return []
+
+        # Build dependency graph
+        graph = defaultdict(list)  # dependency -> [fixtures that depend on it]
+        in_degree = defaultdict(int)  # fixture -> number of dependencies
+        fixture_map = {f.__name__: f for f in self.fixtures}
+
+        # Initialize in-degree for all fixtures
+        for fixture in self.fixtures:
+            in_degree[fixture.__name__] = 0
+
+        # Build graph and calculate in-degrees
+        for fixture_name, deps in self._fixture_dependencies.items():
+            for dep in deps:
+                if dep not in fixture_map:
+                    raise ValueError(f"Fixture '{fixture_name}' depends on '{dep}' which is not registered")
+                graph[dep].append(fixture_name)
+                in_degree[fixture_name] += 1
+
+        # Topological sort using Kahn's algorithm
+        queue = deque()
+        result = []
+
+        # Start with fixtures that have no dependencies
+        for fixture_name in fixture_map:
+            if in_degree[fixture_name] == 0:
+                queue.append(fixture_name)
+
+        while queue:
+            current = queue.popleft()
+            result.append(fixture_map[current])
+
+            # Remove this fixture from the graph
+            for dependent in graph[current]:
+                in_degree[dependent] -= 1
+                if in_degree[dependent] == 0:
+                    queue.append(dependent)
+
+        # Check for circular dependencies
+        if len(result) != len(self.fixtures):
+            remaining = [name for name in fixture_map if name not in [f.__name__ for f in result]]
+            raise ValueError(f"Circular dependency detected in fixtures: {remaining}")
+
+        return result
+
+    def register_webservice(
+            self,
+            field_or_fct: StrawberryField | Callable,
+            is_public: WebserviceIsPublicType = False,
+            enabled: bool = True,
+            access_levels: List[str] = None,
+            is_licenced: bool = True,
+    ):
+        if not self.is_locked(AppComponentTypeEnum.WEBSERVICES):
+            if type(field_or_fct) is StrawberryField:
+                webservice_name = field_or_fct.base_resolver.wrapped_func.__name__
+            else:
+                webservice_name = field_or_fct.__name__
+
+            webservice_fixture = generate_webservice_fixture(
+                webservice_name,
+                enabled, is_public,
+                access_levels,
+                is_licenced
+            ).model_dump()
+
+            if not self.webservices.get(webservice_name):
+                self.webservices[webservice_name] = webservice_fixture
+
+    def register_node(self, name: str, node_class: Type[NodeInterface]):
+        if not self.is_locked(AppComponentTypeEnum.NODES):
+
+            if not issubclass(node_class, NodeInterface):
+                raise TypeError(f"Node '{name}' must be a subclass of NodeInterface")
+
+            # Store the node in the register for later retrieval
+            self.nodes[name] = node_class
+
+            logging.info(f"✓ Registered node: {name} -> {node_class.__name__}")
+
+    def get_node(self, name: str) -> Type[NodeInterface]:
+        """
+        Retrieve a registered node by name.
+
+        Args:
+            name: Node name to lookup
+
+        Returns:
+            Node class
+
+        Raises:
+            KeyError: If service is not found
+        """
+        if name not in self.nodes:
+            raise KeyError(f"Node '{name}' not found. Available: {list(self.nodes.keys())}")
+        return self.nodes[name]
+
+
+@singleton
+class LysAppRegister(AppRegister):
+    pass
+
+
+def register_entity(register: AppRegister=None):
+    if register is None:
+        register = LysAppRegister()
+
+    def decorator(cls):
+        register.register_entity(cls.__tablename__, cls)
+        return cls
+
+    return decorator
+
+
+def register_service(register: AppRegister=None):
+    if register is None:
+        register = LysAppRegister()
+
+    def decorator(cls):
+        register.register_service(cls.service_name, cls)
+        return cls
+
+    return decorator
+
+
+def register_fixture(depends_on: List[str] = None, register: AppRegister=None):
+    if register is None:
+        register = LysAppRegister()
+
+    def decorator(cls):
+        register.register_fixture(cls, depends_on=depends_on)
+        return cls
+
+    return decorator
+
+
+def register_webservice(
+        is_public: WebserviceIsPublicType = False,
+        enabled: bool = True,
+        access_levels: List[str] = None,
+        is_licenced: bool = True,
+        register: AppRegister = None
+):
+    if register is None:
+        register = LysAppRegister()
+
+    def decorator(cls):
+        register.register_webservice(
+            cls,
+            is_public,
+            enabled,
+            access_levels,
+            is_licenced,
+        )
+        return cls
+    return decorator
+
+
+def register_node(register: AppRegister=None):
+    if register is None:
+        register = LysAppRegister()
+
+    def decorator(cls):
+        register.register_node(cls.__name__, cls)
+        return cls
+
+    return decorator
