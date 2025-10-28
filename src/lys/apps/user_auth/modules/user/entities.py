@@ -1,8 +1,9 @@
 from datetime import datetime
 
 from sqlalchemy import ForeignKey, DateTime
-from sqlalchemy.orm import Mapped, mapped_column, declared_attr, relationship
+from sqlalchemy.orm import Mapped, mapped_column, declared_attr, relationship, backref
 
+from lys.apps.base.modules.one_time_token.entities import OneTimeToken
 from lys.apps.user_auth.modules.user.consts import ENABLED_USER_STATUS
 from lys.apps.user_auth.utils import AuthUtils
 from lys.core.abstracts.email_address import AbstractEmailAddress
@@ -41,6 +42,7 @@ class User(Entity):
     password: Mapped[str] = mapped_column(nullable=True)
     is_super_user: Mapped[bool] = mapped_column(nullable=False, default=False)
     status_id: Mapped[str] = mapped_column(ForeignKey("user_status.id"), default=ENABLED_USER_STATUS)
+    language_id: Mapped[str] = mapped_column(ForeignKey("language.id"), nullable=False)
 
     @declared_attr
     def email_address(self):
@@ -56,6 +58,10 @@ class User(Entity):
     @declared_attr
     def status(self):
         return relationship("user_status", lazy='selectin')
+
+    @declared_attr
+    def language(self):
+        return relationship("language", lazy='selectin')
 
     @staticmethod
     def login_name() -> str:
@@ -140,3 +146,61 @@ class UserRefreshToken(Entity):
 
     def accessing_organizations(self):
         return {}
+
+
+@register_entity()
+class UserEmailing(Entity):
+    __tablename__ = "user_emailing"
+
+    user_id: Mapped[str] = mapped_column(ForeignKey("user.id", ondelete='CASCADE'))
+
+    @declared_attr
+    def user(self):
+        return relationship("user", lazy='selectin')
+
+    emailing_id: Mapped[str] = mapped_column(ForeignKey("emailing.id", ondelete='CASCADE'))
+
+    @declared_attr
+    def emailing(self):
+        return relationship(
+            "emailing",
+            lazy='selectin',
+            backref=backref("user_emailing", uselist=False),
+            enable_typechecks = False
+        )
+
+    def accessing_users(self):
+        return [self.user]
+
+    def accessing_organizations(self):
+        return {}
+
+    @classmethod
+    def user_accessing_filters(cls, stmt, user_id: str):
+        return stmt, [cls.user.id == user_id]
+
+
+@register_entity()
+class UserOneTimeToken(OneTimeToken):
+    """
+    One-time token associated with a user.
+
+    Used for password reset, email verification, etc.
+    """
+    __tablename__ = "user_one_time_token"
+
+    user_id: Mapped[str] = mapped_column(ForeignKey("user.id", ondelete='CASCADE'))
+
+    @declared_attr
+    def user(self):
+        return relationship("user", lazy='selectin')
+
+    def accessing_users(self):
+        return [self.user]
+
+    def accessing_organizations(self):
+        return {}
+
+    @classmethod
+    def user_accessing_filters(cls, stmt, user_id: str):
+        return stmt, [cls.user_id == user_id]

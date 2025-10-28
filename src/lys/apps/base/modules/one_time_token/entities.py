@@ -1,0 +1,86 @@
+"""
+One-time token entities for secure token-based operations.
+"""
+
+from datetime import datetime, timedelta
+
+from sqlalchemy import ForeignKey, DateTime
+from sqlalchemy.orm import Mapped, mapped_column, declared_attr, relationship
+
+from lys.apps.base.modules.one_time_token.consts import PENDING_TOKEN_STATUS
+from lys.core.entities import Entity, ParametricEntity
+from lys.core.registers import register_entity
+
+
+@register_entity()
+class OneTimeTokenStatus(ParametricEntity):
+    """
+    Status for one-time tokens (pending, used, revoked).
+    """
+    __tablename__ = "one_time_token_status"
+
+
+@register_entity()
+class OneTimeTokenType(ParametricEntity):
+    """
+    Type of one-time token (forgotten_password, email_verification, etc.).
+    """
+    __tablename__ = "one_time_token_type"
+
+    duration: Mapped[int] = mapped_column(
+        nullable=False,
+        comment="Token validity duration in minutes"
+    )
+
+
+class OneTimeToken(Entity):
+    """
+    Base class for one-time use tokens.
+
+    Not registered as entity - should be inherited by specific implementations
+    like UserOneTimeToken.
+
+    The entity's id serves as the token (UUID).
+
+    Tokens have:
+    - A type (with duration in minutes)
+    - A status (pending, used, revoked)
+    - created_at is used with type.duration to determine expiration
+    """
+    __abstract__ = True
+
+    used_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        nullable=True,
+        comment="Timestamp when token was used"
+    )
+
+    status_id: Mapped[str] = mapped_column(
+        ForeignKey("one_time_token_status.id"),
+        default=PENDING_TOKEN_STATUS
+    )
+
+    @declared_attr
+    def status(self):
+        return relationship("one_time_token_status", lazy='selectin')
+
+    type_id: Mapped[str] = mapped_column(ForeignKey("one_time_token_type.id"))
+
+    @declared_attr
+    def type(self):
+        return relationship("one_time_token_type", lazy='selectin')
+
+    @property
+    def expires_at(self) -> datetime:
+        """Calculate token expiration time based on created_at and type duration."""
+        return self.created_at + timedelta(minutes=self.type.duration)
+
+    @property
+    def is_expired(self) -> bool:
+        """Check if token has expired."""
+        return datetime.now() >= self.expires_at
+
+    @property
+    def is_valid(self) -> bool:
+        """Check if token is valid (pending status and not expired)."""
+        return self.status_id == PENDING_TOKEN_STATUS and not self.is_expired

@@ -37,6 +37,7 @@ class UserDevFixtures(EntityFixtures[UserService]):
             "attributes": {
                 "email_address": "enabled_user@lys-test.fr",
                 "password": "password",
+                "language_id": "fr"
             }
         },
         {
@@ -44,6 +45,7 @@ class UserDevFixtures(EntityFixtures[UserService]):
                 "email_address": "disabled_user@lys-test.fr",
                 "password": "password",
                 "status_id": LOGIN_BLOCKED_USER_STATUS,
+                "language_id": "fr"
             }
         },
         {
@@ -51,6 +53,7 @@ class UserDevFixtures(EntityFixtures[UserService]):
                 "email_address": "super_user@lys-test.fr",
                 "password": "password",
                 "is_super_user": True,
+                "language_id": "fr"
             }
         },
     ]

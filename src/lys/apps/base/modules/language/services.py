@@ -1,0 +1,46 @@
+"""
+Services for language management.
+"""
+
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from lys.apps.base.modules.language.consts import FRENCH_LANGUAGE
+from lys.apps.base.modules.language.entities import Language
+from lys.core.registers import register_service
+from lys.core.services import EntityService
+
+
+@register_service()
+class LanguageService(EntityService[Language]):
+    """
+    Service for managing languages.
+    """
+
+    @classmethod
+    async def get_default_language(cls, session: AsyncSession) -> Language:
+        """
+        Get the default language (French).
+
+        Args:
+            session: Database session
+
+        Returns:
+            The default Language entity (French)
+        """
+        return await cls.get_by_id(FRENCH_LANGUAGE, session)
+
+    @classmethod
+    async def get_enabled_languages(cls, session: AsyncSession) -> list[Language]:
+        """
+        Get all enabled languages.
+
+        Args:
+            session: Database session
+
+        Returns:
+            List of enabled Language entities
+        """
+        stmt = select(Language).where(Language.enabled == True).order_by(Language.id.asc())
+        result = await session.execute(stmt)
+        return list(result.scalars().all())

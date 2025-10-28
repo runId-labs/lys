@@ -12,6 +12,7 @@ requires-python = ">=3.13"
 dependencies = [
     "asyncpg==0.30.0",
     "bcrypt==4.3.0",
+    "celery[redis]==5.4.0",
     "dogpile.cache==1.4.0",
     "fastapi[all]==0.116.1",
     "psycopg2-binary==2.9.10",

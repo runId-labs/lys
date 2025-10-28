@@ -76,6 +76,36 @@ Set environment via `LysAppSettings.env`:
 ### Component Registration
 Components are automatically discovered and registered when modules are imported. Use decorators like `@register_entity`, `@register_service` to register components.
 
+### Accessing Entities and Services - CRITICAL ARCHITECTURE RULE
+
+**MANDATORY**: ALL entities and services MUST be accessed through `app_manager`. Direct imports of entities or services WILL cause bugs and failures.
+
+**Correct approach** - Always use `app_manager` registry:
+```python
+# In services - use cls.entity_class for your own entity
+emailing = session.get(cls.entity_class, emailing_id)
+
+# Get other services by name
+email_service = cls.get_service_by_name("emailing")
+user_service = app_manager.get_service("user")
+```
+
+**NEVER do this** - Direct imports break the architecture:
+```python
+# WRONG - DO NOT DO THIS
+from lys.apps.base.modules.emailing.entities import Emailing
+emailing = session.get(Emailing, emailing_id)  # WILL FAIL
+```
+
+**Why this is critical**:
+- Direct imports bypass the registration system
+- Causes SQLAlchemy inspection errors
+- Breaks in Celery workers where the app context is different
+- Violates the dependency injection pattern of the framework
+- Prevents proper entity/service resolution
+
+**Rule**: If you need an entity or service, get it from `app_manager` or use `cls.entity_class`/`cls.get_service_by_name()`. No exceptions.
+
 ### GraphQL Integration
 - Uses Strawberry GraphQL with FastAPI
 - Supports multiple schemas with automatic routing

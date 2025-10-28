@@ -1,0 +1,47 @@
+"""
+GraphQL webservices for language module.
+"""
+
+import strawberry
+from sqlalchemy import Select, select
+
+from lys.apps.base.modules.language.nodes import LanguageNode
+from lys.apps.base.modules.language.services import LanguageService
+from lys.core.contexts import Info
+from lys.core.graphql.connection import lys_connection
+from lys.core.graphql.registers import register_query
+from lys.core.graphql.types import Query
+
+
+@register_query("graphql")
+@strawberry.type
+class LanguageQuery(Query):
+    """
+    GraphQL queries for languages.
+    """
+
+    @lys_connection(
+        LanguageNode,
+        is_public=True,
+        is_licenced=False,
+        description="Return all available languages."
+    )
+    async def all_languages(self, info: Info, enabled: bool | None = None) -> Select:
+        """
+        Query all languages with optional filtering by enabled status.
+
+        Args:
+            info: GraphQL context
+            enabled: Optional filter for enabled languages
+
+        Returns:
+            SQLAlchemy Select statement
+        """
+        service_class: type[LanguageService] | None = info.context.service_class
+        entity_type = service_class.get_entity_by_name("language")
+        stmt = select(entity_type).order_by(entity_type.id.asc())
+
+        if enabled is not None:
+            stmt = stmt.where(entity_type.enabled == enabled)
+
+        return stmt

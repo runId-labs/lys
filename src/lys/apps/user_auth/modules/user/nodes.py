@@ -6,7 +6,7 @@ from strawberry import relay
 
 from lys.apps.user_auth.modules.user.entities import UserEmailAddress, User
 from lys.apps.user_auth.modules.user.services import UserStatusService, UserEmailAddressService, UserService
-from lys.core.graphql.nodes import parametric_node, EntityNode
+from lys.core.graphql.nodes import parametric_node, EntityNode, ServiceNode
 from lys.core.registers import register_node
 
 
@@ -52,4 +52,8 @@ class UserNode(EntityNode[UserService], relay.Node):
         )
 
 
+@strawberry.type
+@register_node()
+class ForgottenPasswordNode(ServiceNode[UserService]):
+    success: bool
 

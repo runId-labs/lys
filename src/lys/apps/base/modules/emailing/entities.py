@@ -5,7 +5,6 @@ from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, declared_attr, relationship
 
 from lys.apps.base.modules.emailing.consts import WAITING_EMAILING_STATUS
-from lys.apps.base.modules.job.mixins import CronJobExecutionChildMixin
 from lys.core.entities import Entity, ParametricEntity
 from lys.core.registers import register_entity
 
@@ -25,7 +24,7 @@ class EmailingType(ParametricEntity):
 
 
 @register_entity()
-class Emailing(CronJobExecutionChildMixin, Entity):
+class Emailing(Entity):
     __tablename__ = "emailing"
 
     email_address: Mapped[str] = mapped_column()
@@ -46,6 +45,12 @@ class Emailing(CronJobExecutionChildMixin, Entity):
     @declared_attr
     def type(self):
         return relationship("emailing_type", lazy='selectin')
+
+    language_id: Mapped[str] = mapped_column(ForeignKey("language.id"), nullable=False)
+
+    @declared_attr
+    def language(self):
+        return relationship("language", lazy='selectin')
 
     def accessing_users(self):
         return []

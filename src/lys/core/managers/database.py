@@ -1,7 +1,8 @@
-from contextlib import asynccontextmanager
-from typing import Optional
+from contextlib import asynccontextmanager, contextmanager
+from typing import Optional, Dict, Any
+from sqlalchemy import create_engine, Engine
 from sqlalchemy.ext.asyncio import AsyncSession, AsyncEngine, create_async_engine, async_sessionmaker, AsyncAttrs
-from sqlalchemy.orm import DeclarativeBase
+from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 
 from lys.core.configs import DatabaseSettings
 
@@ -33,12 +34,118 @@ class DatabaseManager:
     def __init__(self, settings: DatabaseSettings):
         self.settings = settings
 
+        # Async components
         self._engine: Optional[AsyncEngine] = None
         self._session_factory: Optional[async_sessionmaker] = None
 
+        # Sync components
+        self._sync_engine: Optional[Engine] = None
+        self._sync_session_factory: Optional[sessionmaker] = None
+
+    def _build_url(self, async_mode: bool = True) -> str:
+        """
+        Build database URL from configured components.
+
+        Args:
+            async_mode: If True, use async drivers; if False, use sync drivers
+
+        Returns:
+            Database connection URL string
+
+        Raises:
+            ValueError: If database type is not supported
+        """
+        self.settings.validate()
+
+        db_type = self.settings.type
+        username = self.settings.username
+        password = self.settings.password
+        host = self.settings.host
+        port = self.settings.port
+        database = self.settings.database
+
+        if db_type == "postgresql":
+            driver = "asyncpg" if async_mode else "psycopg2"
+            return f"postgresql+{driver}://{username}:{password}@{host}:{port}/{database}"
+
+        elif db_type == "sqlite":
+            driver = "aiosqlite" if async_mode else ""
+            driver_suffix = f"+{driver}" if driver else ""
+            return f"sqlite{driver_suffix}:///{database}"
+
+        elif db_type == "mysql":
+            driver = "aiomysql" if async_mode else "mysqldb"
+            return f"mysql+{driver}://{username}:{password}@{host}:{port}/{database}"
+
+        else:
+            raise ValueError(f"Unsupported database type: {db_type}")
+
+    def _get_sync_poolclass(self):
+        """
+        Convert async poolclass to sync equivalent.
+
+        Returns:
+            Sync pool class corresponding to configured async pool class,
+            or None if no poolclass is configured
+        """
+        from sqlalchemy.pool import AsyncAdaptedQueuePool, QueuePool
+
+        if self.settings.poolclass is None:
+            return None
+
+        # Mapping from async pools to sync equivalents
+        async_to_sync_mapping = {
+            AsyncAdaptedQueuePool: QueuePool,
+        }
+
+        return async_to_sync_mapping.get(
+            self.settings.poolclass,
+            self.settings.poolclass  # Return as-is if already sync or unknown
+        )
+
+    def _get_engine_kwargs(self, async_mode: bool = True) -> Dict[str, Any]:
+        """
+        Get keyword arguments for engine creation.
+
+        Args:
+            async_mode: If True, configure for async engine; if False, for sync engine
+
+        Returns:
+            Dict with engine configuration parameters
+        """
+        self.settings.validate()
+
+        kwargs: Dict[str, Any] = {
+            "pool_pre_ping": self.settings.pool_pre_ping,
+            "pool_recycle": self.settings.pool_recycle,
+            "echo": self.settings.echo,
+            "echo_pool": self.settings.echo_pool,
+        }
+
+        # Poolclass
+        if async_mode:
+            if self.settings.poolclass is not None:
+                kwargs["poolclass"] = self.settings.poolclass
+        else:
+            sync_poolclass = self._get_sync_poolclass()
+            if sync_poolclass is not None:
+                kwargs["poolclass"] = sync_poolclass
+
+        # Pool size settings
+        if self.settings.pool_size is not None:
+            kwargs["pool_size"] = self.settings.pool_size
+
+        if self.settings.max_overflow is not None:
+            kwargs["max_overflow"] = self.settings.max_overflow
+
+        if self.settings.connect_args:
+            kwargs["connect_args"] = self.settings.connect_args
+
+        return kwargs
+
     def create_database_engine(self) -> AsyncEngine:
         """
-        Create database engine using configured settings.
+        Create async database engine using configured settings.
 
         Returns:
             AsyncEngine instance configured with current settings
@@ -46,8 +153,23 @@ class DatabaseManager:
         Raises:
             ValueError: If database settings are not configured
         """
-        engine_kwargs = self.settings.get_engine_kwargs()
-        return create_async_engine(self.settings.url, **engine_kwargs)
+        url = self._build_url(async_mode=True)
+        engine_kwargs = self._get_engine_kwargs(async_mode=True)
+        return create_async_engine(url, **engine_kwargs)
+
+    def create_sync_database_engine(self) -> Engine:
+        """
+        Create sync database engine using configured settings.
+
+        Returns:
+            Engine instance configured with current settings
+
+        Raises:
+            ValueError: If database settings are not configured
+        """
+        url = self._build_url(async_mode=False)
+        engine_kwargs = self._get_engine_kwargs(async_mode=False)
+        return create_engine(url, **engine_kwargs)
 
     def get_engine(self) -> AsyncEngine:
         """
@@ -65,9 +187,25 @@ class DatabaseManager:
             self._engine = self.create_database_engine()
         return self._engine
 
+    def get_sync_engine(self) -> Engine:
+        """
+        Get the global sync database engine instance.
+
+        Creates the engine on first access using configured settings.
+
+        Returns:
+            Engine instance
+
+        Raises:
+            ValueError: If database settings are not configured
+        """
+        if self._sync_engine is None:
+            self._sync_engine = self.create_sync_database_engine()
+        return self._sync_engine
+
     def get_session_factory(self) -> async_sessionmaker:
         """
-        Get the global session factory.
+        Get the global async session factory.
 
         Creates the factory on first access using the current engine.
 
@@ -82,6 +220,23 @@ class DatabaseManager:
             )
         return self._session_factory
 
+    def get_sync_session_factory(self) -> sessionmaker:
+        """
+        Get the global sync session factory.
+
+        Creates the factory on first access using the current sync engine.
+
+        Returns:
+            sessionmaker instance
+        """
+        if self._sync_session_factory is None:
+            self._sync_session_factory = sessionmaker(
+                self.get_sync_engine(),
+                class_=Session,
+                expire_on_commit=False
+            )
+        return self._sync_session_factory
+
     def reset_database_connection(self):
         """
         Reset database connections.
@@ -89,30 +244,46 @@ class DatabaseManager:
         This forces recreation of engine and session factory on next access.
         Useful when changing database configuration at runtime.
         """
+        # Reset async components
         if self._engine:
-            # Note: In a real app, you might want to properly dispose the engine
-            pass
+            pass  # Dispose is handled by close() method
         self._engine = None
         self._session_factory = None
+
+        # Reset sync components
+        if self._sync_engine:
+            self._sync_engine.dispose()
+        self._sync_engine = None
+        self._sync_session_factory = None
 
     def has_database_configured(self):
         return self.settings.configured() is not None
 
     @property
     def engine(self) -> AsyncEngine:
-        """Get the database engine."""
+        """Get the async database engine."""
         return self.get_engine()
 
     @property
+    def sync_engine(self) -> Engine:
+        """Get the sync database engine."""
+        return self.get_sync_engine()
+
+    @property
     def session_factory(self) -> async_sessionmaker:
-        """Get the session factory."""
+        """Get the async session factory."""
         return self.get_session_factory()
+
+    @property
+    def sync_session_factory(self) -> sessionmaker:
+        """Get the sync session factory."""
+        return self.get_sync_session_factory()
 
     @asynccontextmanager
     async def get_session(self):
         """
-        Context manager pour obtenir une session DB
-        Gère automatiquement commit/rollback
+        Context manager for obtaining an async database session.
+        Automatically handles commit/rollback.
         """
         async with self.session_factory() as session:
             try:
@@ -126,8 +297,31 @@ class DatabaseManager:
             finally:
                 await session.close()
 
+    @contextmanager
+    def get_sync_session(self):
+        """
+        Context manager for obtaining a sync database session.
+        Automatically handles commit/rollback.
+        """
+        session = self.sync_session_factory()
+        try:
+            yield session
+            session.commit()
+        except NonBlockingRollbackException:
+            session.rollback()
+        except Exception:
+            session.rollback()
+            raise
+        finally:
+            session.close()
+
     def create_session(self) -> AsyncSession:
+        """Create a new async session."""
         return self.session_factory()
+
+    def create_sync_session(self) -> Session:
+        """Create a new sync session."""
+        return self.sync_session_factory()
 
     async def execute_parallel(self, *queries):
         """

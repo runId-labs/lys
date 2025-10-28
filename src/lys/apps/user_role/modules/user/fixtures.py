@@ -19,7 +19,8 @@ class RoleUserDevFixtures(UserDevFixtures):
                 "password": "password",
                 "roles": [
                     USER_ADMIN_ROLE
-                ]
+                ],
+                "language_id": "fr"
             }
         }
     ]

@@ -17,11 +17,15 @@ class BaseSettings:
 
 class DatabaseSettings(BaseSettings):
     def __init__(self):
-        # Default values
+        # Database connection components
+        self.type: Optional[str] = None  # "postgresql", "sqlite", "mysql"
+        self.host: Optional[str] = None
+        self.port: Optional[int] = None
+        self.username: Optional[str] = None
+        self.password: Optional[str] = None
+        self.database: Optional[str] = None
 
-        # Database URL connection string
-        self.url: Optional[str] = None
-        # SQLAlchemy pool class to use
+        # SQLAlchemy pool class to use (async pool, will be converted for sync)
         self.poolclass: Optional[type[Pool]] = None
         # Additional arguments for database connection
         self.connect_args: dict[str, Any] = {}
@@ -39,7 +43,7 @@ class DatabaseSettings(BaseSettings):
         self.max_overflow: Optional[int] = None
 
     def configured(self):
-        return not self.url
+        return self.type is not None
 
     def validate(self):
         """
@@ -48,41 +52,106 @@ class DatabaseSettings(BaseSettings):
         Raises:
             ValueError: If required settings are missing or invalid
         """
-        if not self.url:
-            raise ValueError("Database URL must be configured. Use database_settings.configure(url='...')")
+        if self.type is None:
+            raise ValueError(
+                "Database must be configured. Use database_settings.configure("
+                "type='postgresql', host='...', port=..., username='...', password='...', database='...')"
+            )
 
-        # Additional validation can be added here
+        # Validate based on database type
+        if self.type == "sqlite":
+            if not self.database:
+                raise ValueError("SQLite requires 'database' parameter (file path)")
+        elif self.type in ["postgresql", "mysql"]:
+            required = ["host", "port", "username", "password", "database"]
+            missing = [field for field in required if getattr(self, field) is None]
+            if missing:
+                raise ValueError(
+                    f"Database type '{self.type}' requires: {', '.join(missing)}"
+                )
+        else:
+            raise ValueError(f"Unsupported database type: {self.type}. Supported: postgresql, sqlite, mysql")
 
-    def get_engine_kwargs(self) -> Dict[str, Any]:
+
+class CelerySettings(BaseSettings):
+    """Configuration for Celery task queue."""
+
+    def __init__(self):
+        # Broker configuration
+        self.broker_url: str = "redis://localhost:6379/0"
+        self.result_backend: Optional[str] = "redis://localhost:6379/0"
+
+        # Task configuration
+        self.task_serializer: str = "json"
+        self.result_serializer: str = "json"
+        self.accept_content: list[str] = ["json"]
+        self.task_track_started: bool = True
+        self.task_time_limit: int = 3600  # 1 hour
+        self.task_soft_time_limit: int = 3000  # 50 minutes
+
+        # Task modules to import
+        self.tasks: list[str] = []
+
+        # Beat schedule configuration
+        self.beat_schedule: dict[str, dict[str, Any]] = {}
+
+        # Timezone
+        self.timezone: str = "UTC"
+        self.enable_utc: bool = True
+
+        # Worker configuration
+        self.worker_prefetch_multiplier: int = 4
+        self.worker_max_tasks_per_child: int = 1000
+
+    def configured(self) -> bool:
+        """Check if Celery is configured."""
+        return self.broker_url is not None
+
+    def validate(self):
         """
-        Get keyword arguments for create_async_engine.
+        Validate that required Celery settings are configured.
 
-        Returns:
-            Dict with engine configuration parameters
+        Raises:
+            ValueError: If broker_url is not configured
         """
-        self.validate()
+        if not self.broker_url:
+            raise ValueError(
+                "Celery broker_url must be configured. "
+                "Use settings.celery.configure(broker_url='redis://...')"
+            )
 
-        kwargs: Dict[str, Any] = {
-            "pool_pre_ping": self.pool_pre_ping,
-            "pool_recycle": self.pool_recycle,
-            "echo": self.echo,
-            "echo_pool": self.echo_pool,
-        }
 
-        # Add optional parameters only if they are set
-        if self.poolclass is not None:
-            kwargs["poolclass"] = self.poolclass
+class EmailSettings(BaseSettings):
+    """Configuration for email sending."""
 
-        if self.connect_args:
-            kwargs["connect_args"] = self.connect_args
+    def __init__(self):
+        # SMTP server configuration
+        self.server: str = "localhost"
+        self.port: int = 587
+        self.sender: Optional[str] = None
+        self.login: Optional[str] = None
+        self.password: Optional[str] = None
+        self.starttls: bool = True
 
-        if self.pool_size is not None:
-            kwargs["pool_size"] = self.pool_size
+        # Template configuration
+        self.template_path: str = "/templates/emails"
 
-        if self.max_overflow is not None:
-            kwargs["max_overflow"] = self.max_overflow
+    def configured(self) -> bool:
+        """Check if email is configured."""
+        return self.sender is not None
 
-        return kwargs
+    def validate(self):
+        """
+        Validate that required email settings are configured.
+
+        Raises:
+            ValueError: If sender is not configured
+        """
+        if not self.sender:
+            raise ValueError(
+                "Email sender must be configured. "
+                "Use settings.email.configure(sender='noreply@example.com', ...)"
+            )
 
 
 class AppSettings(BaseSettings):
@@ -98,7 +167,10 @@ class AppSettings(BaseSettings):
 
         # General application configuration
         self.secret_key: Optional[str] = None    # For cryptographic operations
+        self.front_url: Optional[str] = None    # Frontend URL for email links
         self.database: DatabaseSettings = DatabaseSettings()
+        self.celery: Optional[CelerySettings] = None  # Celery task queue (optional)
+        self.email: EmailSettings = EmailSettings()  # Email configuration
         self.log_format:str = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 
         # graphql configurations
