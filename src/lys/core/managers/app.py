@@ -52,6 +52,50 @@ class AppManager:
         self.permissions: List[PermissionInterface] = []
 
     ####################################################################################################################
+    #                                                    PUBLIC
+    ####################################################################################################################
+
+    def get_entity(self, name: str):
+        """
+        Retrieve a registered entity by name.
+
+        This is the standard way to access entities in the lys framework.
+
+        Args:
+            name: Entity name to lookup (typically __tablename__)
+
+        Returns:
+            Entity class
+
+        Raises:
+            KeyError: If entity is not found
+
+        Example:
+            user_entity = app_manager.get_entity("users")
+        """
+        return self.register.get_entity(name)
+
+    def get_service(self, name: str):
+        """
+        Retrieve a registered service by name.
+
+        This is the standard way to access services in the lys framework.
+
+        Args:
+            name: Service name to lookup (typically entity's __tablename__)
+
+        Returns:
+            Service class
+
+        Raises:
+            KeyError: If service is not found
+
+        Example:
+            user_service = app_manager.get_service("users")
+        """
+        return self.register.get_service(name)
+
+    ####################################################################################################################
     #                                                    PROTECTED
     ####################################################################################################################
 

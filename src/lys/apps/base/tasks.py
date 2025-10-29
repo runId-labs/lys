@@ -31,7 +31,7 @@ def send_pending_email(emailing_id: str):
     app_manager = current_app.app_manager
 
     # Get emailing service from app_manager
-    emailing_service = app_manager.register.get_service("emailing")
+    emailing_service = app_manager.get_service("emailing")
 
     try:
         # Call send_email service method

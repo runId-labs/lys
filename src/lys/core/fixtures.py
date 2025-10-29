@@ -12,8 +12,10 @@ from lys.core.interfaces.fixtures import EntityFixtureInterface
 from lys.core.interfaces.services import EntityServiceInterface, ServiceInterface
 from lys.core.models.fixtures import EntityFixturesModel
 from lys.core.services import EntityService
+from lys.core.strategies.fixture_loading import FixtureLoadingStrategyFactory
 from lys.core.utils.database import check_is_needing_session
 from lys.core.utils.manager import AppManagerCallerMixin
+from lys.core.utils.generic import resolve_service_name_from_generic
 
 T = TypeVar('T', bound=EntityService)
 
@@ -83,16 +85,14 @@ class EntityFixtures(Generic[T], AppManagerCallerMixin, EntityFixtureInterface):
 
     def __init_subclass__(cls, **kwargs):
         super().__init_subclass__(**kwargs)
-        # Automatically define service_name when creating subclasses
-        for base in cls.__orig_bases__:
-            if hasattr(base, '__args__'):
-                service_class = base.__args__[0]
-                cls.service_name = service_class.service_name
-                break
+        # Use centralized generic type resolver to extract service_name
+        service_name = resolve_service_name_from_generic(cls)
+        if service_name:
+            cls.service_name = service_name
 
     @classproperty
     def service(self) -> Type[ServiceInterface]:
-        return self.get_service_by_name(self.service_name)
+        return self.app_manager.get_service(self.service_name)
 
     ####################################################################################################################
     #                                                    PROTECTED
@@ -131,140 +131,56 @@ class EntityFixtures(Generic[T], AppManagerCallerMixin, EntityFixtureInterface):
 
     @classmethod
     async def _do_before_add(cls, obj: Entity):
+        """
+        Hook method called before adding an entity to the session.
+
+        Subclasses can override this method to perform additional
+        operations before an entity is added during fixture loading.
+
+        Args:
+            obj: The entity instance about to be added
+        """
         pass
-
-    @classmethod
-    async def _load_business_data(cls, session, entity_class: Type[Entity]):
-        """
-        Load business entity data (non-PROD only).
-
-        Returns:
-            Tuple of (deleted_count, added_count)
-        """
-        deleted_count = 0
-
-        if cls.delete_previous_data:
-            # Delete all existing rows
-            stmt = delete(entity_class)
-            result = await session.execute(stmt)
-            deleted_count = result.rowcount
-
-        # Prepare formatted attributes
-        formatted_attributes_list = []
-        for data in cls.data_list:
-            formatted_attributes_list.append(
-                await cls._format_attributes(data.get("attributes", {}), session=session)
-            )
-
-        # Insert all data from data_list
-        for attributes in formatted_attributes_list:
-            obj = entity_class(**attributes)
-            await cls._do_before_add(obj)
-            session.add(obj)
-
-        added_count = len(cls.data_list)
-
-        return deleted_count, added_count
-
-    @classmethod
-    async def _load_parametric_data(cls, session, entity_class: Type[ParametricEntity], service):
-        """
-        Load parametric entity data with update/disable logic.
-
-        Returns:
-            Tuple of (deleted_count, added_count, updated_count, unchanged_count)
-        """
-        deleted_count = 0
-        added_count = 0
-        updated_count = 0
-        unchanged_count = 0
-
-        # Disable entities not in data_list
-        if cls.delete_previous_data:
-            stmt = update(entity_class).where(
-                entity_class.id.notin_([data["id"] for data in cls.data_list])
-            ).values(enabled=False)
-            result = await session.execute(stmt)
-            deleted_count = result.rowcount
-
-        # Process each data item
-        for data in cls.data_list:
-            stmt = select(entity_class).where(entity_class.id == data["id"]).limit(1)
-            result = await session.execute(stmt)
-            obj: Optional[Entity] = result.scalars().one_or_none()
-
-            attributes: Dict[str, Any] = data.get("attributes", {})
-
-            if obj is not None:
-                # Update existing entity
-                if len(attributes.keys()):
-                    formatted_attributes = await cls._format_attributes(attributes, session=session)
-                    obj_updated, is_updated = await service.check_and_update(
-                        entity=obj, **formatted_attributes
-                    )
-
-                    if is_updated:
-                        updated_count += 1
-                    else:
-                        unchanged_count += 1
-                else:
-                    unchanged_count += 1
-            else:
-                # Create new entity
-                formatted_attributes = await cls._format_attributes(attributes, session=session)
-                obj = entity_class(id=data["id"], **formatted_attributes)
-
-                await cls._do_before_add(obj)
-                session.add(obj)
-                added_count += 1
-
-        return deleted_count, added_count, updated_count, unchanged_count
 
     @classmethod
     async def _inner_load(cls, session, entity_class: Type[Entity], service: EntityServiceInterface):
         """
-        Internal load method with session management.
+        Internal load method with session management using strategy pattern.
 
         Args:
             session: Database session from context manager
             entity_class: Entity class to load fixtures for
             service: Service instance for entity operations
         """
-        # Initialize log values
-        deleted_count = 0
-        added_count = 0
-        updated_count = 0
-        unchanged_count = 0
-
         _FixtureLogger.log_start(entity_class.__tablename__)
 
-        if issubclass(entity_class, ParametricEntity):
-            # Handle parametric entities (reference data)
-            deleted_count, added_count, updated_count, unchanged_count = await cls._load_parametric_data(
-                session, entity_class, service
-            )
+        # Use strategy pattern to determine loading behavior
+        strategy = FixtureLoadingStrategyFactory.create_strategy(entity_class)
 
-        elif not cls.app_manager.settings.env == EnvironmentEnum.PROD:
-            # Handle business entities (only in non-PROD environments)
-            deleted_count, added_count = await cls._load_business_data(
-                session, entity_class
-            )
+        # Check if business data should be loaded based on environment
+        if not issubclass(entity_class, ParametricEntity):
+            if cls.app_manager.settings.env == EnvironmentEnum.PROD:
+                # Skip business data loading in production
+                _FixtureLogger.log_results(entity_class.__tablename__, 0, 0, 0, 0)
+                return
+
+        # Execute the loading strategy
+        deleted_count, added_count, updated_count, unchanged_count = await strategy.load(
+            cls, session, entity_class, service
+        )
 
         # Log results
-        _FixtureLogger.log_results(entity_class.__tablename__, deleted_count, added_count, updated_count,
-                                   unchanged_count)
+        _FixtureLogger.log_results(
+            entity_class.__tablename__,
+            deleted_count,
+            added_count,
+            updated_count,
+            unchanged_count
+        )
 
     ####################################################################################################################
     #                                                    PUBLIC
     ####################################################################################################################
-
-    @classmethod
-    def get_service_by_name(cls, service_name: str) -> Type[ServiceInterface]:
-        return cls.app_manager.register.get_service(service_name)
-
-    @classmethod
-    def get_entity_by_name(cls, tablename: str) -> Type[EntityInterface]:
-        return cls.app_manager.register.get_entity(tablename)
 
     @classmethod
     def is_viable(cls, obj: 'EntityFixtures') -> bool:

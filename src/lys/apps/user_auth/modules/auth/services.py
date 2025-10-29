@@ -43,7 +43,7 @@ class AuthService(Service):
         :param session: database session
         :return:
         """
-        user_class: Type[User] = cls.get_entity_by_name("user")
+        user_class: Type[User] = cls.app_manager.get_entity("user")
 
         user: User | None = None
         inner_clause: ColumnElement | None = None
@@ -67,7 +67,7 @@ class AuthService(Service):
     @classmethod
     async def get_user_last_login_attempt(cls, user: User, status_id: str, session: AsyncSession) \
             -> Optional[UserLoginAttempt]:
-        user_login_attempt_entity: Type[UserLoginAttempt] = cls.get_entity_by_name("user_login_attempt")
+        user_login_attempt_entity: Type[UserLoginAttempt] = cls.app_manager.get_entity("user_login_attempt")
 
         stmt = select(user_login_attempt_entity).where(
             user_login_attempt_entity.status_id == status_id,
@@ -92,8 +92,8 @@ class AuthService(Service):
         :param session:
         :return:
         """
-        user_login_attempt_entity: Type[UserLoginAttempt] = cls.get_entity_by_name("user_login_attempt")
-        user_service: Type[UserService] = cls.get_service_by_name("user")
+        user_login_attempt_entity: Type[UserLoginAttempt] = cls.app_manager.get_entity("user_login_attempt")
+        user_service: Type[UserService] = cls.app_manager.get_service("user")
 
         # get user from email address
         user = await cls.get_user_from_login(login, session)
@@ -137,7 +137,7 @@ class AuthService(Service):
 
     @classmethod
     async def login(cls, data: LoginInputModel, response: Response, session: AsyncSession):
-        refresh_token_service: Type[UserRefreshTokenService] = cls.get_service_by_name("user_refresh_token")
+        refresh_token_service: Type[UserRefreshTokenService] = cls.app_manager.get_service("user_refresh_token")
 
         # find out the user based on his email address and his password
         user = await cls.authenticate_user(data.login, data.password, session)
@@ -161,7 +161,7 @@ class AuthService(Service):
 
     @classmethod
     async def logout(cls, request: Request, response: Response, session: AsyncSession):
-        refresh_token_service: Type[UserRefreshTokenService] = cls.get_service_by_name("user_refresh_token")
+        refresh_token_service: Type[UserRefreshTokenService] = cls.app_manager.get_service("user_refresh_token")
 
         refresh_token_id = request.cookies.get(REFRESH_COOKIE_KEY)
         await refresh_token_service.revoke(

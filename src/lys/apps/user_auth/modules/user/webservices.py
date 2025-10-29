@@ -38,7 +38,7 @@ class UserStatusQuery(Query):
     )
     async def all_user_statuses(self, info: Info, enabled: bool | None = None) -> Select:
         service_class: type[UserStatusService] | None = info.context.service_class
-        entity_type = service_class.get_entity_by_name("user_status")
+        entity_type = service_class.app_manager.get_entity("user_status")
         stmt = select(entity_type).order_by(entity_type.id.asc())
         if enabled is not None:
             stmt = stmt.where(entity_type.enabled == enabled)
@@ -72,7 +72,7 @@ class UserMutation(Mutation):
 
         # Get services
         user_service: type[UserService] = node.service_class
-        user_emailing_service: type[UserEmailingService] = user_service.get_service_by_name("user_emailing")
+        user_emailing_service: type[UserEmailingService] = user_service.app_manager.get_service("user_emailing")
 
         # Find user by email
         user = await user_service.get_by_email(email, session)

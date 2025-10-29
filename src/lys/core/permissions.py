@@ -163,7 +163,7 @@ def generate_webservice_permission(
             try:
                 # Service resolution with explicit error handling
                 try:
-                    webservice_service: Type[EntityService] = self.app_manager.register.get_service(WEBSERVICE_TABLENAME)
+                    webservice_service: Type[EntityService] = self.app_manager.get_service(WEBSERVICE_TABLENAME)
                 except Exception as e:
                     logging.error(e)
                     self.code, self.message = UNKNOWN_WEBSERVICE_ERROR

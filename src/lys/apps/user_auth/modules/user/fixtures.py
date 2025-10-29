@@ -60,7 +60,7 @@ class UserDevFixtures(EntityFixtures[UserService]):
 
     @classmethod
     async def format_email_address(cls, email_address: str):
-        user_email_address_class = cls.get_entity_by_name("user_email_address")
+        user_email_address_class = cls.app_manager.get_entity("user_email_address")
         return user_email_address_class(id=email_address)
 
     @classmethod

@@ -25,8 +25,8 @@ class UserRolePermission(PermissionInterface, AppManagerCallerMixin):
 
         if ROLE_ACCESS_LEVEL in access_levels:
             # check if the webservice in the user role accessed webservices
-            webservice_class= cls.app_manager.register.get_entity("webservice")
-            role_class = cls.app_manager.register.get_entity("role")
+            webservice_class= cls.app_manager.get_entity("webservice")
+            role_class = cls.app_manager.get_entity("role")
 
 
 

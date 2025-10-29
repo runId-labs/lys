@@ -96,7 +96,7 @@ class EmailingService(EntityService[Emailing]):
         Returns:
             The created Emailing entity
         """
-        emailing_type_service: EntityService[EmailingType] = cls.get_service_by_name("emailing_type")
+        emailing_type_service: EntityService[EmailingType] = cls.app_manager.get_service("emailing_type")
 
         emailing_type: EmailingType | None = await emailing_type_service.get_by_id(type_id, session)
 

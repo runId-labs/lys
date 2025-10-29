@@ -24,6 +24,7 @@ from lys.core.permissions import add_access_constraints
 from lys.core.utils.access import get_db_object_and_check_access
 from lys.core.utils.database import get_select_total_count
 from lys.core.utils.manager import AppManagerCallerMixin
+from lys.core.utils.generic import resolve_service_name_from_generic
 
 T = TypeVar('T', bound=ServiceInterface)
 
@@ -41,19 +42,17 @@ class ServiceNodeMixin(AppManagerCallerMixin, NodeInterface):
 
     @classproperty
     def service_class(self) -> Type[ServiceInterface]:
-        return self.app_manager.register.get_service(self.service_name)
+        return self.app_manager.get_service(self.service_name)
 
 
 class ServiceNode(Generic[T], ServiceNodeMixin):
 
     def __init_subclass__(cls, **kwargs):
         super().__init_subclass__(**kwargs)
-        # Automatically define service_name when creating subclasses
-        for base in cls.__orig_bases__:
-            if hasattr(base, '__args__'):
-                service_class = base.__args__[0]
-                cls.service_name = service_class.service_name
-                break
+        # Use centralized generic type resolver to extract service_name
+        service_name = resolve_service_name_from_generic(cls)
+        if service_name:
+            cls.service_name = service_name
 
 
 class EntityNode(Generic[T], ServiceNodeMixin):
@@ -62,16 +61,14 @@ class EntityNode(Generic[T], ServiceNodeMixin):
 
     def __init_subclass__(cls, **kwargs):
         super().__init_subclass__(**kwargs)
-        # Automatically define service_name when creating subclasses
-        for base in cls.__orig_bases__:
-            if hasattr(base, '__args__'):
-                service_class = base.__args__[0]
-                cls.service_name = service_class.service_name
-                break
+        # Use centralized generic type resolver to extract service_name
+        service_name = resolve_service_name_from_generic(cls)
+        if service_name:
+            cls.service_name = service_name
 
     @classproperty
     def entity_class(self) -> Type[EntityInterface]:
-        return self.app_manager.register.get_entity(self.service_name)
+        return self.app_manager.get_entity(self.service_name)
 
     @classmethod
     @abstractmethod

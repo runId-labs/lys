@@ -38,7 +38,7 @@ class LanguageQuery(Query):
             SQLAlchemy Select statement
         """
         service_class: type[LanguageService] | None = info.context.service_class
-        entity_type = service_class.get_entity_by_name("language")
+        entity_type = service_class.app_manager.get_entity("language")
         stmt = select(entity_type).order_by(entity_type.id.asc())
 
         if enabled is not None:

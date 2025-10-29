@@ -25,7 +25,7 @@ class AuthWebserviceService(WebserviceService):
             where = cls.entity_class.public_type_id.is_not(None)
 
             if user is not None:
-                access_level_entity: type[AccessLevel] = cls.get_entity_by_name("access_level")
+                access_level_entity: type[AccessLevel] = cls.app_manager.get_entity("access_level")
                 # connected owner access level webservices ...
                 where |= cls.entity_class.access_levels.any(
                     access_level_entity.id.in_([CONNECTED_ACCESS_LEVEL, OWNER_ACCESS_LEVEL]),

@@ -51,7 +51,7 @@ class RefreshTokenMutation(Mutation):
         node = LoginNode.get_effective_node()
         auth_utils = AuthUtils()
         auth_service: type[AuthService] = node.service_class
-        refresh_token_service: type[UserRefreshTokenService] = auth_service.get_service_by_name("user_refresh_token")
+        refresh_token_service: type[UserRefreshTokenService] = auth_service.app_manager.get_service("user_refresh_token")
 
         request = info.context.request
         response: Response = info.context.response

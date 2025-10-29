@@ -80,21 +80,28 @@ Components are automatically discovered and registered when modules are imported
 
 **MANDATORY**: ALL entities and services MUST be accessed through `app_manager`. Direct imports of entities or services WILL cause bugs and failures.
 
-**Correct approach** - Always use `app_manager` registry:
+**Standard Pattern** - Use `app_manager.get_entity()` and `app_manager.get_service()`:
 ```python
-# In services - use cls.entity_class for your own entity
-emailing = session.get(cls.entity_class, emailing_id)
+# In services/fixtures/nodes - access via app_manager
+class UserService(EntityService[User]):
+    async def example(cls, session: AsyncSession):
+        # For the current service's entity - use cls.entity_class shortcut
+        user = await session.get(cls.entity_class, user_id)
 
-# Get other services by name
-email_service = cls.get_service_by_name("emailing")
-user_service = app_manager.get_service("user")
+        # For other entities - use app_manager
+        org_entity = cls.app_manager.get_entity("organizations")
+        org = await session.get(org_entity, org_id)
+
+        # For other services - use app_manager
+        email_service = cls.app_manager.get_service("emailing")
+        await email_service.send_welcome_email(user, session)
 ```
 
 **NEVER do this** - Direct imports break the architecture:
 ```python
 # WRONG - DO NOT DO THIS
 from lys.apps.base.modules.emailing.entities import Emailing
-emailing = session.get(Emailing, emailing_id)  # WILL FAIL
+emailing = await session.get(Emailing, emailing_id)  # WILL FAIL
 ```
 
 **Why this is critical**:
@@ -104,7 +111,10 @@ emailing = session.get(Emailing, emailing_id)  # WILL FAIL
 - Violates the dependency injection pattern of the framework
 - Prevents proper entity/service resolution
 
-**Rule**: If you need an entity or service, get it from `app_manager` or use `cls.entity_class`/`cls.get_service_by_name()`. No exceptions.
+**The ONE correct pattern**:
+- Use `app_manager.get_entity("name")` for entities
+- Use `app_manager.get_service("name")` for services
+- Use `cls.entity_class` in EntityService for the current entity (convenience shortcut)
 
 ### GraphQL Integration
 - Uses Strawberry GraphQL with FastAPI
@@ -131,6 +141,27 @@ emailing = session.get(Emailing, emailing_id)  # WILL FAIL
 - Focus on usage patterns, parameters, return values, and side effects
 
 ### Git and Version Control
-- Do not sign commits when creating commits
+- **CRITICAL**: Do NOT sign commits - no GPG signatures, no Co-Authored-By lines, no Generated with Claude Code footers
+- Do NOT add any attribution, signature, or authorship metadata to commit messages
+- Commit messages should contain ONLY the conventional commit format with description
 - Use clear, descriptive commit messages in English
 - Follow conventional commit format when applicable
+
+Example of correct commit message:
+```
+refactor: implement fixture loading strategy pattern
+
+- Add FixtureLoadingStrategy base class
+- Extract parametric and business loading logic into separate strategies
+- Update EntityFixtures to use strategy pattern
+```
+
+Example of INCORRECT commit message (DO NOT DO THIS):
+```
+refactor: implement fixture loading strategy pattern
+
+- Add FixtureLoadingStrategy base class
+
+🤖 Generated with [Claude Code](https://claude.com/claude-code)
+Co-Authored-By: Claude <noreply@anthropic.com>
+```

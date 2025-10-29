@@ -29,7 +29,7 @@ class RoleFixtures(EntityFixtures[RoleService]):
 
     @classmethod
     async def format_webservices(cls, webservice_ids: List[str], session:AsyncSession) -> List:
-        webservice_class = cls.get_entity_by_name("webservice")
+        webservice_class = cls.app_manager.get_entity("webservice")
         stmt = select(webservice_class).where(webservice_class.id.in_(webservice_ids))
 
         result = await session.execute(stmt)

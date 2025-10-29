@@ -8,19 +8,12 @@ from lys.core.entities import Entity
 from lys.core.interfaces.services import ServiceInterface, EntityServiceInterface
 from lys.core.managers.database import Base
 from lys.core.utils.manager import AppManagerCallerMixin
+from lys.core.utils.generic import resolve_service_name_from_generic
 
 T = TypeVar('T', bound=Entity)
 
 
 class Service(AppManagerCallerMixin, ServiceInterface):
-    @classmethod
-    def get_entity_by_name(cls, name: str) -> type[Entity]:
-        return cls.app_manager.register.get_entity(name)
-
-    @classmethod
-    def get_service_by_name(cls, name: str) -> type[Self]:
-        return cls.app_manager.register.get_service(name)
-
     @classmethod
     async def execute_parallel(cls, *query_functions: Callable[[AsyncSession], Any]):
         """
@@ -80,12 +73,10 @@ class EntityService(Generic[T], EntityServiceInterface, Service):
             **kwargs: Additional keyword arguments passed to parent __init_subclass__
         """
         super().__init_subclass__(**kwargs)
-        # Automatically define service_name when creating subclasses
-        for base in cls.__orig_bases__:
-            if hasattr(base, '__args__'):
-                entity_class = base.__args__[0]
-                cls.service_name = entity_class.__tablename__
-                break
+        # Use centralized generic type resolver to extract service_name
+        service_name = resolve_service_name_from_generic(cls)
+        if service_name:
+            cls.service_name = service_name
 
     @classproperty
     def entity_class(self) -> Union[type[T], Base]:
@@ -97,7 +88,7 @@ class EntityService(Generic[T], EntityServiceInterface, Service):
         Returns:
             The entity class type associated with this service.
         """
-        return self.get_entity_by_name(self.service_name)
+        return self.app_manager.get_entity(self.service_name)
 
     @classmethod
     async def get_by_id(cls, entity_id: str, session:AsyncSession) -> Optional[T]:

@@ -27,7 +27,7 @@ class RoleUserDevFixtures(UserDevFixtures):
 
     @classmethod
     async def format_roles(cls, role_id_list: List[str], session: AsyncSession = None) -> List[Role]:
-        role_class = cls.get_entity_by_name("role")
+        role_class = cls.app_manager.get_entity("role")
         stmt = select(role_class).where(role_class.id.in_(role_id_list))
         result = await session.execute(stmt)
         roles: List[Role] = list(result.scalars().all())

@@ -49,7 +49,7 @@ class UserService(EntityService[User]):
         from sqlalchemy import select
 
         # Get UserEmailAddress service
-        email_address_service = cls.get_service_by_name("user_email_address")
+        email_address_service = cls.app_manager.get_service("user_email_address")
 
         # Query user by email address - join on user_id = User.id
         stmt = (
@@ -192,8 +192,8 @@ class UserEmailingService(EntityService[UserEmailing]):
             UserEmailing: The created user emailing entity
         """
         # Get services
-        token_service = cls.get_service_by_name("user_one_time_token")
-        emailing_service = cls.get_service_by_name("emailing")
+        token_service = cls.app_manager.get_service("user_one_time_token")
+        emailing_service = cls.app_manager.get_service("emailing")
 
         # 1. Create one-time token for password reset
         from lys.apps.base.modules.one_time_token.consts import FORGOTTEN_PASSWORD_TOKEN_TYPE

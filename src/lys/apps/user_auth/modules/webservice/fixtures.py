@@ -41,7 +41,7 @@ class WebserviceFixtures(EntityFixtures[AuthWebserviceService]):
     @classmethod
     async def format_public_type(cls, public_type_id: str | None, session:AsyncSession) -> WebservicePublicType | None:
         webservice_public_type_service: type[WebservicePublicTypeService] = \
-            cls.get_service_by_name("webservice_public_type")
+            cls.app_manager.get_service("webservice_public_type")
 
         public_type: WebservicePublicType | None = None
 
@@ -53,7 +53,7 @@ class WebserviceFixtures(EntityFixtures[AuthWebserviceService]):
     @classmethod
     async def format_access_levels(cls, access_levels: list[str], session:AsyncSession) -> list[AccessLevel]:
         access_level_service: type[AccessLevelService] = \
-            cls.get_service_by_name("access_level")
+            cls.app_manager.get_service("access_level")
 
         access_level_objs: list[AccessLevel] = []
 
