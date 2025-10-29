@@ -49,12 +49,13 @@ def _create_strawberry_field_config(
 
 def _apply_webservice_config(field, is_public: WebserviceIsPublicType, enabled: bool,
                                   access_levels: List[str], is_licenced: bool,
-                                  register: AppRegister=None):
+                                  allow_override: bool, register: AppRegister=None):
     return register_webservice(
         is_public=is_public,
         enabled=enabled,
         access_levels=access_levels,
         is_licenced=is_licenced,
+        allow_override=allow_override,
         register=register,
     )(field)
 
@@ -67,6 +68,7 @@ def lys_typed_field(
         enabled: bool = True,
         access_levels: List[str] = None,
         is_licenced: bool = True,
+        allow_override: bool = False,
         name: Optional[str] = None,
         is_subscription: bool = False,
         description: Optional[str] = None,
@@ -104,7 +106,7 @@ def lys_typed_field(
 
         field = strawberry.field(**field_config)
         field.base_resolver.type_annotation = ensure_type
-        return _apply_webservice_config(field, is_public, enabled, access_levels, is_licenced, register)
+        return _apply_webservice_config(field, is_public, enabled, access_levels, is_licenced, allow_override, register)
 
     return wrapper
 
@@ -115,6 +117,7 @@ def lys_field(
         enabled: bool = True,
         access_levels: List[str] = None,
         is_licenced: bool = True,
+        allow_override: bool = False,
         name: Optional[str] = None,
         is_subscription: bool = False,
         description: Optional[str] = None,
@@ -171,6 +174,7 @@ def lys_field(
         enabled=enabled,
         access_levels=access_levels,
         is_licenced=is_licenced,
+        allow_override=allow_override,
         name=name,
         is_subscription=is_subscription,
         description=description,
@@ -193,6 +197,7 @@ def lys_connection_field(
         enabled: bool = True,
         access_levels: List[str] = None,
         is_licenced: bool = True,
+        allow_override: bool = False,
         name: Optional[str] = None,
         is_subscription: bool = False,
         description: Optional[str] = None,
@@ -312,6 +317,6 @@ def lys_connection_field(
         )
 
         field = strawberry.field(**field_config)
-        return _apply_webservice_config(field, is_public, enabled, access_levels, is_licenced)
+        return _apply_webservice_config(field, is_public, enabled, access_levels, is_licenced, allow_override)
 
     return wrapper

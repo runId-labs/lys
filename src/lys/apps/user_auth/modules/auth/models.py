@@ -1,8 +1,9 @@
 from pydantic import BaseModel, field_validator
 from pydantic_core.core_schema import ValidationInfo
 
-from lys.apps.user_auth.errors import EMPTY_LOGIN_ERROR, EMPTY_PASSWORD_ERROR
+from lys.apps.user_auth.errors import EMPTY_LOGIN_ERROR
 from lys.core.errors import LysError
+from lys.core.utils.validators import validate_password_for_login
 
 
 class LoginInputModel(BaseModel):
@@ -26,10 +27,4 @@ class LoginInputModel(BaseModel):
     @field_validator('password')
     @classmethod
     def validate_password(cls, password: str | None, info: ValidationInfo) -> str | None:
-        if not len(password.strip()):
-            raise LysError(
-                EMPTY_PASSWORD_ERROR,
-                "password cannot be empty"
-            )
-
-        return password.strip()
+        return validate_password_for_login(password)

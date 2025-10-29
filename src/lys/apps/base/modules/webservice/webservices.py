@@ -1,5 +1,5 @@
 import strawberry
-from sqlalchemy import Select
+from sqlalchemy import Select, select
 
 from lys.apps.base.modules.webservice.nodes import WebserviceNode
 from lys.apps.base.modules.webservice.services import WebserviceService
@@ -22,3 +22,13 @@ class WebserviceQuery(Query):
         webservice_service: type[WebserviceService] | None = info.context.service_class
         connected_user = info.context.connected_user
         return await webservice_service.accessible_webservices(connected_user)
+
+    @lys_connection(
+        ensure_type=WebserviceNode,
+        is_licenced=False,
+        description="Get all webservices (super admin only)."
+    )
+    async def all_webservices(self, info: Info) -> Select:
+        entity_type = info.context.service_class.entity_class
+        stmt = select(entity_type).order_by(entity_type.id.asc())
+        return stmt

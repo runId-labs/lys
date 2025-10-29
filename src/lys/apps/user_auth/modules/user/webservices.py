@@ -1,13 +1,17 @@
 import logging
+from datetime import datetime
+from typing import Optional
 
 import strawberry
 from sqlalchemy import Select, select
 
-from lys.apps.user_auth.modules.user.nodes import UserNode, UserStatusNode, ForgottenPasswordNode
+from lys.apps.user_auth.modules.user.inputs import CreateSuperUserInput
+from lys.apps.user_auth.modules.user.nodes import UserNode, UserStatusNode, ForgottenPasswordNode, UserOneTimeTokenNode
 from lys.apps.user_auth.modules.user.services import UserStatusService, UserService, UserEmailingService
 from lys.core.consts.webservices import OWNER_ACCESS_LEVEL
 from lys.core.contexts import Info
 from lys.core.graphql.connection import lys_connection
+from lys.core.graphql.create import lys_creation
 from lys.core.graphql.fields import lys_field
 from lys.core.graphql.getter import lys_getter
 from lys.core.graphql.registers import register_query, register_mutation
@@ -45,6 +49,45 @@ class UserStatusQuery(Query):
         stmt = select(entity_type).order_by(entity_type.id.asc())
         if enabled is not None:
             stmt = stmt.where(entity_type.enabled == enabled)
+        return stmt
+
+
+@register_query("graphql")
+@strawberry.type
+class UserOneTimeTokenQuery(Query):
+    @lys_connection(
+        ensure_type=UserOneTimeTokenNode,
+        is_licenced=False,
+        description="Return user one-time tokens filtered by optional criteria."
+    )
+    async def all_user_one_time_tokens(
+        self,
+        info: Info,
+        status_id: Optional[str] = None,
+        type_id: Optional[str] = None,
+        user_id: Optional[str] = None,
+        start_date: Optional[datetime] = None,
+        end_date: Optional[datetime] = None,
+    ) -> Select:
+        entity_type = info.context.service_class.entity_class
+
+        stmt = select(entity_type).order_by(entity_type.created_at.desc())
+
+        if status_id is not None:
+            stmt = stmt.where(entity_type.status_id == status_id)
+
+        if type_id is not None:
+            stmt = stmt.where(entity_type.type_id == type_id)
+
+        if user_id is not None:
+            stmt = stmt.where(entity_type.user_id == user_id)
+
+        if start_date is not None:
+            stmt = stmt.where(entity_type.created_at >= start_date)
+
+        if end_date is not None:
+            stmt = stmt.where(entity_type.created_at <= end_date)
+
         return stmt
 
 
@@ -94,3 +137,54 @@ class UserMutation(Mutation):
         logger.info(f"Password reset email scheduled for user: {user.id}")
 
         return node(success=True)
+
+    @lys_creation(
+        ensure_type=UserNode,
+        is_public=False,
+        is_licenced=False,
+        description="Create a new super user. Only accessible to super users."
+    )
+    async def create_super_user(
+        self,
+        inputs: CreateSuperUserInput,
+        info: Info
+    ):
+        """
+        Create a new super user with private data.
+
+        This webservice is only accessible to existing super users. It creates
+        a new user with super user privileges and GDPR-protected private data.
+
+        Args:
+            inputs: Input containing:
+                - email: Email address for the new super user
+                - password: Plain text password (will be hashed)
+                - language_id: Language ID for the user
+                - first_name: Optional first name (GDPR-protected)
+                - last_name: Optional last name (GDPR-protected)
+                - gender_id: Optional gender ID (GDPR-protected)
+            info: GraphQL context
+
+        Returns:
+            User: The created super user
+        """
+        # Convert Strawberry input to Pydantic model for validation
+        input_data = inputs.to_pydantic()
+
+        session = info.context.session
+        user_service: type[UserService] = info.context.service_class
+
+        # Delegate all business logic to the service
+        user = await user_service.create_super_user(
+            email=input_data.email,
+            password=input_data.password,
+            language_id=input_data.language_id,
+            session=session,
+            first_name=input_data.first_name,
+            last_name=input_data.last_name,
+            gender_id=input_data.gender_id
+        )
+
+        logger.info(f"Super user created with email: {input_data.email}")
+
+        return user

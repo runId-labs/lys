@@ -3,13 +3,14 @@ from typing import List
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from lys.apps.user_auth.modules.user.consts import FEMALE_GENDER
 from lys.apps.user_auth.modules.user.fixtures import UserDevFixtures
 from lys.apps.user_role.consts import USER_ADMIN_ROLE
 from lys.apps.user_role.modules.role.entities import Role
 from lys.core.registers import register_fixture
 
 
-@register_fixture(depends_on=["UserStatusFixtures", "RoleFixtures"])
+@register_fixture(depends_on=["UserStatusFixtures", "GenderFixtures", "RoleFixtures"])
 class RoleUserDevFixtures(UserDevFixtures):
     delete_previous_data = False
     data_list = [
@@ -20,7 +21,12 @@ class RoleUserDevFixtures(UserDevFixtures):
                 "roles": [
                     USER_ADMIN_ROLE
                 ],
-                "language_id": "fr"
+                "language_id": "fr",
+                "private_data": {
+                    "first_name": "Alice",
+                    "last_name": "Administrator",
+                    "gender_id": FEMALE_GENDER
+                }
             }
         }
     ]

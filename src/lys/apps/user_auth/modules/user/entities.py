@@ -21,6 +21,14 @@ class UserStatus(ParametricEntity):
 
 
 @register_entity()
+class Gender(ParametricEntity):
+    """
+    Gender parametric entity for GDPR-protected user data
+    """
+    __tablename__ = "gender"
+
+
+@register_entity()
 class UserEmailAddress(AbstractEmailAddress):
     __tablename__ = "user_email_address"
 
@@ -81,6 +89,71 @@ class User(Entity):
     @classmethod
     def user_accessing_filters(cls, stmt, user_id: str):
         return stmt, [cls.id == user_id]
+
+
+@register_entity()
+class UserPrivateData(Entity):
+    """
+    GDPR-protected user private data.
+
+    This entity stores sensitive personal information separately from the User entity
+    to facilitate GDPR compliance (right to be forgotten, data minimization, etc.).
+
+    Personal data stored here:
+    - first_name: User's first name
+    - last_name: User's last name
+    - gender_id: User's gender reference
+
+    GDPR features:
+    - anonymized_at: Timestamp when data was anonymized (right to be forgotten)
+    - Separate table allows selective data retrieval (data minimization)
+    - Easy to delete/anonymize without affecting user account
+    """
+    __tablename__ = "user_private_data"
+
+    user_id: Mapped[str] = mapped_column(
+        ForeignKey("user.id", ondelete='CASCADE'),
+        unique=True,
+        comment="One-to-one relationship with User"
+    )
+
+    first_name: Mapped[str] = mapped_column(nullable=True, comment="User's first name")
+    last_name: Mapped[str] = mapped_column(nullable=True, comment="User's last name")
+    gender_id: Mapped[str] = mapped_column(ForeignKey("gender.id"), nullable=True, comment="User's gender")
+
+    anonymized_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+        comment="Timestamp when private data was anonymized (GDPR right to be forgotten)"
+    )
+
+    @declared_attr
+    def user(self):
+        return relationship(
+            "user",
+            backref=backref("private_data", uselist=False, lazy='selectin')
+        )
+
+    @declared_attr
+    def gender(self):
+        return relationship("gender", lazy='selectin')
+
+    def accessing_users(self):
+        """
+        Only the user themselves can access their private data.
+        Super users can access via permission check in the node/webservice.
+        """
+        return [self.user] if self.user else []
+
+    def accessing_organizations(self):
+        return {}
+
+    @classmethod
+    def user_accessing_filters(cls, stmt, user_id: str):
+        """
+        Filter to show only the user's own private data.
+        """
+        return stmt, [cls.user_id == user_id]
 
 
 @register_entity()

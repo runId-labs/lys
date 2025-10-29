@@ -40,6 +40,9 @@ def _creation_resolver_generator(resolver: Callable, ensure_type: Type[EntityNod
                 # add object to database
                 session.add(entity_obj)
 
+                # Refresh to load all relationships before creating the node
+                await session.refresh(entity_obj)
+
                 # return node
                 return ensure_type.from_obj(entity_obj)
 
@@ -58,6 +61,7 @@ def lys_creation(
     enabled: bool = True,
     access_levels: List[str] = None,
     is_licenced: bool = True,
+    allow_override: bool = False,
     name: Optional[str] = None,
     is_subscription: bool = False,
     description: Optional[str] = None,
@@ -98,6 +102,7 @@ def lys_creation(
         enabled=enabled,
         access_levels=access_levels,
         is_licenced=is_licenced,
+        allow_override=allow_override,
         name=name,
         is_subscription=is_subscription,
         description=description,

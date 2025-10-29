@@ -57,6 +57,9 @@ def _edition_resolver_generator(resolver: Callable, ensure_type: Type[EntityNode
                 # check permission again after updating
                 await check_access_to_object(obj, info.context)
 
+                # Refresh to load all relationships before creating the node
+                await session.refresh(obj)
+
                 return ensure_type.from_obj(obj)
 
         return await wrapped()
@@ -77,6 +80,7 @@ def lys_edition(
         enabled: bool = True,
         access_levels: List[str] = None,
         is_licenced: bool = True,
+        allow_override: bool = False,
         name: Optional[str] = None,
         is_subscription: bool = False,
         description: Optional[str] = None,
@@ -118,6 +122,7 @@ def lys_edition(
             enabled=enabled,
             access_levels=access_levels,
             is_licenced=is_licenced,
+            allow_override=allow_override,
             name=name,
             is_subscription=is_subscription,
             description=description,

@@ -21,7 +21,8 @@ class RoleFixtures(EntityFixtures[RoleService]):
                 "enabled": True,
                 "webservices": [
                     "create_user",
-                    "user"
+                    "user",
+                    "all_roles"
                 ]
             }
         }

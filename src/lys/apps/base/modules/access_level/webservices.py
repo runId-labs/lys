@@ -14,8 +14,7 @@ from lys.core.graphql.types import Query
 class AccessLevelQuery(Query):
     @lys_connection(
         ensure_type=AccessLevelNode,
-        is_public=False,
-        access_levels=[CONNECTED_ACCESS_LEVEL],
+        is_public=True,
         is_licenced=False,
         description="Return possible access levels."
     )
