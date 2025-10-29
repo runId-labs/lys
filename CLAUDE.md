@@ -134,11 +134,32 @@ emailing = await session.get(Emailing, emailing_id)  # WILL FAIL
 - **No marketing language**: Avoid superlatives, promotional terms, or sales-oriented language
 - **Technical precision**: Focus on functionality, behavior, and implementation details rather than subjective assessments
 
+### Code Style Standards
+- **PEP 8 Compliance**: All Python code MUST follow PEP 8 style guidelines
+- **Line length**: Maximum 120 characters per line (project standard, extended from PEP 8's 79)
+- **Indentation**: 4 spaces (no tabs)
+- **Imports**:
+  - Group imports in order: standard library, third-party, local application
+  - Absolute imports preferred over relative imports
+  - One import per line (except for `from x import a, b`)
+  - All imports at the top of the file (no imports inside functions unless absolutely necessary)
+- **Naming conventions**:
+  - `snake_case` for functions, variables, and module names
+  - `PascalCase` for class names
+  - `UPPER_CASE` for constants
+- **Whitespace**:
+  - Two blank lines between top-level functions and classes
+  - One blank line between methods in a class
+  - No trailing whitespace
+- **String quotes**: Use double quotes `"` for strings (project convention)
+- **Type hints**: Use type hints for function signatures and class attributes where applicable
+
 ### Code Documentation
 - Document what the code does, not how good it is
 - Use clear, descriptive names for functions and variables
 - Explain complex logic with technical comments, not value judgments
 - Focus on usage patterns, parameters, return values, and side effects
+- Use docstrings for all public modules, functions, classes, and methods (Google/NumPy style preferred)
 
 ### Git and Version Control
 - **CRITICAL**: Do NOT sign commits - no GPG signatures, no Co-Authored-By lines, no Generated with Claude Code footers

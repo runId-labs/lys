@@ -1,11 +1,12 @@
 import strawberry
 from starlette.responses import Response
 
-from lys.apps.user_auth.consts import REFRESH_COOKIE_KEY, ACCESS_COOKIE_KEY
-from lys.apps.user_auth.errors import INVALID_REFRESH_TOKEN_ERROR
+from lys.apps.user_auth.consts import REFRESH_COOKIE_KEY
+from lys.apps.user_auth.errors import INVALID_REFRESH_TOKEN_ERROR, BLOCKED_USER_ERROR
 from lys.apps.user_auth.modules.auth.inputs import LoginInput
 from lys.apps.user_auth.modules.auth.nodes import LoginNode, LogoutNode
 from lys.apps.user_auth.modules.auth.services import AuthService
+from lys.apps.user_auth.modules.user.consts import ENABLED_USER_STATUS
 from lys.apps.user_auth.modules.user.models import GetUserRefreshTokenInputModel
 from lys.apps.user_auth.modules.user.nodes import UserNode
 from lys.apps.user_auth.modules.user.services import UserRefreshTokenService
@@ -64,8 +65,7 @@ class AuthTokenMutation(Mutation):
 
         # validate refresh token exists
         if not refresh_token_id:
-            response.delete_cookie(REFRESH_COOKIE_KEY, path="/auth")
-            response.delete_cookie(ACCESS_COOKIE_KEY, path="/graphql")
+            await auth_service.clear_auth_cookies(response)
             raise LysError(
                 INVALID_REFRESH_TOKEN_ERROR,
                 "Missing refresh token in cookie"
@@ -83,18 +83,26 @@ class AuthTokenMutation(Mutation):
                     GetUserRefreshTokenInputModel(refresh_token_id=refresh_token_id),
                     session=session
                 )
-        except Exception:
-            response.delete_cookie(REFRESH_COOKIE_KEY, path="/auth")
-            response.delete_cookie(ACCESS_COOKIE_KEY, path="/graphql")
-            raise
 
-        await auth_service.set_cookie(response, REFRESH_COOKIE_KEY, refresh_token.id, "/auth")
+            # validate user status before generating new access token
+            if refresh_token.user.status_id != ENABLED_USER_STATUS:
+                raise LysError(
+                    BLOCKED_USER_ERROR,
+                    "User account has been blocked"
+                )
+
+        except LysError:
+            # Clear cookies only for known authentication errors
+            await auth_service.clear_auth_cookies(response)
+            raise
+        # System errors are NOT caught - they will be logged by the middleware
 
         # generate the user access token
         access_token, claims = await auth_service.generate_access_token(refresh_token.user)
-        await auth_service.set_cookie(response, ACCESS_COOKIE_KEY, access_token, "/graphql")
 
-        node = LoginNode.get_effective_node()
+        # set authentication cookies
+        await auth_service.set_auth_cookies(response, refresh_token.id, access_token)
+
         user_node_class: type[UserNode] = node.get_node_by_name("UserNode")
 
         return node(

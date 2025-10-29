@@ -244,8 +244,8 @@ class AuthService(Service):
         # generate the user access token
         access_token, claims = await cls.generate_access_token(user)
 
-        await cls.set_cookie(response, REFRESH_COOKIE_KEY, refresh_token.id, "/auth")
-        await cls.set_cookie(response, ACCESS_COOKIE_KEY, access_token, "/graphql")
+        # set authentication cookies
+        await cls.set_auth_cookies(response, refresh_token.id, access_token)
 
         # success result
         return user, claims
@@ -264,8 +264,7 @@ class AuthService(Service):
             )
 
         # delete refresh and access cookie
-        response.delete_cookie(REFRESH_COOKIE_KEY, path="/auth")
-        response.delete_cookie(ACCESS_COOKIE_KEY, path="/graphql")
+        await cls.clear_auth_cookies(response)
 
     @staticmethod
     async def generate_xsrf_token():
@@ -287,6 +286,35 @@ class AuthService(Service):
             cls.auth_utils.secret_key,
             algorithm=cls.auth_utils.config.get("encryption_algorithm"),
         ), claims
+
+    @classmethod
+    async def clear_auth_cookies(cls, response: Response) -> None:
+        """
+        Clear authentication cookies (refresh and access tokens).
+
+        Args:
+            response: Starlette response object
+        """
+        response.delete_cookie(REFRESH_COOKIE_KEY, path="/auth")
+        response.delete_cookie(ACCESS_COOKIE_KEY, path="/graphql")
+
+    @classmethod
+    async def set_auth_cookies(
+        cls,
+        response: Response,
+        refresh_token_id: str,
+        access_token: str
+    ) -> None:
+        """
+        Set both refresh and access token cookies.
+
+        Args:
+            response: Starlette response object
+            refresh_token_id: Refresh token ID to store in cookie
+            access_token: Access token to store in cookie
+        """
+        await cls.set_cookie(response, REFRESH_COOKIE_KEY, refresh_token_id, "/auth")
+        await cls.set_cookie(response, ACCESS_COOKIE_KEY, access_token, "/graphql")
 
     @classmethod
     async def set_cookie(cls, response: Response, key: str, value: str, path: str):

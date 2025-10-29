@@ -1,8 +1,9 @@
+import logging
+
 import strawberry
 from sqlalchemy import Select, select
 
 from lys.apps.user_auth.modules.user.nodes import UserNode, UserStatusNode, ForgottenPasswordNode
-
 from lys.apps.user_auth.modules.user.services import UserStatusService, UserService, UserEmailingService
 from lys.core.consts.webservices import OWNER_ACCESS_LEVEL
 from lys.core.contexts import Info
@@ -11,6 +12,8 @@ from lys.core.graphql.fields import lys_field
 from lys.core.graphql.getter import lys_getter
 from lys.core.graphql.registers import register_query, register_mutation
 from lys.core.graphql.types import Query, Mutation
+
+logger = logging.getLogger(__name__)
 
 
 @register_query("graphql")
@@ -65,8 +68,6 @@ class UserMutation(Mutation):
         Returns:
             ForgottenPasswordNode with success status
         """
-        from lys.apps.base.tasks import send_pending_email
-
         node = ForgottenPasswordNode.get_effective_node()
         session = info.context.session
 
@@ -79,6 +80,7 @@ class UserMutation(Mutation):
 
         # Don't reveal if email exists or not (security)
         if not user:
+            logger.info(f"Password reset requested for unknown email: {email}")
             return node(success=True)
 
         # Create emailing (will be committed at end of request)
@@ -86,10 +88,9 @@ class UserMutation(Mutation):
             user, session
         )
 
-        # Send email via Celery after commit
-        # Note: This will be executed after the session commits
-        info.context.background_tasks.add_task(
-            lambda: send_pending_email.delay(user_emailing.emailing_id)
-        )
+        # Schedule email sending via Celery after commit
+        user_emailing_service.schedule_send_emailing(user_emailing, info.context.background_tasks)
+
+        logger.info(f"Password reset email scheduled for user: {user.id}")
 
         return node(success=True)

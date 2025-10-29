@@ -6,8 +6,9 @@ from sqlalchemy import update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from lys.apps.base.modules.emailing.consts import FORGOTTEN_PASSWORD_EMAILING_TYPE
-from lys.apps.base.modules.emailing.services import EmailingService
+from lys.apps.base.modules.one_time_token.consts import FORGOTTEN_PASSWORD_TOKEN_TYPE
 from lys.apps.base.modules.one_time_token.services import OneTimeTokenService
+from lys.apps.base.tasks import send_pending_email
 from lys.apps.user_auth.errors import INVALID_REFRESH_TOKEN_ERROR
 from lys.apps.user_auth.modules.user.entities import UserStatus, User, UserEmailAddress, UserRefreshToken, UserEmailing, UserOneTimeToken
 from lys.apps.user_auth.modules.user.models import GetUserRefreshTokenInputModel
@@ -197,8 +198,6 @@ class UserEmailingService(EntityService[UserEmailing]):
         emailing_service = cls.app_manager.get_service("emailing")
 
         # 1. Create one-time token for password reset
-        from lys.apps.base.modules.one_time_token.consts import FORGOTTEN_PASSWORD_TOKEN_TYPE
-
         token = await token_service.create(
             session,
             user_id=user.id,
@@ -225,3 +224,19 @@ class UserEmailingService(EntityService[UserEmailing]):
         )
 
         return user_emailing
+
+    @classmethod
+    def schedule_send_emailing(cls, user_emailing: UserEmailing, background_tasks) -> None:
+        """
+        Schedule the emailing to be sent via Celery.
+
+        This method should be called after the database session commits
+        to ensure the emailing entity is persisted.
+
+        Args:
+            user_emailing: The user emailing entity to send
+            background_tasks: FastAPI/Starlette background tasks manager
+        """
+        background_tasks.add_task(
+            lambda: send_pending_email.delay(user_emailing.emailing_id)
+        )

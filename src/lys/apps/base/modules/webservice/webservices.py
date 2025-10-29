@@ -16,8 +16,7 @@ class WebserviceQuery(Query):
         ensure_type=WebserviceNode,
         is_public=True,
         is_licenced=False,
-        description="Get all accessible webservices by a user (connected or not) corresponding by his roles, "
-                    "the list can be filtered by module."
+        description="Get all accessible webservices by a user (connected or not) based on their roles."
     )
     async def all_accessible_webservices(self, info: Info) -> Select:
         webservice_service: type[WebserviceService] | None = info.context.service_class
