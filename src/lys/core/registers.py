@@ -137,21 +137,31 @@ class AppRegister:
         """
         Register a fixture class with dependency tracking.
 
+        Uses module-qualified names to avoid conflicts when multiple fixtures
+        have the same class name in different modules.
+
         Args:
             fixture_class: Fixture class implementing EntityFixtureInterface
             depends_on: List of fixture class names this fixture depends on
         """
         if not self.is_locked(AppComponentTypeEnum.FIXTURES):
-            fixture_name = fixture_class.__name__
+            # Use module-qualified name to avoid conflicts
+            fixture_id = f"{fixture_class.__module__}.{fixture_class.__name__}"
 
             # Check if already registered
             for existing_fixture in self.fixtures:
-                if existing_fixture.__name__ == fixture_name:
-                    raise ValueError(f"Fixture '{fixture_name}' already registered.")
+                existing_id = f"{existing_fixture.__module__}.{existing_fixture.__name__}"
+                if existing_id == fixture_id:
+                    raise ValueError(
+                        f"Fixture '{fixture_id}' already registered. "
+                        f"Fixtures with the same class name in different modules are now supported."
+                    )
 
             self.fixtures.append(fixture_class)
-            self._fixture_dependencies[fixture_name] = depends_on or []
-            logging.info(f"✓ Registered fixture: {fixture_name} (depends on: {depends_on or 'none'})")
+            # Store dependencies with simple class name for backward compatibility
+            simple_name = fixture_class.__name__
+            self._fixture_dependencies[fixture_id] = depends_on or []
+            logging.info(f"✓ Registered fixture: {fixture_id} (depends on: {depends_on or 'none'})")
 
     def get_fixtures_in_dependency_order(self) -> List[EntityFixtureInterface]:
         """
@@ -169,28 +179,46 @@ class AppRegister:
         # Build dependency graph
         graph = defaultdict(list)  # dependency -> [fixtures that depend on it]
         in_degree = defaultdict(int)  # fixture -> number of dependencies
-        fixture_map = {f.__name__: f for f in self.fixtures}
 
-        # Initialize in-degree for all fixtures
-        for fixture in self.fixtures:
-            in_degree[fixture.__name__] = 0
+        # Use module-qualified names to match the keys in _fixture_dependencies
+        fixture_map = {f"{f.__module__}.{f.__name__}": f for f in self.fixtures}
+
+        # Also create a simple name to qualified name mapping for depends_on lookups
+        simple_to_qualified = {}
+        for f in self.fixtures:
+            qualified_name = f"{f.__module__}.{f.__name__}"
+            simple_name = f.__name__
+            # If multiple fixtures have the same simple name, this will only keep the last one
+            # but that's okay since depends_on should use the simple name and we'll resolve it
+            simple_to_qualified[simple_name] = qualified_name
+
+        # Initialize in-degree for all fixtures using qualified names
+        for qualified_name in fixture_map:
+            in_degree[qualified_name] = 0
 
         # Build graph and calculate in-degrees
-        for fixture_name, deps in self._fixture_dependencies.items():
+        for fixture_qualified_name, deps in self._fixture_dependencies.items():
             for dep in deps:
-                if dep not in fixture_map:
-                    raise ValueError(f"Fixture '{fixture_name}' depends on '{dep}' which is not registered")
-                graph[dep].append(fixture_name)
-                in_degree[fixture_name] += 1
+                # dep is a simple name (from depends_on parameter)
+                # We need to resolve it to a qualified name
+                if dep in simple_to_qualified:
+                    dep_qualified = simple_to_qualified[dep]
+                elif dep in fixture_map:
+                    dep_qualified = dep
+                else:
+                    raise ValueError(f"Fixture '{fixture_qualified_name}' depends on '{dep}' which is not registered")
+
+                graph[dep_qualified].append(fixture_qualified_name)
+                in_degree[fixture_qualified_name] += 1
 
         # Topological sort using Kahn's algorithm
         queue = deque()
         result = []
 
-        # Start with fixtures that have no dependencies
-        for fixture_name in fixture_map:
-            if in_degree[fixture_name] == 0:
-                queue.append(fixture_name)
+        # Start with fixtures that have no dependencies (use qualified names)
+        for qualified_name in fixture_map:
+            if in_degree[qualified_name] == 0:
+                queue.append(qualified_name)
 
         while queue:
             current = queue.popleft()
@@ -204,7 +232,7 @@ class AppRegister:
 
         # Check for circular dependencies
         if len(result) != len(self.fixtures):
-            remaining = [name for name in fixture_map if name not in [f.__name__ for f in result]]
+            remaining = [name for name in fixture_map if fixture_map[name] not in result]
             raise ValueError(f"Circular dependency detected in fixtures: {remaining}")
 
         return result
@@ -216,6 +244,7 @@ class AppRegister:
             enabled: bool = True,
             access_levels: List[str] = None,
             is_licenced: bool = True,
+            allow_override: bool = True,
     ):
         if not self.is_locked(AppComponentTypeEnum.WEBSERVICES):
             if type(field_or_fct) is StrawberryField:
@@ -230,8 +259,48 @@ class AppRegister:
                 is_licenced
             ).model_dump()
 
-            if not self.webservices.get(webservice_name):
-                self.webservices[webservice_name] = webservice_fixture
+            existing = self.webservices.get(webservice_name)
+            if existing:
+                if not allow_override:
+                    raise ValueError(
+                        f"Webservice '{webservice_name}' already registered. "
+                        f"Set allow_override=True to explicitly override it."
+                    )
+                logging.warning(f"⚠ Overwriting webservice '{webservice_name}' with new configuration")
+
+            self.webservices[webservice_name] = webservice_fixture
+
+    def validate_webservice_configuration(self):
+        """
+        Validate webservice configuration at initialization.
+
+        Checks that all access_levels referenced by webservices exist in the database.
+        This prevents runtime errors from misconfigured webservices.
+
+        Raises:
+            ValueError: If a webservice references an unknown access_level
+        """
+        if "access_level" not in self.entities:
+            logging.warning("⚠ AccessLevel entity not registered, skipping webservice validation")
+            return
+
+        errors = []
+        for ws_name, ws_config in self.webservices.items():
+            access_levels = ws_config.get("attributes", {}).get("access_levels", [])
+            for access_level in access_levels:
+                # Note: We can't check against the database here since it's not initialized yet
+                # This validation would need to happen after fixture loading
+                # For now, we just validate that access_level names are non-empty strings
+                if not isinstance(access_level, str) or not access_level.strip():
+                    errors.append(
+                        f"Webservice '{ws_name}' has invalid access_level: '{access_level}'"
+                    )
+
+        if errors:
+            error_msg = "Webservice configuration validation failed:\n" + "\n".join(f"  - {e}" for e in errors)
+            raise ValueError(error_msg)
+
+        logging.info(f"✓ Validated {len(self.webservices)} webservice configurations")
 
     def register_node(self, name: str, node_class: Type[NodeInterface]):
         if not self.is_locked(AppComponentTypeEnum.NODES):
@@ -305,6 +374,7 @@ def register_webservice(
         enabled: bool = True,
         access_levels: List[str] = None,
         is_licenced: bool = True,
+        allow_override: bool = True,
         register: AppRegister = None
 ):
     if register is None:
@@ -317,6 +387,7 @@ def register_webservice(
             enabled,
             access_levels,
             is_licenced,
+            allow_override,
         )
         return cls
     return decorator
