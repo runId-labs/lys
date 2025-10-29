@@ -11,7 +11,7 @@ user_role = Table(
     Base.metadata,
     Column("user_id", ForeignKey("user.id", ondelete='CASCADE')),
     Column("role_id", ForeignKey("role.id", ondelete='CASCADE')),
-    Column("created_at", DateTime, server_default=func.now())
+    Column("created_at", DateTime(timezone=True), server_default=func.now())
 )
 
 

@@ -13,6 +13,7 @@ from lys.apps.base.modules.one_time_token.entities import (
 )
 from lys.core.registers import register_service
 from lys.core.services import EntityService
+from lys.core.utils.datetime import now_utc
 
 
 @register_service()
@@ -73,7 +74,7 @@ class OneTimeTokenService:
             session: Database session
         """
         token.status_id = USED_TOKEN_STATUS
-        token.used_at = datetime.now()
+        token.used_at = now_utc()
         await session.flush()
 
     @classmethod

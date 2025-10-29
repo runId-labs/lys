@@ -2,6 +2,7 @@ import strawberry
 from starlette.responses import Response
 
 from lys.apps.user_auth.consts import REFRESH_COOKIE_KEY, ACCESS_COOKIE_KEY
+from lys.apps.user_auth.errors import INVALID_REFRESH_TOKEN_ERROR
 from lys.apps.user_auth.modules.auth.inputs import LoginInput
 from lys.apps.user_auth.modules.auth.nodes import LoginNode, LogoutNode
 from lys.apps.user_auth.modules.auth.services import AuthService
@@ -10,6 +11,7 @@ from lys.apps.user_auth.modules.user.nodes import UserNode
 from lys.apps.user_auth.modules.user.services import UserRefreshTokenService
 from lys.apps.user_auth.utils import AuthUtils
 from lys.core.contexts import Info
+from lys.core.errors import LysError
 from lys.core.graphql.fields import lys_field
 from lys.core.graphql.registers import register_mutation
 from lys.core.graphql.types import Mutation
@@ -17,7 +19,7 @@ from lys.core.graphql.types import Mutation
 
 @register_mutation("auth")
 @strawberry.type
-class RefreshTokenMutation(Mutation):
+class AuthTokenMutation(Mutation):
     @lys_field(
         ensure_type=LoginNode,
         is_public="disconnected",
@@ -60,8 +62,17 @@ class RefreshTokenMutation(Mutation):
         # get refresh token from cookie
         refresh_token_id = request.cookies.get(REFRESH_COOKIE_KEY)
 
+        # validate refresh token exists
+        if not refresh_token_id:
+            response.delete_cookie(REFRESH_COOKIE_KEY, path="/auth")
+            response.delete_cookie(ACCESS_COOKIE_KEY, path="/graphql")
+            raise LysError(
+                INVALID_REFRESH_TOKEN_ERROR,
+                "Missing refresh token in cookie"
+            )
+
         try:
-            refresh_token_used_once = auth_utils.config.get("")
+            refresh_token_used_once = auth_utils.config.get("refresh_token_used_once", False)
             if refresh_token_used_once:
                 refresh_token = await refresh_token_service.refresh(
                     GetUserRefreshTokenInputModel(refresh_token_id=refresh_token_id),
@@ -72,10 +83,10 @@ class RefreshTokenMutation(Mutation):
                     GetUserRefreshTokenInputModel(refresh_token_id=refresh_token_id),
                     session=session
                 )
-        except Exception as ex:
+        except Exception:
             response.delete_cookie(REFRESH_COOKIE_KEY, path="/auth")
             response.delete_cookie(ACCESS_COOKIE_KEY, path="/graphql")
-            raise ex
+            raise
 
         await auth_service.set_cookie(response, REFRESH_COOKIE_KEY, refresh_token.id, "/auth")
 

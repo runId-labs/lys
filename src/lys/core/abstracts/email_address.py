@@ -12,8 +12,8 @@ class AbstractEmailAddress(Entity):
     """
     __abstract__ = True
     id: Mapped[str] = mapped_column(primary_key=True)
-    validated_at: Mapped[datetime] = mapped_column(DateTime, nullable=True)
-    last_validation_request_at: Mapped[datetime] = mapped_column(DateTime, nullable=True)
+    validated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_validation_request_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True)
 
     @property
     def address(self):

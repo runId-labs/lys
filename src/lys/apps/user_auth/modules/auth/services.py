@@ -1,3 +1,4 @@
+import logging
 import os
 from datetime import datetime, timedelta
 from typing import Optional, Type
@@ -9,8 +10,10 @@ from sqlalchemy.orm import Relationship, ColumnProperty, InstrumentedAttribute
 from starlette.requests import Request
 from starlette.responses import Response
 
+logger = logging.getLogger(__name__)
+
 from lys.apps.user_auth.consts import REFRESH_COOKIE_KEY, ACCESS_COOKIE_KEY
-from lys.apps.user_auth.errors import BLOCKED_USER_ERROR, WRONG_CREDENTIALS_ERROR
+from lys.apps.user_auth.errors import BLOCKED_USER_ERROR, WRONG_CREDENTIALS_ERROR, RATE_LIMIT_ERROR
 from lys.apps.user_auth.modules.auth.consts import FAILED_LOGIN_ATTEMPT_STATUS, SUCCEED_LOGIN_ATTEMPT_STATUS
 from lys.apps.user_auth.modules.auth.entities import UserLoginAttempt, LoginAttemptStatus
 from lys.apps.user_auth.modules.auth.models import LoginInputModel
@@ -22,6 +25,7 @@ from lys.apps.user_auth.utils import AuthUtils
 from lys.core.errors import LysError
 from lys.core.registers import register_service
 from lys.core.services import Service, EntityService
+from lys.core.utils.datetime import now_utc
 
 
 @register_service()
@@ -65,18 +69,42 @@ class AuthService(Service):
         return user
 
     @classmethod
-    async def get_user_last_login_attempt(cls, user: User, status_id: str, session: AsyncSession) \
+    async def get_user_last_login_attempt(cls, user: User, session: AsyncSession) \
             -> Optional[UserLoginAttempt]:
+        """
+        Get the last login attempt for a user (any status).
+
+        :param user: User entity
+        :param session: Database session
+        :return: Last login attempt or None
+        """
         user_login_attempt_entity: Type[UserLoginAttempt] = cls.app_manager.get_entity("user_login_attempt")
 
         stmt = select(user_login_attempt_entity).where(
-            user_login_attempt_entity.status_id == status_id,
             user_login_attempt_entity.user == user,
         ).order_by(user_login_attempt_entity.created_at.desc()).limit(1)
         result = await session.execute(stmt)
         user_login_attempt_obj: Optional[UserLoginAttempt] = result.scalars().one_or_none()
 
         return user_login_attempt_obj
+
+    @classmethod
+    def _get_lockout_duration(cls, attempt_count: int) -> int:
+        """
+        Get lockout duration in seconds based on attempt count.
+        Uses progressive lockout strategy from configuration.
+
+        :param attempt_count: Number of failed attempts
+        :return: Lockout duration in seconds
+        """
+        lockout_durations = cls.auth_utils.config.get("login_lockout_durations", {3: 60, 5: 900})
+
+        # Find the appropriate lockout duration
+        for threshold in sorted(lockout_durations.keys(), reverse=True):
+            if attempt_count >= threshold:
+                return lockout_durations[threshold]
+
+        return 0
 
     @classmethod
     async def authenticate_user(
@@ -86,52 +114,107 @@ class AuthService(Service):
             session: AsyncSession
     ) -> User:
         """
-        User authentication process via login and password
-        :param login:
-        :param password:
-        :param session:
-        :return:
+        User authentication process via login and password with rate limiting.
+
+        Login attempt tracking logic:
+        - Failed after success: Create new line with status=failed, attempt_count=1
+        - Failed after failed: Increment attempt_count on existing line
+        - Success after failed: Create new line with status=success, attempt_count=1
+        - Success after success: Create new line with status=success, attempt_count=1
+
+        This maintains complete history while keeping the database optimized.
+
+        :param login: User login identifier
+        :param password: User password
+        :param session: Database session
+        :return: Authenticated user or None
+        :raises LysError: If user is blocked or rate limited
         """
         user_login_attempt_entity: Type[UserLoginAttempt] = cls.app_manager.get_entity("user_login_attempt")
         user_service: Type[UserService] = cls.app_manager.get_service("user")
 
-        # get user from email address
+        # get user from login identifier
         user = await cls.get_user_from_login(login, session)
 
         if user:
-            # check if the user is allowed to log in the application
+            # check if the user account is enabled
             if not user.status_id == ENABLED_USER_STATUS:
                 raise LysError(
                     BLOCKED_USER_ERROR,
                     "user with '%s' has been blocked" % login
                 )
 
-            # get user last failed login attempt
-            user_login_attempt_obj = await cls.get_user_last_login_attempt(user, FAILED_LOGIN_ATTEMPT_STATUS,
-                                                                           session)
+            # get user last login attempt (any status)
+            last_login_attempt = await cls.get_user_last_login_attempt(user, session)
 
-            user_login_attempt_status_id = SUCCEED_LOGIN_ATTEMPT_STATUS
+            # check if rate limiting is enabled
+            rate_limit_enabled = cls.auth_utils.config.get("login_rate_limit_enabled", True)
 
-            # if it is the wrong password, it is a failed login attempt
-            if not user_service.check_password(user, password):
-                user_login_attempt_status_id = FAILED_LOGIN_ATTEMPT_STATUS
+            # check if user is currently blocked (only if last attempt was failed)
+            if rate_limit_enabled and last_login_attempt and \
+               last_login_attempt.status_id == FAILED_LOGIN_ATTEMPT_STATUS and \
+               last_login_attempt.blocked_until:
+                now = now_utc()
+                if now < last_login_attempt.blocked_until:
+                    remaining_seconds = int((last_login_attempt.blocked_until - now).total_seconds())
+                    raise LysError(
+                        RATE_LIMIT_ERROR,
+                        f"Too many failed login attempts for user '{login}'. Try again in {remaining_seconds} seconds.",
+                        extensions={
+                            "remaining_seconds": remaining_seconds,
+                            "attempt_count": last_login_attempt.attempt_count
+                        }
+                    )
 
-            # if there is no failed login attempt, create one with the right status
-            if not user_login_attempt_obj:
+            # verify password
+            password_valid = user_service.check_password(user, password)
+
+            # handle failed login attempt
+            if not password_valid:
+                # check if we should reuse existing failed line or create new one
+                if last_login_attempt and last_login_attempt.status_id == FAILED_LOGIN_ATTEMPT_STATUS:
+                    # failed after failed: increment attempt count on existing line
+                    last_login_attempt.attempt_count += 1
+                    attempt_count = last_login_attempt.attempt_count
+                    user_login_attempt_obj = last_login_attempt
+                else:
+                    # failed after success (or no previous attempt): create new failed line
+                    user_login_attempt_obj = user_login_attempt_entity(
+                        status_id=FAILED_LOGIN_ATTEMPT_STATUS,
+                        user_id=user.id,
+                        attempt_count=1,
+                        blocked_until=None
+                    )
+                    session.add(user_login_attempt_obj)
+                    attempt_count = 1
+
+                # calculate lockout duration based on attempt count
+                lockout_duration = 0
+                if rate_limit_enabled:
+                    lockout_duration = cls._get_lockout_duration(attempt_count)
+                    if lockout_duration > 0:
+                        user_login_attempt_obj.blocked_until = now_utc() + timedelta(seconds=lockout_duration)
+
+                # log failed login attempt
+                logger.warning(
+                    f"Failed login attempt for user '{login}' - "
+                    f"Attempt #{attempt_count}"
+                    + (f" - Blocked for {lockout_duration} seconds" if lockout_duration > 0 else "")
+                )
+
+                user = None
+            else:
+                # successful login: always create new success line
                 user_login_attempt_obj = user_login_attempt_entity(
-                    status_id=user_login_attempt_status_id,
+                    status_id=SUCCEED_LOGIN_ATTEMPT_STATUS,
                     user_id=user.id,
-                    attempt_count=1
+                    attempt_count=1,
+                    blocked_until=None
                 )
                 session.add(user_login_attempt_obj)
-            # else update it
-            else:
-                user_login_attempt_obj.status_id = user_login_attempt_status_id
-                user_login_attempt_obj.attempt_count += 1
 
-            # if the login failed, don't send the user
-            if user_login_attempt_status_id == FAILED_LOGIN_ATTEMPT_STATUS:
-                user = None
+                # log successful login
+                logger.info(f"Successful login for user '{login}'")
 
         return user
 
@@ -140,9 +223,17 @@ class AuthService(Service):
         refresh_token_service: Type[UserRefreshTokenService] = cls.app_manager.get_service("user_refresh_token")
 
         # find out the user based on his email address and his password
-        user = await cls.authenticate_user(data.login, data.password, session)
+        try:
+            user = await cls.authenticate_user(data.login, data.password, session)
+        except LysError:
+            # commit login attempt state before raising exception
+            await session.commit()
+            raise
 
         if not user:
+            # commit failed login attempt to database before raising exception
+            await session.commit()
+
             raise LysError(
                 WRONG_CREDENTIALS_ERROR,
                 "unknown user with login '%s' with specified password" % data.login
@@ -164,10 +255,13 @@ class AuthService(Service):
         refresh_token_service: Type[UserRefreshTokenService] = cls.app_manager.get_service("user_refresh_token")
 
         refresh_token_id = request.cookies.get(REFRESH_COOKIE_KEY)
-        await refresh_token_service.revoke(
-            GetUserRefreshTokenInputModel(refresh_token_id=refresh_token_id),
-            session=session
-        )
+
+        # only revoke if refresh token exists
+        if refresh_token_id:
+            await refresh_token_service.revoke(
+                GetUserRefreshTokenInputModel(refresh_token_id=refresh_token_id),
+                session=session
+            )
 
         # delete refresh and access cookie
         response.delete_cookie(REFRESH_COOKIE_KEY, path="/auth")
@@ -185,7 +279,7 @@ class AuthService(Service):
                     "id": str(user.id),
                     "is_super_user": user.is_super_user,
                 },
-                "exp": int(round((datetime.now() + timedelta(minutes=access_token_expire_minutes)).timestamp())),
+                "exp": int(round((now_utc() + timedelta(minutes=access_token_expire_minutes)).timestamp())),
                 "xsrf_token": str(await cls.generate_xsrf_token())
             }
         return jwt.encode(
@@ -202,7 +296,7 @@ class AuthService(Service):
             secure=cls.auth_utils.config.get("cookie_secure"),
             httponly=cls.auth_utils.config.get("cookie_http_only"),
             samesite=cls.auth_utils.config.get("cookie_same_site"),
-            expires=(datetime.now() + timedelta(weeks=1)).strftime("%a, %d %b %Y %H:%M:%S GMT"),
+            expires=(now_utc() + timedelta(weeks=1)).strftime("%a, %d %b %Y %H:%M:%S GMT"),
             domain=cls.auth_utils.config.get("cookie_domain"),
             path=path
         )

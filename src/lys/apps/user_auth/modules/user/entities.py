@@ -9,6 +9,7 @@ from lys.apps.user_auth.utils import AuthUtils
 from lys.core.abstracts.email_address import AbstractEmailAddress
 from lys.core.entities import ParametricEntity, Entity
 from lys.core.registers import register_entity
+from lys.core.utils.datetime import now_utc
 
 
 @register_entity()
@@ -96,24 +97,24 @@ class UserRefreshToken(Entity):
     ####################################################################################################################
 
     once_expire_at: Mapped[datetime] = mapped_column(
-        DateTime,
+        DateTime(timezone=True),
         comment="define when the token will be expired",
         nullable=True
     )
 
     connection_expire_at: Mapped[datetime] = mapped_column(
-        DateTime,
+        DateTime(timezone=True),
         comment="define when the connection will be expired"
     )
 
     revoked_at: Mapped[datetime] = mapped_column(
-        DateTime,
+        DateTime(timezone=True),
         comment="define when the token has been revoked",
         nullable=True
     )
 
     used_at: Mapped[datetime] = mapped_column(
-        DateTime,
+        DateTime(timezone=True),
         comment="define the last time when the token has been used",
         nullable=True
     )
@@ -134,7 +135,7 @@ class UserRefreshToken(Entity):
             - the refresh token can be used multiple times else it is not used
         :return:
         """
-        now = datetime.now()
+        now = now_utc()
 
         return self.revoked_at is None and \
             now < self.connection_expire_at and \

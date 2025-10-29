@@ -12,7 +12,7 @@ role_webservice = Table(
     Base.metadata,
     Column("role_id", ForeignKey("role.id", ondelete='CASCADE')),
     Column("webservice_id", ForeignKey("webservice.id", ondelete='CASCADE')),
-    Column("created_at", DateTime, server_default=func.now())
+    Column("created_at", DateTime(timezone=True), server_default=func.now())
 )
 
 

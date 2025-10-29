@@ -29,8 +29,8 @@ class Entity(EntityInterface):
     id: Mapped[str] = mapped_column(Uuid(as_uuid=False), primary_key=True, default=uuid4)
 
     # Audit timestamps: Automatically managed by database
-    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
-    updated_at: Mapped[datetime] = mapped_column(DateTime, nullable=True, onupdate=func.now())
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True, onupdate=func.now())
 
     @classmethod
     def get_tablename(cls):

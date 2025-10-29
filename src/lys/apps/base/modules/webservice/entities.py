@@ -13,7 +13,7 @@ webservice_access_level = Table(
     Base.metadata,
     Column("webservice_id", ForeignKey(WEBSERVICE_TABLENAME + ".id", ondelete='CASCADE')),
     Column("access_level_id", ForeignKey(ACCESS_LEVEL_TABLENAME + ".id", ondelete='CASCADE')),
-    Column("created_at", DateTime, server_default=func.now())  # Audit trail
+    Column("created_at", DateTime(timezone=True), server_default=func.now())  # Audit trail
 )
 
 

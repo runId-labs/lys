@@ -1,7 +1,6 @@
 from typing import Any
 
-from sqlalchemy import ForeignKey
-from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy import ForeignKey, JSON
 from sqlalchemy.orm import Mapped, mapped_column, declared_attr, relationship
 
 from lys.apps.base.modules.emailing.consts import WAITING_EMAILING_STATUS
@@ -20,7 +19,7 @@ class EmailingType(ParametricEntity):
 
     subject: Mapped[str] = mapped_column(nullable=False)
     template: Mapped[str] = mapped_column(nullable=False)
-    context_description: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=True)
+    context_description: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=True)
 
 
 @register_entity()
@@ -28,8 +27,8 @@ class Emailing(Entity):
     __tablename__ = "emailing"
 
     email_address: Mapped[str] = mapped_column()
-    context: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=True)
-    error: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=True)
+    context: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=True)
+    error: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=True)
 
     status_id: Mapped[str] = mapped_column(
         ForeignKey("emailing_status.id", ondelete='CASCADE'),

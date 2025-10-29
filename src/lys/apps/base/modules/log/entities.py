@@ -1,5 +1,4 @@
-from sqlalchemy import Text, String, Integer
-from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy import Text, String, Integer, JSON
 from sqlalchemy.orm import mapped_column, Mapped
 
 from lys.core.consts.tablenames import LOG_TABLENAME
@@ -14,7 +13,7 @@ class Log(Entity):
     file_name: Mapped[str] = mapped_column(String, nullable=False)
     line: Mapped[int] = mapped_column(Integer, nullable=False)
     traceback = mapped_column(Text, nullable=False)
-    context = mapped_column(JSONB, nullable=True)
+    context = mapped_column(JSON, nullable=True)
 
     def accessing_users(self):
         return []

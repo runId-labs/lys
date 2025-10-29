@@ -24,19 +24,24 @@ class _MiddlewareLysError(AppManagerCallerMixin, HTTPException):
             file_name: str,
             line: int,
             traceback_,
+            public_extensions: dict | None = None
     ) -> None:
         self.debug_message = debug_message
         self.file_name = file_name
         self.line = line
         self.traceback = traceback_
 
+        # Initialize extensions with public data (always visible)
+        self.extensions = public_extensions or {}
+
+        # Add debug info only in DEV environment
         if self.app_manager.settings.env == EnvironmentEnum.DEV:
-            self.extensions = dict(
-                debug_message= self.debug_message,
-                file_name=self.file_name,
-                line=self.line,
-                traceback=self.traceback
-            )
+            self.extensions.update({
+                "debug_message": self.debug_message,
+                "file_name": self.file_name,
+                "line": self.line,
+                "traceback": self.traceback
+            })
 
         HTTPException.__init__(
             self,
@@ -86,7 +91,8 @@ class ErrorManagerMiddleware(MiddlewareInterface, BaseHTTPMiddleware):
                 ex.debug_message,
                 os.path.split(exc_tb.tb_frame.f_code.co_filename)[1],
                 exc_tb.tb_lineno,
-                traceback.format_exc()
+                traceback.format_exc(),
+                public_extensions=ex.extensions
             )
             raise mlex
         except Exception:

@@ -9,9 +9,11 @@ class LysError(HTTPException):
             self,
             message_tuple: Tuple[int, str],
             debug_message: str,
+            extensions: dict | None = None
     ) -> None:
         (code, message) = message_tuple
         self.debug_message = debug_message
+        self.extensions = extensions or {}
 
         super().__init__(
             status_code=code,

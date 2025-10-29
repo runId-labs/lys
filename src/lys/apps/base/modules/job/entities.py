@@ -1,7 +1,6 @@
 from typing import Dict, List, Self, Any
 
-from sqlalchemy import ForeignKey, DateTime
-from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy import ForeignKey, DateTime, JSON
 from sqlalchemy.orm import mapped_column, Mapped, relationship, declared_attr
 
 from lys.core.entities import ParametricEntity, Entity
@@ -28,8 +27,8 @@ class JobExecution(Entity):
     __abstract__ = True
 
     job_id: Mapped[str] = mapped_column(ForeignKey("job.id", ondelete='CASCADE'))
-    ended_at: Mapped[DateTime] = mapped_column(DateTime, nullable=True)
-    data: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=True)
+    ended_at: Mapped[DateTime] = mapped_column(DateTime(timezone=True), nullable=True)
+    data: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=True)
 
     @declared_attr
     def job(self):

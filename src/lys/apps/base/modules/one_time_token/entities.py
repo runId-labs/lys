@@ -10,6 +10,7 @@ from sqlalchemy.orm import Mapped, mapped_column, declared_attr, relationship
 from lys.apps.base.modules.one_time_token.consts import PENDING_TOKEN_STATUS
 from lys.core.entities import Entity, ParametricEntity
 from lys.core.registers import register_entity
+from lys.core.utils.datetime import now_utc
 
 
 @register_entity()
@@ -50,7 +51,7 @@ class OneTimeToken(Entity):
     __abstract__ = True
 
     used_at: Mapped[datetime] = mapped_column(
-        DateTime,
+        DateTime(timezone=True),
         nullable=True,
         comment="Timestamp when token was used"
     )
@@ -78,7 +79,7 @@ class OneTimeToken(Entity):
     @property
     def is_expired(self) -> bool:
         """Check if token has expired."""
-        return datetime.now() >= self.expires_at
+        return now_utc() >= self.expires_at
 
     @property
     def is_valid(self) -> bool:

@@ -15,6 +15,7 @@ from lys.apps.user_auth.utils import AuthUtils
 from lys.core.errors import LysError
 from lys.core.registers import register_service
 from lys.core.services import EntityService
+from lys.core.utils.datetime import now_utc
 
 
 @register_service()
@@ -74,9 +75,9 @@ class UserRefreshTokenService(EntityService[UserRefreshToken]):
             session,
             id=str(uuid.uuid4()),
             user_id=user.id,
-            once_expire_at=datetime.now() + timedelta(minutes=once_refresh_token_expire_minutes)
+            once_expire_at=now_utc() + timedelta(minutes=once_refresh_token_expire_minutes)
             if once_refresh_token_expire_minutes else None,
-            connection_expire_at=datetime.now() + timedelta(minutes=connection_expire_minutes),
+            connection_expire_at=now_utc() + timedelta(minutes=connection_expire_minutes),
 
         )
 
@@ -122,7 +123,7 @@ class UserRefreshTokenService(EntityService[UserRefreshToken]):
         """
 
         refresh_token = await cls.get(data, session=session)
-        now = datetime.now()
+        now = now_utc()
 
         # revoke all refresh token not revoked
         stmt = update(cls.entity_class).where(

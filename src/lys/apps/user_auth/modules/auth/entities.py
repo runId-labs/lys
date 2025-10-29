@@ -1,7 +1,9 @@
+from datetime import datetime
 from typing import Dict, List, Self
 
 from sqlalchemy import ForeignKey, SmallInteger
 from sqlalchemy.orm import Mapped, mapped_column, relationship, declared_attr
+from sqlalchemy.types import DateTime
 
 from lys.core.entities import ParametricEntity, Entity
 from lys.core.registers import register_entity
@@ -22,6 +24,7 @@ class LoginAttempt(Entity):
         return relationship("login_attempt_status", lazy='selectin')
 
     attempt_count: Mapped[int] = mapped_column(SmallInteger, default=1)
+    blocked_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     def accessing_users(self):
         return []
