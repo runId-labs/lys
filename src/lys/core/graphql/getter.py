@@ -13,7 +13,7 @@ from lys.core.utils.webservice import WebserviceIsPublicType
 
 def _getter_resolver_generator(resolver: Callable, ensure_type: Type[EntityNode]):
     async def inner_resolver(id: relay.GlobalID, info: Info) -> EntityNode:
-        info.context.service_class = ensure_type.service_class
+        info.context.app_manager = ensure_type.app_manager
 
         return await id.resolve_node(info, ensure_type=ensure_type)
 

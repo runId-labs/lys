@@ -28,7 +28,7 @@ def _edition_resolver_generator(resolver: Callable, ensure_type: Type[EntityNode
     ]
 
     async def inner_resolver(self, id: relay.GlobalID, *args, info: Info, **kwargs) -> EntityNode:
-        info.context.service_class = ensure_type.service_class
+        info.context.app_manager = ensure_type.app_manager
 
         async def wrapped() -> EntityNode:
             async with ensure_type.app_manager.database.get_session() as session:

@@ -5,7 +5,7 @@ from typing import Optional
 import strawberry
 from sqlalchemy import Select, select
 
-from lys.apps.user_auth.modules.user.inputs import CreateSuperUserInput
+from lys.apps.user_auth.modules.user.inputs import CreateUserInput, CreateSuperUserInput
 from lys.apps.user_auth.modules.user.nodes import UserNode, UserStatusNode, ForgottenPasswordNode, UserOneTimeTokenNode
 from lys.apps.user_auth.modules.user.services import UserStatusService, UserService, UserEmailingService
 from lys.core.consts.webservices import OWNER_ACCESS_LEVEL
@@ -176,15 +176,66 @@ class UserMutation(Mutation):
 
         # Delegate all business logic to the service
         user = await user_service.create_super_user(
+            session=session,
             email=input_data.email,
             password=input_data.password,
             language_id=input_data.language_id,
-            session=session,
             first_name=input_data.first_name,
             last_name=input_data.last_name,
             gender_id=input_data.gender_id
         )
 
         logger.info(f"Super user created with email: {input_data.email}")
+
+        return user
+
+    @lys_creation(
+        ensure_type=UserNode,
+        is_public=False,
+        is_licenced=False,
+        description="Create a new regular user. Only accessible to super users."
+    )
+    async def create_user(
+        self,
+        inputs: CreateUserInput,
+        info: Info
+    ):
+        """
+        Create a new regular user with private data.
+
+        This webservice is only accessible to super users. It creates
+        a new user with regular privileges (not super user) and GDPR-protected private data.
+
+        Args:
+            inputs: Input containing:
+                - email: Email address for the new user
+                - password: Plain text password (will be hashed)
+                - language_id: Language ID for the user
+                - first_name: Optional first name (GDPR-protected)
+                - last_name: Optional last name (GDPR-protected)
+                - gender_id: Optional gender ID (GDPR-protected)
+            info: GraphQL context
+
+        Returns:
+            User: The created regular user
+        """
+        # Convert Strawberry input to Pydantic model for validation
+        input_data = inputs.to_pydantic()
+
+        session = info.context.session
+        user_service: type[UserService] = info.context.service_class
+
+        # Delegate all business logic to the service
+        user = await user_service.create_user(
+            session=session,
+            email=input_data.email,
+            password=input_data.password,
+            language_id=input_data.language_id,
+            first_name=input_data.first_name,
+            last_name=input_data.last_name,
+            gender_id=input_data.gender_id
+        )
+
+        logger.info(f"User created with email: {input_data.email}")
 
         return user

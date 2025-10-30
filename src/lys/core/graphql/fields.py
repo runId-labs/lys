@@ -134,7 +134,7 @@ def lys_field(
 ) -> Any:
     def _resolver_generator(resolver: Callable, ensure_type_: Type[EntityNode]):
         async def inner_resolver(self, *args, info: Info, **kwargs) -> EntityNode:
-            info.context.service_class = ensure_type_.service_class
+            info.context.app_manager = ensure_type_.app_manager
 
             async def resolve_node():
                 node = await resolver(self, *args, info=info, **kwargs)
@@ -258,7 +258,7 @@ def lys_connection_field(
 
         # overwrite webservice to compute order by if needed
         async def inner_resolver(*args, info: Info, **kwargs):
-            info.context.service_class = ensure_type.service_class
+            info.context.app_manager = ensure_type.app_manager
 
             order_by = None
             if "order_by" in kwargs.keys():

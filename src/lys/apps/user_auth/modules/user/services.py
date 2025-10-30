@@ -1,5 +1,5 @@
 import uuid
-from datetime import datetime, timedelta
+from datetime import timedelta
 
 import bcrypt
 from sqlalchemy import update
@@ -139,39 +139,21 @@ class UserService(EntityService[User]):
         return result.scalar_one_or_none()
 
     @classmethod
-    async def create_super_user(
+    async def _validate_and_prepare_user_data(
         cls,
+        session: AsyncSession,
         email: str,
         password: str,
         language_id: str,
-        session: AsyncSession,
         first_name: str | None = None,
         last_name: str | None = None,
         gender_id: str | None = None
-    ) -> User:
+    ) -> tuple:
         """
-        Create a new super user with full validation.
-
-        This method performs all necessary validations and creates the user with:
-        - Email address entity
-        - Hashed password
-        - Super user privileges
-        - Optional private data (GDPR-protected)
-
-        Args:
-            email: Email address (will be normalized)
-            password: Plain text password (will be hashed)
-            language_id: Language ID (format validated)
-            session: Database session
-            first_name: Optional first name
-            last_name: Optional last name
-            gender_id: Optional gender ID
+        Validate user data and prepare entities for user creation.
 
         Returns:
-            User: The created super user entity
-
-        Raises:
-            LysError: If email already exists, language doesn't exist, or gender doesn't exist
+            Tuple of (email_address_entity, hashed_password, private_data_entity)
         """
         from lys.apps.user_auth.errors import USER_ALREADY_EXISTS
         from lys.apps.user_auth.utils import AuthUtils
@@ -202,7 +184,7 @@ class UserService(EntityService[User]):
         # 5. Hash the password
         hashed_password = AuthUtils.hash_password(password)
 
-        # 6. Create private data entity (even if fields are None)
+        # 6. Create private data entity
         private_data = user_private_data_service.entity_class(
             id=str(uuid.uuid4()),
             first_name=first_name,
@@ -210,17 +192,155 @@ class UserService(EntityService[User]):
             gender_id=gender_id
         )
 
-        # 7. Create user with super user privileges
+        return email_address, hashed_password, private_data
+
+    @classmethod
+    async def _create_user_internal(
+        cls,
+        session: AsyncSession,
+        email: str,
+        password: str,
+        language_id: str,
+        is_super_user: bool = False,
+        first_name: str | None = None,
+        last_name: str | None = None,
+        gender_id: str | None = None,
+        **kwargs
+    ) -> User:
+        """
+        Internal method to create a user with full validation.
+
+        This method performs all necessary validations and creates the user with:
+        - Email address entity
+        - Hashed password
+        - Configurable super user privileges
+        - Optional private data (GDPR-protected)
+        - Additional attributes via kwargs (e.g., roles for user_role app)
+
+        Args:
+            email: Email address (will be normalized)
+            password: Plain text password (will be hashed)
+            language_id: Language ID (format validated)
+            is_super_user: Whether to create a super user or regular user
+            session: Database session
+            first_name: Optional first name
+            last_name: Optional last name
+            gender_id: Optional gender ID
+            **kwargs: Additional attributes for subclass-specific fields (e.g., roles)
+
+        Returns:
+            User: The created user entity
+
+        Raises:
+            LysError: If email already exists, language doesn't exist, or gender doesn't exist
+        """
+        # Validate and prepare user data
+        email_address, hashed_password, private_data = await cls._validate_and_prepare_user_data(
+            session=session,
+            email=email,
+            password=password,
+            language_id=language_id,
+            first_name=first_name,
+            last_name=last_name,
+            gender_id=gender_id
+        )
+
+        # Create user with specified privileges and additional kwargs
         user = await cls.create(
             session,
             email_address=email_address,
             password=hashed_password,
-            is_super_user=True,
+            is_super_user=is_super_user,
             language_id=language_id,
-            private_data=private_data
+            private_data=private_data,
+            **kwargs
         )
 
         return user
+
+    @classmethod
+    async def create_super_user(
+        cls,
+        session: AsyncSession,
+        email: str,
+        password: str,
+        language_id: str,
+        first_name: str | None = None,
+        last_name: str | None = None,
+        gender_id: str | None = None
+    ) -> User:
+        """
+        Create a new super user with full validation.
+
+        Wrapper around _create_user_internal with is_super_user=True.
+
+        Args:
+            email: Email address (will be normalized)
+            password: Plain text password (will be hashed)
+            language_id: Language ID (format validated)
+            session: Database session
+            first_name: Optional first name
+            last_name: Optional last name
+            gender_id: Optional gender ID
+
+        Returns:
+            User: The created super user entity
+
+        Raises:
+            LysError: If email already exists, language doesn't exist, or gender doesn't exist
+        """
+        return await cls._create_user_internal(
+            session=session,
+            email=email,
+            password=password,
+            language_id=language_id,
+            is_super_user=True,
+            first_name=first_name,
+            last_name=last_name,
+            gender_id=gender_id
+        )
+
+    @classmethod
+    async def create_user(
+        cls,
+        session: AsyncSession,
+        email: str,
+        password: str,
+        language_id: str,
+        first_name: str | None = None,
+        last_name: str | None = None,
+        gender_id: str | None = None
+    ) -> User:
+        """
+        Create a new regular user with full validation.
+
+        Wrapper around _create_user_internal with is_super_user=False.
+
+        Args:
+            email: Email address (will be normalized)
+            password: Plain text password (will be hashed)
+            language_id: Language ID (format validated)
+            session: Database session
+            first_name: Optional first name
+            last_name: Optional last name
+            gender_id: Optional gender ID
+
+        Returns:
+            User: The created regular user entity
+
+        Raises:
+            LysError: If email already exists, language doesn't exist, or gender doesn't exist
+        """
+        return await cls._create_user_internal(
+            session=session,
+            email=email,
+            password=password,
+            language_id=language_id,
+            is_super_user=False,
+            first_name=first_name,
+            last_name=last_name,
+            gender_id=gender_id
+        )
 
 
 @register_service()

@@ -75,20 +75,47 @@ class UserAuthPermission(PermissionInterface):
     async def add_statement_access_constraints(cls, stmt: Select, or_where: BinaryExpression, context,
                                                entity_class: Optional[Type[EntityInterface]]
                                                ) -> Tuple[Select, BinaryExpression]:
+        """
+        Add owner-based filtering constraints to a SQLAlchemy query statement.
 
+        This method modifies database queries to enforce row-level security based on
+        ownership. When OWNER_ACCESS_LEVEL is configured, users can only access entities
+        they own (where user_id matches the connected user's ID).
+
+        Args:
+            stmt: The SQLAlchemy SELECT statement to modify
+            or_where: Binary expression for combining multiple access conditions with OR
+            context: Request context containing access_type and connected_user information
+            entity_class: The entity class being queried (must implement user_accessing_filters)
+
+        Returns:
+            Tuple of (modified_stmt, modified_or_where):
+            - modified_stmt: Statement with any necessary joins added
+            - modified_or_where: OR expression with owner filters added
+
+        Raises:
+            ValueError: If entity_class is None when access_type requires filtering
+        """
         access_type: Union[Dict[str, Any], bool] = context.access_type
         connected_user_id: str | None = context.connected_user.get('id') if context.connected_user is not None else None
 
+        # Only apply constraints if access_type is a dict (contains specific access rules)
+        # If access_type is True, no filtering is needed (full access granted)
         if isinstance(access_type, dict):
+            # Only apply filters if the statement has FROM clauses (is a real query)
             if len(stmt.froms):
                 if entity_class is not None:
-                    if connected_user_id and access_type.get(OWNER_ACCESS_LEVEL, False):
+                    # Check if OWNER_ACCESS_LEVEL is configured and user is connected
+                    if connected_user_id and access_type.get(OWNER_ACCESS_KEY, False):
+                        # Delegate to entity-specific filtering logic
+                        # Each entity knows how to filter by ownership (typically user_id column)
                         stmt, conditions = entity_class.user_accessing_filters(stmt, connected_user_id)
-                        if len(conditions):
+                        if conditions:
                             or_where |= or_(*conditions)
                 else:
+                    # If we need to filter but don't have an entity class, this is a configuration error
                     raise ValueError(
-                        "Entity type is required"
+                        "Entity type is required for owner-based access filtering"
                     )
 
         return stmt, or_where

@@ -16,7 +16,7 @@ from lys.core.utils.webservice import WebserviceIsPublicType
 
 def _delete_resolver_generator(resolver: Callable, ensure_type: Type[EntityNode]):
     async def inner_resolver(self, id: relay.GlobalID, info: Info) -> SuccessNode:
-        info.context.service_class = ensure_type.service_class
+        info.context.app_manager = ensure_type.app_manager
 
         async def wrapped() -> SuccessNode:
             async with ensure_type.app_manager.database.get_session() as session:

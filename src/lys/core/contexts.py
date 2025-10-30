@@ -1,4 +1,4 @@
-from typing import Dict, Any, Union, TypeAlias
+from typing import Dict, Any, Union, TypeAlias, TYPE_CHECKING
 
 from sqlalchemy.ext.asyncio import AsyncSession
 from strawberry.fastapi import BaseContext
@@ -7,13 +7,16 @@ from strawberry.types.info import RootValueType
 
 from lys.core.interfaces.services import ServiceInterface, EntityServiceInterface
 
+if TYPE_CHECKING:
+    from lys.core.managers.app import AppManager
+
 
 class Context(BaseContext):
     def __init__(self):
         super().__init__()
 
-        self.service_class: type[ServiceInterface | EntityServiceInterface] | None = None
         self.session: AsyncSession | None = None
+        self.app_manager: "AppManager" | None = None
 
     def get_from_request_state(self, name, default_value=None):
         if self.request is not None:

@@ -65,12 +65,13 @@ class UserPrivateDataInputModel(BaseModel):
         return value
 
 
-class CreateSuperUserInputModel(UserPrivateDataInputModel):
+class CreateUserInputModel(UserPrivateDataInputModel):
     """
-    Input model for creating a super user.
+    Input model for creating a regular user.
 
     Includes both authentication data and optional private GDPR-protected data.
     Inherits from UserPrivateDataInputModel for consistent validation.
+    Used by both user_auth and user_role create_user webservices.
     """
     email: EmailStr
     password: str = Field(min_length=8, max_length=128)
@@ -92,6 +93,16 @@ class CreateSuperUserInputModel(UserPrivateDataInputModel):
     @classmethod
     def validate_language_id(cls, value: str | None, info: ValidationInfo) -> str | None:
         return validate_language_format(value)
+
+
+class CreateSuperUserInputModel(CreateUserInputModel):
+    """
+    Input model for creating a super user.
+
+    Inherits from CreateUserInputModel with identical validation.
+    Separated for semantic clarity (super user vs regular user creation).
+    """
+    pass
 
 
 class UpdateUserPrivateDataInputModel(UserPrivateDataInputModel):

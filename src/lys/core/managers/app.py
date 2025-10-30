@@ -115,6 +115,10 @@ class AppManager:
             try:
                 if self._load_app_component(app_string, component_type.value):
                     loaded_count += 1
+            except (ValueError, TypeError, ModuleNotFoundError) as e:
+                # ValueError/TypeError/ModuleNotFoundError indicate configuration errors - these are fatal
+                logging.error(f"❌ FATAL: Configuration error in {app_string}: {e}")
+                raise  # Re-raise to stop application startup
             except Exception as e:
                 logging.warning(f"Failed to load {component_type} from {app_string}: {e}")
 
@@ -174,6 +178,12 @@ class AppManager:
                 loaded = True
             except ModuleNotFoundError:
                 logging.debug(f"No {component_type} module in {submodule.__name__}")
+            except (ValueError, TypeError) as e:
+                # ValueError/TypeError indicate configuration errors (duplicate webservices, invalid class type, etc)
+                # These should be fatal as they indicate programmer errors
+                logging.error(f"❌ FATAL: Configuration error in {submodule.__name__}: {e}")
+                traceback.print_exc()
+                raise  # Re-raise to stop application startup
             except Exception as e:
                 logging.error(f"Error loading {component_type} from {submodule.__name__}: {e}")
                 traceback.print_exc()
