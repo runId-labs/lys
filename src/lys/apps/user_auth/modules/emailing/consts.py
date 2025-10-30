@@ -1,0 +1,7 @@
+"""
+Constants for user authentication emailing types.
+"""
+
+# User emailing types
+USER_FORGOTTEN_PASSWORD_EMAILING_TYPE = "USER_FORGOTTEN_PASSWORD"
+USER_EMAIL_VERIFICATION_EMAILING_TYPE = "USER_EMAIL_VERIFICATION"

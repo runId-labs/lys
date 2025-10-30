@@ -1,0 +1,27 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>Email Validation</title>
+</head>
+<body>
+    <p>
+        {% if private_data.gender_id == 'MALE' and private_data.first_name and private_data.last_name %}
+            Bonjour Monsieur {{ private_data.first_name }} {{ private_data.last_name }},
+        {% elif private_data.gender_id == 'FEMALE' and private_data.first_name and private_data.last_name %}
+            Bonjour Madame {{ private_data.first_name }} {{ private_data.last_name }},
+        {% elif private_data.first_name and private_data.last_name %}
+            Bonjour {{ private_data.first_name }} {{ private_data.last_name }},
+        {% elif private_data.first_name %}
+            Bonjour {{ private_data.first_name }},
+        {% else %}
+            Bonjour,
+        {% endif %}
+    </p>
+
+    <h1>Validate Your Email</h1>
+    <p>Please click the link below to validate your email address:</p>
+    <p><a href="{{ front_url }}/validate-email?token={{ token }}">Validate Email</a></p>
+    <p>If you did not create an account, please ignore this email.</p>
+</body>
+</html>

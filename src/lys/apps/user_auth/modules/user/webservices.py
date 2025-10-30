@@ -7,7 +7,7 @@ from sqlalchemy import Select, select
 
 from lys.apps.user_auth.modules.user.inputs import CreateUserInput, CreateSuperUserInput
 from lys.apps.user_auth.modules.user.nodes import UserNode, UserStatusNode, ForgottenPasswordNode, UserOneTimeTokenNode
-from lys.apps.user_auth.modules.user.services import UserStatusService, UserService, UserEmailingService
+from lys.apps.user_auth.modules.user.services import UserStatusService, UserService
 from lys.core.consts.webservices import OWNER_ACCESS_LEVEL
 from lys.core.contexts import Info
 from lys.core.graphql.connection import lys_connection
@@ -113,28 +113,16 @@ class UserMutation(Mutation):
         """
         node = ForgottenPasswordNode.get_effective_node()
         session = info.context.session
-
-        # Get services
         user_service: type[UserService] = node.service_class
-        user_emailing_service: type[UserEmailingService] = user_service.app_manager.get_service("user_emailing")
 
-        # Find user by email
-        user = await user_service.get_by_email(email, session)
-
-        # Don't reveal if email exists or not (security)
-        if not user:
-            logger.info(f"Password reset requested for unknown email: {email}")
-            return node(success=True)
-
-        # Create emailing (will be committed at end of request)
-        user_emailing = await user_emailing_service.create_forgotten_password_emailing(
-            user, session
+        # Delegate all business logic to the service
+        await user_service.request_password_reset(
+            email=email,
+            session=session,
+            background_tasks=info.context.background_tasks
         )
 
-        # Schedule email sending via Celery after commit
-        user_emailing_service.schedule_send_emailing(user_emailing, info.context.background_tasks)
-
-        logger.info(f"Password reset email scheduled for user: {user.id}")
+        logger.info(f"Password reset requested for email: {email}")
 
         return node(success=True)
 
@@ -180,6 +168,8 @@ class UserMutation(Mutation):
             email=input_data.email,
             password=input_data.password,
             language_id=input_data.language_id,
+            send_verification_email=True,
+            background_tasks=info.context.background_tasks,
             first_name=input_data.first_name,
             last_name=input_data.last_name,
             gender_id=input_data.gender_id
@@ -231,6 +221,8 @@ class UserMutation(Mutation):
             email=input_data.email,
             password=input_data.password,
             language_id=input_data.language_id,
+            send_verification_email=True,
+            background_tasks=info.context.background_tasks,
             first_name=input_data.first_name,
             last_name=input_data.last_name,
             gender_id=input_data.gender_id

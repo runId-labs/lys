@@ -4,6 +4,7 @@ Fixtures for one-time token data.
 
 from lys.apps.base.modules.one_time_token.consts import (
     FORGOTTEN_PASSWORD_TOKEN_TYPE,
+    EMAIL_VERIFICATION_TOKEN_TYPE,
     PENDING_TOKEN_STATUS,
     USED_TOKEN_STATUS,
     REVOKED_TOKEN_STATUS
@@ -30,6 +31,13 @@ class OneTimeTokenTypeFixtures(EntityFixtures[OneTimeTokenTypeService]):
             "attributes": {
                 "enabled": True,
                 "duration": 30  # 30 minutes - standard for password reset
+            }
+        },
+        {
+            "id": EMAIL_VERIFICATION_TOKEN_TYPE,
+            "attributes": {
+                "enabled": True,
+                "duration": 1440  # 24 hours (1440 minutes) - standard for email verification
             }
         }
     ]

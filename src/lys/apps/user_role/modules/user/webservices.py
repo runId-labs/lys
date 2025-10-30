@@ -108,6 +108,8 @@ class UserMutation(Mutation):
             email=input_data.email,
             password=input_data.password,
             language_id=input_data.language_id,
+            send_verification_email=True,
+            background_tasks=info.context.background_tasks,
             roles=input_data.roles,
             first_name=input_data.first_name,
             last_name=input_data.last_name,

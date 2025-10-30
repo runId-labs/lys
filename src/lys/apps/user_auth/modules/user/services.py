@@ -5,8 +5,11 @@ import bcrypt
 from sqlalchemy import update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from lys.apps.base.modules.emailing.consts import FORGOTTEN_PASSWORD_EMAILING_TYPE
-from lys.apps.base.modules.one_time_token.consts import FORGOTTEN_PASSWORD_TOKEN_TYPE
+from lys.apps.user_auth.modules.emailing.consts import (
+    USER_FORGOTTEN_PASSWORD_EMAILING_TYPE,
+    USER_EMAIL_VERIFICATION_EMAILING_TYPE
+)
+from lys.apps.base.modules.one_time_token.consts import FORGOTTEN_PASSWORD_TOKEN_TYPE, EMAIL_VERIFICATION_TOKEN_TYPE
 from lys.apps.base.modules.one_time_token.services import OneTimeTokenService
 from lys.apps.base.tasks import send_pending_email
 from lys.apps.user_auth.errors import INVALID_REFRESH_TOKEN_ERROR, INVALID_GENDER, INVALID_LANGUAGE
@@ -202,6 +205,8 @@ class UserService(EntityService[User]):
         password: str,
         language_id: str,
         is_super_user: bool = False,
+        send_verification_email: bool = True,
+        background_tasks=None,
         first_name: str | None = None,
         last_name: str | None = None,
         gender_id: str | None = None,
@@ -215,6 +220,7 @@ class UserService(EntityService[User]):
         - Hashed password
         - Configurable super user privileges
         - Optional private data (GDPR-protected)
+        - Email verification email (if send_verification_email=True and background_tasks provided)
         - Additional attributes via kwargs (e.g., roles for user_role app)
 
         Args:
@@ -222,6 +228,8 @@ class UserService(EntityService[User]):
             password: Plain text password (will be hashed)
             language_id: Language ID (format validated)
             is_super_user: Whether to create a super user or regular user
+            send_verification_email: Whether to send email verification email (default: True)
+            background_tasks: FastAPI BackgroundTasks for scheduling email (optional)
             session: Database session
             first_name: Optional first name
             last_name: Optional last name
@@ -256,6 +264,18 @@ class UserService(EntityService[User]):
             **kwargs
         )
 
+        # Send email verification if requested and background_tasks provided
+        if send_verification_email and background_tasks is not None:
+            user_emailing_service = cls.app_manager.get_service("user_emailing")
+
+            # Create email verification emailing
+            user_emailing = await user_emailing_service.create_email_verification_emailing(
+                user, session
+            )
+
+            # Schedule email sending via Celery after commit
+            user_emailing_service.schedule_send_emailing(user_emailing, background_tasks)
+
         return user
 
     @classmethod
@@ -265,6 +285,8 @@ class UserService(EntityService[User]):
         email: str,
         password: str,
         language_id: str,
+        send_verification_email: bool = True,
+        background_tasks=None,
         first_name: str | None = None,
         last_name: str | None = None,
         gender_id: str | None = None
@@ -278,6 +300,8 @@ class UserService(EntityService[User]):
             email: Email address (will be normalized)
             password: Plain text password (will be hashed)
             language_id: Language ID (format validated)
+            send_verification_email: Whether to send email verification email (default: True)
+            background_tasks: FastAPI BackgroundTasks for scheduling email (optional)
             session: Database session
             first_name: Optional first name
             last_name: Optional last name
@@ -295,6 +319,8 @@ class UserService(EntityService[User]):
             password=password,
             language_id=language_id,
             is_super_user=True,
+            send_verification_email=send_verification_email,
+            background_tasks=background_tasks,
             first_name=first_name,
             last_name=last_name,
             gender_id=gender_id
@@ -307,6 +333,8 @@ class UserService(EntityService[User]):
         email: str,
         password: str,
         language_id: str,
+        send_verification_email: bool = True,
+        background_tasks=None,
         first_name: str | None = None,
         last_name: str | None = None,
         gender_id: str | None = None
@@ -320,6 +348,8 @@ class UserService(EntityService[User]):
             email: Email address (will be normalized)
             password: Plain text password (will be hashed)
             language_id: Language ID (format validated)
+            send_verification_email: Whether to send email verification email (default: True)
+            background_tasks: FastAPI BackgroundTasks for scheduling email (optional)
             session: Database session
             first_name: Optional first name
             last_name: Optional last name
@@ -337,10 +367,59 @@ class UserService(EntityService[User]):
             password=password,
             language_id=language_id,
             is_super_user=False,
+            send_verification_email=send_verification_email,
+            background_tasks=background_tasks,
             first_name=first_name,
             last_name=last_name,
             gender_id=gender_id
         )
+
+    @classmethod
+    async def request_password_reset(
+        cls,
+        email: str,
+        session: AsyncSession,
+        background_tasks=None
+    ) -> bool:
+        """
+        Request a password reset for a user.
+
+        This method:
+        1. Finds the user by email
+        2. Creates a forgotten password emailing (if user exists)
+        3. Schedules the email to be sent (if background_tasks provided)
+
+        For security reasons, this method always returns True even if the email
+        doesn't exist, to avoid revealing which emails are registered.
+
+        Args:
+            email: User's email address
+            session: Database session
+            background_tasks: FastAPI BackgroundTasks for scheduling email (optional)
+
+        Returns:
+            bool: Always True (for security)
+        """
+        # Find user by email
+        user = await cls.get_by_email(email, session)
+
+        # Don't reveal if email exists or not (security)
+        if not user:
+            return True
+
+        # Get user emailing service
+        user_emailing_service = cls.app_manager.get_service("user_emailing")
+
+        # Create forgotten password emailing
+        user_emailing = await user_emailing_service.create_forgotten_password_emailing(
+            user, session
+        )
+
+        # Schedule email sending via Celery after commit (if background_tasks provided)
+        if background_tasks is not None:
+            user_emailing_service.schedule_send_emailing(user_emailing, background_tasks)
+
+        return True
 
 
 @register_service()
@@ -486,7 +565,7 @@ class UserEmailingService(EntityService[UserEmailing]):
 
         # 2. Create emailing with token
         emailing = await emailing_service.generate_emailing(
-            type_id=FORGOTTEN_PASSWORD_EMAILING_TYPE,
+            type_id=USER_FORGOTTEN_PASSWORD_EMAILING_TYPE,
             email_address=user.email_address.id,
             language_id=user.language_id,
             session=session,
@@ -494,6 +573,60 @@ class UserEmailingService(EntityService[UserEmailing]):
             token=str(token.id),
             front_url=cls.app_manager.settings.front_url,
             lang=user.language_id
+        )
+
+        # 3. Link emailing to user
+        user_emailing = await cls.create(
+            session,
+            user_id=user.id,
+            emailing_id=emailing.id
+        )
+
+        return user_emailing
+
+    @classmethod
+    async def create_email_verification_emailing(
+        cls,
+        user: User,
+        session: AsyncSession
+    ) -> UserEmailing:
+        """
+        Create the emailing to verify user email address.
+
+        This method:
+        1. Creates a one-time token for email verification (valid 24 hours)
+        2. Creates an emailing with the token link
+        3. Links the emailing to the user
+
+        The email will be sent via Celery task (call send_pending_email.delay in BackgroundTask)
+
+        Args:
+            user: User to send the email to
+            session: Database session
+
+        Returns:
+            UserEmailing: The created user emailing entity
+        """
+        # Get services
+        token_service = cls.app_manager.get_service("user_one_time_token")
+        emailing_service = cls.app_manager.get_service("emailing")
+
+        # 1. Create one-time token for email verification (24 hours validity)
+        token = await token_service.create(
+            session,
+            user_id=user.id,
+            type_id=EMAIL_VERIFICATION_TOKEN_TYPE
+        )
+
+        # 2. Create emailing with token and user data
+        emailing = await emailing_service.generate_emailing(
+            type_id=USER_EMAIL_VERIFICATION_EMAILING_TYPE,
+            email_address=user.email_address.id,
+            language_id=user.language_id,
+            session=session,
+            user=user,
+            token=str(token.id),
+            front_url=cls.app_manager.settings.front_url
         )
 
         # 3. Link emailing to user

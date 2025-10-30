@@ -1,0 +1,7 @@
+"""
+Error constants for user_role app.
+
+Format: (HTTP_STATUS_CODE, "ERROR_CODE_STRING")
+"""
+
+UNAUTHORIZED_ROLE_ASSIGNMENT = (403, "UNAUTHORIZED_ROLE_ASSIGNMENT")
