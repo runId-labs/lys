@@ -132,3 +132,9 @@ class UserOneTimeTokenNode(EntityNode[UserOneTimeTokenService], relay.Node):
 class ForgottenPasswordNode(ServiceNode[UserService]):
     success: bool
 
+
+@strawberry.type
+@register_node()
+class ResetPasswordNode(ServiceNode[UserService]):
+    success: bool
+

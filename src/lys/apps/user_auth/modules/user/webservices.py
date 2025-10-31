@@ -5,8 +5,18 @@ from typing import Optional
 import strawberry
 from sqlalchemy import Select, select
 
-from lys.apps.user_auth.modules.user.inputs import CreateUserInput, CreateSuperUserInput
-from lys.apps.user_auth.modules.user.nodes import UserNode, UserStatusNode, ForgottenPasswordNode, UserOneTimeTokenNode
+from lys.apps.user_auth.modules.user.inputs import (
+    CreateUserInput,
+    CreateSuperUserInput,
+    ResetPasswordInput
+)
+from lys.apps.user_auth.modules.user.nodes import (
+    UserNode,
+    UserStatusNode,
+    ForgottenPasswordNode,
+    ResetPasswordNode,
+    UserOneTimeTokenNode
+)
 from lys.apps.user_auth.modules.user.services import UserStatusService, UserService
 from lys.core.consts.webservices import OWNER_ACCESS_LEVEL
 from lys.core.contexts import Info
@@ -123,6 +133,40 @@ class UserMutation(Mutation):
         )
 
         logger.info(f"Password reset requested for email: {email}")
+
+        return node(success=True)
+
+    @lys_field(
+        ensure_type=ResetPasswordNode,
+        is_public=True,
+        is_licenced=False,
+        description="Reset user password using a one-time token from email."
+    )
+    async def reset_password(self, inputs: ResetPasswordInput, info: Info) -> ResetPasswordNode:
+        """
+        Reset user password using a one-time token.
+
+        Args:
+            inputs: Input containing:
+                - token: One-time reset token from email
+                - new_password: New password to set
+            info: GraphQL context
+
+        Returns:
+            ResetPasswordNode with success status
+        """
+        input_data = inputs.to_pydantic()
+        node = ResetPasswordNode.get_effective_node()
+        session = info.context.session
+        user_service: type[UserService] = node.service_class
+
+        await user_service.reset_password(
+            token=input_data.token,
+            new_password=input_data.new_password,
+            session=session
+        )
+
+        logger.info("Password successfully reset using token")
 
         return node(success=True)
 

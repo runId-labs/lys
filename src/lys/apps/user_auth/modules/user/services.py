@@ -12,7 +12,12 @@ from lys.apps.user_auth.modules.emailing.consts import (
 from lys.apps.base.modules.one_time_token.consts import FORGOTTEN_PASSWORD_TOKEN_TYPE, EMAIL_VERIFICATION_TOKEN_TYPE
 from lys.apps.base.modules.one_time_token.services import OneTimeTokenService
 from lys.apps.base.tasks import send_pending_email
-from lys.apps.user_auth.errors import INVALID_REFRESH_TOKEN_ERROR, INVALID_GENDER, INVALID_LANGUAGE
+from lys.apps.user_auth.errors import (
+    INVALID_REFRESH_TOKEN_ERROR,
+    INVALID_GENDER,
+    INVALID_RESET_TOKEN_ERROR,
+    EXPIRED_RESET_TOKEN_ERROR
+)
 from lys.apps.user_auth.modules.user.entities import (
     UserStatus,
     User,
@@ -420,6 +425,86 @@ class UserService(EntityService[User]):
             user_emailing_service.schedule_send_emailing(user_emailing, background_tasks)
 
         return True
+
+    @classmethod
+    async def reset_password(
+        cls,
+        token: str,
+        new_password: str,
+        session: AsyncSession
+    ) -> User:
+        """
+        Reset user password using a one-time token.
+
+        This method:
+        1. Validates the token exists and is not expired
+        2. Validates the token has not been used
+        3. Updates the user password
+        4. Marks the token as used
+
+        Args:
+            token: The one-time reset token from email
+            new_password: The new password (will be hashed)
+            session: Database session
+
+        Returns:
+            User: The user with updated password
+
+        Raises:
+            LysError: If token is invalid, expired, or already used
+        """
+        # Get token service
+        token_service = cls.app_manager.get_service("user_one_time_token")
+
+        # 1. Find the token
+        token_entity = await token_service.get_by_id(token, session)
+
+        if not token_entity:
+            raise LysError(
+                INVALID_RESET_TOKEN_ERROR,
+                "Invalid reset token"
+            )
+
+        # 2. Check token type
+        if token_entity.type_id != FORGOTTEN_PASSWORD_TOKEN_TYPE:
+            raise LysError(
+                INVALID_RESET_TOKEN_ERROR,
+                "Token is not a password reset token"
+            )
+
+        # 3. Check if token is expired
+        if token_service.is_expired(token_entity):
+            raise LysError(
+                EXPIRED_RESET_TOKEN_ERROR,
+                "Reset token has expired"
+            )
+
+        # 4. Check if token has already been used
+        if token_service.is_used(token_entity):
+            raise LysError(
+                INVALID_RESET_TOKEN_ERROR,
+                "Reset token has already been used"
+            )
+
+        # 5. Get the user
+        user = await cls.get_by_id(token_entity.user_id, session)
+
+        if not user:
+            raise LysError(
+                INVALID_RESET_TOKEN_ERROR,
+                "User not found for this token"
+            )
+
+        # 6. Hash the new password
+        hashed_password = AuthUtils.hash_password(new_password)
+
+        # 7. Update user password
+        user.password = hashed_password
+
+        # 8. Mark token as used
+        await token_service.mark_as_used(token_entity, session)
+
+        return user
 
 
 @register_service()

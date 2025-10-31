@@ -5,7 +5,8 @@ from lys.apps.user_auth.modules.user.models import (
     CreateSuperUserInputModel,
     UpdateUserInputModel,
     UpdateUserPrivateDataInputModel,
-    ChangePasswordInputModel
+    ChangePasswordInputModel,
+    ResetPasswordInputModel
 )
 
 
@@ -77,6 +78,16 @@ class UpdateUserPrivateDataInput:
 class ChangePasswordInput:
     current_password: strawberry.auto = strawberry.field(
         description="Current password for verification"
+    )
+    new_password: strawberry.auto = strawberry.field(
+        description="New password (min 8 chars, must contain at least one letter and one digit)"
+    )
+
+
+@strawberry.experimental.pydantic.input(model=ResetPasswordInputModel)
+class ResetPasswordInput:
+    token: strawberry.auto = strawberry.field(
+        description="One-time reset token from email"
     )
     new_password: strawberry.auto = strawberry.field(
         description="New password (min 8 chars, must contain at least one letter and one digit)"

@@ -151,6 +151,28 @@ class ChangePasswordInputModel(BaseModel):
         return validate_password_for_creation(password)
 
 
+class ResetPasswordInputModel(BaseModel):
+    """
+    Input model for resetting password using one-time token.
+
+    Used when user forgot password and received reset link via email.
+    """
+    token: str = Field(min_length=1)
+    new_password: str = Field(min_length=8, max_length=128)
+
+    @field_validator('token')
+    @classmethod
+    def validate_token(cls, token: str | None, info: ValidationInfo) -> str | None:
+        if not token or not token.strip():
+            raise ValueError("Reset token cannot be empty")
+        return token.strip()
+
+    @field_validator('new_password')
+    @classmethod
+    def validate_new_password(cls, password: str | None, info: ValidationInfo) -> str | None:
+        return validate_password_for_creation(password)
+
+
 class GetUserRefreshTokenInputModel(BaseModel):
     refresh_token_id: str | None
 
