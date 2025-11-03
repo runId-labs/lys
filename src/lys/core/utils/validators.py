@@ -1,7 +1,8 @@
 import re
 import uuid
 
-from lys.apps.user_auth.errors import EMPTY_PASSWORD_ERROR, WEAK_PASSWORD, INVALID_NAME, INVALID_LANGUAGE
+from lys.apps.user_auth.errors import EMPTY_PASSWORD_ERROR, WEAK_PASSWORD, INVALID_NAME, INVALID_LANGUAGE, INVALID_GENDER
+from lys.apps.user_auth.modules.user.consts import MALE_GENDER, FEMALE_GENDER, OTHER_GENDER
 from lys.core.consts.errors import NOT_UUID_ERROR
 from lys.core.errors import LysError
 
@@ -13,6 +14,9 @@ LANGUAGE_PATTERN = r"^[a-z]{2}(-[a-z]{2})?$"
 # Password constraints
 PASSWORD_MIN_LENGTH = 8
 PASSWORD_MAX_LENGTH = 128
+
+# Valid gender codes
+VALID_GENDER_CODES = [MALE_GENDER, FEMALE_GENDER, OTHER_GENDER]
 
 
 def validate_name(value: str | None, field_name: str) -> str | None:
@@ -151,6 +155,31 @@ def validate_password_for_login(password: str | None) -> str:
         )
 
     return password.strip()
+
+
+def validate_gender_code(value: str | None) -> str | None:
+    """
+    Validate gender code against valid options.
+
+    Args:
+        value: The gender code to validate
+
+    Returns:
+        Validated gender code, or None if input is None
+
+    Raises:
+        LysError: If gender code is not in the list of valid codes
+    """
+    if value is None:
+        return value
+
+    if value not in VALID_GENDER_CODES:
+        raise LysError(
+            INVALID_GENDER,
+            f"gender_code must be one of: {', '.join(VALID_GENDER_CODES)}"
+        )
+
+    return value
 
 
 def validate_uuid(id_: str | None, error: tuple[int, str] = NOT_UUID_ERROR):

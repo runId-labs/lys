@@ -7,7 +7,7 @@ database queries to respect organization boundaries.
 """
 from typing import Type, Tuple, Optional, Dict
 
-from sqlalchemy import Select, BinaryExpression, or_
+from sqlalchemy import Select, BinaryExpression, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from lys.apps.organization.consts import ORGANIZATION_ROLE_ACCESS_LEVEL
@@ -47,6 +47,9 @@ class OrganizationPermission(PermissionInterface, AppManagerCallerMixin):
         in organizations that grant access to the requested webservice. Access is granted on a
         per-organization basis, meaning users can access data only within organizations where
         they have appropriate roles.
+
+        Additionally, if the user is the owner of a client, they automatically gain full access
+        to that client's data, even without explicit organization roles.
 
         Args:
             webservice: The webservice being accessed
@@ -97,8 +100,15 @@ class OrganizationPermission(PermissionInterface, AppManagerCallerMixin):
                     webservice_id=webservice.id,
                 )
 
-                # Build access map if user has any qualifying roles
-                if user_organization_roles:
+                # Check if user is owner of any clients
+                # Owner gets automatic full access to their client(s)
+                client_entity = cls.app_manager.get_entity("client")
+                stmt = select(client_entity).where(client_entity.owner_id == connected_user["id"])
+                result = await session.execute(stmt)
+                owned_clients = list(result.scalars().all())
+
+                # Build access map if user has any qualifying roles OR is a client owner
+                if user_organization_roles or owned_clients:
                     # Initialize access type structure
                     access_type = {}
 
@@ -125,6 +135,21 @@ class OrganizationPermission(PermissionInterface, AppManagerCallerMixin):
                         access_type[ORGANIZATION_ROLE_ACCESS_KEY][organization_model_name].append(
                             organization.id
                         )
+
+                    # Add owned clients to access map (automatic owner access)
+                    if owned_clients:
+                        # Initialize organization_role key if not already done
+                        if ORGANIZATION_ROLE_ACCESS_KEY not in access_type:
+                            access_type[ORGANIZATION_ROLE_ACCESS_KEY] = {}
+
+                        # Initialize client list if not already done
+                        if "client" not in access_type[ORGANIZATION_ROLE_ACCESS_KEY]:
+                            access_type[ORGANIZATION_ROLE_ACCESS_KEY]["client"] = []
+
+                        # Add owned client IDs (avoid duplicates if user also has roles)
+                        for client in owned_clients:
+                            if client.id not in access_type[ORGANIZATION_ROLE_ACCESS_KEY]["client"]:
+                                access_type[ORGANIZATION_ROLE_ACCESS_KEY]["client"].append(client.id)
 
         return access_type, error_code
 

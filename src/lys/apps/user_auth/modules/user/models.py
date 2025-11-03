@@ -6,7 +6,6 @@ from strawberry import relay
 
 from lys.apps.user_auth.errors import (
     WRONG_REFRESH_TOKEN_ERROR,
-    INVALID_GENDER,
     INVALID_RESET_TOKEN_ERROR,
     INVALID_STATUS_CHANGE,
     INVALID_USER_ID
@@ -18,7 +17,8 @@ from lys.core.utils.validators import (
     validate_language_format,
     validate_password_for_creation,
     validate_password_for_login,
-    validate_uuid
+    validate_uuid,
+    validate_gender_code
 )
 
 
@@ -57,19 +57,8 @@ class UserPrivateDataInputModel(BaseModel):
 
     @field_validator('gender_code')
     @classmethod
-    def validate_gender_code(cls, value: str | None, info: ValidationInfo) -> str | None:
-        if value is None:
-            return value
-
-        # List of valid gender codes (should match Gender fixtures)
-        valid_genders = ["MALE", "FEMALE", "OTHER"]
-        if value not in valid_genders:
-            raise LysError(
-                INVALID_GENDER,
-                f"gender_code must be one of: {', '.join(valid_genders)}"
-            )
-
-        return value
+    def validate_gender_code_field(cls, value: str | None, info: ValidationInfo) -> str | None:
+        return validate_gender_code(value)
 
 
 class CreateUserInputModel(UserPrivateDataInputModel):

@@ -55,7 +55,7 @@ class UserService(AuthUserService):
             LysError: If validation fails (duplicate email, invalid password, etc.)
         """
         # Query role entities if provided
-        role_entities = None
+        role_entities = []
         if roles:
             role_service = cls.app_manager.get_service("role")
             role_entity = role_service.entity_class

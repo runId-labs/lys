@@ -18,6 +18,7 @@ Organizations are hierarchical entities that represent business units, departmen
 - Organizations can have parent-child relationships
 - Child organizations inherit access from parent organizations
 - Each organization has an owner (user)
+- **Client owners automatically receive full access** to their client's data without requiring explicit role assignment
 
 ### Organization Roles
 
@@ -54,7 +55,17 @@ When a user attempts to access a webservice, the system performs the following c
                             │
                             ▼
 ┌─────────────────────────────────────────────────────────────┐
-│ 3. Build access map of accessible organizations            │
+│ 3. Check if user is owner of any clients                   │
+│    - Query: SELECT * FROM client WHERE owner_id = user_id   │
+│    - Owner gets automatic access without explicit roles    │
+└─────────────────────────────────────────────────────────────┘
+                            │
+                            ▼
+┌─────────────────────────────────────────────────────────────┐
+│ 4. Build access map of accessible organizations            │
+│    - Include organizations from roles (step 2)             │
+│    - Include owned clients (step 3)                        │
+│    - Avoid duplicates                                      │
 │    {                                                        │
 │      "organization_role": {                                 │
 │        "client": [client_id1, client_id2],                 │
@@ -196,7 +207,35 @@ Once webservice access is granted, all database queries are automatically filter
 
 **Result**: Disabling a role immediately revokes access for all users with that role.
 
-### Use Case 4: Hierarchical Organizations (Future Extension)
+### Use Case 4: Client Owner Automatic Access
+
+**Scenario**: Diana is the owner of Client D. She should have full access to all Client D's data without needing explicit role assignments.
+
+**Setup**:
+1. Diana has a User account
+2. Diana created Client D and is set as `client.owner_id = diana_user_id`
+3. Diana does NOT have any ClientUser or ClientUserRole entries
+4. Other users in Client D have roles assigned through ClientUserRole
+
+**Flow**:
+1. Diana requests `/graphql` with query `view_client_data`
+2. System checks: Does `view_client_data` require `ORGANIZATION_ROLE_ACCESS_LEVEL`? → Yes
+3. System queries: Does Diana have a role in any organization? → No explicit roles found
+4. System queries: Is Diana the owner of any clients? → Yes (Client D)
+5. System builds access map: `{"organization_role": {"client": [client_d_id]}}`
+6. System filters query: `WHERE data.client_id = client_d_id`
+7. Diana receives all data from Client D
+
+**Result**: Client owners have automatic administrator-level access to their client's data without requiring role configuration. This simplifies onboarding and ensures owners always maintain control of their organizations.
+
+**Implementation Details**:
+- Owner check happens automatically in `OrganizationPermission.check_webservice_permission()`
+- Query: `SELECT * FROM client WHERE owner_id = connected_user_id`
+- Owned client IDs are added to the access map alongside role-based access
+- Duplicates are avoided if owner also has explicit roles
+- Owner access is scoped only to webservices with `ORGANIZATION_ROLE_ACCESS_LEVEL`
+
+### Use Case 5: Hierarchical Organizations (Future Extension)
 
 **Scenario**: Department D is a child of Client C. Users with access to Client C should also access Department D's data.
 
@@ -465,6 +504,8 @@ if ORGANIZATION_ROLE_ACCESS_LEVEL in access_levels:
    - User without role → access denied
    - Disabled role → access denied
    - Multiple organizations → correct access map
+   - Client owner without role → access granted to owned client
+   - Client owner with roles → access to owned client + role-based clients (no duplicates)
 
 2. **Test query filtering**:
    - Data from accessible organizations returned
@@ -500,10 +541,11 @@ if ORGANIZATION_ROLE_ACCESS_LEVEL in access_levels:
 **Checklist**:
 1. Is the user connected? Check `context.connected_user`
 2. Does the webservice require `ORGANIZATION_ROLE_ACCESS_LEVEL`?
-3. Is the user a member of an organization? Check `ClientUser` exists
-4. Does the user have a role in that organization? Check `ClientUserRole` exists
-5. Is the role enabled? Check `role.enabled = True`
-6. Does the role include this webservice? Check `role.webservices` relationship
+3. Is the user the owner of a client? Check `client.owner_id = user.id` (automatic access)
+4. Is the user a member of an organization? Check `ClientUser` exists
+5. Does the user have a role in that organization? Check `ClientUserRole` exists
+6. Is the role enabled? Check `role.enabled = True`
+7. Does the role include this webservice? Check `role.webservices` relationship
 
 ### User Sees Wrong Data
 
