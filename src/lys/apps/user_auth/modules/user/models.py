@@ -2,16 +2,23 @@ from typing import Optional
 
 from pydantic import EmailStr, BaseModel, field_validator, Field
 from pydantic_core.core_schema import ValidationInfo
+from strawberry import relay
 
-from lys.apps.user_auth.errors import WRONG_REFRESH_TOKEN_ERROR, INVALID_GENDER
+from lys.apps.user_auth.errors import (
+    WRONG_REFRESH_TOKEN_ERROR,
+    INVALID_GENDER,
+    INVALID_RESET_TOKEN_ERROR,
+    INVALID_STATUS_CHANGE,
+    INVALID_USER_ID
+)
 from lys.core.models.fixtures import EntityFixturesModel
-from lys.core.utils.models import validate_uuid
 from lys.core.errors import LysError
 from lys.core.utils.validators import (
     validate_name,
     validate_language_format,
     validate_password_for_creation,
-    validate_password_for_login
+    validate_password_for_login,
+    validate_uuid
 )
 
 
@@ -41,25 +48,25 @@ class UserPrivateDataInputModel(BaseModel):
     """
     first_name: Optional[str] = Field(None, min_length=1, max_length=100)
     last_name: Optional[str] = Field(None, min_length=1, max_length=100)
-    gender_id: Optional[str] = None
+    gender_code: Optional[str] = None
 
     @field_validator('first_name', 'last_name')
     @classmethod
     def validate_name_field(cls, value: str | None, info: ValidationInfo) -> str | None:
         return validate_name(value, info.field_name)
 
-    @field_validator('gender_id')
+    @field_validator('gender_code')
     @classmethod
-    def validate_gender_id(cls, value: str | None, info: ValidationInfo) -> str | None:
+    def validate_gender_code(cls, value: str | None, info: ValidationInfo) -> str | None:
         if value is None:
             return value
 
-        # List of valid gender IDs (should match Gender fixtures)
+        # List of valid gender codes (should match Gender fixtures)
         valid_genders = ["MALE", "FEMALE", "OTHER"]
         if value not in valid_genders:
             raise LysError(
                 INVALID_GENDER,
-                f"gender_id must be one of: {', '.join(valid_genders)}"
+                f"gender_code must be one of: {', '.join(valid_genders)}"
             )
 
         return value
@@ -75,7 +82,7 @@ class CreateUserInputModel(UserPrivateDataInputModel):
     """
     email: EmailStr
     password: str = Field(min_length=8, max_length=128)
-    language_id: str = Field(min_length=2, max_length=5)
+    language_code: str = Field(min_length=2, max_length=5)
 
     @field_validator('password')
     @classmethod
@@ -89,9 +96,9 @@ class CreateUserInputModel(UserPrivateDataInputModel):
             return email.strip().lower()
         return email
 
-    @field_validator('language_id')
+    @field_validator('language_code')
     @classmethod
-    def validate_language_id(cls, value: str | None, info: ValidationInfo) -> str | None:
+    def validate_language_code(cls, value: str | None, info: ValidationInfo) -> str | None:
         return validate_language_format(value)
 
 
@@ -121,14 +128,52 @@ class UpdateUserInputModel(BaseModel):
 
     All fields are optional to allow partial updates.
     """
-    language_id: Optional[str] = Field(None, min_length=2, max_length=5)
+    language_code: Optional[str] = Field(None, min_length=2, max_length=5)
 
-    @field_validator('language_id')
+    @field_validator('language_code')
     @classmethod
-    def validate_language_id(cls, value: str | None, info: ValidationInfo) -> str | None:
+    def validate_language_code(cls, value: str | None, info: ValidationInfo) -> str | None:
         if value is None:
             return value
         return validate_language_format(value)
+
+
+class UpdateEmailInputModel(BaseModel):
+    """
+    Input model for updating user email address.
+
+    Requires new email address. The email will be set to unverified state
+    and a verification email will be sent to the new address.
+    """
+    new_email: EmailStr
+
+    @field_validator('new_email')
+    @classmethod
+    def validate_email(cls, email: str | None, info: ValidationInfo) -> str | None:
+        if email:
+            return email.strip().lower()
+        return email
+
+
+class UpdatePasswordInputModel(BaseModel):
+    """
+    Input model for updating user password (OWNER access).
+
+    Requires current password for security and validates new password strength.
+    Used with lys_edition and OWNER access level.
+    """
+    current_password: str = Field(min_length=1)
+    new_password: str = Field(min_length=8, max_length=128)
+
+    @field_validator('current_password')
+    @classmethod
+    def validate_current_password(cls, password: str | None, info: ValidationInfo) -> str | None:
+        return validate_password_for_login(password)
+
+    @field_validator('new_password')
+    @classmethod
+    def validate_new_password(cls, password: str | None, info: ValidationInfo) -> str | None:
+        return validate_password_for_creation(password)
 
 
 class ChangePasswordInputModel(BaseModel):
@@ -163,14 +208,28 @@ class ResetPasswordInputModel(BaseModel):
     @field_validator('token')
     @classmethod
     def validate_token(cls, token: str | None, info: ValidationInfo) -> str | None:
-        if not token or not token.strip():
-            raise ValueError("Reset token cannot be empty")
-        return token.strip()
+        validate_uuid(token, INVALID_RESET_TOKEN_ERROR)
+        return token
 
     @field_validator('new_password')
     @classmethod
     def validate_new_password(cls, password: str | None, info: ValidationInfo) -> str | None:
         return validate_password_for_creation(password)
+
+
+class VerifyEmailInputModel(BaseModel):
+    """
+    Input model for verifying email using one-time token.
+
+    Used when user clicks verification link in email.
+    """
+    token: str = Field(min_length=1)
+
+    @field_validator('token')
+    @classmethod
+    def validate_token(cls, token: str | None, info: ValidationInfo) -> str | None:
+        validate_uuid(token, INVALID_RESET_TOKEN_ERROR)
+        return token
 
 
 class GetUserRefreshTokenInputModel(BaseModel):
@@ -182,3 +241,110 @@ class GetUserRefreshTokenInputModel(BaseModel):
 
         validate_uuid(refresh_token_id, WRONG_REFRESH_TOKEN_ERROR)
         return refresh_token_id
+
+
+class UpdateUserStatusInputModel(BaseModel):
+    """
+    Input model for updating user status.
+
+    Used to change user status (e.g., ACTIVE, INACTIVE, SUSPENDED).
+    Cannot be used to set status to DELETED - use anonymize_user instead.
+    Requires a reason for audit trail purposes.
+    """
+    status_code: str = Field(min_length=1, max_length=50)
+    reason: str = Field(min_length=10, description="Reason for status change (min 10 characters, required for audit)")
+
+    @field_validator('status_code')
+    @classmethod
+    def validate_status_code(cls, value: str | None, info: ValidationInfo) -> str | None:
+        if value is None:
+            return value
+
+        # Prevent setting DELETED status via this input
+        if value == "DELETED":
+            raise LysError(
+                INVALID_STATUS_CHANGE,
+                "Cannot set status to DELETED. Use anonymize_user webservice instead."
+            )
+
+        return value
+
+
+class AnonymizeUserInputModel(BaseModel):
+    """
+    Input model for anonymizing user data (GDPR compliance).
+
+    This is an irreversible operation that removes all personal data
+    and sets the user status to DELETED.
+    """
+    reason: str = Field(min_length=10, max_length=500, description="Reason for anonymization (required for audit)")
+
+    @field_validator('reason')
+    @classmethod
+    def validate_reason(cls, value: str | None, info: ValidationInfo) -> str | None:
+        if value:
+            return value.strip()
+        return value
+
+
+class CreateUserObservationInputModel(BaseModel):
+    """
+    Input model for creating a user observation (manual audit log).
+
+    Used by administrators to add notes/observations about users.
+    """
+    target_user_id: relay.GlobalID
+    message: str = Field(min_length=10, description="Observation message (min 10 characters)")
+
+    @field_validator('target_user_id')
+    @classmethod
+    def validate_target_user_id(cls, value: relay.GlobalID | None, info: ValidationInfo) -> str | None:
+        target_user_id = value.node_id
+        validate_uuid(target_user_id, INVALID_USER_ID)
+        return target_user_id
+
+    @field_validator('message')
+    @classmethod
+    def validate_message(cls, value: str | None, info: ValidationInfo) -> str | None:
+        if value:
+            return value.strip()
+        return value
+
+
+class UpdateUserAuditLogInputModel(BaseModel):
+    """
+    Input model for updating a user audit log (OBSERVATION type only).
+
+    Only the author can update their own observations.
+    System logs (STATUS_CHANGE, ANONYMIZATION) cannot be updated.
+    """
+    message: str = Field(min_length=10, description="Updated observation message (min 10 characters)")
+
+    @field_validator('message')
+    @classmethod
+    def validate_message(cls, value: str | None, info: ValidationInfo) -> str | None:
+        if value:
+            return value.strip()
+        return value
+
+
+class ListUserAuditLogsInputModel(BaseModel):
+    """
+    Input model for listing user audit logs with filters.
+
+    All fields are optional for flexible filtering.
+    """
+    log_type_code: Optional[str] = Field(None, description="Filter by log type (STATUS_CHANGE, ANONYMIZATION, OBSERVATION)")
+    email_search: Optional[str] = Field(None, min_length=1, description="Search in target or author email addresses")
+    user_filter: Optional[str] = Field(None, description="Filter by user role: 'author', 'target', or None (both)")
+    include_deleted: Optional[bool] = Field(False, description="Include soft-deleted observations (default: False)")
+
+    @field_validator('user_filter')
+    @classmethod
+    def validate_user_filter(cls, value: str | None, info: ValidationInfo) -> str | None:
+        if value is not None and value not in ["author", "target"]:
+            raise LysError(
+                (400, "INVALID_USER_FILTER"),
+                "user_filter must be 'author', 'target', or None"
+            )
+        return value

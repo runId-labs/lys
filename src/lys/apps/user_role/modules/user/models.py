@@ -9,7 +9,7 @@ class CreateUserWithRolesInputModel(CreateUserInputModel):
     """
     Input model for creating a user with role assignments.
 
-    Extends CreateUserInputModel with an optional list of role IDs to assign to the new user.
+    Extends CreateUserInputModel with an optional list of role codes to assign to the new user.
     Used by user_role app's create_user webservice.
     """
-    roles: Optional[List[str]] = Field(None, description="Optional list of role IDs to assign to the user")
+    role_codes: Optional[List[str]] = Field(None, description="Optional list of role codes to assign to the user")

@@ -11,26 +11,18 @@ from lys.core.consts.webservices import OWNER_ACCESS_LEVEL
 from lys.core.contexts import Info
 from lys.core.errors import LysError
 from lys.core.graphql.create import lys_creation
-from lys.core.graphql.getter import lys_getter
-from lys.core.graphql.registers import register_query, register_mutation
-from lys.core.graphql.types import Query, Mutation
+from lys.core.graphql.registers import register_mutation
+from lys.core.graphql.types import Mutation
+from lys.core.registers import override_webservice
 
 logger = logging.getLogger(__name__)
 
 
-@register_query("graphql")
-@strawberry.type
-class UserQuery(Query):
-    @lys_getter(
-        UserNode,
-        is_public=False,
-        access_levels=[OWNER_ACCESS_LEVEL, ROLE_ACCESS_LEVEL],
-        is_licenced=False,
-        allow_override=True,
-        description="Return user information."
-    )
-    async def user(self):
-        pass
+# Override user query from user_auth to extend access levels to include ROLE
+override_webservice(
+    name="user",
+    access_levels=[OWNER_ACCESS_LEVEL, ROLE_ACCESS_LEVEL]
+)
 
 
 @register_mutation("graphql")
@@ -85,16 +77,16 @@ class UserMutation(Mutation):
         is_super_user = connected_user.get("is_super_user", False)
 
         # Validate role assignments
-        if input_data.roles and not is_super_user:
+        if input_data.role_codes and not is_super_user:
             # Get the connected user entity to access their roles
             connected_user_entity = await user_service.get_by_id(connected_user["id"], session)
 
-            # Get role IDs that the connected user has
-            connected_user_role_ids = {role.id for role in connected_user_entity.roles}
+            # Get role codes that the connected user has
+            connected_user_role_codes = {role.id for role in connected_user_entity.roles}
 
             # Check if user is trying to assign roles they don't have
-            requested_role_ids = set(input_data.roles)
-            unauthorized_roles = requested_role_ids - connected_user_role_ids
+            requested_role_codes = set(input_data.role_codes)
+            unauthorized_roles = requested_role_codes - connected_user_role_codes
 
             if unauthorized_roles:
                 raise LysError(
@@ -107,18 +99,50 @@ class UserMutation(Mutation):
             session=session,
             email=input_data.email,
             password=input_data.password,
-            language_id=input_data.language_id,
+            language_id=input_data.language_code,
             send_verification_email=True,
             background_tasks=info.context.background_tasks,
-            roles=input_data.roles,
+            roles=input_data.role_codes,
             first_name=input_data.first_name,
             last_name=input_data.last_name,
-            gender_id=input_data.gender_id
+            gender_id=input_data.gender_code
         )
 
-        if input_data.roles:
-            logger.info(f"User created with email: {input_data.email} and roles: {input_data.roles}")
+        if input_data.role_codes:
+            logger.info(f"User created with email: {input_data.email} and roles: {input_data.role_codes}")
         else:
             logger.info(f"User created with email: {input_data.email} without roles")
 
         return user
+
+
+# Override webservices from user_auth to extend access levels to include ROLE
+override_webservice(
+    name="update_email",
+    access_levels=[OWNER_ACCESS_LEVEL, ROLE_ACCESS_LEVEL]
+)
+
+override_webservice(
+    name="update_password",
+    access_levels=[OWNER_ACCESS_LEVEL, ROLE_ACCESS_LEVEL]
+)
+
+override_webservice(
+    name="update_user_private_data",
+    access_levels=[OWNER_ACCESS_LEVEL, ROLE_ACCESS_LEVEL]
+)
+
+override_webservice(
+    name="update_user_status",
+    access_levels=[ROLE_ACCESS_LEVEL]
+)
+
+override_webservice(
+    name="create_user_observation",
+    access_levels=[ROLE_ACCESS_LEVEL]
+)
+
+override_webservice(
+    name="list_user_audit_logs",
+    access_levels=[ROLE_ACCESS_LEVEL]
+)

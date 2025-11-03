@@ -59,6 +59,7 @@ def create_celery_app(settings, app_manager=None) -> Celery:
         celery_app.app_manager = app_manager
     else:
         # Production: use singleton LysAppManager
+        # Local import to avoid circular dependency: celery_app <- app_manager <- celery_app
         from lys.core.managers.app import LysAppManager
         celery_app.app_manager = LysAppManager()
 
@@ -73,7 +74,8 @@ def init_worker_process(**kwargs):
     This signal is called when a new worker process is spawned.
     Each worker process gets its own database connection.
     """
-    # Get celery app from current task
+    # Local import to ensure current_app is available in worker process context
+    # Avoids import at module level where current_app may not be initialized yet
     from celery import current_app
 
     if hasattr(current_app, 'app_manager'):

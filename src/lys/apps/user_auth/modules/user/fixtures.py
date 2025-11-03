@@ -4,14 +4,24 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from lys.apps.user_auth.modules.user.consts import (
     ENABLED_USER_STATUS,
-    LOGIN_BLOCKED_USER_STATUS,
+    DISABLED_USER_STATUS,
+    REVOKED_USER_STATUS,
     MALE_GENDER,
     FEMALE_GENDER,
-    OTHER_GENDER
+    OTHER_GENDER,
+    DELETED_USER_STATUS,
+    STATUS_CHANGE_LOG_TYPE,
+    ANONYMIZATION_LOG_TYPE,
+    OBSERVATION_LOG_TYPE
 )
 from lys.apps.user_auth.modules.user.entities import UserEmailAddress, UserPrivateData
 from lys.apps.user_auth.modules.user.models import UserFixturesModel
-from lys.apps.user_auth.modules.user.services import UserService, UserStatusService, GenderService
+from lys.apps.user_auth.modules.user.services import (
+    UserService,
+    UserStatusService,
+    GenderService,
+    UserAuditLogTypeService
+)
 from lys.apps.user_auth.utils import AuthUtils
 from lys.core.consts.environments import EnvironmentEnum
 from lys.core.fixtures import EntityFixtures
@@ -30,7 +40,19 @@ class UserStatusFixtures(EntityFixtures[UserStatusService]):
             }
         },
         {
-            "id": LOGIN_BLOCKED_USER_STATUS,
+            "id": DISABLED_USER_STATUS,
+            "attributes": {
+                "enabled": True
+            }
+        },
+        {
+            "id": REVOKED_USER_STATUS,
+            "attributes": {
+                "enabled": True
+            }
+        },
+        {
+            "id": DELETED_USER_STATUS,
             "attributes": {
                 "enabled": True
             }
@@ -68,6 +90,39 @@ class GenderFixtures(EntityFixtures[GenderService]):
     ]
 
 
+@register_fixture()
+class UserAuditLogTypeFixtures(EntityFixtures[UserAuditLogTypeService]):
+    """
+    Fixtures for user audit log type parametric entity.
+
+    Provides log types for user audit trail:
+    - STATUS_CHANGE: Automatic log when user status changes
+    - ANONYMIZATION: Automatic log when user is anonymized (GDPR)
+    - OBSERVATION: Manual observation/note added by administrators
+    """
+    model = ParametricEntityFixturesModel
+    data_list = [
+        {
+            "id": STATUS_CHANGE_LOG_TYPE,
+            "attributes": {
+                "enabled": True
+            }
+        },
+        {
+            "id": ANONYMIZATION_LOG_TYPE,
+            "attributes": {
+                "enabled": True
+            }
+        },
+        {
+            "id": OBSERVATION_LOG_TYPE,
+            "attributes": {
+                "enabled": True
+            }
+        }
+    ]
+
+
 @register_fixture(depends_on=["UserStatusFixtures", "GenderFixtures"])
 class UserDevFixtures(EntityFixtures[UserService]):
     model = UserFixturesModel
@@ -90,7 +145,7 @@ class UserDevFixtures(EntityFixtures[UserService]):
             "attributes": {
                 "email_address": "disabled_user@lys-test.fr",
                 "password": "password",
-                "status_id": LOGIN_BLOCKED_USER_STATUS,
+                "status_id": DISABLED_USER_STATUS,
                 "language_id": "fr",
                 "private_data": {
                     "first_name": "Jane",

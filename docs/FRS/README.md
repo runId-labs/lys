@@ -40,6 +40,13 @@ Each FRS document follows this structure:
   - Data isolation and filtering
   - Permission flows and use cases
 
+- **[webservice_management.md](./webservice_management.md)**: Webservice Management System
+  - Webservice creation and registration
+  - Metadata-only overrides (recommended)
+  - Full implementation overrides
+  - Webservice disabling
+  - Best practices and patterns
+
 ## How to Use These Documents
 
 ### For Product Owners and Business Analysts

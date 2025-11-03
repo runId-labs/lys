@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from sqlalchemy import ForeignKey, DateTime
+from sqlalchemy import ForeignKey, DateTime, Text
 from sqlalchemy.orm import Mapped, mapped_column, declared_attr, relationship, backref
 
 from lys.apps.base.modules.one_time_token.entities import OneTimeToken
@@ -26,6 +26,19 @@ class Gender(ParametricEntity):
     Gender parametric entity for GDPR-protected user data
     """
     __tablename__ = "gender"
+
+
+@register_entity()
+class UserAuditLogType(ParametricEntity):
+    """
+    User audit log type entity.
+
+    Types:
+    - STATUS_CHANGE: Automatic log when user status changes
+    - ANONYMIZATION: Automatic log when user is anonymized (GDPR)
+    - OBSERVATION: Manual observation/note added by administrators
+    """
+    __tablename__ = "user_audit_log_type"
 
 
 @register_entity()
@@ -71,6 +84,15 @@ class User(Entity):
     @declared_attr
     def language(self):
         return relationship("language", lazy='selectin')
+
+    @declared_attr
+    def private_data(self):
+        return relationship(
+            "user_private_data",
+            back_populates="user",
+            uselist=False,
+            lazy='selectin'
+        )
 
     @staticmethod
     def login_name() -> str:
@@ -129,10 +151,7 @@ class UserPrivateData(Entity):
 
     @declared_attr
     def user(self):
-        return relationship(
-            "user",
-            backref=backref("private_data", uselist=False, lazy='selectin')
-        )
+        return relationship("user", back_populates="private_data", lazy='selectin')
 
     @declared_attr
     def gender(self):
@@ -251,7 +270,7 @@ class UserEmailing(Entity):
 
     @classmethod
     def user_accessing_filters(cls, stmt, user_id: str):
-        return stmt, [cls.user.id == user_id]
+        return stmt, [cls.user_id == user_id]
 
 
 @register_entity()
@@ -278,3 +297,88 @@ class UserOneTimeToken(OneTimeToken):
     @classmethod
     def user_accessing_filters(cls, stmt, user_id: str):
         return stmt, [cls.user_id == user_id]
+
+
+@register_entity()
+class UserAuditLog(Entity):
+    """
+    User audit log entity for tracking user-related actions and observations.
+
+    This entity provides a comprehensive audit trail for:
+    - Automatic logging of status changes (STATUS_CHANGE)
+    - Automatic logging of user anonymization (ANONYMIZATION)
+    - Manual observations/notes from administrators (OBSERVATION)
+
+    Features:
+    - Soft delete support (deleted_at) for OBSERVATION type logs
+    - Only OBSERVATION logs can be modified (by owner) or deleted
+    - STATUS_CHANGE and ANONYMIZATION logs are immutable for audit integrity
+    - Full traceability with target user, author, and timestamps
+    """
+    __tablename__ = "user_audit_log"
+
+    target_user_id: Mapped[str] = mapped_column(
+        ForeignKey("user.id", ondelete='CASCADE'),
+        comment="User being observed or acted upon"
+    )
+
+    author_user_id: Mapped[str] = mapped_column(
+        ForeignKey("user.id", ondelete='CASCADE'),
+        comment="User who created this log entry"
+    )
+
+    log_type_id: Mapped[str] = mapped_column(
+        ForeignKey("user_audit_log_type.id"),
+        nullable=False,
+        comment="Type of log: STATUS_CHANGE, ANONYMIZATION, or OBSERVATION"
+    )
+
+    message: Mapped[str] = mapped_column(
+        Text,
+        nullable=False,
+        comment="Log message or observation (supports up to 1000 words)"
+    )
+
+    deleted_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+        comment="Soft delete timestamp (only for OBSERVATION type)"
+    )
+
+    @declared_attr
+    def target_user(self):
+        return relationship(
+            "user",
+            foreign_keys=[self.target_user_id],
+            lazy='selectin'
+        )
+
+    @declared_attr
+    def author_user(self):
+        return relationship(
+            "user",
+            foreign_keys=[self.author_user_id],
+            lazy='selectin'
+        )
+
+    @declared_attr
+    def log_type(self):
+        return relationship("user_audit_log_type", lazy='selectin')
+
+    def accessing_users(self):
+        """
+        Returns the author user to enable OWNER access level.
+        Super users and users with USER_ADMIN role can access via webservice permissions.
+        """
+        return [self.author_user] if self.author_user else []
+
+    def accessing_organizations(self):
+        return {}
+
+    @classmethod
+    def user_accessing_filters(cls, stmt, user_id: str):
+        """
+        Filter audit logs to only show logs authored by the user.
+        This enables OWNER access level to work correctly.
+        """
+        return stmt, [cls.author_user_id == user_id]

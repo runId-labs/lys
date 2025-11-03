@@ -402,3 +402,118 @@ def register_node(register: AppRegister=None):
         return cls
 
     return decorator
+
+
+def override_webservice(
+    name: str,
+    access_levels: List[str] | None = None,
+    is_public: WebserviceIsPublicType | None = None,
+    is_licenced: bool | None = None,
+    enabled: bool | None = None,
+    register: AppRegister = None
+):
+    """
+    Override an existing webservice fixture with new parameters.
+
+    This function allows you to modify the metadata of an already registered webservice
+    without duplicating its implementation logic. Useful for extending access levels
+    in app overrides.
+
+    Args:
+        name: Name of the webservice to override
+        access_levels: New access levels (e.g., [OWNER_ACCESS_LEVEL, ROLE_ACCESS_LEVEL])
+        is_public: New is_public value
+        is_licenced: New is_licenced value
+        enabled: New enabled value
+        register: Optional custom register (defaults to LysAppRegister singleton)
+
+    Raises:
+        ValueError: If webservice not found in registry or no parameters provided
+
+    Example:
+        >>> override_webservice(
+        ...     name="update_email",
+        ...     access_levels=[OWNER_ACCESS_LEVEL, ROLE_ACCESS_LEVEL]
+        ... )
+    """
+    if register is None:
+        register = LysAppRegister()
+
+    if name not in register.webservices:
+        raise ValueError(
+            f"Webservice '{name}' not found in registry and cannot be overridden. "
+            f"Available webservices: {', '.join(sorted(register.webservices.keys()))}. "
+            f"Make sure the webservice is registered before attempting to override it."
+        )
+
+    existing_fixture = register.webservices[name]
+    attributes = existing_fixture.get("attributes", {})
+    modified = False
+
+    # Update only provided parameters
+    if access_levels is not None:
+        attributes["access_levels"] = access_levels
+        modified = True
+
+    if is_public is not None:
+        attributes["is_public"] = is_public
+        modified = True
+
+    if is_licenced is not None:
+        attributes["is_licenced"] = is_licenced
+        modified = True
+
+    if enabled is not None:
+        attributes["enabled"] = enabled
+        modified = True
+
+    if not modified:
+        logging.warning(
+            f"⚠ override_webservice('{name}'): No parameters provided, nothing to override. "
+            f"Available parameters: access_levels, is_public, is_licenced, enabled"
+        )
+        return
+
+    # Update the fixture
+    existing_fixture["attributes"] = attributes
+
+    logging.info(f"✓ Overridden webservice: {name} with new configuration")
+
+
+def disable_webservice(
+    name: str,
+    register: AppRegister = None
+):
+    """
+    Disable an existing webservice.
+
+    This function sets the 'enabled' flag to False for a registered webservice,
+    effectively preventing it from being accessible in the API without removing
+    its registration entirely.
+
+    Args:
+        name: Name of the webservice to disable
+        register: Optional custom register (defaults to LysAppRegister singleton)
+
+    Raises:
+        ValueError: If webservice not found in registry
+
+    Example:
+        >>> disable_webservice("create_super_user")
+    """
+    if register is None:
+        register = LysAppRegister()
+
+    if name not in register.webservices:
+        raise ValueError(
+            f"Webservice '{name}' not found in registry and cannot be disabled. "
+            f"Available webservices: {', '.join(sorted(register.webservices.keys()))}. "
+            f"Make sure the webservice is registered before attempting to disable it."
+        )
+
+    existing_fixture = register.webservices[name]
+    attributes = existing_fixture.get("attributes", {})
+    attributes["enabled"] = False
+    existing_fixture["attributes"] = attributes
+
+    logging.info(f"✓ Disabled webservice: {name}")

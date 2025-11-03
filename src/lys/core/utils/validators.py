@@ -1,6 +1,8 @@
 import re
+import uuid
 
 from lys.apps.user_auth.errors import EMPTY_PASSWORD_ERROR, WEAK_PASSWORD, INVALID_NAME, INVALID_LANGUAGE
+from lys.core.consts.errors import NOT_UUID_ERROR
 from lys.core.errors import LysError
 
 
@@ -149,3 +151,23 @@ def validate_password_for_login(password: str | None) -> str:
         )
 
     return password.strip()
+
+
+def validate_uuid(id_: str | None, error: tuple[int, str] = NOT_UUID_ERROR):
+    """
+    Validate that a string is a valid UUID.
+
+    Args:
+        id_: The string to validate as UUID
+        error: Optional custom error tuple to raise if validation fails (default: NOT_UUID_ERROR)
+
+    Raises:
+        LysError: If the string is not a valid UUID format
+    """
+    try:
+        uuid.UUID(str(id_))
+    except ValueError:
+        raise LysError(
+            error,
+            "expected an uuid"
+        )

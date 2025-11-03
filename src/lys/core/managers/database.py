@@ -1,8 +1,11 @@
+import asyncio
 from contextlib import asynccontextmanager, contextmanager
 from typing import Optional, Dict, Any
+
 from sqlalchemy import create_engine, Engine
 from sqlalchemy.ext.asyncio import AsyncSession, AsyncEngine, create_async_engine, async_sessionmaker, AsyncAttrs
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
+from sqlalchemy.pool import AsyncAdaptedQueuePool, QueuePool
 
 from lys.core.configs import DatabaseSettings
 
@@ -88,8 +91,6 @@ class DatabaseManager:
             Sync pool class corresponding to configured async pool class,
             or None if no poolclass is configured
         """
-        from sqlalchemy.pool import AsyncAdaptedQueuePool, QueuePool
-
         if self.settings.poolclass is None:
             return None
 
@@ -331,8 +332,6 @@ class DatabaseManager:
                 lambda s: s.execute(select(UserStatus))
             )
         """
-        import asyncio
-
         async def execute_with_session(query_func):
             async with self.get_session() as session:
                 return await query_func(session)

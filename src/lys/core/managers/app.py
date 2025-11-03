@@ -178,8 +178,8 @@ class AppManager:
                 loaded = True
             except ModuleNotFoundError:
                 logging.debug(f"No {component_type} module in {submodule.__name__}")
-            except (ValueError, TypeError) as e:
-                # ValueError/TypeError indicate configuration errors (duplicate webservices, invalid class type, etc)
+            except (ValueError, TypeError, ImportError) as e:
+                # ValueError/TypeError/ImportError indicate configuration errors (duplicate webservices, invalid imports, etc)
                 # These should be fatal as they indicate programmer errors
                 logging.error(f"❌ FATAL: Configuration error in {submodule.__name__}: {e}")
                 traceback.print_exc()

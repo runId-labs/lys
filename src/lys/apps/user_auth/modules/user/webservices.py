@@ -3,25 +3,41 @@ from datetime import datetime
 from typing import Optional
 
 import strawberry
-from sqlalchemy import Select, select
+from sqlalchemy import Select, select, or_
+from strawberry import relay
 
+from lys.apps.user_auth.modules.user.consts import OBSERVATION_LOG_TYPE
+from lys.apps.user_auth.modules.user.entities import User, UserAuditLog
 from lys.apps.user_auth.modules.user.inputs import (
     CreateUserInput,
     CreateSuperUserInput,
-    ResetPasswordInput
+    ResetPasswordInput,
+    VerifyEmailInput,
+    UpdateEmailInput,
+    UpdatePasswordInput,
+    UpdateUserPrivateDataInput,
+    UpdateUserStatusInput,
+    AnonymizeUserInput,
+    CreateUserObservationInput,
+    UpdateUserAuditLogInput
 )
 from lys.apps.user_auth.modules.user.nodes import (
     UserNode,
     UserStatusNode,
-    ForgottenPasswordNode,
+    PasswordResetRequestNode,
     ResetPasswordNode,
-    UserOneTimeTokenNode
+    VerifyEmailNode,
+    UserOneTimeTokenNode,
+    AnonymizeUserNode,
+    UserAuditLogNode,
+    DeleteUserObservationNode
 )
-from lys.apps.user_auth.modules.user.services import UserStatusService, UserService
+from lys.apps.user_auth.modules.user.services import UserService
 from lys.core.consts.webservices import OWNER_ACCESS_LEVEL
 from lys.core.contexts import Info
 from lys.core.graphql.connection import lys_connection
 from lys.core.graphql.create import lys_creation
+from lys.core.graphql.edit import lys_edition
 from lys.core.graphql.fields import lys_field
 from lys.core.graphql.getter import lys_getter
 from lys.core.graphql.registers import register_query, register_mutation
@@ -43,6 +59,51 @@ class UserQuery(Query):
     async def user(self):
         pass
 
+    @lys_connection(
+        UserNode,
+        is_public=False,
+        is_licenced=False,
+        description="Return all users. Only accessible to super users."
+    )
+    async def all_users(self, info: Info, search: Optional[str] = None) -> Select:
+        """
+        Get all users in the system with optional search filtering.
+
+        This query is only accessible to super users for administrative purposes.
+        Search filters by email address, first name, or last name (case-insensitive).
+
+        Args:
+            info: GraphQL context
+            search: Optional search string to filter by email, first_name, or last_name
+
+        Returns:
+            Select: SQLAlchemy select statement for users ordered by creation date
+        """
+        entity_type = info.context.app_manager.get_entity("user")
+        email_entity = info.context.app_manager.get_entity("user_email_address")
+        private_data_entity = info.context.app_manager.get_entity("user_private_data")
+
+        # Base query with joins
+        stmt = (
+            select(entity_type)
+            .join(email_entity)
+            .join(private_data_entity)
+            .order_by(entity_type.created_at.desc())
+        )
+
+        # Apply search filter if provided
+        if search:
+            search_pattern = f"%{search.lower()}%"
+            stmt = stmt.where(
+                or_(
+                    email_entity.id.ilike(search_pattern),
+                    private_data_entity.first_name.ilike(search_pattern),
+                    private_data_entity.last_name.ilike(search_pattern)
+                )
+            )
+
+        return stmt
+
 
 @register_query("graphql")
 @strawberry.type
@@ -54,8 +115,7 @@ class UserStatusQuery(Query):
         description="Return all possible user statuses."
     )
     async def all_user_statuses(self, info: Info, enabled: bool | None = None) -> Select:
-        service_class: type[UserStatusService] | None = info.context.service_class
-        entity_type = service_class.app_manager.get_entity("user_status")
+        entity_type = info.context.app_manager.get_entity("user_status")
         stmt = select(entity_type).order_by(entity_type.id.asc())
         if enabled is not None:
             stmt = stmt.where(entity_type.enabled == enabled)
@@ -79,7 +139,7 @@ class UserOneTimeTokenQuery(Query):
         start_date: Optional[datetime] = None,
         end_date: Optional[datetime] = None,
     ) -> Select:
-        entity_type = info.context.service_class.entity_class
+        entity_type = info.context.app_manager.get_entity("user_one_time_token")
 
         stmt = select(entity_type).order_by(entity_type.created_at.desc())
 
@@ -105,12 +165,12 @@ class UserOneTimeTokenQuery(Query):
 @strawberry.type
 class UserMutation(Mutation):
     @lys_field(
-        ensure_type=ForgottenPasswordNode,
+        ensure_type=PasswordResetRequestNode,
         is_public=True,
         is_licenced=False,
         description="Send a password reset email to the user."
     )
-    async def forgotten_password(self, email: str, info: Info) -> ForgottenPasswordNode:
+    async def request_password_reset(self, email: str, info: Info) -> PasswordResetRequestNode:
         """
         Request a password reset email.
 
@@ -119,9 +179,9 @@ class UserMutation(Mutation):
             info: GraphQL context
 
         Returns:
-            ForgottenPasswordNode with success status
+            PasswordResetRequestNode with success status
         """
-        node = ForgottenPasswordNode.get_effective_node()
+        node = PasswordResetRequestNode.get_effective_node()
         session = info.context.session
         user_service: type[UserService] = node.service_class
 
@@ -170,6 +230,38 @@ class UserMutation(Mutation):
 
         return node(success=True)
 
+    @lys_field(
+        ensure_type=VerifyEmailNode,
+        is_public=True,
+        is_licenced=False,
+        description="Verify user email address using a one-time token from email."
+    )
+    async def verify_email(self, inputs: VerifyEmailInput, info: Info) -> VerifyEmailNode:
+        """
+        Verify user email address using a one-time token.
+
+        Args:
+            inputs: Input containing:
+                - token: One-time verification token from email
+            info: GraphQL context
+
+        Returns:
+            VerifyEmailNode with success status
+        """
+        input_data = inputs.to_pydantic()
+        node = VerifyEmailNode.get_effective_node()
+        session = info.context.session
+        user_service: type[UserService] = node.service_class
+
+        await user_service.verify_email(
+            token=input_data.token,
+            session=session
+        )
+
+        logger.info("Email successfully verified using token")
+
+        return node(success=True)
+
     @lys_creation(
         ensure_type=UserNode,
         is_public=False,
@@ -204,19 +296,19 @@ class UserMutation(Mutation):
         input_data = inputs.to_pydantic()
 
         session = info.context.session
-        user_service: type[UserService] = info.context.service_class
+        user_service = info.context.app_manager.get_service("user")
 
         # Delegate all business logic to the service
         user = await user_service.create_super_user(
             session=session,
             email=input_data.email,
             password=input_data.password,
-            language_id=input_data.language_id,
+            language_id=input_data.language_code,
             send_verification_email=True,
             background_tasks=info.context.background_tasks,
             first_name=input_data.first_name,
             last_name=input_data.last_name,
-            gender_id=input_data.gender_id
+            gender_id=input_data.gender_code
         )
 
         logger.info(f"Super user created with email: {input_data.email}")
@@ -257,21 +349,446 @@ class UserMutation(Mutation):
         input_data = inputs.to_pydantic()
 
         session = info.context.session
-        user_service: type[UserService] = info.context.service_class
+        user_service = info.context.app_manager.get_service("user")
 
         # Delegate all business logic to the service
         user = await user_service.create_user(
             session=session,
             email=input_data.email,
             password=input_data.password,
-            language_id=input_data.language_id,
+            language_id=input_data.language_code,
             send_verification_email=True,
             background_tasks=info.context.background_tasks,
             first_name=input_data.first_name,
             last_name=input_data.last_name,
-            gender_id=input_data.gender_id
+            gender_id=input_data.gender_code
         )
 
         logger.info(f"User created with email: {input_data.email}")
 
         return user
+
+    @lys_edition(
+        ensure_type=UserNode,
+        is_public=False,
+        access_levels=[OWNER_ACCESS_LEVEL],
+        is_licenced=False,
+        description="Update user email address. Only the owner can update their own email."
+    )
+    async def update_email(
+        self,
+        obj: User,
+        inputs: UpdateEmailInput,
+        info: Info
+    ):
+        """
+        Update user email address and send verification email to the new address.
+
+        This webservice is only accessible to the user themselves (OWNER access level).
+        The new email address will be set to unverified state and a verification email
+        will be sent to the new address.
+
+        Args:
+            obj: User entity (fetched and validated by lys_edition)
+            inputs: Input containing:
+                - new_email: New email address
+            info: GraphQL context
+
+        Returns:
+            User: The updated user with new unverified email address
+        """
+        # Convert Strawberry input to Pydantic model for validation
+        input_data = inputs.to_pydantic()
+
+        session = info.context.session
+        user_service = info.context.app_manager.get_service("user")
+
+        # Delegate all business logic to the service
+        await user_service.update_email(
+            user=obj,
+            new_email=input_data.new_email,
+            session=session,
+            background_tasks=info.context.background_tasks
+        )
+
+        logger.info(f"User {obj.id} email updated to: {input_data.new_email}")
+
+        return obj
+
+    @lys_edition(
+        ensure_type=UserNode,
+        is_public=False,
+        access_levels=[OWNER_ACCESS_LEVEL],
+        is_licenced=False,
+        description="Update user password. Only the owner can update their own password."
+    )
+    async def update_password(
+        self,
+        obj: User,
+        inputs: UpdatePasswordInput,
+        info: Info
+    ):
+        """
+        Update user password after verifying current password.
+
+        This webservice is only accessible to the user themselves (OWNER access level).
+        Requires current password for security.
+
+        Args:
+            obj: User entity (fetched and validated by lys_edition)
+            inputs: Input containing:
+                - current_password: Current password for verification
+                - new_password: New password to set
+            info: GraphQL context
+
+        Returns:
+            User: The user with updated password
+        """
+        # Convert Strawberry input to Pydantic model for validation
+        input_data = inputs.to_pydantic()
+
+        session = info.context.session
+        user_service = info.context.app_manager.get_service("user")
+
+        # Delegate all business logic to the service
+        await user_service.update_password(
+            user=obj,
+            current_password=input_data.current_password,
+            new_password=input_data.new_password,
+            session=session
+        )
+
+        logger.info(f"User {obj.id} password updated successfully")
+
+        return obj
+
+    @lys_edition(
+        ensure_type=UserNode,
+        is_public=False,
+        access_levels=[OWNER_ACCESS_LEVEL],
+        is_licenced=False,
+        description="Update user private data. Only the owner can update their own private data."
+    )
+    async def update_user_private_data(
+        self,
+        obj: User,
+        inputs: UpdateUserPrivateDataInput,
+        info: Info
+    ):
+        """
+        Update user private data (GDPR-protected fields).
+
+        This webservice is only accessible to the user themselves (OWNER access level).
+        Updates first_name, last_name, and gender_id.
+
+        Args:
+            obj: User entity (fetched and validated by lys_edition)
+            inputs: Input containing:
+                - first_name: Optional first name to update
+                - last_name: Optional last name to update
+                - gender_id: Optional gender ID to update
+            info: GraphQL context
+
+        Returns:
+            User: The user with updated private data
+        """
+        # Convert Strawberry input to Pydantic model for validation
+        input_data = inputs.to_pydantic()
+
+        session = info.context.session
+        user_service = info.context.app_manager.get_service("user")
+
+        # Delegate all business logic to the service
+        await user_service.update_user(
+            user=obj,
+            first_name=input_data.first_name,
+            last_name=input_data.last_name,
+            gender_id=input_data.gender_code,
+            session=session
+        )
+
+        logger.info(f"User {obj.id} private data updated successfully")
+
+        return obj
+
+    @lys_edition(
+        ensure_type=UserNode,
+        is_public=False,
+        is_licenced=False,
+        description="Update user status with audit trail. Only accessible to super users."
+    )
+    async def update_user_status(
+        self,
+        obj: User,
+        inputs: UpdateUserStatusInput,
+        info: Info
+    ):
+        """
+        Update user status with automatic audit log creation.
+
+        This webservice is only accessible to super users.
+        Cannot be used to set status to DELETED - use anonymize_user instead.
+        Creates an audit log entry with the reason and old/new status values.
+
+        Args:
+            obj: User entity (fetched and validated by lys_edition)
+            inputs: Input containing:
+                - status_id: New status ID (e.g., ACTIVE, INACTIVE, SUSPENDED)
+                - reason: Reason for status change (min 10 chars, for audit)
+            info: GraphQL context
+
+        Returns:
+            User: The user with updated status
+        """
+        input_data = inputs.to_pydantic()
+
+        session = info.context.session
+        user_service = info.context.app_manager.get_service("user")
+
+        await user_service.update_status(
+            user=obj,
+            status_id=input_data.status_code,
+            reason=input_data.reason,
+            author_user_id=info.context.connected_user["id"],
+            session=session
+        )
+
+        logger.info(f"User {obj.id} status updated to: {input_data.status_code} by {info.context.connected_user['id']}")
+
+        return obj
+
+    @lys_field(
+        ensure_type=AnonymizeUserNode,
+        is_public=False,
+        is_licenced=False,
+        description="Anonymize user data (GDPR). Only accessible to super users. IRREVERSIBLE."
+    )
+    async def anonymize_user(self, user_id: relay.GlobalID, inputs: AnonymizeUserInput, info: Info) -> AnonymizeUserNode:
+        """
+        Anonymize user data for GDPR compliance.
+
+        This is an IRREVERSIBLE operation that:
+        - Sets user status to DELETED
+        - Removes all private data (first_name, last_name, gender)
+        - Sets anonymized_at timestamp
+        - Keeps user_id and email for audit/legal purposes
+
+        This webservice is only accessible to super users.
+
+        Args:
+            user_id: Relay GlobalID of user to anonymize
+            inputs: Input containing:
+                - reason: Reason for anonymization (required for audit)
+            info: GraphQL context
+
+        Returns:
+            AnonymizeUserNode with success status
+        """
+        input_data = inputs.to_pydantic()
+        node = AnonymizeUserNode.get_effective_node()
+        session = info.context.session
+        user_service: type[UserService] = node.service_class
+
+        await user_service.anonymize_user(
+            user_id=user_id.node_id,
+            reason=input_data.reason,
+            anonymized_by=info.context.connected_user["id"],
+            session=session
+        )
+
+        logger.info(f"User {user_id.node_id} anonymized by {info.context.connected_user['id']}")
+
+        return node(success=True)
+
+
+@register_query("graphql")
+@strawberry.type
+class UserAuditLogQuery(Query):
+    """
+    GraphQL queries for user audit logs.
+
+    Provides access to audit trail for user-related actions and observations.
+    """
+
+    @lys_connection(
+        ensure_type=UserAuditLogNode,
+        is_public=False,
+        is_licenced=False,
+        description="List user audit logs with filters. Only accessible to super users and USER_ADMIN role."
+    )
+    async def list_user_audit_logs(
+        self,
+        info: Info,
+        log_type_code: Optional[str] = None,
+        email_search: Optional[str] = None,
+        user_filter: Optional[str] = None,
+        include_deleted: Optional[bool] = False
+    ) -> Select:
+        """
+        List user audit logs with optional filters.
+
+        This query is only accessible to super users and users with USER_ADMIN role.
+        Provides comprehensive filtering by log type, email search, and user role.
+
+        Args:
+            info: GraphQL context
+            log_type_code: Filter by log type (STATUS_CHANGE, ANONYMIZATION, OBSERVATION)
+            email_search: Search in target or author email addresses
+            user_filter: Filter by user role ("author", "target", or None for both)
+            include_deleted: Include soft-deleted observations (default: False)
+
+        Returns:
+            Select: SQLAlchemy select statement for audit logs
+        """
+        audit_log_service = info.context.app_manager.get_service("user_audit_log")
+
+        stmt = audit_log_service.list_audit_logs(
+            log_type_id=log_type_code,
+            email_search=email_search,
+            user_filter=user_filter,
+            include_deleted=include_deleted
+        )
+
+        return stmt
+
+
+@register_mutation("graphql")
+@strawberry.type
+class UserAuditLogMutation(Mutation):
+    """
+    GraphQL mutations for user audit logs.
+
+    Provides operations for creating, updating, and deleting user observations.
+    """
+
+    @lys_creation(
+        ensure_type=UserAuditLogNode,
+        is_public=False,
+        is_licenced=False,
+        description="Create user observation (manual audit log). Only accessible to super users and USER_ADMIN role."
+    )
+    async def create_user_observation(
+        self,
+        inputs: CreateUserObservationInput,
+        info: Info
+    ):
+        """
+        Create a manual observation/note about a user.
+
+        This webservice is only accessible to super users and users with USER_ADMIN role.
+        Creates an OBSERVATION type audit log entry.
+
+        Args:
+            inputs: Input containing:
+                - target_user_id: ID of user to create observation for
+                - message: Observation message (min 10 characters)
+            info: GraphQL context
+
+        Returns:
+            UserAuditLog: The created audit log
+        """
+        input_data = inputs.to_pydantic()
+        session = info.context.session
+        audit_log_service = info.context.app_manager.get_service("user_audit_log")
+
+        audit_log = await audit_log_service.create_audit_log(
+            target_user_id=input_data.target_user_id,
+            author_user_id=info.context.connected_user["id"],
+            log_type_id=OBSERVATION_LOG_TYPE,
+            message=input_data.message,
+            session=session
+        )
+
+        logger.info(
+            f"Observation created for user {input_data.target_user_id} "
+            f"by {info.context.connected_user['id']}"
+        )
+
+        return audit_log
+
+    @lys_edition(
+        ensure_type=UserAuditLogNode,
+        is_public=False,
+        access_levels=[OWNER_ACCESS_LEVEL],
+        is_licenced=False,
+        description="Update user audit log (OBSERVATION only). Only owner and super users can update."
+    )
+    async def update_user_audit_log(
+        self,
+        obj: UserAuditLog,
+        inputs: UpdateUserAuditLogInput,
+        info: Info
+    ):
+        """
+        Update a user audit log message.
+
+        This webservice is only accessible to:
+        - The author of the observation (OWNER access level)
+        - Super users
+
+        Only OBSERVATION type logs can be updated.
+        STATUS_CHANGE and ANONYMIZATION logs are immutable for audit integrity.
+
+        Args:
+            obj: UserAuditLog entity (fetched and validated by lys_edition)
+            inputs: Input containing:
+                - message: Updated observation message (min 10 characters)
+            info: GraphQL context
+
+        Returns:
+            Updated obj (via lys_edition mechanism)
+        """
+        input_data = inputs.to_pydantic()
+        session = info.context.session
+        audit_log_service = info.context.app_manager.get_service("user_audit_log")
+
+        await audit_log_service.update_observation(
+            log=obj,
+            new_message=input_data.message,
+            session=session
+        )
+
+        logger.info(
+            f"Audit log {obj.id} updated by {info.context.connected_user['id']}"
+        )
+
+    @lys_edition(
+        ensure_type=DeleteUserObservationNode,
+        is_public=False,
+        access_levels=[OWNER_ACCESS_LEVEL],
+        is_licenced=False,
+        description="Delete user observation (soft delete). Only owner and super users can delete."
+    )
+    async def delete_user_observation(
+        self,
+        obj: UserAuditLog,
+        info: Info
+    ):
+        """
+        Soft delete a user observation.
+
+        This webservice is only accessible to:
+        - The author of the observation (OWNER access level)
+        - Super users
+
+        Only OBSERVATION type logs can be deleted.
+        STATUS_CHANGE and ANONYMIZATION logs are immutable for audit integrity.
+
+        Args:
+            obj: UserAuditLog entity (fetched and validated by lys_edition)
+            info: GraphQL context
+
+        Returns:
+            Deleted obj (via lys_edition mechanism, will be transformed to success=True by DeleteUserObservationNode)
+        """
+        session = info.context.session
+        audit_log_service = info.context.app_manager.get_service("user_audit_log")
+
+        await audit_log_service.delete_observation(
+            log=obj,
+            session=session
+        )
+
+        logger.info(
+            f"Observation {obj.id} deleted by {info.context.connected_user['id']}"
+        )

@@ -1,21 +1,29 @@
 from datetime import datetime
-from typing import Optional
+from typing import Optional, Dict, Any
 
 import strawberry
 from strawberry import relay
 
-from lys.apps.user_auth.modules.user.entities import UserEmailAddress, User, UserOneTimeToken, UserPrivateData
+from lys.apps.user_auth.modules.user.entities import (
+    UserEmailAddress,
+    User,
+    UserOneTimeToken,
+    UserPrivateData,
+    UserAuditLog
+)
 from lys.apps.user_auth.modules.user.services import (
     UserStatusService,
     GenderService,
     UserEmailAddressService,
     UserService,
     UserOneTimeTokenService,
-    UserPrivateDataService
+    UserPrivateDataService,
+    UserAuditLogTypeService,
+    UserAuditLogService
 )
-from lys.core.contexts import Info
 from lys.core.graphql.nodes import parametric_node, EntityNode, ServiceNode
 from lys.core.registers import register_node
+from lys.core.utils.manager import classproperty
 
 
 @register_node()
@@ -27,6 +35,12 @@ class UserStatusNode:
 @register_node()
 @parametric_node(GenderService)
 class GenderNode:
+    pass
+
+
+@register_node()
+@parametric_node(UserAuditLogTypeService)
+class UserAuditLogTypeNode:
     pass
 
 
@@ -68,6 +82,30 @@ class UserNode(EntityNode[UserService], relay.Node):
             created_at=entity.created_at,
             updated_at=entity.updated_at,
         )
+
+    @classproperty
+    def order_by_attribute_map(self) -> Dict[str, Any]:
+        """
+        Define allowed order by keys for User queries.
+
+        Allowed sorting fields:
+        - created_at: User creation date
+        - email_address: User email address (requires join with user_email_address)
+        - first_name: User first name (requires join with user_private_data)
+        - last_name: User last name (requires join with user_private_data)
+
+        Note: The query using these order_by fields MUST include the necessary joins.
+        """
+        entity_class = self.service_class.entity_class
+        email_entity = self.service_class.app_manager.get_entity("user_email_address")
+        private_data_entity = self.service_class.app_manager.get_entity("user_private_data")
+
+        return {
+            "created_at": entity_class.created_at,
+            "email_address": email_entity.id,
+            "first_name": private_data_entity.first_name,
+            "last_name": private_data_entity.last_name,
+        }
 
 
 @strawberry.type
@@ -129,7 +167,7 @@ class UserOneTimeTokenNode(EntityNode[UserOneTimeTokenService], relay.Node):
 
 @strawberry.type
 @register_node()
-class ForgottenPasswordNode(ServiceNode[UserService]):
+class PasswordResetRequestNode(ServiceNode[UserService]):
     success: bool
 
 
@@ -137,4 +175,82 @@ class ForgottenPasswordNode(ServiceNode[UserService]):
 @register_node()
 class ResetPasswordNode(ServiceNode[UserService]):
     success: bool
+
+
+@strawberry.type
+@register_node()
+class VerifyEmailNode(ServiceNode[UserService]):
+    success: bool
+
+
+@strawberry.type
+@register_node()
+class AnonymizeUserNode(ServiceNode[UserService]):
+    success: bool
+
+
+@strawberry.type
+@register_node()
+class UserAuditLogNode(EntityNode[UserAuditLogService], relay.Node):
+    """
+    User audit log node for tracking user-related actions and observations.
+
+    Accessible by super users and users with USER_ADMIN role.
+    Provides audit trail for status changes, anonymization, and manual observations.
+    """
+    id: relay.NodeID[str]
+    target_user: UserNode
+    author_user: UserNode
+    log_type: UserAuditLogTypeNode
+    message: str
+    created_at: datetime
+    updated_at: Optional[datetime]
+    deleted_at: Optional[datetime]
+
+    @classmethod
+    def from_obj(cls, entity: UserAuditLog) -> "UserAuditLogNode":
+        return cls(
+            id=entity.id,
+            target_user=UserNode.from_obj(entity.target_user),
+            author_user=UserNode.from_obj(entity.author_user),
+            log_type=UserAuditLogTypeNode.from_obj(entity.log_type),
+            message=entity.message,
+            created_at=entity.created_at,
+            updated_at=entity.updated_at,
+            deleted_at=entity.deleted_at,
+        )
+
+    @classproperty
+    def order_by_attribute_map(self) -> Dict[str, Any]:
+        """
+        Define allowed order by keys for UserAuditLog queries.
+
+        Allowed sorting fields:
+        - created_at: Log creation date (default)
+        - log_type: Type of log entry
+        """
+        entity_class = self.service_class.entity_class
+
+        return {
+            "created_at": entity_class.created_at,
+            "log_type": entity_class.log_type_id,
+        }
+
+
+@strawberry.type
+@register_node()
+class CreateUserObservationNode(ServiceNode[UserAuditLogService]):
+    """Result node for creating user observation."""
+    audit_log: UserAuditLogNode
+
+
+@strawberry.type
+@register_node()
+class DeleteUserObservationNode(EntityNode[UserAuditLogService]):
+    """Result node for deleting user observation."""
+    success: bool
+
+    @classmethod
+    def from_obj(cls, entity: UserAuditLog) -> "DeleteUserObservationNode":
+        return cls(success=True)
 

@@ -22,6 +22,10 @@ class RoleFixtures(EntityFixtures[RoleService]):
                 "webservices": [
                     "create_user",
                     "user",
+                    "update_email",
+                    "update_password",
+                    "update_user_private_data",
+                    "update_user_status",
                     "all_roles"
                 ]
             }

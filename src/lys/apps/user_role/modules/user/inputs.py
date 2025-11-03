@@ -11,8 +11,8 @@ class CreateUserWithRolesInput:
     password: strawberry.auto = strawberry.field(
         description="Password (min 8 chars, must contain at least one letter and one digit)"
     )
-    language_id: strawberry.auto = strawberry.field(
-        description="Language ID in format 'en' or 'en-US'"
+    language_code: strawberry.auto = strawberry.field(
+        description="Language code in format 'en' or 'en-US'"
     )
     first_name: strawberry.auto = strawberry.field(
         description="Optional first name (GDPR-protected)"
@@ -20,9 +20,9 @@ class CreateUserWithRolesInput:
     last_name: strawberry.auto = strawberry.field(
         description="Optional last name (GDPR-protected)"
     )
-    gender_id: strawberry.auto = strawberry.field(
-        description="Optional gender ID (MALE, FEMALE, OTHER)"
+    gender_code: strawberry.auto = strawberry.field(
+        description="Optional gender code (MALE, FEMALE, OTHER)"
     )
-    roles: strawberry.auto = strawberry.field(
-        description="List of role IDs to assign to the new user"
+    role_codes: strawberry.auto = strawberry.field(
+        description="List of role codes to assign to the new user"
     )

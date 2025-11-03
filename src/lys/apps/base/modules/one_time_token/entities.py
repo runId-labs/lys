@@ -24,7 +24,7 @@ class OneTimeTokenStatus(ParametricEntity):
 @register_entity()
 class OneTimeTokenType(ParametricEntity):
     """
-    Type of one-time token (forgotten_password, email_verification, etc.).
+    Type of one-time token (password_reset, email_verification, etc.).
     """
     __tablename__ = "one_time_token_type"
 

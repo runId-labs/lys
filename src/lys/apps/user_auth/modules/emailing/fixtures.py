@@ -1,5 +1,5 @@
 from lys.apps.user_auth.modules.emailing.consts import (
-    USER_FORGOTTEN_PASSWORD_EMAILING_TYPE,
+    USER_PASSWORD_RESET_EMAILING_TYPE,
     USER_EMAIL_VERIFICATION_EMAILING_TYPE
 )
 from lys.apps.base.modules.emailing.services import EmailingTypeService
@@ -15,11 +15,11 @@ class EmailingTypeFixtures(EntityFixtures[EmailingTypeService]):
 
     data_list = [
         {
-            "id": USER_FORGOTTEN_PASSWORD_EMAILING_TYPE,
+            "id": USER_PASSWORD_RESET_EMAILING_TYPE,
             "attributes": {
                 "enabled": True,
-                "subject": "forgotten password",
-                "template": "user_forgotten_password",
+                "subject": "password reset",
+                "template": "user_password_reset",
                 "context_description": {
                     "front_url": None,
                     "token": None,

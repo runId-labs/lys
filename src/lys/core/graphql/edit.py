@@ -37,7 +37,7 @@ def _edition_resolver_generator(resolver: Callable, ensure_type: Type[EntityNode
                 # get object and check access on it
                 obj: Optional[Entity] = await get_db_object_and_check_access(
                     id.node_id,
-                    ensure_type.entity_class,
+                    ensure_type.service_class,
                     info.context,
                     session=session
                 )
@@ -46,7 +46,7 @@ def _edition_resolver_generator(resolver: Callable, ensure_type: Type[EntityNode
                     raise LysError(
                         NOT_FOUND_ERROR,
                         "_edition_resolver_generator: Unknown entity with type '%s' and id '%s'" % (
-                            ensure_type.entity_class,
+                            ensure_type.service_class.entity_class,
                             id.node_id
                         )
                     )
@@ -114,26 +114,24 @@ def lys_edition(
     :return:
     """
 
-    def wrapper(resolver: Callable):
-        return lys_typed_field(
-            ensure_type=ensure_type,
-            resolver_wrapper=_edition_resolver_generator,
-            is_public=is_public,
-            enabled=enabled,
-            access_levels=access_levels,
-            is_licenced=is_licenced,
-            allow_override=allow_override,
-            name=name,
-            is_subscription=is_subscription,
-            description=description,
-            deprecation_reason=deprecation_reason,
-            default=default,
-            default_factory=default_factory,
-            metadata=metadata,
-            directives=directives,
-            extensions=extensions,
-            graphql_type=graphql_type,
-            init=init,
-        )
+    return lys_typed_field(
+        ensure_type=ensure_type,
+        resolver_wrapper=_edition_resolver_generator,
+        is_public=is_public,
+        enabled=enabled,
+        access_levels=access_levels,
+        is_licenced=is_licenced,
+        allow_override=allow_override,
+        name=name,
+        is_subscription=is_subscription,
+        description=description,
+        deprecation_reason=deprecation_reason,
+        default=default,
+        default_factory=default_factory,
+        metadata=metadata,
+        directives=directives,
+        extensions=extensions,
+        graphql_type=graphql_type,
+        init=init,
+    )
 
-    return wrapper

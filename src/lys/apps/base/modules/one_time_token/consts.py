@@ -3,7 +3,7 @@ Constants for one-time token module.
 """
 
 # Token Types
-FORGOTTEN_PASSWORD_TOKEN_TYPE = "forgotten_password"
+PASSWORD_RESET_TOKEN_TYPE = "password_reset"
 EMAIL_VERIFICATION_TOKEN_TYPE = "email_verification"
 
 # Token Statuses

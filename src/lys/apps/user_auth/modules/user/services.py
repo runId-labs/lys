@@ -1,22 +1,29 @@
+import logging
 import uuid
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 
 import bcrypt
-from sqlalchemy import update
+from sqlalchemy import update, select, or_
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from lys.apps.user_auth.modules.emailing.consts import (
-    USER_FORGOTTEN_PASSWORD_EMAILING_TYPE,
+    USER_PASSWORD_RESET_EMAILING_TYPE,
     USER_EMAIL_VERIFICATION_EMAILING_TYPE
 )
-from lys.apps.base.modules.one_time_token.consts import FORGOTTEN_PASSWORD_TOKEN_TYPE, EMAIL_VERIFICATION_TOKEN_TYPE
+from lys.apps.base.modules.one_time_token.consts import PASSWORD_RESET_TOKEN_TYPE, EMAIL_VERIFICATION_TOKEN_TYPE
 from lys.apps.base.modules.one_time_token.services import OneTimeTokenService
 from lys.apps.base.tasks import send_pending_email
 from lys.apps.user_auth.errors import (
     INVALID_REFRESH_TOKEN_ERROR,
     INVALID_GENDER,
     INVALID_RESET_TOKEN_ERROR,
-    EXPIRED_RESET_TOKEN_ERROR
+    EXPIRED_RESET_TOKEN_ERROR,
+    EMAIL_ALREADY_VALIDATED_ERROR,
+    USER_ALREADY_EXISTS,
+    INVALID_USER_STATUS,
+    INVALID_STATUS_CHANGE,
+    USER_ALREADY_ANONYMIZED,
+    WRONG_CREDENTIALS_ERROR
 )
 from lys.apps.user_auth.modules.user.entities import (
     UserStatus,
@@ -26,14 +33,23 @@ from lys.apps.user_auth.modules.user.entities import (
     UserEmailing,
     UserOneTimeToken,
     Gender,
-    UserPrivateData
+    UserPrivateData,
+    UserAuditLogType,
+    UserAuditLog
 )
 from lys.apps.user_auth.modules.user.models import GetUserRefreshTokenInputModel
+from lys.apps.user_auth.modules.user.consts import (
+    OBSERVATION_LOG_TYPE,
+    STATUS_CHANGE_LOG_TYPE,
+    ANONYMIZATION_LOG_TYPE
+)
 from lys.apps.user_auth.utils import AuthUtils
 from lys.core.errors import LysError
 from lys.core.registers import register_service
 from lys.core.services import EntityService
 from lys.core.utils.datetime import now_utc
+
+logger = logging.getLogger(__name__)
 
 
 @register_service()
@@ -94,8 +110,6 @@ class UserPrivateDataService(EntityService[UserPrivateData]):
         Returns:
             UserPrivateData: The anonymized entity, or None if not found
         """
-        from sqlalchemy import select
-
         # Find the private data
         stmt = select(cls.entity_class).where(cls.entity_class.user_id == user_id)
         result = await session.execute(stmt)
@@ -132,8 +146,6 @@ class UserService(EntityService[User]):
         Returns:
             User entity if found, None otherwise
         """
-        from sqlalchemy import select
-
         # Get UserEmailAddress service
         email_address_service = cls.app_manager.get_service("user_email_address")
 
@@ -163,9 +175,6 @@ class UserService(EntityService[User]):
         Returns:
             Tuple of (email_address_entity, hashed_password, private_data_entity)
         """
-        from lys.apps.user_auth.errors import USER_ALREADY_EXISTS
-        from lys.apps.user_auth.utils import AuthUtils
-
         # Get services
         user_email_address_service = cls.app_manager.get_service("user_email_address")
         user_private_data_service = cls.app_manager.get_service("user_private_data")
@@ -415,8 +424,8 @@ class UserService(EntityService[User]):
         # Get user emailing service
         user_emailing_service = cls.app_manager.get_service("user_emailing")
 
-        # Create forgotten password emailing
-        user_emailing = await user_emailing_service.create_forgotten_password_emailing(
+        # Create password reset emailing
+        user_emailing = await user_emailing_service.create_password_reset_emailing(
             user, session
         )
 
@@ -466,7 +475,7 @@ class UserService(EntityService[User]):
             )
 
         # 2. Check token type
-        if token_entity.type_id != FORGOTTEN_PASSWORD_TOKEN_TYPE:
+        if token_entity.type_id != PASSWORD_RESET_TOKEN_TYPE:
             raise LysError(
                 INVALID_RESET_TOKEN_ERROR,
                 "Token is not a password reset token"
@@ -505,6 +514,393 @@ class UserService(EntityService[User]):
         await token_service.mark_as_used(token_entity, session)
 
         return user
+
+    @classmethod
+    async def verify_email(
+        cls,
+        token: str,
+        session: AsyncSession
+    ) -> User:
+        """
+        Verify user email address using a one-time token.
+
+        This method:
+        1. Validates the token exists and is not expired
+        2. Validates the token has not been used
+        3. Validates the email is not already verified
+        4. Updates the email address validated_at timestamp
+        5. Marks the token as used
+
+        Args:
+            token: The one-time verification token from email
+            session: Database session
+
+        Returns:
+            User: The user with verified email
+
+        Raises:
+            LysError: If token is invalid, expired, already used, or email already validated
+        """
+        # Get token service
+        token_service = cls.app_manager.get_service("user_one_time_token")
+
+        # 1. Find the token
+        token_entity = await token_service.get_by_id(token, session)
+
+        if not token_entity:
+            raise LysError(
+                INVALID_RESET_TOKEN_ERROR,
+                "Invalid verification token"
+            )
+
+        # 2. Check token type
+        if token_entity.type_id != EMAIL_VERIFICATION_TOKEN_TYPE:
+            raise LysError(
+                INVALID_RESET_TOKEN_ERROR,
+                "Token is not an email verification token"
+            )
+
+        # 3. Check if token is expired
+        if token_service.is_expired(token_entity):
+            raise LysError(
+                EXPIRED_RESET_TOKEN_ERROR,
+                "Verification token has expired"
+            )
+
+        # 4. Check if token has already been used
+        if token_service.is_used(token_entity):
+            raise LysError(
+                INVALID_RESET_TOKEN_ERROR,
+                "Verification token has already been used"
+            )
+
+        # 5. Get the user
+        user = await cls.get_by_id(token_entity.user_id, session)
+
+        if not user:
+            raise LysError(
+                INVALID_RESET_TOKEN_ERROR,
+                "User not found for this token"
+            )
+
+        # 6. Check if email is already validated
+        if user.email_address.validated_at is not None:
+            raise LysError(
+                EMAIL_ALREADY_VALIDATED_ERROR,
+                f"Email address {user.email_address.id} is already validated"
+            )
+
+        # 7. Update email address validated_at
+        user.email_address.validated_at = now_utc()
+
+        # 8. Mark token as used
+        await token_service.mark_as_used(token_entity, session)
+
+        return user
+
+    @classmethod
+    async def update_email(
+        cls,
+        user: User,
+        new_email: str,
+        session: AsyncSession,
+        background_tasks=None
+    ) -> User:
+        """
+        Update user email address and send verification email to new address.
+
+        This method is called by lys_edition which already fetched and validated
+        permissions on the user entity.
+
+        This method:
+        1. Validates the new email is not already taken
+        2. Deletes the old email address entity
+        3. Creates a new email address entity (unverified, validated_at=None)
+        4. Sends verification email to the new address
+
+        Args:
+            user: The user entity (fetched and validated by lys_edition)
+            new_email: New email address (will be normalized)
+            session: Database session
+            background_tasks: FastAPI BackgroundTasks for scheduling email (optional)
+
+        Returns:
+            User: The updated user with new email address
+
+        Raises:
+            LysError: If new email is already taken
+        """
+        # Get services
+        user_email_address_service = cls.app_manager.get_service("user_email_address")
+
+        # 1. Check if new email is already taken
+        existing_user = await cls.get_by_email(new_email, session)
+        if existing_user and existing_user.id != user.id:
+            raise LysError(
+                USER_ALREADY_EXISTS,
+                f"Email {new_email} is already in use"
+            )
+
+        # 2. Delete old email address entity
+        old_email = user.email_address
+        await session.delete(old_email)
+
+        # 3. Create new email address entity (validated_at will be None by default)
+        await user_email_address_service.create(
+            session,
+            id=new_email,
+            user_id=user.id
+        )
+
+        # 4. Flush to update the relationship
+        await session.flush()
+
+        # 5. Send verification email to new address (if background_tasks provided)
+        if background_tasks is not None:
+            user_emailing_service = cls.app_manager.get_service("user_emailing")
+
+            # Create email verification emailing
+            user_emailing = await user_emailing_service.create_email_verification_emailing(
+                user, session
+            )
+
+            # Schedule email sending via Celery after commit
+            user_emailing_service.schedule_send_emailing(user_emailing, background_tasks)
+
+        return user
+
+    @classmethod
+    async def update_password(
+        cls,
+        user: User,
+        current_password: str,
+        new_password: str,
+        session: AsyncSession
+    ) -> User:
+        """
+        Update user password after verifying current password.
+
+        This method is called by lys_edition which already fetched and validated
+        permissions on the user entity.
+
+        This method:
+        1. Verifies the current password is correct
+        2. Hashes the new password
+        3. Updates the user's password
+
+        Args:
+            user: The user entity (fetched and validated by lys_edition)
+            current_password: Current password for verification
+            new_password: New password to set (will be hashed)
+            session: Database session
+
+        Returns:
+            User: The user with updated password
+
+        Raises:
+            LysError: If current password is incorrect
+        """
+        # 1. Verify current password
+        if not bcrypt.checkpw(current_password.encode('utf-8'), user.password.encode('utf-8')):
+            raise LysError(
+                WRONG_CREDENTIALS_ERROR,
+                "Current password is incorrect"
+            )
+
+        # 2. Hash new password
+        salt = bcrypt.gensalt()
+        hashed_password = bcrypt.hashpw(new_password.encode('utf-8'), salt)
+
+        # 3. Update password
+        user.password = hashed_password.decode('utf-8')
+
+        return user
+
+    @classmethod
+    async def update_user(
+        cls,
+        user: User,
+        first_name: str | None = None,
+        last_name: str | None = None,
+        gender_id: str | None = None,
+        session: AsyncSession = None
+    ) -> User:
+        """
+        Update user private data (GDPR-protected fields).
+
+        This method is called by lys_edition which already fetched and validated
+        permissions on the user entity.
+
+        This method:
+        1. Validates gender_id exists if provided
+        2. Updates private data fields (only non-None values are updated)
+
+        Args:
+            user: The user entity (fetched and validated by lys_edition)
+            first_name: Optional first name to update
+            last_name: Optional last name to update
+            gender_id: Optional gender ID to update
+            session: Database session
+
+        Returns:
+            User: The user with updated private data
+
+        Raises:
+            LysError: If gender_id doesn't exist in database
+        """
+        # Get gender service for validation
+        gender_service = cls.app_manager.get_service("gender")
+
+        # 1. Validate gender exists if provided
+        if gender_id is not None:
+            await gender_service.validate_gender_exists(gender_id, session)
+
+        # 2. Update private data fields (only update non-None values)
+        if first_name is not None:
+            user.private_data.first_name = first_name
+
+        if last_name is not None:
+            user.private_data.last_name = last_name
+
+        if gender_id is not None:
+            user.private_data.gender_id = gender_id
+
+        return user
+
+    @classmethod
+    async def update_status(
+        cls,
+        user: User,
+        status_id: str,
+        reason: str,
+        author_user_id: str,
+        session: AsyncSession
+    ) -> User:
+        """
+        Update user status and create audit log.
+
+        Args:
+            user: User entity to update
+            status_id: New status ID (e.g., ACTIVE, INACTIVE, SUSPENDED)
+            reason: Reason for status change (for audit log)
+            author_user_id: ID of user performing the status change
+            session: Database session
+
+        Returns:
+            User: Updated user entity
+
+        Raises:
+            LysError: If status_id is invalid or is DELETED
+        """
+        # Prevent setting DELETED status via this method
+        if status_id == "DELETED":
+            raise LysError(
+                INVALID_STATUS_CHANGE,
+                "Cannot set status to DELETED. Use anonymize_user instead."
+            )
+
+        # Validate status exists
+        user_status_service = cls.app_manager.get_service("user_status")
+        status = await user_status_service.get_by_id(status_id, session)
+
+        if not status:
+            raise LysError(
+                INVALID_USER_STATUS,
+                f"Invalid status_id: {status_id}"
+            )
+
+        # Store old status for audit log
+        old_status_id = user.status_id
+
+        # Update status
+        user.status_id = status_id
+        await session.flush()
+
+        # Create audit log with "OLD → NEW" prefix
+        audit_log_service = cls.app_manager.get_service("user_audit_log")
+        audit_message = f"{old_status_id} → {status_id}\n\n{reason}"
+
+        await audit_log_service.create_audit_log(
+            target_user_id=user.id,
+            author_user_id=author_user_id,
+            log_type_id=STATUS_CHANGE_LOG_TYPE,
+            message=audit_message,
+            session=session
+        )
+
+        return user
+
+    @classmethod
+    async def anonymize_user(
+        cls,
+        user_id: str,
+        reason: str,
+        anonymized_by: str,
+        session: AsyncSession
+    ) -> None:
+        """
+        Anonymize user data for GDPR compliance and create audit log.
+
+        This is an IRREVERSIBLE operation that:
+        - Sets user status to DELETED
+        - Removes all private data (first_name, last_name, gender)
+        - Sets anonymized_at timestamp
+        - Creates audit log entry
+        - Keeps user_id and email for audit/legal purposes
+
+        Args:
+            user_id: ID of user to anonymize
+            reason: Reason for anonymization (for audit log)
+            anonymized_by: ID of user performing the anonymization
+            session: Database session
+
+        Raises:
+            LysError: If user is already anonymized or not found
+        """
+        # Fetch user with private_data
+        user = await cls.get_by_id(user_id, session)
+
+        if not user:
+            raise LysError((404, "USER_NOT_FOUND"), f"User {user_id} not found")
+
+        # Check if already anonymized
+        if user.private_data and user.private_data.anonymized_at is not None:
+            raise LysError(
+                USER_ALREADY_ANONYMIZED,
+                f"User {user_id} is already anonymized"
+            )
+
+        # Store old status for audit log
+        old_status_id = user.status_id
+
+        # Set status to DELETED
+        user.status_id = "DELETED"
+
+        # Anonymize private data
+        if user.private_data:
+            user.private_data.first_name = None
+            user.private_data.last_name = None
+            user.private_data.gender_id = None
+            user.private_data.anonymized_at = datetime.now(timezone.utc)
+
+        await session.flush()
+
+        # Create audit log with "OLD → DELETED (anonymized)" prefix
+        audit_log_service = cls.app_manager.get_service("user_audit_log")
+        audit_message = f"{old_status_id} → DELETED (anonymized)\n\n{reason}"
+
+        await audit_log_service.create_audit_log(
+            target_user_id=user_id,
+            author_user_id=anonymized_by,
+            log_type_id=ANONYMIZATION_LOG_TYPE,
+            message=audit_message,
+            session=session
+        )
+
+        # Log anonymization for audit
+        logger.info(
+            f"User {user_id} anonymized. Reason: {reason}. Anonymized by: {anonymized_by}"
+        )
 
 
 @register_service()
@@ -615,13 +1011,13 @@ class UserOneTimeTokenService(OneTimeTokenService, EntityService[UserOneTimeToke
 class UserEmailingService(EntityService[UserEmailing]):
 
     @classmethod
-    async def create_forgotten_password_emailing(
+    async def create_password_reset_emailing(
         cls,
         user: User,
         session: AsyncSession
     ) -> UserEmailing:
         """
-        Create the emailing to retrieve the user forgotten password.
+        Create the emailing for password reset.
 
         This method:
         1. Creates a one-time token for password reset
@@ -645,12 +1041,12 @@ class UserEmailingService(EntityService[UserEmailing]):
         token = await token_service.create(
             session,
             user_id=user.id,
-            type_id=FORGOTTEN_PASSWORD_TOKEN_TYPE
+            type_id=PASSWORD_RESET_TOKEN_TYPE
         )
 
         # 2. Create emailing with token
         emailing = await emailing_service.generate_emailing(
-            type_id=USER_FORGOTTEN_PASSWORD_EMAILING_TYPE,
+            type_id=USER_PASSWORD_RESET_EMAILING_TYPE,
             email_address=user.email_address.id,
             language_id=user.language_id,
             session=session,
@@ -679,9 +1075,11 @@ class UserEmailingService(EntityService[UserEmailing]):
         Create the emailing to verify user email address.
 
         This method:
-        1. Creates a one-time token for email verification (valid 24 hours)
-        2. Creates an emailing with the token link
-        3. Links the emailing to the user
+        1. Validates that the email is not already verified
+        2. Updates last_validation_request_at on the email address
+        3. Creates a one-time token for email verification (valid 24 hours)
+        4. Creates an emailing with the token link
+        5. Links the emailing to the user
 
         The email will be sent via Celery task (call send_pending_email.delay in BackgroundTask)
 
@@ -691,19 +1089,32 @@ class UserEmailingService(EntityService[UserEmailing]):
 
         Returns:
             UserEmailing: The created user emailing entity
+
+        Raises:
+            LysError: If email address is already validated
         """
+        # 1. Check if email is already validated
+        if user.email_address.validated_at is not None:
+            raise LysError(
+                EMAIL_ALREADY_VALIDATED_ERROR,
+                f"Email address {user.email_address.id} is already validated"
+            )
+
         # Get services
         token_service = cls.app_manager.get_service("user_one_time_token")
         emailing_service = cls.app_manager.get_service("emailing")
 
-        # 1. Create one-time token for email verification (24 hours validity)
+        # 2. Update last validation request timestamp
+        user.email_address.last_validation_request_at = now_utc()
+
+        # 3. Create one-time token for email verification (24 hours validity)
         token = await token_service.create(
             session,
             user_id=user.id,
             type_id=EMAIL_VERIFICATION_TOKEN_TYPE
         )
 
-        # 2. Create emailing with token and user data
+        # 4. Create emailing with token and user data
         emailing = await emailing_service.generate_emailing(
             type_id=USER_EMAIL_VERIFICATION_EMAILING_TYPE,
             email_address=user.email_address.id,
@@ -714,7 +1125,7 @@ class UserEmailingService(EntityService[UserEmailing]):
             front_url=cls.app_manager.settings.front_url
         )
 
-        # 3. Link emailing to user
+        # 5. Link emailing to user
         user_emailing = await cls.create(
             session,
             user_id=user.id,
@@ -738,3 +1149,208 @@ class UserEmailingService(EntityService[UserEmailing]):
         background_tasks.add_task(
             lambda: send_pending_email.delay(user_emailing.emailing_id)
         )
+
+
+@register_service()
+class UserAuditLogTypeService(EntityService[UserAuditLogType]):
+    pass
+
+
+@register_service()
+class UserAuditLogService(EntityService[UserAuditLog]):
+    """
+    Service for managing user audit logs.
+
+    Provides operations for:
+    - Creating audit logs for status changes and anonymization (automatic)
+    - Creating manual observations by administrators
+    - Updating observations (owner only)
+    - Soft deleting observations (owner only)
+    - Listing and searching audit logs with filters
+    """
+
+    @classmethod
+    async def create_audit_log(
+        cls,
+        target_user_id: str,
+        author_user_id: str,
+        log_type_id: str,
+        message: str,
+        session: AsyncSession
+    ) -> UserAuditLog:
+        """
+        Create a new audit log entry.
+
+        Args:
+            target_user_id: ID of user being logged about
+            author_user_id: ID of user creating the log
+            log_type_id: Type of log (STATUS_CHANGE, ANONYMIZATION, OBSERVATION)
+            message: Log message
+            session: Database session
+
+        Returns:
+            UserAuditLog: Created audit log entity
+        """
+        audit_log = await cls.create(
+            session,
+            target_user_id=target_user_id,
+            author_user_id=author_user_id,
+            log_type_id=log_type_id,
+            message=message
+        )
+
+        return audit_log
+
+    @classmethod
+    async def update_observation(
+        cls,
+        log: UserAuditLog,
+        new_message: str,
+        session: AsyncSession
+    ) -> UserAuditLog:
+        """
+        Update an observation log message.
+
+        Only OBSERVATION type logs can be updated.
+        Permission check (OWNER) must be done at webservice level via lys_edition.
+
+        Args:
+            log: UserAuditLog entity to update (fetched by lys_edition)
+            new_message: New message content
+            session: Database session
+
+        Returns:
+            UserAuditLog: Updated audit log entity
+
+        Raises:
+            LysError: If log is not OBSERVATION type or already deleted
+        """
+        # Only OBSERVATION logs can be updated
+        if log.log_type_id != OBSERVATION_LOG_TYPE:
+            raise LysError(
+                (403, "CANNOT_EDIT_SYSTEM_LOG"),
+                "Only OBSERVATION logs can be edited. System logs (STATUS_CHANGE, ANONYMIZATION) are immutable."
+            )
+
+        # Check if already deleted
+        if log.deleted_at is not None:
+            raise LysError(
+                (403, "CANNOT_EDIT_DELETED_LOG"),
+                "Cannot edit a deleted observation"
+            )
+
+        # Update message
+        log.message = new_message
+        await session.flush()
+
+        return log
+
+    @classmethod
+    async def delete_observation(
+        cls,
+        log: UserAuditLog,
+        session: AsyncSession
+    ) -> UserAuditLog:
+        """
+        Soft delete an observation log.
+
+        Only OBSERVATION type logs can be deleted.
+        Permission check (OWNER) must be done at webservice level via lys_edition.
+
+        Args:
+            log: UserAuditLog entity to delete (fetched by lys_edition)
+            session: Database session
+
+        Returns:
+            UserAuditLog: Deleted audit log entity
+
+        Raises:
+            LysError: If log is not OBSERVATION type or already deleted
+        """
+        # Only OBSERVATION logs can be deleted
+        if log.log_type_id != OBSERVATION_LOG_TYPE:
+            raise LysError(
+                (403, "CANNOT_DELETE_SYSTEM_LOG"),
+                "Only OBSERVATION logs can be deleted. System logs (STATUS_CHANGE, ANONYMIZATION) are immutable."
+            )
+
+        # Check if already deleted
+        if log.deleted_at is not None:
+            raise LysError(
+                (403, "ALREADY_DELETED"),
+                "This observation is already deleted"
+            )
+
+        # Soft delete
+        log.deleted_at = now_utc()
+        await session.flush()
+
+        return log
+
+    @classmethod
+    def list_audit_logs(
+        cls,
+        log_type_id: str | None = None,
+        email_search: str | None = None,
+        user_filter: str | None = None,
+        include_deleted: bool = False
+    ):
+        """
+        Build query to list audit logs with optional filters.
+
+        This method returns a statement for lys_connection to execute.
+
+        Args:
+            log_type_id: Filter by log type (optional)
+            email_search: Search in target or author email addresses (optional)
+            user_filter: Filter by user role - "author", "target", or None (both) (optional)
+            include_deleted: Include soft-deleted observations (default: False)
+
+        Returns:
+            SQLAlchemy select statement
+        """
+        # Get user email address entity
+        user_email_address_entity = cls.app_manager.get_entity("user_email_address")
+
+        # Build base query
+        stmt = select(cls.entity_class)
+
+        # Filter by log type
+        if log_type_id:
+            stmt = stmt.where(cls.entity_class.log_type_id == log_type_id)
+
+        # Filter deleted observations
+        if not include_deleted:
+            stmt = stmt.where(cls.entity_class.deleted_at == None)
+
+        # Email search (search in both target and author emails)
+        if email_search:
+            # Join with user_email_address for target_user
+            target_email_alias = user_email_address_entity.__table__.alias("target_email")
+            author_email_alias = user_email_address_entity.__table__.alias("author_email")
+
+            stmt = stmt.join(
+                target_email_alias,
+                cls.entity_class.target_user_id == target_email_alias.c.user_id
+            ).join(
+                author_email_alias,
+                cls.entity_class.author_user_id == author_email_alias.c.user_id
+            )
+
+            # Apply email filter based on user_filter
+            if user_filter == "author":
+                stmt = stmt.where(author_email_alias.c.id.ilike(f"%{email_search}%"))
+            elif user_filter == "target":
+                stmt = stmt.where(target_email_alias.c.id.ilike(f"%{email_search}%"))
+            else:  # None - search in both
+                stmt = stmt.where(
+                    or_(
+                        target_email_alias.c.id.ilike(f"%{email_search}%"),
+                        author_email_alias.c.id.ilike(f"%{email_search}%")
+                    )
+                )
+
+        # Order by created_at desc (most recent first)
+        stmt = stmt.order_by(cls.entity_class.created_at.desc())
+
+        return stmt
