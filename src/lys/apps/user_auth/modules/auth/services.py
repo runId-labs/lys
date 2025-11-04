@@ -292,11 +292,16 @@ class AuthService(Service):
         """
         Clear authentication cookies (refresh and access tokens).
 
+        Both cookies use path="/" (industry standard).
+        Security is enforced by server-side validation:
+        - JWTAuthMiddleware extracts and validates ONLY the access token
+        - Refresh token is explicitly extracted only in auth operations (login, logout, refresh)
+
         Args:
             response: Starlette response object
         """
-        response.delete_cookie(REFRESH_COOKIE_KEY, path="/auth")
-        response.delete_cookie(ACCESS_COOKIE_KEY, path="/graphql")
+        response.delete_cookie(REFRESH_COOKIE_KEY, path="/")
+        response.delete_cookie(ACCESS_COOKIE_KEY, path="/")
 
     @classmethod
     async def set_auth_cookies(
@@ -308,13 +313,21 @@ class AuthService(Service):
         """
         Set both refresh and access token cookies.
 
+        Both cookies use path="/" (industry standard).
+        Security is enforced by server-side validation:
+        - JWTAuthMiddleware extracts and validates ONLY the access token
+        - Refresh token is explicitly extracted only in auth operations (login, logout, refresh)
+
+        This provides defense-in-depth: even if both cookies are sent to all endpoints,
+        only the appropriate token is used based on server-side logic.
+
         Args:
             response: Starlette response object
             refresh_token_id: Refresh token ID to store in cookie
             access_token: Access token to store in cookie
         """
-        await cls.set_cookie(response, REFRESH_COOKIE_KEY, refresh_token_id, "/auth")
-        await cls.set_cookie(response, ACCESS_COOKIE_KEY, access_token, "/graphql")
+        await cls.set_cookie(response, REFRESH_COOKIE_KEY, refresh_token_id, "/")
+        await cls.set_cookie(response, ACCESS_COOKIE_KEY, access_token, "/")
 
     @classmethod
     async def set_cookie(cls, response: Response, key: str, value: str, path: str):

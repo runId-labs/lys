@@ -23,7 +23,11 @@ class JWTAuthMiddleware(MiddlewareInterface, BaseHTTPMiddleware):
         # Initialize default user context
         connected_user: Union[Dict[str, Any], None] = None
 
-        # Extract JWT from cookies
+        # Extract ONLY the access token from cookies
+        # Security note: The refresh token cookie is deliberately NOT extracted here
+        # even though it is sent with every request (path="/")
+        # Refresh token is only used in specific auth operations (login, logout, refresh)
+        # This provides defense-in-depth security
         access_token = request.cookies.get(ACCESS_COOKIE_KEY)
 
         if access_token:
