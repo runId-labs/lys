@@ -326,44 +326,54 @@ class AppManager:
         logging.info(f"Total middlewares loaded: {total_middlewares} ({middleware_names})")
         logging.info("=" * 50)
 
-    def _load_schema_mapping(self):
-        schema_mapping =  None
-        if not self.graphql_register.is_empty:
-            extensions = [
-                # security: limit query depth to avoid high query complexity
-                QueryDepthLimiter(self.settings.query_depth_limit),
-                # security: limit number of alias in a same query to avoid malicious batch requests
-                MaxAliasesLimiter(self.settings.query_alias_limit)
-            ]
+    def _load_schema(self):
+        """
+        Load the single GraphQL schema.
 
-            # secure graphql schema on non-dev environment
-            if not self.settings.env == EnvironmentEnum.DEV:
-                extensions.append(AddValidationRules([NoSchemaIntrospectionCustomRule]))
+        The schema name is taken from settings.graphql_schema_name.
+        All queries, mutations, and subscriptions are registered to this single schema.
 
-            schema_mapping = {}
-            register_mapping = {
-                "Query": self.graphql_register.queries,
-                "Mutation": self.graphql_register.mutations,
-                "Subscription": self.graphql_register.subscriptions,
-            }
-            for type_name, schema_type in register_mapping.items():
-                for schema_name in schema_type.keys():
-                    if schema_mapping.get(schema_name) is None:
-                        schema_mapping[schema_name] = {}
+        Returns:
+            strawberry.Schema or None if no GraphQL components are registered
+        """
+        if self.graphql_register.is_empty:
+            return None
 
-                    l = schema_type[schema_name]
-                    if len(l) > 0:
-                        l.reverse()
-                        schema_mapping[schema_name][type_name] = strawberry.type(type(type_name, tuple(l), {}))
+        # Configure security extensions
+        extensions = [
+            # security: limit query depth to avoid high query complexity
+            QueryDepthLimiter(self.settings.query_depth_limit),
+            # security: limit number of alias in a same query to avoid malicious batch requests
+            MaxAliasesLimiter(self.settings.query_alias_limit)
+        ]
 
-            for schema_name, value in schema_mapping.items():
-                schema_mapping[schema_name] = strawberry.Schema(
-                    value.get("Query", DefaultQuery),
-                    value.get("Mutation"),
-                    value.get("Subscription"),
-                    extensions=extensions,
-                )
-        return schema_mapping
+        # secure graphql schema on non-dev environment
+        if not self.settings.env == EnvironmentEnum.DEV:
+            extensions.append(AddValidationRules([NoSchemaIntrospectionCustomRule]))
+
+        # Build schema types from registered components
+        schema_name = self.settings.graphql_schema_name
+        schema_types = {}
+
+        register_mapping = {
+            "Query": self.graphql_register.queries,
+            "Mutation": self.graphql_register.mutations,
+            "Subscription": self.graphql_register.subscriptions,
+        }
+
+        for type_name, schema_type in register_mapping.items():
+            component_list = schema_type.get(schema_name, [])
+            if len(component_list) > 0:
+                component_list.reverse()
+                schema_types[type_name] = strawberry.type(type(type_name, tuple(component_list), {}))
+
+        # Create and return the schema
+        return strawberry.Schema(
+            schema_types.get("Query", DefaultQuery),
+            schema_types.get("Mutation"),
+            schema_types.get("Subscription"),
+            extensions=extensions,
+        )
 
     @asynccontextmanager
     async def _app_lifespan(self, app: FastAPI):
@@ -440,18 +450,17 @@ class AppManager:
         self._load_middlewares(app)
 
         # Phase 5: load graphql api
-        schema_mapping = self._load_schema_mapping()
+        schema = self._load_schema()
 
-        if schema_mapping is not None:
-            for key, schema in schema_mapping.items():
-                graphql_app = GraphQLRouter(
-                    schema,
-                    context_getter=get_context,
-                    # security enabled graphql ide only on dev environment
-                    graphql_ide="graphiql" if self.settings.env == EnvironmentEnum.DEV else None
-                )
+        if schema is not None:
+            graphql_app = GraphQLRouter(
+                schema,
+                context_getter=get_context,
+                # security enabled graphql ide only on dev environment
+                graphql_ide="graphiql" if self.settings.env == EnvironmentEnum.DEV else None
+            )
 
-                app.include_router(graphql_app, prefix=f"/{key}")
+            app.include_router(graphql_app, prefix=f"/{self.settings.graphql_schema_name}")
 
         return app
 

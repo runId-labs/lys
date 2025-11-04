@@ -9,7 +9,7 @@ from lys.core.graphql.registers import register_query
 from lys.core.graphql.types import Query
 
 
-@register_query("graphql")
+@register_query()
 @strawberry.type
 class AccessLevelQuery(Query):
     @lys_connection(

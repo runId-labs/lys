@@ -167,6 +167,8 @@ emailing = await session.get(Emailing, emailing_id)  # WILL FAIL
 - Commit messages should contain ONLY the conventional commit format with description
 - Use clear, descriptive commit messages in English
 - Follow conventional commit format when applicable
+- **IMPORTANT**: NEVER commit changes unless explicitly asked by the user with "commit" command
+- Do NOT proactively stage files or create commits - wait for explicit user instruction
 
 Example of correct commit message:
 ```

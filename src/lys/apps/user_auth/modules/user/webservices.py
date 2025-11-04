@@ -46,7 +46,7 @@ from lys.core.graphql.types import Query, Mutation
 logger = logging.getLogger(__name__)
 
 
-@register_query("graphql")
+@register_query()
 @strawberry.type
 class UserQuery(Query):
     @lys_getter(
@@ -105,7 +105,7 @@ class UserQuery(Query):
         return stmt
 
 
-@register_query("graphql")
+@register_query()
 @strawberry.type
 class UserStatusQuery(Query):
     @lys_connection(
@@ -122,7 +122,7 @@ class UserStatusQuery(Query):
         return stmt
 
 
-@register_query("graphql")
+@register_query()
 @strawberry.type
 class UserOneTimeTokenQuery(Query):
     @lys_connection(
@@ -161,7 +161,7 @@ class UserOneTimeTokenQuery(Query):
         return stmt
 
 
-@register_mutation("graphql")
+@register_mutation()
 @strawberry.type
 class UserMutation(Mutation):
     @lys_field(
@@ -601,7 +601,7 @@ class UserMutation(Mutation):
         return node(success=True)
 
 
-@register_query("graphql")
+@register_query()
 @strawberry.type
 class UserAuditLogQuery(Query):
     """
@@ -652,7 +652,7 @@ class UserAuditLogQuery(Query):
         return stmt
 
 
-@register_mutation("graphql")
+@register_mutation()
 @strawberry.type
 class UserAuditLogMutation(Mutation):
     """

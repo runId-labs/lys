@@ -18,7 +18,7 @@ from lys.core.graphql.registers import register_mutation
 from lys.core.graphql.types import Mutation
 
 
-@register_mutation("graphql")
+@register_mutation()
 @strawberry.type
 class AuthTokenMutation(Mutation):
     @lys_field(

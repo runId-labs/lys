@@ -1,5 +1,6 @@
 from lys.core.graphql.interfaces import QueryInterface, MutationInterface, SubscriptionInterface
 from lys.core.utils.decorators import singleton
+from lys.core.configs import settings
 
 
 class GraphqlRegister:
@@ -34,31 +35,67 @@ class LysGraphqlRegister(GraphqlRegister):
     pass
 
 
-def register_query(schema_name, register:GraphqlRegister=None):
+def register_query(register: GraphqlRegister = None):
+    """
+    Register a GraphQL query class to the schema.
+
+    The schema name is automatically retrieved from settings.graphql_schema_name.
+
+    Args:
+        register: Optional GraphqlRegister instance. If None, uses LysGraphqlRegister singleton.
+
+    Returns:
+        Decorator function that registers the query class.
+    """
     if register is None:
         register = LysGraphqlRegister()
 
     def decorator(cls: type[QueryInterface]):
-        register.register_query(schema_name, cls)
+        register.register_query(settings.graphql_schema_name, cls)
+        return cls
 
     return decorator
 
 
-def register_mutation(schema_name, register:GraphqlRegister=None):
+def register_mutation(register: GraphqlRegister = None):
+    """
+    Register a GraphQL mutation class to the schema.
+
+    The schema name is automatically retrieved from settings.graphql_schema_name.
+
+    Args:
+        register: Optional GraphqlRegister instance. If None, uses LysGraphqlRegister singleton.
+
+    Returns:
+        Decorator function that registers the mutation class.
+    """
     if register is None:
         register = LysGraphqlRegister()
 
     def decorator(cls: type[MutationInterface]):
-        register.register_mutation(schema_name, cls)
+        register.register_mutation(settings.graphql_schema_name, cls)
+        return cls
 
     return decorator
 
 
-def register_subscription(schema_name, register:GraphqlRegister=None):
+def register_subscription(register: GraphqlRegister = None):
+    """
+    Register a GraphQL subscription class to the schema.
+
+    The schema name is automatically retrieved from settings.graphql_schema_name.
+
+    Args:
+        register: Optional GraphqlRegister instance. If None, uses LysGraphqlRegister singleton.
+
+    Returns:
+        Decorator function that registers the subscription class.
+    """
     if register is None:
         register = LysGraphqlRegister()
 
     def decorator(cls: type[SubscriptionInterface]):
-        register.register_subscription(schema_name, cls)
+        register.register_subscription(settings.graphql_schema_name, cls)
+        return cls
 
     return decorator

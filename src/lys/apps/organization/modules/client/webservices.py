@@ -12,7 +12,7 @@ from lys.core.graphql.types import Mutation
 logger = logging.getLogger(__name__)
 
 
-@register_mutation("graphql")
+@register_mutation()
 @strawberry.type
 class ClientMutation(Mutation):
     @lys_creation(

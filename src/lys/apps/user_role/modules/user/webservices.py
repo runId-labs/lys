@@ -25,7 +25,7 @@ override_webservice(
 )
 
 
-@register_mutation("graphql")
+@register_mutation()
 @strawberry.type
 class UserMutation(Mutation):
     @lys_creation(
