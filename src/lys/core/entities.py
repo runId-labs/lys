@@ -26,7 +26,7 @@ class Entity(EntityInterface):
         super().__init_subclass__(**kwargs)
 
     # Primary key: Auto-generated UUID for technical identification
-    id: Mapped[str] = mapped_column(Uuid(as_uuid=False), primary_key=True, default=uuid4)
+    id: Mapped[str] = mapped_column(Uuid(as_uuid=False), primary_key=True, default=lambda: str(uuid4()))
 
     # Audit timestamps: Automatically managed by database
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
