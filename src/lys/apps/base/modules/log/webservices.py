@@ -26,7 +26,7 @@ class LogQuery(Query):
         end_date: Optional[datetime] = None,
         file_name: Optional[str] = None,
     ) -> Select:
-        entity_type = info.context.service_class.entity_class
+        entity_type = info.context.app_manager.get_entity("log")
 
         stmt = select(entity_type).order_by(entity_type.created_at.desc())
 

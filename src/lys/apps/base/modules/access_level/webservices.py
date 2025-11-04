@@ -19,7 +19,7 @@ class AccessLevelQuery(Query):
         description="Return possible access levels."
     )
     async def all_access_levels(self, info: Info, enabled: bool | None = None) -> Select:
-        entity_type = info.context.service_class.entity_class
+        entity_type = info.context.app_manager.get_entity("access_level")
         stmt = select(entity_type).order_by(entity_type.id.asc())
         if enabled is not None:
             stmt = stmt.where(entity_type.enabled == enabled)

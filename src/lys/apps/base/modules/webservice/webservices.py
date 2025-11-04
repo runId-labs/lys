@@ -19,7 +19,7 @@ class WebserviceQuery(Query):
         description="Get all accessible webservices by a user (connected or not) based on their roles."
     )
     async def all_accessible_webservices(self, info: Info) -> Select:
-        webservice_service: type[WebserviceService] | None = info.context.service_class
+        webservice_service = info.context.app_manager.get_service("webservice")
         connected_user = info.context.connected_user
         return await webservice_service.accessible_webservices(connected_user)
 
@@ -29,6 +29,7 @@ class WebserviceQuery(Query):
         description="Get all webservices (super admin only)."
     )
     async def all_webservices(self, info: Info) -> Select:
-        entity_type = info.context.service_class.entity_class
+        webservice_service = info.context.app_manager.get_service("webservice")
+        entity_type = webservice_service.entity_class
         stmt = select(entity_type).order_by(entity_type.id.asc())
         return stmt

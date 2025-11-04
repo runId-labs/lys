@@ -20,7 +20,7 @@ class RoleQuery(Query):
         description="Return all roles."
     )
     async def all_roles(self, info: Info, enabled: bool | None = None) -> Select:
-        entity_type = info.context.service_class.entity_class
+        entity_type = info.context.app_manager.get_entity("role")
         stmt = select(entity_type).order_by(entity_type.id.asc())
         if enabled is not None:
             stmt = stmt.where(entity_type.enabled == enabled)
