@@ -74,13 +74,33 @@ async def user_auth_app_manager():
         await emailing_status_service.create(session=session, id="SENT", enabled=True)
 
         # Create one-time token types (duration in minutes)
-        from lys.apps.base.modules.one_time_token.consts import PASSWORD_RESET_TOKEN_TYPE
+        from lys.apps.base.modules.one_time_token.consts import (
+            PASSWORD_RESET_TOKEN_TYPE,
+            EMAIL_VERIFICATION_TOKEN_TYPE
+        )
         await one_time_token_type_service.create(
             session=session,
             id=PASSWORD_RESET_TOKEN_TYPE,
             enabled=True,
+            duration=30  # 30 minutes
+        )
+        await one_time_token_type_service.create(
+            session=session,
+            id=EMAIL_VERIFICATION_TOKEN_TYPE,
+            enabled=True,
             duration=1440  # 24 hours
         )
+
+        # Create one-time token statuses
+        from lys.apps.base.modules.one_time_token.consts import (
+            PENDING_TOKEN_STATUS,
+            USED_TOKEN_STATUS,
+            REVOKED_TOKEN_STATUS
+        )
+        one_time_token_status_service = app_manager.get_service("one_time_token_status")
+        await one_time_token_status_service.create(session=session, id=PENDING_TOKEN_STATUS, enabled=True)
+        await one_time_token_status_service.create(session=session, id=USED_TOKEN_STATUS, enabled=True)
+        await one_time_token_status_service.create(session=session, id=REVOKED_TOKEN_STATUS, enabled=True)
 
     yield app_manager
 
@@ -491,3 +511,188 @@ class TestUserServicePasswordManagement:
 
             # Token has been used, so it should be invalid
             assert "INVALID_RESET_TOKEN_ERROR" in str(exc_info.value) or "TOKEN_ALREADY_USED" in str(exc_info.value)
+
+
+@pytest.mark.usefixtures("isolate_sqlalchemy_registry")
+class TestUserServiceEmailVerification:
+    """Tests for UserService email verification methods."""
+
+    @pytest.mark.asyncio
+    async def test_verify_email_with_valid_token(self, user_auth_app_manager):
+        """Test that email can be verified with valid token."""
+        user_service = user_auth_app_manager.get_service("user")
+        token_service = user_auth_app_manager.get_service("user_one_time_token")
+
+        # Create user (email not verified by default)
+        async with user_auth_app_manager.database.get_session() as session:
+            user = await user_service.create_user(
+                session=session,
+                email="emailverify@example.com",
+                password="Password123!",
+                language_id="en",
+                send_verification_email=False
+            )
+            # Verify email is not validated
+            assert user.email_address.validated_at is None
+
+        # Create email verification token
+        async with user_auth_app_manager.database.get_session() as session:
+            from lys.apps.base.modules.one_time_token.consts import EMAIL_VERIFICATION_TOKEN_TYPE
+
+            token = await token_service.create(
+                session,
+                user_id=user.id,
+                type_id=EMAIL_VERIFICATION_TOKEN_TYPE
+            )
+
+        # Verify email with token
+        async with user_auth_app_manager.database.get_session() as session:
+            verified_user = await user_service.verify_email(
+                token=str(token.id),
+                session=session
+            )
+
+            # Verify email is now validated
+            assert verified_user.email_address.validated_at is not None
+            assert verified_user.id == user.id
+
+    @pytest.mark.asyncio
+    async def test_verify_email_with_expired_token_fails(self, user_auth_app_manager):
+        """Test that email verification fails with expired token."""
+        user_service = user_auth_app_manager.get_service("user")
+        token_service = user_auth_app_manager.get_service("user_one_time_token")
+
+        # Create user
+        async with user_auth_app_manager.database.get_session() as session:
+            user = await user_service.create_user(
+                session=session,
+                email="expiredtoken@example.com",
+                password="Password123!",
+                language_id="en",
+                send_verification_email=False
+            )
+
+        # Create email verification token and make it expired
+        async with user_auth_app_manager.database.get_session() as session:
+            from lys.apps.base.modules.one_time_token.consts import EMAIL_VERIFICATION_TOKEN_TYPE
+            from datetime import timedelta
+            from lys.core.utils.datetime import now_utc
+
+            token = await token_service.create(
+                session,
+                user_id=user.id,
+                type_id=EMAIL_VERIFICATION_TOKEN_TYPE
+            )
+
+            # Make token expired (email verification tokens are valid for 1440 minutes / 24 hours)
+            # Set created_at to 1441 minutes ago
+            token.created_at = now_utc() - timedelta(minutes=1441)
+            await session.flush()
+
+        # Try to verify email with expired token
+        async with user_auth_app_manager.database.get_session() as session:
+            with pytest.raises(LysError) as exc_info:
+                await user_service.verify_email(
+                    token=str(token.id),
+                    session=session
+                )
+
+            # Should raise EXPIRED_RESET_TOKEN_ERROR
+            assert "EXPIRED_RESET_TOKEN_ERROR" in str(exc_info.value)
+
+    @pytest.mark.asyncio
+    async def test_verify_email_with_used_token_fails(self, user_auth_app_manager):
+        """Test that email verification fails with already used token."""
+        user_service = user_auth_app_manager.get_service("user")
+        token_service = user_auth_app_manager.get_service("user_one_time_token")
+
+        # Create user
+        async with user_auth_app_manager.database.get_session() as session:
+            user = await user_service.create_user(
+                session=session,
+                email="usedtoken@example.com",
+                password="Password123!",
+                language_id="en",
+                send_verification_email=False
+            )
+
+        # Create email verification token
+        async with user_auth_app_manager.database.get_session() as session:
+            from lys.apps.base.modules.one_time_token.consts import EMAIL_VERIFICATION_TOKEN_TYPE
+
+            token = await token_service.create(
+                session,
+                user_id=user.id,
+                type_id=EMAIL_VERIFICATION_TOKEN_TYPE
+            )
+
+        # Use token once
+        async with user_auth_app_manager.database.get_session() as session:
+            await user_service.verify_email(
+                token=str(token.id),
+                session=session
+            )
+
+        # Try to use token again
+        async with user_auth_app_manager.database.get_session() as session:
+            with pytest.raises(LysError) as exc_info:
+                await user_service.verify_email(
+                    token=str(token.id),
+                    session=session
+                )
+
+            # Token has been used, so it should be invalid
+            assert "INVALID_RESET_TOKEN_ERROR" in str(exc_info.value)
+
+    @pytest.mark.asyncio
+    async def test_verify_email_with_already_verified_email_fails(self, user_auth_app_manager):
+        """Test that email verification fails if email is already verified."""
+        user_service = user_auth_app_manager.get_service("user")
+        token_service = user_auth_app_manager.get_service("user_one_time_token")
+
+        # Create user
+        async with user_auth_app_manager.database.get_session() as session:
+            user = await user_service.create_user(
+                session=session,
+                email="alreadyverified@example.com",
+                password="Password123!",
+                language_id="en",
+                send_verification_email=False
+            )
+
+        # Create and use first token to verify email
+        async with user_auth_app_manager.database.get_session() as session:
+            from lys.apps.base.modules.one_time_token.consts import EMAIL_VERIFICATION_TOKEN_TYPE
+
+            token1 = await token_service.create(
+                session,
+                user_id=user.id,
+                type_id=EMAIL_VERIFICATION_TOKEN_TYPE
+            )
+
+        async with user_auth_app_manager.database.get_session() as session:
+            await user_service.verify_email(
+                token=str(token1.id),
+                session=session
+            )
+
+        # Create second token for already verified email
+        async with user_auth_app_manager.database.get_session() as session:
+            from lys.apps.base.modules.one_time_token.consts import EMAIL_VERIFICATION_TOKEN_TYPE
+
+            token2 = await token_service.create(
+                session,
+                user_id=user.id,
+                type_id=EMAIL_VERIFICATION_TOKEN_TYPE
+            )
+
+        # Try to verify again with second token
+        async with user_auth_app_manager.database.get_session() as session:
+            with pytest.raises(LysError) as exc_info:
+                await user_service.verify_email(
+                    token=str(token2.id),
+                    session=session
+                )
+
+            # Should raise EMAIL_ALREADY_VALIDATED_ERROR
+            assert "EMAIL_ALREADY_VALIDATED_ERROR" in str(exc_info.value)
