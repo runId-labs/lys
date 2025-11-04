@@ -865,3 +865,433 @@ class TestUserServiceStatusManagement:
 
             # Should raise INVALID_USER_STATUS
             assert "INVALID_USER_STATUS" in str(exc_info.value)
+
+
+@pytest.mark.usefixtures("isolate_sqlalchemy_registry")
+class TestUserServiceGDPRAnonymization:
+    """Tests for UserService GDPR anonymization methods."""
+
+    @pytest.mark.asyncio
+    async def test_anonymize_user_removes_personal_data(self, user_auth_app_manager):
+        """Test that anonymize_user removes all personal data."""
+        user_service = user_auth_app_manager.get_service("user")
+
+        # Create users with private data
+        async with user_auth_app_manager.database.get_session() as session:
+            target_user = await user_service.create_user(
+                session=session,
+                email="gdpr_target@example.com",
+                password="Password123!",
+                language_id="en",
+                first_name="John",
+                last_name="Doe",
+                gender_id="M",
+                send_verification_email=False
+            )
+            admin_user = await user_service.create_user(
+                session=session,
+                email="gdpr_admin@example.com",
+                password="Password123!",
+                language_id="en",
+                send_verification_email=False
+            )
+
+            # Verify initial data exists
+            assert target_user.private_data is not None
+            assert target_user.private_data.first_name == "John"
+            assert target_user.private_data.last_name == "Doe"
+            assert target_user.private_data.gender_id == "M"
+            assert target_user.private_data.anonymized_at is None
+
+        # Anonymize user
+        async with user_auth_app_manager.database.get_session() as session:
+            await user_service.anonymize_user(
+                user_id=target_user.id,
+                reason="User requested account deletion",
+                anonymized_by=admin_user.id,
+                session=session
+            )
+
+        # Verify data was anonymized
+        async with user_auth_app_manager.database.get_session() as session:
+            anonymized_user = await user_service.get_by_id(target_user.id, session)
+
+            # Personal data should be removed
+            assert anonymized_user.private_data.first_name is None
+            assert anonymized_user.private_data.last_name is None
+            assert anonymized_user.private_data.gender_id is None
+            assert anonymized_user.private_data.anonymized_at is not None
+
+            # Status should be DELETED
+            from lys.apps.user_auth.modules.user.consts import DELETED_USER_STATUS
+            assert anonymized_user.status_id == DELETED_USER_STATUS
+
+    @pytest.mark.asyncio
+    async def test_anonymize_user_preserves_audit_trails(self, user_auth_app_manager):
+        """Test that anonymize_user preserves user_id and email, and creates audit log."""
+        user_service = user_auth_app_manager.get_service("user")
+
+        # Create users
+        async with user_auth_app_manager.database.get_session() as session:
+            target_user = await user_service.create_user(
+                session=session,
+                email="gdpr_audit@example.com",
+                password="Password123!",
+                language_id="en",
+                first_name="Jane",
+                last_name="Smith",
+                send_verification_email=False
+            )
+            admin_user = await user_service.create_user(
+                session=session,
+                email="gdpr_admin2@example.com",
+                password="Password123!",
+                language_id="en",
+                send_verification_email=False
+            )
+
+        # Anonymize user
+        async with user_auth_app_manager.database.get_session() as session:
+            await user_service.anonymize_user(
+                user_id=target_user.id,
+                reason="GDPR compliance request",
+                anonymized_by=admin_user.id,
+                session=session
+            )
+
+        # Verify audit trail is preserved
+        async with user_auth_app_manager.database.get_session() as session:
+            anonymized_user = await user_service.get_by_id(target_user.id, session)
+
+            # User ID and email should be preserved for audit/legal purposes
+            assert anonymized_user.id == target_user.id
+            assert anonymized_user.email_address.address == "gdpr_audit@example.com"
+
+            # Audit log should be created
+            from sqlalchemy import select
+            user_audit_log_entity = user_auth_app_manager.get_entity("user_audit_log")
+            from lys.apps.user_auth.modules.user.consts import ANONYMIZATION_LOG_TYPE
+
+            stmt = select(user_audit_log_entity).where(
+                user_audit_log_entity.target_user_id == target_user.id,
+                user_audit_log_entity.log_type_id == ANONYMIZATION_LOG_TYPE
+            )
+            result = await session.execute(stmt)
+            audit_logs = result.scalars().all()
+
+            assert len(audit_logs) == 1
+            audit_log = audit_logs[0]
+            assert audit_log.author_user_id == admin_user.id
+            assert "GDPR compliance request" in audit_log.message
+            assert "DELETED (anonymized)" in audit_log.message
+
+    @pytest.mark.asyncio
+    async def test_anonymize_user_already_anonymized_fails(self, user_auth_app_manager):
+        """Test that anonymizing an already anonymized user fails."""
+        user_service = user_auth_app_manager.get_service("user")
+
+        # Create users
+        async with user_auth_app_manager.database.get_session() as session:
+            target_user = await user_service.create_user(
+                session=session,
+                email="gdpr_double@example.com",
+                password="Password123!",
+                language_id="en",
+                first_name="Bob",
+                last_name="Johnson",
+                send_verification_email=False
+            )
+            admin_user = await user_service.create_user(
+                session=session,
+                email="gdpr_admin3@example.com",
+                password="Password123!",
+                language_id="en",
+                send_verification_email=False
+            )
+
+        # Anonymize user first time
+        async with user_auth_app_manager.database.get_session() as session:
+            await user_service.anonymize_user(
+                user_id=target_user.id,
+                reason="First anonymization",
+                anonymized_by=admin_user.id,
+                session=session
+            )
+
+        # Try to anonymize again (should fail)
+        async with user_auth_app_manager.database.get_session() as session:
+            with pytest.raises(LysError) as exc_info:
+                await user_service.anonymize_user(
+                    user_id=target_user.id,
+                    reason="Second anonymization attempt",
+                    anonymized_by=admin_user.id,
+                    session=session
+                )
+
+            # Should raise USER_ALREADY_ANONYMIZED
+            assert "USER_ALREADY_ANONYMIZED" in str(exc_info.value)
+
+
+@pytest.mark.usefixtures("isolate_sqlalchemy_registry")
+class TestUserServiceAuditLogging:
+    """Tests for UserService audit logging functionality."""
+
+    @pytest.mark.asyncio
+    async def test_create_manual_observation(self, user_auth_app_manager):
+        """Test creating a manual observation audit log."""
+        user_service = user_auth_app_manager.get_service("user")
+        audit_log_service = user_auth_app_manager.get_service("user_audit_log")
+
+        # Create users
+        async with user_auth_app_manager.database.get_session() as session:
+            target_user = await user_service.create_user(
+                session=session,
+                email="audit_target@example.com",
+                password="Password123!",
+                language_id="en",
+                send_verification_email=False
+            )
+            admin_user = await user_service.create_user(
+                session=session,
+                email="audit_admin@example.com",
+                password="Password123!",
+                language_id="en",
+                send_verification_email=False
+            )
+
+        # Create manual observation
+        async with user_auth_app_manager.database.get_session() as session:
+            from lys.apps.user_auth.modules.user.consts import OBSERVATION_LOG_TYPE
+
+            audit_log = await audit_log_service.create_audit_log(
+                target_user_id=target_user.id,
+                author_user_id=admin_user.id,
+                log_type_id=OBSERVATION_LOG_TYPE,
+                message="User contacted support regarding billing issue",
+                session=session
+            )
+
+            # Verify audit log was created
+            assert audit_log.target_user_id == target_user.id
+            assert audit_log.author_user_id == admin_user.id
+            assert audit_log.log_type_id == OBSERVATION_LOG_TYPE
+            assert "billing issue" in audit_log.message
+            assert audit_log.deleted_at is None
+
+    @pytest.mark.asyncio
+    async def test_update_observation_updates_message(self, user_auth_app_manager):
+        """Test updating an observation audit log message."""
+        user_service = user_auth_app_manager.get_service("user")
+        audit_log_service = user_auth_app_manager.get_service("user_audit_log")
+
+        # Create users
+        async with user_auth_app_manager.database.get_session() as session:
+            target_user = await user_service.create_user(
+                session=session,
+                email="audit_update@example.com",
+                password="Password123!",
+                language_id="en",
+                send_verification_email=False
+            )
+            admin_user = await user_service.create_user(
+                session=session,
+                email="audit_admin2@example.com",
+                password="Password123!",
+                language_id="en",
+                send_verification_email=False
+            )
+
+        # Create observation
+        async with user_auth_app_manager.database.get_session() as session:
+            from lys.apps.user_auth.modules.user.consts import OBSERVATION_LOG_TYPE
+
+            audit_log = await audit_log_service.create_audit_log(
+                target_user_id=target_user.id,
+                author_user_id=admin_user.id,
+                log_type_id=OBSERVATION_LOG_TYPE,
+                message="Original observation",
+                session=session
+            )
+
+        # Update observation
+        async with user_auth_app_manager.database.get_session() as session:
+            # Get fresh audit log instance
+            log = await audit_log_service.get_by_id(audit_log.id, session)
+
+            updated_log = await audit_log_service.update_observation(
+                log=log,
+                new_message="Updated observation with more details",
+                session=session
+            )
+
+            # Verify message was updated
+            assert updated_log.message == "Updated observation with more details"
+            assert updated_log.id == audit_log.id
+
+    @pytest.mark.asyncio
+    async def test_update_observation_fails_for_system_logs(self, user_auth_app_manager):
+        """Test that updating system logs (STATUS_CHANGE, ANONYMIZATION) fails."""
+        user_service = user_auth_app_manager.get_service("user")
+
+        # Create users
+        async with user_auth_app_manager.database.get_session() as session:
+            target_user = await user_service.create_user(
+                session=session,
+                email="audit_system@example.com",
+                password="Password123!",
+                language_id="en",
+                send_verification_email=False
+            )
+            admin_user = await user_service.create_user(
+                session=session,
+                email="audit_admin3@example.com",
+                password="Password123!",
+                language_id="en",
+                send_verification_email=False
+            )
+
+        # Create a status change (system log)
+        async with user_auth_app_manager.database.get_session() as session:
+            from lys.apps.user_auth.modules.user.consts import DISABLED_USER_STATUS
+
+            user = await user_service.get_by_id(target_user.id, session)
+            await user_service.update_status(
+                user=user,
+                status_id=DISABLED_USER_STATUS,
+                reason="Account suspended",
+                author_user_id=admin_user.id,
+                session=session
+            )
+
+        # Try to update system log (should fail)
+        async with user_auth_app_manager.database.get_session() as session:
+            audit_log_service = user_auth_app_manager.get_service("user_audit_log")
+            from sqlalchemy import select
+            user_audit_log_entity = user_auth_app_manager.get_entity("user_audit_log")
+            from lys.apps.user_auth.modules.user.consts import STATUS_CHANGE_LOG_TYPE
+
+            stmt = select(user_audit_log_entity).where(
+                user_audit_log_entity.target_user_id == target_user.id,
+                user_audit_log_entity.log_type_id == STATUS_CHANGE_LOG_TYPE
+            )
+            result = await session.execute(stmt)
+            system_log = result.scalar_one()
+
+            with pytest.raises(LysError) as exc_info:
+                await audit_log_service.update_observation(
+                    log=system_log,
+                    new_message="Trying to modify system log",
+                    session=session
+                )
+
+            # Should raise CANNOT_EDIT_SYSTEM_LOG
+            assert "CANNOT_EDIT_SYSTEM_LOG" in str(exc_info.value)
+
+    @pytest.mark.asyncio
+    async def test_delete_observation_soft_deletes_log(self, user_auth_app_manager):
+        """Test soft deleting an observation audit log."""
+        user_service = user_auth_app_manager.get_service("user")
+        audit_log_service = user_auth_app_manager.get_service("user_audit_log")
+
+        # Create users
+        async with user_auth_app_manager.database.get_session() as session:
+            target_user = await user_service.create_user(
+                session=session,
+                email="audit_delete@example.com",
+                password="Password123!",
+                language_id="en",
+                send_verification_email=False
+            )
+            admin_user = await user_service.create_user(
+                session=session,
+                email="audit_admin4@example.com",
+                password="Password123!",
+                language_id="en",
+                send_verification_email=False
+            )
+
+        # Create observation
+        async with user_auth_app_manager.database.get_session() as session:
+            from lys.apps.user_auth.modules.user.consts import OBSERVATION_LOG_TYPE
+
+            audit_log = await audit_log_service.create_audit_log(
+                target_user_id=target_user.id,
+                author_user_id=admin_user.id,
+                log_type_id=OBSERVATION_LOG_TYPE,
+                message="Observation to be deleted",
+                session=session
+            )
+            assert audit_log.deleted_at is None
+
+        # Delete observation
+        async with user_auth_app_manager.database.get_session() as session:
+            log = await audit_log_service.get_by_id(audit_log.id, session)
+
+            deleted_log = await audit_log_service.delete_observation(
+                log=log,
+                session=session
+            )
+
+            # Verify soft delete
+            assert deleted_log.deleted_at is not None
+            assert deleted_log.id == audit_log.id
+
+    @pytest.mark.asyncio
+    async def test_delete_observation_fails_for_system_logs(self, user_auth_app_manager):
+        """Test that deleting system logs fails."""
+        user_service = user_auth_app_manager.get_service("user")
+
+        # Create users
+        async with user_auth_app_manager.database.get_session() as session:
+            target_user = await user_service.create_user(
+                session=session,
+                email="audit_delsys@example.com",
+                password="Password123!",
+                language_id="en",
+                send_verification_email=False
+            )
+            admin_user = await user_service.create_user(
+                session=session,
+                email="audit_admin5@example.com",
+                password="Password123!",
+                language_id="en",
+                send_verification_email=False
+            )
+
+        # Create a status change (system log)
+        async with user_auth_app_manager.database.get_session() as session:
+            from lys.apps.user_auth.modules.user.consts import DISABLED_USER_STATUS
+
+            user = await user_service.get_by_id(target_user.id, session)
+            await user_service.update_status(
+                user=user,
+                status_id=DISABLED_USER_STATUS,
+                reason="Account suspended",
+                author_user_id=admin_user.id,
+                session=session
+            )
+
+        # Try to delete system log (should fail)
+        async with user_auth_app_manager.database.get_session() as session:
+            audit_log_service = user_auth_app_manager.get_service("user_audit_log")
+            from sqlalchemy import select
+            user_audit_log_entity = user_auth_app_manager.get_entity("user_audit_log")
+            from lys.apps.user_auth.modules.user.consts import STATUS_CHANGE_LOG_TYPE
+
+            stmt = select(user_audit_log_entity).where(
+                user_audit_log_entity.target_user_id == target_user.id,
+                user_audit_log_entity.log_type_id == STATUS_CHANGE_LOG_TYPE
+            )
+            result = await session.execute(stmt)
+            system_log = result.scalar_one()
+
+            with pytest.raises(LysError) as exc_info:
+                await audit_log_service.delete_observation(
+                    log=system_log,
+                    session=session
+                )
+
+            # Should raise CANNOT_DELETE_SYSTEM_LOG
+            assert "CANNOT_DELETE_SYSTEM_LOG" in str(exc_info.value)
+
+
