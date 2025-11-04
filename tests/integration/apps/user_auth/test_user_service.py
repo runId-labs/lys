@@ -22,114 +22,7 @@ from lys.core.managers.app import AppManager
 from lys.core.errors import LysError
 
 
-# Shared fixture at module level to avoid SQLAlchemy registry pollution
-@pytest_asyncio.fixture(scope="module")
-async def user_auth_app_manager():
-    """Create AppManager with user_auth app loaded (shared across all test classes in module)."""
-    settings = LysAppSettings()
-    settings.database.configure(
-        type="sqlite",
-        database=":memory:",
-        echo=False
-    )
-    settings.apps = ["lys.apps.base", "lys.apps.user_auth"]
-
-    app_manager = AppManager(settings=settings)
-    app_manager.configure_component_types([
-        AppComponentTypeEnum.ENTITIES,
-        AppComponentTypeEnum.SERVICES,
-    ])
-    app_manager.load_all_components()
-    await app_manager.database.initialize_database()
-
-    # Create base test data (languages, genders, emailing types, etc.)
-    language_service = app_manager.get_service("language")
-    gender_service = app_manager.get_service("gender")
-    emailing_type_service = app_manager.get_service("emailing_type")
-    emailing_status_service = app_manager.get_service("emailing_status")
-    one_time_token_type_service = app_manager.get_service("one_time_token_type")
-
-    async with app_manager.database.get_session() as session:
-        # Create test languages
-        await language_service.create(session=session, id="en", enabled=True)
-        await language_service.create(session=session, id="fr", enabled=True)
-
-        # Create test genders
-        await gender_service.create(session=session, id="M", enabled=True)
-        await gender_service.create(session=session, id="F", enabled=True)
-
-        # Create emailing types
-        from lys.apps.user_auth.modules.emailing.consts import USER_PASSWORD_RESET_EMAILING_TYPE
-        await emailing_type_service.create(
-            session=session,
-            id=USER_PASSWORD_RESET_EMAILING_TYPE,
-            enabled=True,
-            subject="Password Reset",
-            template="password_reset",
-            context_description={}
-        )
-
-        # Create emailing statuses
-        await emailing_status_service.create(session=session, id="PENDING", enabled=True)
-        await emailing_status_service.create(session=session, id="SENT", enabled=True)
-
-        # Create one-time token types (duration in minutes)
-        from lys.apps.base.modules.one_time_token.consts import (
-            PASSWORD_RESET_TOKEN_TYPE,
-            EMAIL_VERIFICATION_TOKEN_TYPE
-        )
-        await one_time_token_type_service.create(
-            session=session,
-            id=PASSWORD_RESET_TOKEN_TYPE,
-            enabled=True,
-            duration=30  # 30 minutes
-        )
-        await one_time_token_type_service.create(
-            session=session,
-            id=EMAIL_VERIFICATION_TOKEN_TYPE,
-            enabled=True,
-            duration=1440  # 24 hours
-        )
-
-        # Create one-time token statuses
-        from lys.apps.base.modules.one_time_token.consts import (
-            PENDING_TOKEN_STATUS,
-            USED_TOKEN_STATUS,
-            REVOKED_TOKEN_STATUS
-        )
-        one_time_token_status_service = app_manager.get_service("one_time_token_status")
-        await one_time_token_status_service.create(session=session, id=PENDING_TOKEN_STATUS, enabled=True)
-        await one_time_token_status_service.create(session=session, id=USED_TOKEN_STATUS, enabled=True)
-        await one_time_token_status_service.create(session=session, id=REVOKED_TOKEN_STATUS, enabled=True)
-
-        # Create user statuses
-        from lys.apps.user_auth.modules.user.consts import (
-            ENABLED_USER_STATUS,
-            DISABLED_USER_STATUS,
-            REVOKED_USER_STATUS,
-            DELETED_USER_STATUS
-        )
-        user_status_service = app_manager.get_service("user_status")
-        await user_status_service.create(session=session, id=ENABLED_USER_STATUS, enabled=True)
-        await user_status_service.create(session=session, id=DISABLED_USER_STATUS, enabled=True)
-        await user_status_service.create(session=session, id=REVOKED_USER_STATUS, enabled=True)
-        await user_status_service.create(session=session, id=DELETED_USER_STATUS, enabled=True)
-
-        # Create user audit log types
-        from lys.apps.user_auth.modules.user.consts import (
-            STATUS_CHANGE_LOG_TYPE,
-            ANONYMIZATION_LOG_TYPE,
-            OBSERVATION_LOG_TYPE
-        )
-        user_audit_log_type_service = app_manager.get_service("user_audit_log_type")
-        await user_audit_log_type_service.create(session=session, id=STATUS_CHANGE_LOG_TYPE, enabled=True)
-        await user_audit_log_type_service.create(session=session, id=ANONYMIZATION_LOG_TYPE, enabled=True)
-        await user_audit_log_type_service.create(session=session, id=OBSERVATION_LOG_TYPE, enabled=True)
-
-    yield app_manager
-
-    await app_manager.database.close()
-
+# Note: user_auth_app_manager fixture is defined in conftest.py
 
 class TestUserServiceCRUD:
     """Test UserService CRUD operations."""
@@ -537,7 +430,6 @@ class TestUserServicePasswordManagement:
             assert "INVALID_RESET_TOKEN_ERROR" in str(exc_info.value) or "TOKEN_ALREADY_USED" in str(exc_info.value)
 
 
-@pytest.mark.usefixtures("isolate_sqlalchemy_registry")
 class TestUserServiceEmailVerification:
     """Tests for UserService email verification methods."""
 
@@ -722,7 +614,6 @@ class TestUserServiceEmailVerification:
             assert "EMAIL_ALREADY_VALIDATED_ERROR" in str(exc_info.value)
 
 
-@pytest.mark.usefixtures("isolate_sqlalchemy_registry")
 class TestUserServiceStatusManagement:
     """Tests for UserService status management methods."""
 
@@ -867,7 +758,6 @@ class TestUserServiceStatusManagement:
             assert "INVALID_USER_STATUS" in str(exc_info.value)
 
 
-@pytest.mark.usefixtures("isolate_sqlalchemy_registry")
 class TestUserServiceGDPRAnonymization:
     """Tests for UserService GDPR anonymization methods."""
 
@@ -1032,7 +922,6 @@ class TestUserServiceGDPRAnonymization:
             assert "USER_ALREADY_ANONYMIZED" in str(exc_info.value)
 
 
-@pytest.mark.usefixtures("isolate_sqlalchemy_registry")
 class TestUserServiceAuditLogging:
     """Tests for UserService audit logging functionality."""
 
