@@ -4,6 +4,7 @@ from typing import Optional, Dict, Any
 import strawberry
 from strawberry import relay
 
+from lys.apps.base.modules.language.nodes import LanguageNode
 from lys.apps.user_auth.modules.user.entities import (
     UserEmailAddress,
     User,
@@ -51,6 +52,7 @@ class UserEmailAddressNode(EntityNode[UserEmailAddressService], relay.Node):
     address: str
     created_at: Optional[datetime]
     updated_at: Optional[datetime]
+    validated_at: Optional[datetime]
 
     @classmethod
     def from_obj(cls, entity: UserEmailAddress) -> "UserEmailAddressNode":
@@ -59,6 +61,7 @@ class UserEmailAddressNode(EntityNode[UserEmailAddressService], relay.Node):
             address=entity.address,
             created_at=entity.created_at,
             updated_at=entity.updated_at,
+            validated_at=entity.validated_at,
         )
 
 
@@ -68,6 +71,7 @@ class UserNode(EntityNode[UserService], relay.Node):
     id: relay.NodeID[str]
     email_address: UserEmailAddressNode
     status: UserStatusNode
+    language: LanguageNode
     private_data: Optional["UserPrivateDataNode"]
     created_at: datetime
     updated_at: Optional[datetime]
@@ -78,6 +82,7 @@ class UserNode(EntityNode[UserService], relay.Node):
             id=entity.id,
             email_address=UserEmailAddressNode.from_obj(entity.email_address),
             status=UserStatusNode.from_obj(entity.status),
+            language=LanguageNode.from_obj(entity.language),
             private_data=UserPrivateDataNode.from_obj(entity.private_data) if entity.private_data else None,
             created_at=entity.created_at,
             updated_at=entity.updated_at,
