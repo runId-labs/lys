@@ -102,6 +102,30 @@ async def user_auth_app_manager():
         await one_time_token_status_service.create(session=session, id=USED_TOKEN_STATUS, enabled=True)
         await one_time_token_status_service.create(session=session, id=REVOKED_TOKEN_STATUS, enabled=True)
 
+        # Create user statuses
+        from lys.apps.user_auth.modules.user.consts import (
+            ENABLED_USER_STATUS,
+            DISABLED_USER_STATUS,
+            REVOKED_USER_STATUS,
+            DELETED_USER_STATUS
+        )
+        user_status_service = app_manager.get_service("user_status")
+        await user_status_service.create(session=session, id=ENABLED_USER_STATUS, enabled=True)
+        await user_status_service.create(session=session, id=DISABLED_USER_STATUS, enabled=True)
+        await user_status_service.create(session=session, id=REVOKED_USER_STATUS, enabled=True)
+        await user_status_service.create(session=session, id=DELETED_USER_STATUS, enabled=True)
+
+        # Create user audit log types
+        from lys.apps.user_auth.modules.user.consts import (
+            STATUS_CHANGE_LOG_TYPE,
+            ANONYMIZATION_LOG_TYPE,
+            OBSERVATION_LOG_TYPE
+        )
+        user_audit_log_type_service = app_manager.get_service("user_audit_log_type")
+        await user_audit_log_type_service.create(session=session, id=STATUS_CHANGE_LOG_TYPE, enabled=True)
+        await user_audit_log_type_service.create(session=session, id=ANONYMIZATION_LOG_TYPE, enabled=True)
+        await user_audit_log_type_service.create(session=session, id=OBSERVATION_LOG_TYPE, enabled=True)
+
     yield app_manager
 
     await app_manager.database.close()
@@ -696,3 +720,148 @@ class TestUserServiceEmailVerification:
 
             # Should raise EMAIL_ALREADY_VALIDATED_ERROR
             assert "EMAIL_ALREADY_VALIDATED_ERROR" in str(exc_info.value)
+
+
+@pytest.mark.usefixtures("isolate_sqlalchemy_registry")
+class TestUserServiceStatusManagement:
+    """Tests for UserService status management methods."""
+
+    @pytest.mark.asyncio
+    async def test_update_status_changes_status_and_creates_audit_log(self, user_auth_app_manager):
+        """Test that update_status changes user status and creates audit log."""
+        user_service = user_auth_app_manager.get_service("user")
+        user_audit_log_service = user_auth_app_manager.get_service("user_audit_log")
+
+        # Create two users: target user and admin user
+        async with user_auth_app_manager.database.get_session() as session:
+            target_user = await user_service.create_user(
+                session=session,
+                email="status_target@example.com",
+                password="Password123!",
+                language_id="en",
+                send_verification_email=False
+            )
+            admin_user = await user_service.create_user(
+                session=session,
+                email="status_admin@example.com",
+                password="Password123!",
+                language_id="en",
+                send_verification_email=False
+            )
+            # Default status should be ENABLED
+            from lys.apps.user_auth.modules.user.consts import ENABLED_USER_STATUS
+            assert target_user.status_id == ENABLED_USER_STATUS
+
+        # Update status to DISABLED
+        async with user_auth_app_manager.database.get_session() as session:
+            from lys.apps.user_auth.modules.user.consts import DISABLED_USER_STATUS
+
+            # Get fresh user instance
+            user = await user_service.get_by_id(target_user.id, session)
+
+            updated_user = await user_service.update_status(
+                user=user,
+                status_id=DISABLED_USER_STATUS,
+                reason="User requested account suspension",
+                author_user_id=admin_user.id,
+                session=session
+            )
+
+            # Verify status changed
+            assert updated_user.status_id == DISABLED_USER_STATUS
+
+            # Verify audit log was created
+            from sqlalchemy import select
+            user_audit_log_entity = user_auth_app_manager.get_entity("user_audit_log")
+            stmt = select(user_audit_log_entity).where(
+                user_audit_log_entity.target_user_id == target_user.id
+            )
+            result = await session.execute(stmt)
+            audit_logs = result.scalars().all()
+
+            assert len(audit_logs) == 1
+            audit_log = audit_logs[0]
+            assert audit_log.author_user_id == admin_user.id
+            assert audit_log.target_user_id == target_user.id
+            assert "ENABLED → DISABLED" in audit_log.message
+            assert "User requested account suspension" in audit_log.message
+
+    @pytest.mark.asyncio
+    async def test_update_status_prevents_deleted_status(self, user_auth_app_manager):
+        """Test that update_status prevents setting DELETED status directly."""
+        user_service = user_auth_app_manager.get_service("user")
+
+        # Create users
+        async with user_auth_app_manager.database.get_session() as session:
+            target_user = await user_service.create_user(
+                session=session,
+                email="status_target2@example.com",
+                password="Password123!",
+                language_id="en",
+                send_verification_email=False
+            )
+            admin_user = await user_service.create_user(
+                session=session,
+                email="status_admin2@example.com",
+                password="Password123!",
+                language_id="en",
+                send_verification_email=False
+            )
+
+        # Try to update status to DELETED (should fail)
+        async with user_auth_app_manager.database.get_session() as session:
+            from lys.apps.user_auth.modules.user.consts import DELETED_USER_STATUS
+
+            # Get fresh user instance
+            user = await user_service.get_by_id(target_user.id, session)
+
+            with pytest.raises(LysError) as exc_info:
+                await user_service.update_status(
+                    user=user,
+                    status_id=DELETED_USER_STATUS,
+                    reason="Test deletion",
+                    author_user_id=admin_user.id,
+                    session=session
+                )
+
+            # Should raise INVALID_STATUS_CHANGE
+            assert "INVALID_STATUS_CHANGE" in str(exc_info.value)
+
+    @pytest.mark.asyncio
+    async def test_update_status_with_invalid_status_fails(self, user_auth_app_manager):
+        """Test that update_status fails with invalid status_id."""
+        user_service = user_auth_app_manager.get_service("user")
+
+        # Create users
+        async with user_auth_app_manager.database.get_session() as session:
+            target_user = await user_service.create_user(
+                session=session,
+                email="status_target3@example.com",
+                password="Password123!",
+                language_id="en",
+                send_verification_email=False
+            )
+            admin_user = await user_service.create_user(
+                session=session,
+                email="status_admin3@example.com",
+                password="Password123!",
+                language_id="en",
+                send_verification_email=False
+            )
+
+        # Try to update status to invalid status
+        async with user_auth_app_manager.database.get_session() as session:
+            # Get fresh user instance
+            user = await user_service.get_by_id(target_user.id, session)
+
+            with pytest.raises(LysError) as exc_info:
+                await user_service.update_status(
+                    user=user,
+                    status_id="INVALID_STATUS",
+                    reason="Test invalid status",
+                    author_user_id=admin_user.id,
+                    session=session
+                )
+
+            # Should raise INVALID_USER_STATUS
+            assert "INVALID_USER_STATUS" in str(exc_info.value)
