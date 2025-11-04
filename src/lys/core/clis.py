@@ -54,8 +54,7 @@ def run_fast_app(
 
 def export_graphql_schema(
     output_path: Path,
-    settings_module: str = "settings",
-    split_schemas: bool = False
+    settings_module: str = "settings"
 ):
     """
     Export the GraphQL schema to a file.
@@ -68,14 +67,9 @@ def export_graphql_schema(
     configures apps, middlewares, permissions, and plugins without initializing
     database, Celery, or email services.
 
-    By default, all schemas (graphql, auth, etc.) are merged into a single file
-    for client consumption. Use split_schemas=True to export each schema separately.
-
     Args:
         output_path: Path where the schema file will be written (e.g., ./schema/schema.graphql)
         settings_module: Module path to import settings from (default: "settings")
-        split_schemas: If True, export each schema to a separate file. If False (default),
-                      merge all schemas into a single file.
 
     Raises:
         Exception: If settings module cannot be imported or schema generation fails
@@ -106,43 +100,22 @@ def export_graphql_schema(
     # Load all components
     app_manager.load_all_components()
 
-    # Load schema mapping
-    schema_mapping = app_manager._load_schema_mapping()
+    # Load the GraphQL schema
+    schema = app_manager._load_schema()
 
-    if not schema_mapping:
+    if not schema:
         raise Exception("No GraphQL schema found. Make sure you have registered queries/mutations.")
 
     # Create output directory if it doesn't exist
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
-    if split_schemas:
-        # Export each schema to a separate file
-        for schema_name, schema in schema_mapping.items():
-            # Generate the schema SDL (Schema Definition Language)
-            schema_str = str(schema)
+    # Generate the schema SDL (Schema Definition Language)
+    schema_str = str(schema)
 
-            # Write to file with schema name suffix
-            schema_file = output_path.parent / f"{output_path.stem}_{schema_name}{output_path.suffix}"
-            with open(schema_file, "w", encoding="utf-8") as f:
-                f.write(schema_str)
+    # Write schema to file
+    with open(output_path, "w", encoding="utf-8") as f:
+        f.write(schema_str)
 
-            print(f"GraphQL schema exported to: {schema_file}")
-    else:
-        # Merge all schemas into a single file (default behavior for client consumption)
-        merged_schema = []
-        for schema_name, schema in schema_mapping.items():
-            # Generate the schema SDL
-            schema_str = str(schema)
-            # Add header comment to identify schema sections
-            merged_schema.append(f"# Schema: {schema_name}\n")
-            merged_schema.append(schema_str)
-            merged_schema.append("\n")
-
-        # Write merged schema to single file
-        with open(output_path, "w", encoding="utf-8") as f:
-            f.write("\n".join(merged_schema))
-
-        print(f"GraphQL schema (merged) exported to: {output_path}")
-
+    print(f"GraphQL schema exported to: {output_path}")
     print(f"Schema export completed successfully!")
