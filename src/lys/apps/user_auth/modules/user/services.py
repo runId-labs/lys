@@ -482,14 +482,14 @@ class UserService(EntityService[User]):
             )
 
         # 3. Check if token is expired
-        if token_service.is_expired(token_entity):
+        if token_entity.is_expired:
             raise LysError(
                 EXPIRED_RESET_TOKEN_ERROR,
                 "Reset token has expired"
             )
 
         # 4. Check if token has already been used
-        if token_service.is_used(token_entity):
+        if token_entity.is_used:
             raise LysError(
                 INVALID_RESET_TOKEN_ERROR,
                 "Reset token has already been used"
@@ -561,14 +561,14 @@ class UserService(EntityService[User]):
             )
 
         # 3. Check if token is expired
-        if token_service.is_expired(token_entity):
+        if token_entity.is_expired:
             raise LysError(
                 EXPIRED_RESET_TOKEN_ERROR,
                 "Verification token has expired"
             )
 
         # 4. Check if token has already been used
-        if token_service.is_used(token_entity):
+        if token_entity.is_used:
             raise LysError(
                 INVALID_RESET_TOKEN_ERROR,
                 "Verification token has already been used"
@@ -997,7 +997,7 @@ class UserRefreshTokenService(EntityService[UserRefreshToken]):
         return new_token
 
 @register_service()
-class UserOneTimeTokenService(OneTimeTokenService, EntityService[UserOneTimeToken]):
+class UserOneTimeTokenService(EntityService[UserOneTimeToken], OneTimeTokenService):
     """
     Service for managing user one-time tokens.
 

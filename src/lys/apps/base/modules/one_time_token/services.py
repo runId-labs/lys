@@ -1,7 +1,7 @@
 """
 Services for one-time token management.
 """
-
+from abc import abstractmethod
 from datetime import datetime
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -41,6 +41,11 @@ class OneTimeTokenService:
 
     Provides common logic for token validation, usage, and revocation.
     """
+
+    @classmethod
+    @abstractmethod
+    async def get_by_id(cls, entity_id: str, session: AsyncSession):
+        raise NotImplementedError
 
     @classmethod
     async def get_valid_token(cls, token_id: str, session: AsyncSession) -> OneTimeToken | None:

@@ -74,12 +74,24 @@ class OneTimeToken(Entity):
     @property
     def expires_at(self) -> datetime:
         """Calculate token expiration time based on created_at and type duration."""
-        return self.created_at + timedelta(minutes=self.type.duration)
+        from datetime import timezone
+        # Ensure created_at has timezone info for comparison
+        created = self.created_at
+        if created.tzinfo is None:
+            # If naive, assume UTC
+            created = created.replace(tzinfo=timezone.utc)
+        return created + timedelta(minutes=self.type.duration)
 
     @property
     def is_expired(self) -> bool:
         """Check if token has expired."""
         return now_utc() >= self.expires_at
+
+    @property
+    def is_used(self) -> bool:
+        """Check if token has been used."""
+        from lys.apps.base.modules.one_time_token.consts import USED_TOKEN_STATUS
+        return self.status_id == USED_TOKEN_STATUS
 
     @property
     def is_valid(self) -> bool:
