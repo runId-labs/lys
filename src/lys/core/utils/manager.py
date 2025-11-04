@@ -12,5 +12,6 @@ class AppManagerCallerMixin:
             self._app_manager = LysAppManager()
         return self._app_manager
 
-    def configure_app_manager_for_testing(self, app_manager: AppManager):
-        self._app_manager = app_manager
+    @classmethod
+    def configure_app_manager_for_testing(cls, app_manager: AppManager):
+        cls._app_manager = app_manager
