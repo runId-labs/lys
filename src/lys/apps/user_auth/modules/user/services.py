@@ -280,15 +280,7 @@ class UserService(EntityService[User]):
 
         # Send email verification if requested and background_tasks provided
         if send_verification_email and background_tasks is not None:
-            user_emailing_service = cls.app_manager.get_service("user_emailing")
-
-            # Create email verification emailing
-            user_emailing = await user_emailing_service.create_email_verification_emailing(
-                user, session
-            )
-
-            # Schedule email sending via Celery after commit
-            user_emailing_service.schedule_send_emailing(user_emailing, background_tasks)
+            await cls.send_email_verification(user, session, background_tasks)
 
         return user
 
@@ -387,6 +379,45 @@ class UserService(EntityService[User]):
             last_name=last_name,
             gender_id=gender_id
         )
+
+    @classmethod
+    async def send_email_verification(
+        cls,
+        user: User,
+        session: AsyncSession,
+        background_tasks=None
+    ) -> bool:
+        """
+        Send email verification to a user.
+
+        This method:
+        1. Creates an email verification emailing
+        2. Schedules the email to be sent (if background_tasks provided)
+
+        Args:
+            user: User entity to send verification email to
+            session: Database session
+            background_tasks: FastAPI BackgroundTasks for scheduling email (optional)
+
+        Returns:
+            bool: True if email was sent
+
+        Raises:
+            LysError: If email address is already validated
+        """
+        # Get user emailing service
+        user_emailing_service = cls.app_manager.get_service("user_emailing")
+
+        # Create email verification emailing (will raise error if already validated)
+        user_emailing = await user_emailing_service.create_email_verification_emailing(
+            user, session
+        )
+
+        # Schedule email sending via Celery after commit (if background_tasks provided)
+        if background_tasks is not None:
+            user_emailing_service.schedule_send_emailing(user_emailing, background_tasks)
+
+        return True
 
     @classmethod
     async def request_password_reset(
@@ -657,15 +688,7 @@ class UserService(EntityService[User]):
 
         # 5. Send verification email to new address (if background_tasks provided)
         if background_tasks is not None:
-            user_emailing_service = cls.app_manager.get_service("user_emailing")
-
-            # Create email verification emailing
-            user_emailing = await user_emailing_service.create_email_verification_emailing(
-                user, session
-            )
-
-            # Schedule email sending via Celery after commit
-            user_emailing_service.schedule_send_emailing(user_emailing, background_tasks)
+            await cls.send_email_verification(user, session, background_tasks)
 
         return user
 
@@ -714,6 +737,9 @@ class UserService(EntityService[User]):
         # 3. Update password
         user.password = hashed_password.decode('utf-8')
 
+        # 4. Flush to persist the change
+        await session.flush()
+
         return user
 
     @classmethod
@@ -723,39 +749,48 @@ class UserService(EntityService[User]):
         first_name: str | None = None,
         last_name: str | None = None,
         gender_id: str | None = None,
+        language_id: str | None = None,
         session: AsyncSession = None
     ) -> User:
         """
-        Update user private data (GDPR-protected fields).
+        Update user private data (GDPR-protected fields) and language preference.
 
         This method is called by lys_edition which already fetched and validated
         permissions on the user entity.
 
         This method:
-        1. Validates gender_id exists if provided
-        2. Updates private data fields (only non-None values are updated)
+        1. Validates language_id exists if provided
+        2. Validates gender_id exists if provided
+        3. Updates private data fields (only non-None values are updated)
+        4. Updates language_id if provided
 
         Args:
             user: The user entity (fetched and validated by lys_edition)
             first_name: Optional first name to update
             last_name: Optional last name to update
             gender_id: Optional gender ID to update
+            language_id: Optional language ID to update
             session: Database session
 
         Returns:
-            User: The user with updated private data
+            User: The user with updated private data and/or language
 
         Raises:
-            LysError: If gender_id doesn't exist in database
+            LysError: If gender_id or language_id doesn't exist in database
         """
-        # Get gender service for validation
+        # Get services for validation
         gender_service = cls.app_manager.get_service("gender")
+        language_service = cls.app_manager.get_service("language")
 
-        # 1. Validate gender exists if provided
+        # 1. Validate language exists if provided
+        if language_id is not None:
+            await language_service.validate_language_exists(language_id, session)
+
+        # 2. Validate gender exists if provided
         if gender_id is not None:
             await gender_service.validate_gender_exists(gender_id, session)
 
-        # 2. Update private data fields (only update non-None values)
+        # 3. Update private data fields (only update non-None values)
         if first_name is not None:
             user.private_data.first_name = first_name
 
@@ -764,6 +799,10 @@ class UserService(EntityService[User]):
 
         if gender_id is not None:
             user.private_data.gender_id = gender_id
+
+        # 4. Update language_id if provided
+        if language_id is not None:
+            user.language_id = language_id
 
         return user
 

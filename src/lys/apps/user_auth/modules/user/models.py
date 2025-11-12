@@ -108,7 +108,14 @@ class UpdateUserPrivateDataInputModel(UserPrivateDataInputModel):
     All fields are optional to allow partial updates.
     Inherits validation from UserPrivateDataInputModel.
     """
-    pass
+    language_code: Optional[str] = Field(None, min_length=2, max_length=5)
+
+    @field_validator('language_code')
+    @classmethod
+    def validate_language_code(cls, value: str | None, info: ValidationInfo) -> str | None:
+        if value is None:
+            return value
+        return validate_language_format(value)
 
 
 class UpdateUserInputModel(BaseModel):

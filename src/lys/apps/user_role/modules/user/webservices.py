@@ -138,6 +138,11 @@ override_webservice(
 )
 
 override_webservice(
+    name="send_email_verification",
+    access_levels=[OWNER_ACCESS_LEVEL, ROLE_ACCESS_LEVEL]
+)
+
+override_webservice(
     name="create_user_observation",
     access_levels=[ROLE_ACCESS_LEVEL]
 )

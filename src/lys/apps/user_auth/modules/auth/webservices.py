@@ -2,7 +2,7 @@ import strawberry
 from starlette.responses import Response
 
 from lys.apps.user_auth.consts import REFRESH_COOKIE_KEY
-from lys.apps.user_auth.errors import INVALID_REFRESH_TOKEN_ERROR, BLOCKED_USER_ERROR
+from lys.apps.user_auth.errors import INVALID_REFRESH_TOKEN_ERROR, MISSING_REFRESH_TOKEN_ERROR, BLOCKED_USER_ERROR
 from lys.apps.user_auth.modules.auth.inputs import LoginInput
 from lys.apps.user_auth.modules.auth.nodes import LoginNode, LogoutNode
 from lys.apps.user_auth.modules.auth.services import AuthService
@@ -67,7 +67,7 @@ class AuthTokenMutation(Mutation):
         if not refresh_token_id:
             await auth_service.clear_auth_cookies(response)
             raise LysError(
-                INVALID_REFRESH_TOKEN_ERROR,
+                MISSING_REFRESH_TOKEN_ERROR,
                 "Missing refresh token in cookie"
             )
 

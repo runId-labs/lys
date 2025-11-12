@@ -79,6 +79,9 @@ class UpdateUserPrivateDataInput:
     gender_code: strawberry.auto = strawberry.field(
         description="Optional gender code to update (MALE, FEMALE, OTHER)"
     )
+    language_code: strawberry.auto = strawberry.field(
+        description="Optional language code to update in format 'en' or 'en-US'"
+    )
 
 
 @strawberry.experimental.pydantic.input(model=UpdateEmailInputModel)

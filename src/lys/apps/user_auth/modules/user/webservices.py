@@ -24,6 +24,7 @@ from lys.apps.user_auth.modules.user.inputs import (
 from lys.apps.user_auth.modules.user.nodes import (
     UserNode,
     UserStatusNode,
+    GenderNode,
     PasswordResetRequestNode,
     ResetPasswordNode,
     VerifyEmailNode,
@@ -119,6 +120,21 @@ class UserStatusQuery(Query):
         stmt = select(entity_type).order_by(entity_type.id.asc())
         if enabled is not None:
             stmt = stmt.where(entity_type.enabled == enabled)
+        return stmt
+
+
+@register_query()
+@strawberry.type
+class GenderQuery(Query):
+    @lys_connection(
+        GenderNode,
+        is_public=True,
+        is_licenced=False,
+        description="Return all available genders."
+    )
+    async def all_genders(self, info: Info) -> Select:
+        entity_type = info.context.app_manager.get_entity("gender")
+        stmt = select(entity_type).order_by(entity_type.id.asc())
         return stmt
 
 
@@ -261,6 +277,48 @@ class UserMutation(Mutation):
         logger.info("Email successfully verified using token")
 
         return node(success=True)
+
+    @lys_edition(
+        ensure_type=UserNode,
+        is_public=False,
+        is_licenced=False,
+        description="Send email verification to a user. Only accessible to super users."
+    )
+    async def send_email_verification(
+        self,
+        obj: User,
+        info: Info
+    ):
+        """
+        Send email verification to a user and update last_validation_request_at.
+
+        This webservice is only accessible to super users.
+        It sends a verification email with a one-time token to the user's email address.
+        The email must not already be validated.
+
+        Args:
+            obj: User entity (fetched and validated by lys_edition)
+            info: GraphQL context
+
+        Returns:
+            User: The user with updated last_validation_request_at timestamp
+
+        Raises:
+            LysError: If email address is already validated
+        """
+        session = info.context.session
+        user_service = info.context.app_manager.get_service("user")
+
+        # Delegate all business logic to the service
+        await user_service.send_email_verification(
+            user=obj,
+            session=session,
+            background_tasks=info.context.background_tasks
+        )
+
+        logger.info(f"Email verification sent to user {obj.id}")
+
+        return obj
 
     @lys_creation(
         ensure_type=UserNode,
@@ -476,27 +534,34 @@ class UserMutation(Mutation):
         info: Info
     ):
         """
-        Update user private data (GDPR-protected fields).
+        Update user private data (GDPR-protected fields) and language preference.
 
         This webservice is only accessible to the user themselves (OWNER access level).
-        Updates first_name, last_name, and gender_id.
+        Updates first_name, last_name, gender_id, and language_id.
 
         Args:
             obj: User entity (fetched and validated by lys_edition)
             inputs: Input containing:
                 - first_name: Optional first name to update
                 - last_name: Optional last name to update
-                - gender_id: Optional gender ID to update
+                - gender_code: Optional gender code to update
+                - language_code: Optional language code to update
             info: GraphQL context
 
         Returns:
-            User: The user with updated private data
+            User: The user with updated private data and/or language preference
         """
         # Convert Strawberry input to Pydantic model for validation
         input_data = inputs.to_pydantic()
 
         session = info.context.session
         user_service = info.context.app_manager.get_service("user")
+        language_service = info.context.app_manager.get_service("language")
+
+        # Convert language_code to language_id if provided
+        language_id = None
+        if input_data.language_code is not None:
+            language_id = await language_service.get_id_from_code(input_data.language_code, session)
 
         # Delegate all business logic to the service
         await user_service.update_user(
@@ -504,6 +569,7 @@ class UserMutation(Mutation):
             first_name=input_data.first_name,
             last_name=input_data.last_name,
             gender_id=input_data.gender_code,
+            language_id=language_id,
             session=session
         )
 

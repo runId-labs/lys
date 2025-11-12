@@ -53,6 +53,7 @@ class UserEmailAddressNode(EntityNode[UserEmailAddressService], relay.Node):
     created_at: Optional[datetime]
     updated_at: Optional[datetime]
     validated_at: Optional[datetime]
+    last_validation_request_at: Optional[datetime]
 
     @classmethod
     def from_obj(cls, entity: UserEmailAddress) -> "UserEmailAddressNode":
@@ -62,6 +63,7 @@ class UserEmailAddressNode(EntityNode[UserEmailAddressService], relay.Node):
             created_at=entity.created_at,
             updated_at=entity.updated_at,
             validated_at=entity.validated_at,
+            last_validation_request_at=entity.last_validation_request_at,
         )
 
 
