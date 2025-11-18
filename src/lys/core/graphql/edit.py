@@ -57,6 +57,9 @@ def _edition_resolver_generator(resolver: Callable, ensure_type: Type[EntityNode
                 # check permission again after updating
                 await check_access_to_object(obj, info.context)
 
+                # Flush changes to database before refresh
+                await session.flush()
+
                 # Refresh to load all relationships before creating the node
                 await session.refresh(obj)
 

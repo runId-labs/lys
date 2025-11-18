@@ -683,10 +683,7 @@ class UserService(EntityService[User]):
             user_id=user.id
         )
 
-        # 4. Flush to update the relationship
-        await session.flush()
-
-        # 5. Send verification email to new address (if background_tasks provided)
+        # 4. Send verification email to new address (if background_tasks provided)
         if background_tasks is not None:
             await cls.send_email_verification(user, session, background_tasks)
 
@@ -736,9 +733,6 @@ class UserService(EntityService[User]):
 
         # 3. Update password
         user.password = hashed_password.decode('utf-8')
-
-        # 4. Flush to persist the change
-        await session.flush()
 
         return user
 
@@ -853,7 +847,6 @@ class UserService(EntityService[User]):
 
         # Update status
         user.status_id = status_id
-        await session.flush()
 
         # Create audit log with "OLD → NEW" prefix
         audit_log_service = cls.app_manager.get_service("user_audit_log")
@@ -1280,7 +1273,6 @@ class UserAuditLogService(EntityService[UserAuditLog]):
 
         # Update message
         log.message = new_message
-        await session.flush()
 
         return log
 
@@ -1322,7 +1314,6 @@ class UserAuditLogService(EntityService[UserAuditLog]):
 
         # Soft delete
         log.deleted_at = now_utc()
-        await session.flush()
 
         return log
 

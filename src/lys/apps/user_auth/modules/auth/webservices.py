@@ -36,12 +36,10 @@ class AuthTokenMutation(Mutation):
 
         user, claims = await auth_service.login(inputs.to_pydantic(), response, session)
 
-        user_node_class: type[UserNode] = node.get_node_by_name("UserNode")
-
         return node(
+            success=True,
             access_token_expire_in=claims["exp"],
-            xsrf_token=claims["xsrf_token"],
-            user=user_node_class.from_obj(user)
+            xsrf_token=claims["xsrf_token"]
         )
 
     @lys_field(
@@ -103,12 +101,10 @@ class AuthTokenMutation(Mutation):
         # set authentication cookies
         await auth_service.set_auth_cookies(response, refresh_token.id, access_token)
 
-        user_node_class: type[UserNode] = node.get_node_by_name("UserNode")
-
         return node(
+            success=True,
             access_token_expire_in=claims["exp"],
-            xsrf_token=claims["xsrf_token"],
-            user=user_node_class.from_obj(refresh_token.user)
+            xsrf_token=claims["xsrf_token"]
         )
 
     @lys_field(

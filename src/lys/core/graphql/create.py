@@ -40,6 +40,9 @@ def _creation_resolver_generator(resolver: Callable, ensure_type: Type[EntityNod
                 # add object to database
                 session.add(entity_obj)
 
+                # Flush changes to database before refresh
+                await session.flush()
+
                 # Refresh to load all relationships before creating the node
                 await session.refresh(entity_obj)
 

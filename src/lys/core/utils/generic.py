@@ -5,7 +5,7 @@ This module provides utilities to automatically resolve service names and relate
 metadata from generic type parameters, eliminating code duplication across
 EntityService, EntityFixtures, and EntityNode classes.
 """
-from typing import Optional
+from typing import Optional, get_origin, get_args, Dict, Any
 
 
 def resolve_service_name_from_generic(cls) -> Optional[str]:
@@ -48,3 +48,67 @@ def resolve_service_name_from_generic(cls) -> Optional[str]:
                 return param_class.service_name
 
     return None
+
+
+def replace_node_in_annotation(annotation: Any, nodes_registry: Dict[str, Any]) -> Any:
+    """
+    Replace node references in type annotations with their effective registered versions.
+
+    This function handles node overriding in GraphQL schemas by replacing node type
+    references in annotations with the latest registered version from the node registry.
+    This ensures that when a node is overridden (e.g., UserNode extended with roles),
+    all references to that node in other nodes' annotations point to the effective version.
+
+    Handles:
+    - Direct node references: UserNode -> registry["UserNode"]
+    - String forward references: "UserNode" -> registry["UserNode"]
+    - Optional types: Optional[UserNode] -> Optional[registry["UserNode"]]
+    - List types: List[UserNode] -> List[registry["UserNode"]]
+    - Other generic types: Union, etc.
+
+    Args:
+        annotation: The type annotation to process
+        nodes_registry: Dictionary mapping node names to node classes
+
+    Returns:
+        The annotation with node references replaced, or the original annotation if no replacement needed
+
+    Example:
+        # Before finalization
+        class LoginNode:
+            user: UserNode  # Points to base UserNode from user_auth
+
+        # After finalization with node registry containing extended UserNode
+        class LoginNode:
+            user: UserNode  # Now points to extended UserNode from user_role
+    """
+    # Case 1: String forward reference
+    if isinstance(annotation, str):
+        if annotation in nodes_registry:
+            return nodes_registry[annotation]
+        return annotation
+
+    # Case 2: Simple type with __name__ (direct node class reference)
+    if hasattr(annotation, '__name__') and annotation.__name__ in nodes_registry:
+        return nodes_registry[annotation.__name__]
+
+    # Case 3: Generic type (Optional, List, Union, etc.)
+    origin = get_origin(annotation)
+    if origin is not None:
+        args = get_args(annotation)
+        if args:
+            # Recursively replace node references in type arguments
+            new_args = tuple(
+                replace_node_in_annotation(arg, nodes_registry)
+                for arg in args
+            )
+            # Reconstruct the generic type with updated arguments
+            try:
+                return origin[new_args]
+            except (TypeError, AttributeError):
+                # Some types don't support subscripting after creation
+                # Return original annotation in these cases
+                return annotation
+
+    # No replacement needed
+    return annotation

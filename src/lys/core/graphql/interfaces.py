@@ -1,5 +1,5 @@
 from abc import ABC, abstractmethod
-from typing import Dict, Any, Type
+from typing import Dict, Any, Type, Self
 
 from sqlalchemy.util import classproperty
 
@@ -11,6 +11,11 @@ class NodeInterface:
     @classproperty
     @abstractmethod
     def service_class(self) -> Type[EntityServiceInterface]:
+        raise NotImplementedError
+
+    @classmethod
+    @abstractmethod
+    def get_effective_node(cls) -> type[Self]:
         raise NotImplementedError
 
 

@@ -1,7 +1,6 @@
 from datetime import datetime
 from typing import Optional, Dict, Any
 
-import strawberry
 from strawberry import relay
 
 from lys.apps.base.modules.language.nodes import LanguageNode
@@ -45,7 +44,6 @@ class UserAuditLogTypeNode:
     pass
 
 
-@strawberry.type
 @register_node()
 class UserEmailAddressNode(EntityNode[UserEmailAddressService], relay.Node):
     id: relay.NodeID[str]
@@ -67,7 +65,6 @@ class UserEmailAddressNode(EntityNode[UserEmailAddressService], relay.Node):
         )
 
 
-@strawberry.type
 @register_node()
 class UserNode(EntityNode[UserService], relay.Node):
     id: relay.NodeID[str]
@@ -115,7 +112,6 @@ class UserNode(EntityNode[UserService], relay.Node):
         }
 
 
-@strawberry.type
 @register_node()
 class UserPrivateDataNode(EntityNode[UserPrivateDataService], relay.Node):
     """
@@ -148,7 +144,6 @@ class UserPrivateDataNode(EntityNode[UserPrivateDataService], relay.Node):
         )
 
 
-@strawberry.type
 @register_node()
 class UserOneTimeTokenNode(EntityNode[UserOneTimeTokenService], relay.Node):
     id: relay.NodeID[str]
@@ -172,31 +167,38 @@ class UserOneTimeTokenNode(EntityNode[UserOneTimeTokenService], relay.Node):
         )
 
 
-@strawberry.type
 @register_node()
 class PasswordResetRequestNode(ServiceNode[UserService]):
     success: bool
 
 
-@strawberry.type
 @register_node()
 class ResetPasswordNode(ServiceNode[UserService]):
     success: bool
 
 
-@strawberry.type
 @register_node()
 class VerifyEmailNode(ServiceNode[UserService]):
     success: bool
 
 
-@strawberry.type
 @register_node()
 class AnonymizeUserNode(ServiceNode[UserService]):
     success: bool
 
 
-@strawberry.type
+@register_node()
+class ConnectedUserSessionNode(ServiceNode[UserService]):
+    """
+    Connected user session information.
+
+    Returns session metadata including token expiration and XSRF protection.
+    """
+    success: bool
+    access_token_expire_in: int
+    xsrf_token: str
+
+
 @register_node()
 class UserAuditLogNode(EntityNode[UserAuditLogService], relay.Node):
     """
@@ -216,10 +218,11 @@ class UserAuditLogNode(EntityNode[UserAuditLogService], relay.Node):
 
     @classmethod
     def from_obj(cls, entity: UserAuditLog) -> "UserAuditLogNode":
+        effective_user_node = UserNode.get_effective_node()
         return cls(
             id=entity.id,
-            target_user=UserNode.from_obj(entity.target_user),
-            author_user=UserNode.from_obj(entity.author_user),
+            target_user=effective_user_node.from_obj(entity.target_user),
+            author_user=effective_user_node.from_obj(entity.author_user),
             log_type=UserAuditLogTypeNode.from_obj(entity.log_type),
             message=entity.message,
             created_at=entity.created_at,
@@ -244,14 +247,12 @@ class UserAuditLogNode(EntityNode[UserAuditLogService], relay.Node):
         }
 
 
-@strawberry.type
 @register_node()
 class CreateUserObservationNode(ServiceNode[UserAuditLogService]):
     """Result node for creating user observation."""
     audit_log: UserAuditLogNode
 
 
-@strawberry.type
 @register_node()
 class DeleteUserObservationNode(EntityNode[UserAuditLogService]):
     """Result node for deleting user observation."""

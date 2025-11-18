@@ -1,6 +1,6 @@
 import dataclasses
 import inspect
-from typing import Optional, Callable, List, Any, Union, Mapping, Sequence, Literal, Type
+from typing import Optional, Callable, List, Any, Union, Mapping, Sequence, Literal, Type, get_origin, get_args
 
 import strawberry
 from strawberry.extensions import FieldExtension
@@ -82,9 +82,10 @@ def lys_typed_field(
         init: Literal[True, False, None] = None,
         register: AppRegister=None
 ) -> Any:
+    effective_ensure_type = ensure_type.get_effective_node()
 
     def wrapper(resolver: Callable):
-        wrapped_resolver = resolver_wrapper(resolver, ensure_type)
+        wrapped_resolver = resolver_wrapper(resolver, effective_ensure_type)
 
         field_config = _create_strawberry_field_config(
             resolver=wrapped_resolver,
@@ -105,7 +106,20 @@ def lys_typed_field(
         )
 
         field = strawberry.field(**field_config)
-        field.base_resolver.type_annotation = ensure_type
+
+        # Preserve Optional type annotation from the original resolver
+        original_return_type = inspect.signature(resolver).return_annotation
+        if get_origin(original_return_type) is Union:
+            # Check if it's Optional (Union with None)
+            args = get_args(original_return_type)
+            if type(None) in args:
+                # It's Optional, preserve it
+                field.base_resolver.type_annotation = Optional[effective_ensure_type]
+            else:
+                field.base_resolver.type_annotation = effective_ensure_type
+        else:
+            field.base_resolver.type_annotation = effective_ensure_type
+
         return _apply_webservice_config(field, is_public, enabled, access_levels, is_licenced, allow_override, register)
 
     return wrapper
@@ -139,8 +153,8 @@ def lys_field(
             async def resolve_node():
                 node = await resolver(self, *args, info=info, **kwargs)
 
-                # check if the object is the same type of ensure type
-                if not isinstance(node, ensure_type_):
+                # check if the object is the same type of ensure type (allow None for Optional types)
+                if node is not None and not isinstance(node, ensure_type_):
                     raise ValueError(
                         "Wrong node type '%s'. (Expected: '%s')" % (
                             node.__class__.__name__,
@@ -210,28 +224,30 @@ def lys_connection_field(
         graphql_type: Optional[Any] = None,
         init: Literal[True, False, None] = None,
 ) -> Any:
+    effective_ensure_type = ensure_type.get_effective_node()
+
     def wrapper(resolver: Callable):
         sig = inspect.signature(resolver)
         parameter_value_list = list(sig.parameters.values())
 
         # check if order by schema type exist for the specified node
-        order_by_type = getattr(ensure_type, "order_by_type", None)
+        order_by_type = getattr(effective_ensure_type, "order_by_type", None)
 
         # if not the case create it and save it to make it reusable
-        if order_by_type is None and len(ensure_type.order_by_attribute_map.keys()) > 0:
-            class_str = """class %s :\n""" % (ensure_type.__name__ + "OderByType")
+        if order_by_type is None and len(effective_ensure_type.order_by_attribute_map.keys()) > 0:
+            class_str = """class %s :\n""" % (effective_ensure_type.__name__ + "OderByType")
 
-            for key in ensure_type.order_by_attribute_map.keys():
+            for key in effective_ensure_type.order_by_attribute_map.keys():
                 class_str += """   %s : bool | None = strawberry.UNSET\n""" % key
 
-            class_str += """order_by_type = %s""" % (ensure_type.__name__ + "OderByType")
+            class_str += """order_by_type = %s""" % (effective_ensure_type.__name__ + "OderByType")
 
             exec(class_str)
 
             loc = {}
             exec(class_str, globals(), loc)
             order_by_type = loc['order_by_type']
-            ensure_type.order_by_type = order_by_type
+            effective_ensure_type.order_by_type = order_by_type
 
         # add it to the webservice parameters
         if order_by_type is not None:
@@ -258,7 +274,7 @@ def lys_connection_field(
 
         # overwrite webservice to compute order by if needed
         async def inner_resolver(*args, info: Info, **kwargs):
-            info.context.app_manager = ensure_type.app_manager
+            info.context.app_manager = effective_ensure_type.app_manager
 
             order_by = None
             if "order_by" in kwargs.keys():
@@ -274,10 +290,10 @@ def lys_connection_field(
             stmt = await resolver(*args, info, **kwargs)
 
             if order_by is not None:
-                for key in ensure_type.order_by_attribute_map.keys():
+                for key in effective_ensure_type.order_by_attribute_map.keys():
                     value = getattr(order_by, key, None)
                     if isinstance(value, bool):
-                        column = ensure_type.order_by_attribute_map[key]
+                        column = effective_ensure_type.order_by_attribute_map[key]
                         if value is True:
                             order_by_condition = column.asc()
                         else:

@@ -50,6 +50,45 @@ logger = logging.getLogger(__name__)
 @register_query()
 @strawberry.type
 class UserQuery(Query):
+    @lys_field(
+        ensure_type=UserNode,
+        is_public=True,
+        is_licenced=False,
+        description="Return the currently connected user, or null if not authenticated."
+    )
+    async def connected_user(self, info: Info) -> Optional[UserNode]:
+        """
+        Get the currently connected user.
+
+        This query is public and returns the user information based on the authentication token.
+        Returns None if no user is authenticated (no token or invalid token).
+
+        Args:
+            info: GraphQL context containing the connected user
+
+        Returns:
+            UserNode | None: The connected user information, or None if not authenticated
+        """
+        # Check if user is connected
+        if not hasattr(info.context, "connected_user") or info.context.connected_user is None:
+            return None
+
+        node = UserNode.get_effective_node()
+        user_service = info.context.app_manager.get_service("user")
+        session = info.context.session
+
+        # Get connected user ID from context
+        connected_user_id = info.context.connected_user["id"]
+
+        # Fetch user from database
+        user = await user_service.get_by_id(connected_user_id, session)
+
+        # Return None if user not found in database
+        if user is None:
+            return None
+
+        return node.from_obj(user)
+
     @lys_getter(
         UserNode,
         is_public=False,
@@ -558,18 +597,13 @@ class UserMutation(Mutation):
         user_service = info.context.app_manager.get_service("user")
         language_service = info.context.app_manager.get_service("language")
 
-        # Convert language_code to language_id if provided
-        language_id = None
-        if input_data.language_code is not None:
-            language_id = await language_service.get_id_from_code(input_data.language_code, session)
-
         # Delegate all business logic to the service
         await user_service.update_user(
             user=obj,
             first_name=input_data.first_name,
             last_name=input_data.last_name,
             gender_id=input_data.gender_code,
-            language_id=language_id,
+            language_id=input_data.language_code,
             session=session
         )
 

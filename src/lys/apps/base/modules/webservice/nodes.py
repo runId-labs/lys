@@ -11,7 +11,6 @@ from lys.core.graphql.nodes import EntityNode
 from lys.core.registers import register_node
 
 
-@strawberry.type
 @register_node()
 class WebserviceNode(EntityNode[WebserviceService], relay.Node):
     id: relay.NodeID[str]

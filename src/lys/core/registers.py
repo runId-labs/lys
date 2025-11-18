@@ -2,6 +2,7 @@ import logging
 from collections import defaultdict, deque
 from typing import Type, Dict, List, Callable, Set
 
+import strawberry
 from strawberry.types.field import StrawberryField
 
 from lys.core.consts.component_types import AppComponentTypeEnum
@@ -11,6 +12,7 @@ from lys.core.interfaces.fixtures import EntityFixtureInterface
 from lys.core.interfaces.services import ServiceInterface
 from lys.core.managers.database import Base
 from lys.core.utils.decorators import singleton
+from lys.core.utils.generic import replace_node_in_annotation
 from lys.core.utils.webservice import WebserviceIsPublicType, generate_webservice_fixture
 
 
@@ -329,6 +331,36 @@ class AppRegister:
         if name not in self.nodes:
             raise KeyError(f"Node '{name}' not found. Available: {list(self.nodes.keys())}")
         return self.nodes[name]
+
+    def finalize_nodes(self):
+        """
+        Apply strawberry.type decorator to all registered nodes.
+
+        This method is automatically called after all nodes have been registered.
+        It applies the @strawberry.type decorator to each node, making them
+        discoverable by Strawberry GraphQL schema generation.
+
+        The approach allows:
+        - Nodes to be registered without @strawberry.type decorator
+        - Node overriding via register (last registered wins)
+        - Automatic Strawberry type application after all registrations complete
+        - Node references in annotations are replaced with effective registered versions
+        """
+        for node_name, node_class in self.nodes.items():
+            # Replace node references in annotations with effective registered versions
+            # This ensures that when a node is overridden (e.g., UserNode with roles),
+            # all references to it in other nodes point to the latest version
+            if hasattr(node_class, '__annotations__'):
+                for attr_name, attr_type in list(node_class.__annotations__.items()):
+                    new_type = replace_node_in_annotation(attr_type, self.nodes)
+                    if new_type is not attr_type:
+                        node_class.__annotations__[attr_name] = new_type
+                        logging.debug(f"  Updated {node_name}.{attr_name} type annotation")
+
+            # Apply strawberry.type decorator
+            strawberry_node = strawberry.type(node_class)
+            self.nodes[node_name] = strawberry_node
+            logging.info(f"✓ Finalized node: {node_name}")
 
 
 @singleton

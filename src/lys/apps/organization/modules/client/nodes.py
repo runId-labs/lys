@@ -10,7 +10,6 @@ from lys.core.graphql.nodes import EntityNode
 from lys.core.registers import register_node
 
 
-@strawberry.type
 @register_node()
 class ClientNode(EntityNode[ClientService], relay.Node):
     """

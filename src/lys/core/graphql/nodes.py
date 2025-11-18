@@ -120,11 +120,12 @@ class EntityNode(Generic[T], ServiceNodeMixin):
 
     @classmethod
     def build_list_connection(node_cls):
-        connection_extension = node_cls.__built_connection.get(node_cls.__name__)
+        effective_node_cls: type[EntityNode[T]] = node_cls.get_effective_node()
+        connection_extension = effective_node_cls.__built_connection.get(effective_node_cls.__name__)
         if connection_extension:
             return connection_extension
 
-        class LysListConnection(AbstractListConnection, relay.ListConnection[node_cls]):
+        class LysListConnection(AbstractListConnection, relay.ListConnection[effective_node_cls]):
 
             page_info: LysPageInfo = field(
                 description="Pagination data for this connection",
@@ -132,13 +133,13 @@ class EntityNode(Generic[T], ServiceNodeMixin):
 
             @classmethod
             def resolve_node(cls, node: Any, *, info: Info, **kwargs: Any) -> NodeInterface:
-                service = node_cls.service_class()
+                service = effective_node_cls.service_class()
                 # check if entity type is correct
                 if not isinstance(node, service.entity_class):
                     raise ValueError(
-                        "Wrong entity type '%s'. (Expected: '%s')" % (node.__class__.__name__, node_cls.__name__)
+                        "Wrong entity type '%s'. (Expected: '%s')" % (node.__class__.__name__, effective_node_cls.__name__)
                     )
-                return node_cls.from_obj(node)
+                return effective_node_cls.from_obj(node)
 
             @classmethod
             def resolve_connection(
@@ -242,12 +243,11 @@ def parametric_node(service_class: Type[ServiceInterface]):
                 }
 
         ParametricEntityNode.__name__ = class_.__name__
-        return strawberry.type(ParametricEntityNode)
+        return ParametricEntityNode
 
     return wrapper
 
 
-@strawberry.type
 class SuccessNode(NodeInterface):
     succeed: bool
     message: Optional[str] = None
