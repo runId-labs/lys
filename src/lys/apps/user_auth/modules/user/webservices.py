@@ -144,6 +144,52 @@ class UserQuery(Query):
 
         return stmt
 
+    @lys_connection(
+        UserNode,
+        is_public=False,
+        is_licenced=False,
+        description="Return all super users. Only accessible to super users."
+    )
+    async def all_super_users(self, info: Info, search: Optional[str] = None) -> Select:
+        """
+        Get all super users in the system with optional search filtering.
+
+        This query is only accessible to super users for administrative purposes.
+        Search filters by email address, first name, or last name (case-insensitive).
+
+        Args:
+            info: GraphQL context
+            search: Optional search string to filter by email, first_name, or last_name
+
+        Returns:
+            Select: SQLAlchemy select statement for super users ordered by creation date
+        """
+        entity_type = info.context.app_manager.get_entity("user")
+        email_entity = info.context.app_manager.get_entity("user_email_address")
+        private_data_entity = info.context.app_manager.get_entity("user_private_data")
+
+        # Base query with joins, filtering only super users
+        stmt = (
+            select(entity_type)
+            .join(email_entity)
+            .join(private_data_entity)
+            .where(entity_type.is_super_user == True)
+            .order_by(entity_type.created_at.desc())
+        )
+
+        # Apply search filter if provided
+        if search:
+            search_pattern = f"%{search.lower()}%"
+            stmt = stmt.where(
+                or_(
+                    email_entity.id.ilike(search_pattern),
+                    private_data_entity.first_name.ilike(search_pattern),
+                    private_data_entity.last_name.ilike(search_pattern)
+                )
+            )
+
+        return stmt
+
 
 @register_query()
 @strawberry.type

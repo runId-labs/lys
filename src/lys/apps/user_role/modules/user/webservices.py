@@ -1,18 +1,23 @@
 import logging
+from typing import Optional
 
 import strawberry
+from sqlalchemy import Select, select, or_
 
 from lys.apps.user_auth.modules.user.nodes import UserNode
 from lys.apps.user_role.consts import ROLE_ACCESS_LEVEL
 from lys.apps.user_role.errors import UNAUTHORIZED_ROLE_ASSIGNMENT
-from lys.apps.user_role.modules.user.inputs import CreateUserWithRolesInput
+from lys.apps.user_role.modules.user.entities import User
+from lys.apps.user_role.modules.user.inputs import CreateUserWithRolesInput, UpdateUserRolesInput
 from lys.apps.user_role.modules.user.services import UserService
 from lys.core.consts.webservices import OWNER_ACCESS_LEVEL
 from lys.core.contexts import Info
 from lys.core.errors import LysError
+from lys.core.graphql.connection import lys_connection
 from lys.core.graphql.create import lys_creation
-from lys.core.graphql.registers import register_mutation
-from lys.core.graphql.types import Mutation
+from lys.core.graphql.edit import lys_edition
+from lys.core.graphql.registers import register_mutation, register_query
+from lys.core.graphql.types import Mutation, Query
 from lys.core.registers import override_webservice
 
 logger = logging.getLogger(__name__)
@@ -23,6 +28,71 @@ override_webservice(
     name="user",
     access_levels=[OWNER_ACCESS_LEVEL, ROLE_ACCESS_LEVEL]
 )
+
+
+@strawberry.type
+@register_query()
+class UserRoleQuery(Query):
+    @lys_connection(
+        UserNode,
+        access_levels=[ROLE_ACCESS_LEVEL],
+        is_licenced=False,
+        allow_override=True,
+        description="Return all users with optional search and role filtering. Accessible to USER_ADMIN role."
+    )
+    async def all_users(
+        self,
+        info: Info,
+        search: Optional[str] = None,
+        role_code: Optional[str] = None
+    ) -> Select:
+        """
+        Get all users in the system with optional search and role filtering.
+
+        This query is accessible to users with ROLE_ACCESS_LEVEL (e.g., USER_ADMIN_ROLE).
+        Search filters by email address, first name, or last name (case-insensitive).
+        Role filtering checks if users have a specific role assigned.
+
+        Args:
+            info: GraphQL context
+            search: Optional search string to filter by email, first_name, or last_name
+            role_code: Optional role code to filter users by.
+                       Returns users who have this specific role.
+
+        Returns:
+            Select: SQLAlchemy select statement for users ordered by creation date
+        """
+        entity_type = info.context.app_manager.get_entity("user")
+        email_entity = info.context.app_manager.get_entity("user_email_address")
+        private_data_entity = info.context.app_manager.get_entity("user_private_data")
+
+        # Base query with joins - exclude super users
+        stmt = (
+            select(entity_type)
+            .join(email_entity)
+            .join(private_data_entity)
+            .where(entity_type.is_super_user.is_(False))
+            .order_by(entity_type.created_at.desc())
+        )
+
+        # Apply search filter if provided
+        if search:
+            search_pattern = f"%{search.lower()}%"
+            stmt = stmt.where(
+                or_(
+                    email_entity.id.ilike(search_pattern),
+                    private_data_entity.first_name.ilike(search_pattern),
+                    private_data_entity.last_name.ilike(search_pattern)
+                )
+            )
+
+        # Apply role filter if provided
+        if role_code:
+            role_entity = info.context.app_manager.get_entity("role")
+            # Join with roles to filter by role_code
+            stmt = stmt.join(entity_type.roles).where(role_entity.id == role_code)
+
+        return stmt
 
 
 @register_mutation()
@@ -114,6 +184,57 @@ class UserMutation(Mutation):
             logger.info(f"User created with email: {input_data.email} without roles")
 
         return user
+
+    @lys_edition(
+        ensure_type=UserNode,
+        is_public=False,
+        access_levels=[ROLE_ACCESS_LEVEL],
+        is_licenced=False,
+        description="Update user role assignments. Accessible to users with USER_ADMIN role."
+    )
+    async def update_user_roles(
+        self,
+        obj: User,
+        inputs: UpdateUserRolesInput,
+        info: Info
+    ):
+        """
+        Update a user's role assignments by synchronizing with the provided list.
+
+        This webservice is accessible to users with ROLE_ACCESS_LEVEL (e.g., USER_ADMIN_ROLE).
+        The target user must not be a super user (super users have all permissions by default).
+
+        The operation synchronizes roles:
+        - Adds roles that are in the list but not assigned to the user
+        - Removes roles that are assigned to the user but not in the list
+        - Empty list removes all roles from the user
+
+        Args:
+            obj: User entity (fetched and validated by lys_edition)
+            inputs: Input containing:
+                - role_codes: List of role codes to assign to the user
+            info: GraphQL context
+
+        Returns:
+            User: The user with updated roles
+
+        Raises:
+            LysError: If target user is a super user
+        """
+        # Convert Strawberry input to Pydantic model for validation
+        input_data = inputs.to_pydantic()
+
+        session = info.context.session
+        user_service = info.context.app_manager.get_service("user")
+
+        # Update user roles (validation happens in service method)
+        await user_service.update_user_roles(
+            user=obj,
+            role_codes=input_data.role_codes,
+            session=session
+        )
+
+        logger.info(f"User {obj.id} roles updated to: {input_data.role_codes} by {info.context.connected_user['id']}")
 
 
 # Override webservices from user_auth to extend access levels to include ROLE

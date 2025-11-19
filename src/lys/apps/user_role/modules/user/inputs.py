@@ -1,6 +1,6 @@
 import strawberry
 
-from lys.apps.user_role.modules.user.models import CreateUserWithRolesInputModel
+from lys.apps.user_role.modules.user.models import CreateUserWithRolesInputModel, UpdateUserRolesInputModel
 
 
 @strawberry.experimental.pydantic.input(model=CreateUserWithRolesInputModel)
@@ -25,4 +25,11 @@ class CreateUserWithRolesInput:
     )
     role_codes: strawberry.auto = strawberry.field(
         description="List of role codes to assign to the new user"
+    )
+
+
+@strawberry.experimental.pydantic.input(model=UpdateUserRolesInputModel)
+class UpdateUserRolesInput:
+    role_codes: strawberry.auto = strawberry.field(
+        description="List of role codes to assign to the user (empty list removes all roles)"
     )

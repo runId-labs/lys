@@ -26,10 +26,12 @@ class RoleFixtures(EntityFixtures[RoleService]):
                     "update_password",
                     "update_user_private_data",
                     "update_user_status",
+                    "update_user_roles",
                     "send_email_verification",
                     "create_user_observation",
                     "list_user_audit_logs",
-                    "all_roles"
+                    "all_roles",
+                    "all_users"
                 ]
             }
         }

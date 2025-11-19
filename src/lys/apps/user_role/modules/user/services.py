@@ -4,7 +4,9 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from lys.apps.user_auth.modules.user.services import UserService as AuthUserService
+from lys.apps.user_role.errors import CANNOT_UPDATE_SUPER_USER_ROLES
 from lys.apps.user_role.modules.user.entities import User
+from lys.core.errors import LysError
 from lys.core.registers import register_service
 
 
@@ -80,3 +82,61 @@ class UserService(AuthUserService):
         )
 
         return user
+
+    @classmethod
+    async def update_user_roles(
+        cls,
+        user: User,
+        role_codes: List[str],
+        session: AsyncSession
+    ) -> None:
+        """
+        Update a user's role assignments by synchronizing with the provided list.
+
+        This method:
+        - Validates that the user is not a super user
+        - Adds roles that are in the list but not assigned to the user
+        - Removes roles that are assigned to the user but not in the list
+        - Empty list removes all roles from the user
+
+        Args:
+            user: User entity to update roles for
+            role_codes: List of role codes to assign to the user
+            session: Database session for executing queries
+
+        Raises:
+            LysError: If user is a super user (cannot update super user roles via this method)
+        """
+        # Validate that user is not a super user
+        if user.is_super_user:
+            raise LysError(
+                CANNOT_UPDATE_SUPER_USER_ROLES,
+                "Cannot update roles for super users. Super users have all permissions by default."
+            )
+
+        # Get current role codes
+        current_role_codes = {role.id for role in user.roles}
+
+        # Get target role codes
+        target_role_codes = set(role_codes)
+
+        # Determine which roles to add and remove
+        roles_to_add = target_role_codes - current_role_codes
+        roles_to_remove = current_role_codes - target_role_codes
+
+        # Fetch role entities to add
+        if roles_to_add:
+            role_service = cls.app_manager.get_service("role")
+            role_entity = role_service.entity_class
+
+            stmt = select(role_entity).where(role_entity.id.in_(roles_to_add))
+            result = await session.execute(stmt)
+            roles_to_add_entities = list(result.scalars().all())
+
+            # Add new roles
+            for role in roles_to_add_entities:
+                user.roles.append(role)
+
+        # Remove roles that are no longer in the list
+        if roles_to_remove:
+            user.roles = [role for role in user.roles if role.id not in roles_to_remove]

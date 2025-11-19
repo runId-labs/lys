@@ -19,20 +19,22 @@ class OrganizationUserQuery(Query):
         access_levels=[ROLE_ACCESS_LEVEL],
         is_licenced=False,
         allow_override=True,
-        description="Return all users with optional organization filtering. Accessible to user admins."
+        description="Return all users with optional organization and role filtering. Accessible to user admins."
     )
     async def all_users(
         self,
         info: Info,
         search: Optional[str] = None,
-        is_client_user: Optional[bool] = None
+        is_client_user: Optional[bool] = None,
+        role_code: Optional[str] = None
     ) -> Select:
         """
-        Get all users in the system with optional search and organization filtering.
+        Get all users in the system with optional search, organization, and role filtering.
 
         This query is accessible to users with ORGANIZATION_ROLE or ROLE access.
         Search filters by email address, first name, or last name (case-insensitive).
         Organization filtering checks if users belong to any client organization.
+        Role filtering checks if users have a specific role assigned.
 
         Args:
             info: GraphQL context
@@ -41,6 +43,8 @@ class OrganizationUserQuery(Query):
                 - True: users with at least one client_user relationship
                 - False: users with no client_user relationships
                 - None: no filtering on organization membership
+            role_code: Optional role code to filter users by.
+                       Returns users who have this specific role.
 
         Returns:
             Select: SQLAlchemy select statement for users ordered by creation date
@@ -50,11 +54,12 @@ class OrganizationUserQuery(Query):
         private_data_entity = info.context.app_manager.get_entity("user_private_data")
         client_user_entity = info.context.app_manager.get_entity("client_user")
 
-        # Base query with joins
+        # Base query with joins - exclude super users
         stmt = (
             select(entity_type)
             .join(email_entity)
             .join(private_data_entity)
+            .where(entity_type.is_super_user.is_(False))
             .order_by(entity_type.created_at.desc())
         )
 
@@ -82,5 +87,11 @@ class OrganizationUserQuery(Query):
             else:
                 # Filter users who have no client_user relationships
                 stmt = stmt.where(~client_user_exists)
+
+        # Apply role filter if provided
+        if role_code:
+            role_entity = info.context.app_manager.get_entity("role")
+            # Join with roles to filter by role_code
+            stmt = stmt.join(entity_type.roles).where(role_entity.id == role_code)
 
         return stmt
