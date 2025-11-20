@@ -3,9 +3,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased, selectinload
 
 from lys.apps.organization.abstracts import AbstractUserOrganizationRoleEntity
-from lys.apps.organization.modules.client.entities import ClientUserRole
+from lys.apps.organization.modules.user.entities import ClientUser, ClientUserRole
 from lys.apps.user_role.modules.user.services import UserService as UserRoleService
 from lys.core.registers import register_service
+from lys.core.services import EntityService
 
 
 @register_service()
@@ -90,3 +91,68 @@ class UserService(UserRoleService):
         result = await session.execute(stmt)
         organization_roles: list[ClientUserRole] = list(result.scalars().all())
         return organization_roles
+
+
+@register_service()
+class ClientUserService(EntityService[ClientUser]):
+    """
+    Service for managing ClientUser entity (many-to-many relationship between Client and User).
+    """
+
+    @classmethod
+    async def update_client_user_roles(
+        cls,
+        client_user: ClientUser,
+        role_codes: list[str],
+        session: AsyncSession
+    ) -> None:
+        """
+        Update a client user's role assignments within their organization by synchronizing with the provided list.
+
+        This method:
+        - Adds roles that are in the list but not assigned to the client user
+        - Removes roles that are assigned to the client user but not in the list
+        - Empty list removes all roles from the client user
+
+        Args:
+            client_user: ClientUser entity to update roles for
+            role_codes: List of role codes to assign to the client user in their organization
+            session: Database session for executing queries
+
+        Note:
+            This updates organization-specific roles (ClientUserRole), not global user roles.
+        """
+        # Get current role codes from client_user_roles
+        current_role_codes = {cur.role.id for cur in client_user.client_user_roles}
+
+        # Get target role codes
+        target_role_codes = set(role_codes)
+
+        # Determine which roles to add and remove
+        roles_to_add = target_role_codes - current_role_codes
+        roles_to_remove = current_role_codes - target_role_codes
+
+        # Fetch role entities to add
+        if roles_to_add:
+            role_service = cls.app_manager.get_service("role")
+            role_entity = role_service.entity_class
+
+            stmt = select(role_entity).where(role_entity.id.in_(roles_to_add))
+            result = await session.execute(stmt)
+            roles_to_add_entities = list(result.scalars().all())
+
+            # Create ClientUserRole entities for new roles
+            client_user_role_entity = cls.app_manager.get_entity("client_user_role")
+            for role in roles_to_add_entities:
+                client_user_role = client_user_role_entity(
+                    client_user_id=client_user.id,
+                    role_id=role.id
+                )
+                session.add(client_user_role)
+
+        # Remove roles that are no longer in the list
+        if roles_to_remove:
+            # Delete ClientUserRole entries
+            for client_user_role in list(client_user.client_user_roles):
+                if client_user_role.role.id in roles_to_remove:
+                    await session.delete(client_user_role)

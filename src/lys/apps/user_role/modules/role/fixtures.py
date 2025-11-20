@@ -31,7 +31,12 @@ class RoleFixtures(EntityFixtures[RoleService]):
                     "create_user_observation",
                     "list_user_audit_logs",
                     "all_roles",
-                    "all_users"
+                    "all_users",
+                    "all_client_users",
+                    "client_user",
+                    "update_client_user_email",
+                    "update_client_user_private_data",
+                    "update_client_user_roles"
                 ]
             }
         }

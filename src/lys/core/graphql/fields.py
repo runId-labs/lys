@@ -166,10 +166,16 @@ def lys_field(
 
             async def wrapped() -> EntityNode:
                 if has_session:
-                    async with ensure_type_.app_manager.database.get_session() as session:
-                        info.context.session = session
-
+                    # Check if session already exists in context (from DatabaseSessionExtension)
+                    existing_session = getattr(info.context, 'session', None)
+                    if existing_session is not None:
+                        # Use existing session from context
                         return await resolve_node()
+                    else:
+                        # Create new session if none exists
+                        async with ensure_type_.app_manager.database.get_session() as session:
+                            info.context.session = session
+                            return await resolve_node()
                 else:
                     return await resolve_node()
 

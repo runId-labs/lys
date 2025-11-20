@@ -147,6 +147,8 @@ class BusinessFixtureLoadingStrategy(FixtureLoadingStrategy):
             Tuple of (deleted_count, added_count, 0, 0)
             Note: updated_count and unchanged_count are always 0 for business data
         """
+        import logging
+
         deleted_count = 0
 
         if fixture_class.delete_previous_data:
@@ -157,20 +159,58 @@ class BusinessFixtureLoadingStrategy(FixtureLoadingStrategy):
 
         # Prepare formatted attributes
         formatted_attributes_list = []
-        for data in fixture_class.data_list:
-            formatted_attributes_list.append(
-                await fixture_class._format_attributes(
-                    data.get("attributes", {}), session=session
+        for i, data in enumerate(fixture_class.data_list):
+            try:
+                formatted_attributes_list.append(
+                    await fixture_class._format_attributes(
+                        data.get("attributes", {}), session=session
+                    )
                 )
-            )
+            except Exception as e:
+                logging.error(
+                    f"Failed to format attributes for data item {i+1}/{len(fixture_class.data_list)} "
+                    f"in {fixture_class.__name__}: {str(e)}"
+                )
+                logging.error(f"Problematic data: {data}")
+                raise
 
         # Insert all data from data_list
-        for attributes in formatted_attributes_list:
-            obj = entity_class(**attributes)
-            await fixture_class._do_before_add(obj)
-            session.add(obj)
+        created_objects = []
+        for i, attributes in enumerate(formatted_attributes_list):
+            try:
+                obj = entity_class(**attributes)
+                await fixture_class._do_before_add(obj)
+                session.add(obj)
+                created_objects.append(obj)
+            except Exception as e:
+                logging.error(
+                    f"Failed to create object {i+1}/{len(formatted_attributes_list)} "
+                    f"for {entity_class.__tablename__}: {str(e)}"
+                )
+                logging.error(f"Problematic attributes: {attributes}")
+                raise
 
-        added_count = len(fixture_class.data_list)
+        # Flush to persist objects and generate IDs
+        try:
+            await session.flush()
+        except Exception as e:
+            logging.error(
+                f"Failed to flush fixtures for {entity_class.__tablename__}: {str(e)}"
+            )
+            logging.error(f"Session state: {len(session.new)} new, {len(session.dirty)} dirty, "
+                         f"{len(session.deleted)} deleted")
+            raise
+
+        # Count objects that were successfully persisted (have an ID)
+        added_count = sum(1 for obj in created_objects if hasattr(obj, 'id') and obj.id is not None)
+
+        # Log warning if some objects failed to persist
+        failed_count = len(created_objects) - added_count
+        if failed_count > 0:
+            logging.warning(
+                f"{failed_count} objects were added to session but failed to persist "
+                f"for {entity_class.__tablename__}"
+            )
 
         # Business fixtures don't track updates/unchanged
         return deleted_count, added_count, 0, 0

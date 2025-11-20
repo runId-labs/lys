@@ -1,10 +1,12 @@
+import asyncio
 from abc import abstractmethod
 from datetime import datetime
-from typing import Type, Optional, Any, Self, Dict, List, TypeVar, Generic
+from typing import Type, Optional, Any, Self, Dict, List, TypeVar, Generic, overload, Union
 
 import strawberry
-from sqlalchemy import Select
+from sqlalchemy import Select, inspect
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import RelationshipProperty
 from sqlalchemy.util import classproperty
 from strawberry import relay, field
 from strawberry.relay import Edge
@@ -27,6 +29,7 @@ from lys.core.utils.manager import AppManagerCallerMixin
 from lys.core.utils.generic import resolve_service_name_from_generic
 
 T = TypeVar('T', bound=ServiceInterface)
+TNode = TypeVar('TNode', bound='EntityNode')
 
 
 class ServiceNodeMixin(AppManagerCallerMixin, NodeInterface):
@@ -71,9 +74,168 @@ class EntityNode(Generic[T], ServiceNodeMixin):
         return self.app_manager.get_entity(self.service_name)
 
     @classmethod
-    @abstractmethod
     def from_obj(cls, entity: EntityInterface) -> 'EntityNode':
-        raise NotImplementedError
+        """
+        Convert an entity to a node with automatic field mapping.
+
+        This default implementation automatically maps entity attributes to node fields
+        based on the node's type annotations. Fields starting with '_' are handled specially:
+        - '_entity' is automatically set to store the source entity for lazy loading
+
+        Subclasses can override this method for custom mapping logic.
+
+        Args:
+            entity: The entity instance to convert
+
+        Returns:
+            EntityNode instance with mapped fields
+        """
+        # Collect all non-private fields from annotations
+        fields = {}
+        for field_name in cls.__annotations__:
+            # Skip private fields (will be handled separately)
+            if field_name.startswith('_'):
+                continue
+
+            # Skip methods decorated with @strawberry.field (lazy-loaded relations)
+            # These are computed properties that should not be passed to __init__
+            if hasattr(cls, field_name):
+                class_attr = getattr(cls, field_name)
+                if callable(class_attr) or hasattr(class_attr, '__func__'):
+                    continue
+
+            # Map field if attribute exists on entity
+            if hasattr(entity, field_name):
+                fields[field_name] = getattr(entity, field_name)
+
+        # Store entity if _entity field is defined
+        if '_entity' in cls.__annotations__:
+            fields['_entity'] = entity
+
+        return cls(**fields)
+
+    async def _lazy_load_relation(
+        self,
+        relation_name: str,
+        node_class: Type[TNode],
+        info: 'Info'
+    ) -> Union[TNode, None]:
+        """
+        Async lazy load a single relation from the stored entity.
+
+        This method uses the session from the GraphQL context to explicitly load
+        the relationship using session.refresh(). This is required for SQLAlchemy async
+        to properly load relationships.
+
+        If the underlying foreign key is non-nullable and the relation is None, an error is raised
+        to ensure GraphQL schema consistency with database constraints.
+
+        Args:
+            relation_name: Name of the relation attribute on the entity (e.g., 'user', 'client')
+            node_class: Node class to convert the relation to (e.g., UserNode, ClientNode)
+            info: GraphQL Info context containing the database session
+
+        Returns:
+            Node instance for the relation, or None if relation is nullable and None
+
+        Raises:
+            AttributeError: If the entity is not loaded
+            ValueError: If the relation is non-nullable but None
+
+        Example:
+            @strawberry.field
+            async def user(self, info: Info) -> UserNode:
+                return await self._lazy_load_relation('user', UserNode, info)
+        """
+        if not hasattr(self, '_entity'):
+            raise AttributeError(
+                f"{self.__class__.__name__} must have '_entity' field to use lazy loading. "
+                f"Add '_entity: strawberry.Private[YourEntity]' to the node definition."
+            )
+
+        # Use session from context to refresh the entity with the relationship
+        session = info.context.session
+        await session.refresh(self._entity, [relation_name])
+
+        # Now we can safely access the relationship (it's loaded in memory)
+        entity_relation = getattr(self._entity, relation_name, None)
+
+        if entity_relation is None:
+            is_nullable = self._is_relation_nullable(relation_name)
+            if not is_nullable:
+                raise ValueError(
+                    f"Relation '{relation_name}' on {self._entity.__class__.__name__} is None, "
+                    f"but the underlying foreign key is non-nullable. This indicates a data integrity issue."
+                )
+            return None
+
+        return node_class.get_effective_node().from_obj(entity_relation)
+
+    def _is_relation_nullable(self, relation_name: str) -> bool:
+        """
+        Check if a relation's foreign key columns are nullable.
+
+        Args:
+            relation_name: Name of the relation attribute on the entity
+
+        Returns:
+            True if at least one foreign key column is nullable, False if all are non-nullable
+        """
+        mapper = inspect(self._entity.__class__)
+
+        if relation_name not in mapper.relationships:
+            return True
+
+        relationship = mapper.relationships[relation_name]
+
+        for local_col in relationship.local_columns:
+            if local_col.nullable:
+                return True
+
+        return False
+
+    async def _lazy_load_relation_list(
+        self,
+        relation_name: str,
+        node_class: Type[TNode],
+        info: 'Info'
+    ) -> List[TNode]:
+        """
+        Async lazy load a list of relations from the stored entity.
+
+        This method uses the session from the GraphQL context to explicitly load
+        the collection relationship using session.refresh(). This is required for
+        SQLAlchemy async to properly load relationships.
+
+        Args:
+            relation_name: Name of the relation attribute on the entity (e.g., 'roles', 'permissions')
+            node_class: Node class to convert each relation item to (e.g., RoleNode)
+            info: GraphQL Info context containing the database session
+
+        Returns:
+            List of node instances for the relation items
+
+        Raises:
+            AttributeError: If the entity is not loaded
+
+        Example:
+            @strawberry.field
+            async def roles(self, info: Info) -> List[RoleNode]:
+                return await self._lazy_load_relation_list('roles', RoleNode, info)
+        """
+        if not hasattr(self, '_entity'):
+            raise AttributeError(
+                f"{self.__class__.__name__} must have '_entity' field to use lazy loading. "
+                f"Add '_entity: strawberry.Private[YourEntity]' to the node definition."
+            )
+
+        # Use session from context to refresh the entity with the relationship collection
+        session = info.context.session
+        await session.refresh(self._entity, [relation_name])
+
+        # Now we can safely access the relationship collection (it's loaded in memory)
+        entity_relations = getattr(self._entity, relation_name, [])
+        return [node_class.get_effective_node().from_obj(item) for item in entity_relations]
 
     @classmethod
     async def resolve_node(cls, node_id: str, *,
@@ -85,20 +247,21 @@ class EntityNode(Generic[T], ServiceNodeMixin):
                 cls.__name__
             ))
 
+        # Use session from context (set by DatabaseSessionExtension)
+        # The session is kept open by the extension for the entire GraphQL operation
+        session = info.context.session
+
+        entity_obj: Optional[EntityInterface] = await get_db_object_and_check_access(
+            node_id,
+            cls.service_class,
+            info.context,
+            session,
+            nullable=True
+        )
+
         node = None
-        async with cls.app_manager.database.get_session() as session:
-            info.context.session = session
-
-            entity_obj: Optional[EntityInterface] = await get_db_object_and_check_access(
-                node_id,
-                cls.service_class,
-                info.context,
-                session,
-                nullable=True
-            )
-
-            if entity_obj:
-                node = cls.from_obj(entity_obj)
+        if entity_obj:
+            node = cls.from_obj(entity_obj)
 
         if required and node is None:
             raise LysError(
@@ -176,12 +339,26 @@ class EntityNode(Generic[T], ServiceNodeMixin):
                             async for i, v in aenumerate(iterator)
                         ]
 
-                    def count_entities(session: AsyncSession):
-                        return get_select_total_count(protected_stmt, node_cls.service_class.entity_class, session)
+                    async def count_entities_with_own_session():
+                        # Use a separate session for counting to allow parallel execution
+                        # The main session is used for loading entities (they stay attached)
+                        async with node_cls.app_manager.database.get_session() as count_session:
+                            return await get_select_total_count(
+                                protected_stmt,
+                                node_cls.service_class.entity_class,
+                                count_session
+                            )
 
-                    [edges, total_count] = await node_cls.service_class.execute_parallel(
-                        list_edges,
-                        count_entities
+                    # Use session from context (set by DatabaseSessionExtension) for loading entities
+                    # This keeps entities attached to the session for the entire GraphQL operation
+                    session = info.context.session
+
+                    # Execute list_edges and count_entities in parallel
+                    # - list_edges uses the main session (entities stay attached)
+                    # - count_entities uses its own session (no conflict)
+                    [edges, total_count] = await asyncio.gather(
+                        list_edges(session),
+                        count_entities_with_own_session()
                     )
 
                     return cls.prepare_returning_list(slice_metadata, edges, last, total_count)

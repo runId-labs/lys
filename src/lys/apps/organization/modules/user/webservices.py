@@ -1,14 +1,28 @@
+import logging
 from typing import Optional
 
 import strawberry
 from sqlalchemy import Select, select, or_, exists
+from strawberry import relay
 
+from lys.apps.organization.consts import ORGANIZATION_ROLE_ACCESS_LEVEL
+from lys.apps.organization.modules.user.entities import ClientUser
+from lys.apps.organization.modules.user.inputs import (
+    UpdateClientUserEmailInput,
+    UpdateClientUserPrivateDataInput,
+    UpdateClientUserRolesInput
+)
+from lys.apps.organization.modules.user.nodes import ClientUserNode
 from lys.apps.user_auth.modules.user.nodes import UserNode
 from lys.apps.user_role.consts import ROLE_ACCESS_LEVEL
 from lys.core.contexts import Info
 from lys.core.graphql.connection import lys_connection
-from lys.core.graphql.registers import register_query
-from lys.core.graphql.types import Query
+from lys.core.graphql.edit import lys_edition
+from lys.core.graphql.getter import lys_getter
+from lys.core.graphql.registers import register_query, register_mutation
+from lys.core.graphql.types import Query, Mutation
+
+logger = logging.getLogger(__name__)
 
 
 @strawberry.type
@@ -95,3 +109,246 @@ class OrganizationUserQuery(Query):
             stmt = stmt.join(entity_type.roles).where(role_entity.id == role_code)
 
         return stmt
+
+    @lys_getter(
+        ClientUserNode,
+        is_public=False,
+        access_levels=[ROLE_ACCESS_LEVEL, ORGANIZATION_ROLE_ACCESS_LEVEL],
+        is_licenced=False,
+        description="Return client user information. Accessible to users with USER_ADMIN role."
+    )
+    async def client_user(self):
+        pass
+
+    @lys_connection(
+        ClientUserNode,
+        access_levels=[ROLE_ACCESS_LEVEL, ORGANIZATION_ROLE_ACCESS_LEVEL],
+        is_licenced=False,
+        description="Return all client-user relationships with optional filtering. Accessible to USER_ADMIN role."
+    )
+    async def all_client_users(
+        self,
+        info: Info,
+        client_id: Optional[relay.GlobalID] = None,
+        search: Optional[str] = None,
+        role_code: Optional[str] = None
+    ) -> Select:
+        """
+        Get all client-user relationships with optional filtering.
+
+        This query is accessible to users with ROLE or ORGANIZATION_ROLE access level.
+        Returns the many-to-many relationships between clients and users.
+
+        Args:
+            info: GraphQL context
+            client_id: Optional GlobalID to filter by specific client
+            search: Optional search string to filter by user's email, first_name, or last_name
+            role_code: Optional role code to filter client users by organization role
+
+        Returns:
+            Select: SQLAlchemy select statement for client_user relationships ordered by creation date
+        """
+        client_user_entity = info.context.app_manager.get_entity("client_user")
+        user_entity = info.context.app_manager.get_entity("user")
+        email_entity = info.context.app_manager.get_entity("user_email_address")
+        private_data_entity = info.context.app_manager.get_entity("user_private_data")
+
+        # Base query with joins for search functionality
+        stmt = select(client_user_entity)
+
+        # Join with user, email, and private_data if search is provided
+        if search:
+            stmt = (
+                stmt
+                .join(user_entity, client_user_entity.user)
+                .join(email_entity)
+                .join(private_data_entity)
+            )
+
+            search_pattern = f"%{search.lower()}%"
+            stmt = stmt.where(
+                or_(
+                    email_entity.id.ilike(search_pattern),
+                    private_data_entity.first_name.ilike(search_pattern),
+                    private_data_entity.last_name.ilike(search_pattern)
+                )
+            )
+
+        # Apply client filter if provided
+        if client_id:
+            stmt = stmt.where(client_user_entity.client_id == client_id.node_id)
+
+        # Apply role filter if provided
+        if role_code:
+            client_user_role_entity = info.context.app_manager.get_entity("client_user_role")
+            role_entity = info.context.app_manager.get_entity("role")
+
+            # Join with client_user_roles to filter by role_code
+            stmt = (
+                stmt
+                .join(client_user_role_entity, client_user_entity.client_user_roles)
+                .join(role_entity, client_user_role_entity.role)
+                .where(role_entity.id == role_code)
+            )
+
+        stmt = stmt.order_by(client_user_entity.created_at.desc())
+
+        return stmt
+
+
+@register_mutation()
+@strawberry.type
+class OrganizationUserMutation(Mutation):
+    @lys_edition(
+        ensure_type=ClientUserNode,
+        is_public=False,
+        access_levels=[ROLE_ACCESS_LEVEL, ORGANIZATION_ROLE_ACCESS_LEVEL],
+        is_licenced=False,
+        description="Update client user email address. Accessible to users with USER_ADMIN role."
+    )
+    async def update_client_user_email(
+        self,
+        obj: ClientUser,
+        inputs: UpdateClientUserEmailInput,
+        info: Info
+    ):
+        """
+        Update client user email address and send verification email to the new address.
+
+        This webservice is accessible to users with ROLE or ORGANIZATION_ROLE access level.
+        The new email address will be set to unverified state and a verification email
+        will be sent to the new address.
+
+        Args:
+            obj: ClientUser entity (fetched and validated by lys_edition)
+            inputs: Input containing:
+                - new_email: New email address
+            info: GraphQL context
+
+        Returns:
+            ClientUser: The updated client user with new unverified email address
+        """
+        input_data = inputs.to_pydantic()
+
+        session = info.context.session
+        user_service = info.context.app_manager.get_service("user")
+
+        # Update the underlying user's email
+        await user_service.update_email(
+            user=obj.user,
+            new_email=input_data.new_email,
+            session=session,
+            background_tasks=info.context.background_tasks
+        )
+
+        logger.info(
+            f"Client user {obj.id} email updated to: {input_data.new_email} "
+            f"by {info.context.connected_user['id']}"
+        )
+
+        return obj
+
+    @lys_edition(
+        ensure_type=ClientUserNode,
+        is_public=False,
+        access_levels=[ROLE_ACCESS_LEVEL, ORGANIZATION_ROLE_ACCESS_LEVEL],
+        is_licenced=False,
+        description="Update client user private data. Accessible to users with USER_ADMIN role."
+    )
+    async def update_client_user_private_data(
+        self,
+        obj: ClientUser,
+        inputs: UpdateClientUserPrivateDataInput,
+        info: Info
+    ):
+        """
+        Update client user private data (GDPR-protected fields) and language preference.
+
+        This webservice is accessible to users with ROLE or ORGANIZATION_ROLE access level.
+        Updates first_name, last_name, gender_id, and language_id of the underlying user.
+
+        Args:
+            obj: ClientUser entity (fetched and validated by lys_edition)
+            inputs: Input containing:
+                - first_name: Optional first name to update
+                - last_name: Optional last name to update
+                - gender_code: Optional gender code to update
+                - language_code: Optional language code to update
+            info: GraphQL context
+
+        Returns:
+            ClientUser: The client user with updated private data
+        """
+        input_data = inputs.to_pydantic()
+
+        session = info.context.session
+        user_service = info.context.app_manager.get_service("user")
+
+        # Update the underlying user's private data
+        await user_service.update_user(
+            user=obj.user,
+            first_name=input_data.first_name,
+            last_name=input_data.last_name,
+            gender_id=input_data.gender_code,
+            language_id=input_data.language_code,
+            session=session
+        )
+
+        logger.info(
+            f"Client user {obj.id} private data updated by {info.context.connected_user['id']}"
+        )
+
+        return obj
+
+    @lys_edition(
+        ensure_type=ClientUserNode,
+        is_public=False,
+        access_levels=[ROLE_ACCESS_LEVEL, ORGANIZATION_ROLE_ACCESS_LEVEL],
+        is_licenced=False,
+        description="Update client user role assignments within their organization. Accessible to users with USER_ADMIN role."
+    )
+    async def update_client_user_roles(
+        self,
+        obj: ClientUser,
+        inputs: UpdateClientUserRolesInput,
+        info: Info
+    ):
+        """
+        Update a client user's role assignments within their organization by synchronizing with the provided list.
+
+        This webservice is accessible to users with ROLE or ORGANIZATION_ROLE access level.
+        The operation synchronizes organization-specific roles (ClientUserRole):
+        - Adds roles that are in the list but not assigned to the client user
+        - Removes roles that are assigned to the client user but not in the list
+        - Empty list removes all organization roles from the client user
+
+        Args:
+            obj: ClientUser entity (fetched and validated by lys_edition)
+            inputs: Input containing:
+                - role_codes: List of role codes to assign to the client user in their organization
+            info: GraphQL context
+
+        Returns:
+            ClientUser: The client user with updated organization roles
+
+        Note:
+            This updates organization-specific roles (ClientUserRole), not global user roles.
+        """
+        input_data = inputs.to_pydantic()
+
+        session = info.context.session
+        client_user_service = info.context.app_manager.get_service("client_user")
+
+        # Update client user's organization roles
+        await client_user_service.update_client_user_roles(
+            client_user=obj,
+            role_codes=input_data.role_codes,
+            session=session
+        )
+
+        logger.info(
+            f"Client user {obj.id} roles updated to: {input_data.role_codes} "
+            f"by {info.context.connected_user['id']}"
+        )
+
+        return obj

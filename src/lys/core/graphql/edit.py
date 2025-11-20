@@ -30,42 +30,40 @@ def _edition_resolver_generator(resolver: Callable, ensure_type: Type[EntityNode
     async def inner_resolver(self, id: relay.GlobalID, *args, info: Info, **kwargs) -> EntityNode:
         info.context.app_manager = ensure_type.app_manager
 
-        async def wrapped() -> EntityNode:
-            async with ensure_type.app_manager.database.get_session() as session:
-                info.context.session = session
+        # Use session from context (set by DatabaseSessionExtension)
+        # The session is kept open by the extension for the entire GraphQL operation
+        session = info.context.session
 
-                # get object and check access on it
-                obj: Optional[Entity] = await get_db_object_and_check_access(
-                    id.node_id,
-                    ensure_type.service_class,
-                    info.context,
-                    session=session
+        # get object and check access on it
+        obj: Optional[Entity] = await get_db_object_and_check_access(
+            id.node_id,
+            ensure_type.service_class,
+            info.context,
+            session=session
+        )
+
+        if not obj:
+            raise LysError(
+                NOT_FOUND_ERROR,
+                "_edition_resolver_generator: Unknown entity with type '%s' and id '%s'" % (
+                    ensure_type.service_class.entity_class,
+                    id.node_id
                 )
+            )
 
-                if not obj:
-                    raise LysError(
-                        NOT_FOUND_ERROR,
-                        "_edition_resolver_generator: Unknown entity with type '%s' and id '%s'" % (
-                            ensure_type.service_class.entity_class,
-                            id.node_id
-                        )
-                    )
+        # update the retrieved object with the resolver
+        await resolver(self, obj=obj, *args, info=info, **kwargs)
 
-                # update the retrieved object with the resolver
-                await resolver(self, obj=obj, *args, info=info, **kwargs)
+        # check permission again after updating
+        await check_access_to_object(obj, info.context)
 
-                # check permission again after updating
-                await check_access_to_object(obj, info.context)
+        # Flush changes to database before refresh
+        await session.flush()
 
-                # Flush changes to database before refresh
-                await session.flush()
+        # Refresh to load all relationships before creating the node
+        await session.refresh(obj)
 
-                # Refresh to load all relationships before creating the node
-                await session.refresh(obj)
-
-                return ensure_type.from_obj(obj)
-
-        return await wrapped()
+        return ensure_type.from_obj(obj)
 
     inner_resolver.__signature__ = sig.replace(
         parameters=tuple(parameters)

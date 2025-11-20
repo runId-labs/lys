@@ -18,35 +18,33 @@ def _delete_resolver_generator(resolver: Callable, ensure_type: Type[EntityNode]
     async def inner_resolver(self, id: relay.GlobalID, info: Info) -> SuccessNode:
         info.context.app_manager = ensure_type.app_manager
 
-        async def wrapped() -> SuccessNode:
-            async with ensure_type.app_manager.database.get_session() as session:
-                info.context.session = session
+        # Use session from context (set by DatabaseSessionExtension)
+        # The session is kept open by the extension for the entire GraphQL operation
+        session = info.context.session
 
-                entity_obj: Optional[Entity] = await get_db_object_and_check_access(
-                    id.node_id,
-                    ensure_type.service_class,
-                    info.context,
-                    session=session
+        entity_obj: Optional[Entity] = await get_db_object_and_check_access(
+            id.node_id,
+            ensure_type.service_class,
+            info.context,
+            session=session
+        )
+
+        if not entity_obj:
+            raise LysError(
+                NOT_FOUND_ERROR,
+                "_delete_resolver_generator: Unknown entity with type '%s' and id '%s'" % (
+                    ensure_type.service_class.entity_class,
+                    id.node_id
                 )
-
-                if not entity_obj:
-                    raise LysError(
-                        NOT_FOUND_ERROR,
-                        "_delete_resolver_generator: Unknown entity with type '%s' and id '%s'" % (
-                            ensure_type.service_class.entity_class,
-                            id.node_id
-                        )
-                    )
-
-                # update the object with the resolver
-                await resolver(self, obj=entity_obj, info=info)
-                await session.delete(entity_obj)
-
-            return SuccessNode(
-                succeed=True
             )
 
-        return await wrapped()
+        # update the object with the resolver
+        await resolver(self, obj=entity_obj, info=info)
+        await session.delete(entity_obj)
+
+        return SuccessNode(
+            succeed=True
+        )
 
     inner_resolver.__name__ = resolver.__name__
     inner_resolver.__module__ = resolver.__module__

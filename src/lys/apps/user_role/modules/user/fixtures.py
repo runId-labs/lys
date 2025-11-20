@@ -16,7 +16,7 @@ class RoleUserDevFixtures(UserDevFixtures):
     data_list = [
         {
             "attributes": {
-                "email_address": "admin_user@arum-test.fr",
+                "email_address": "admin_user@lys-test.fr",
                 "password": "password",
                 "roles": [
                     USER_ADMIN_ROLE

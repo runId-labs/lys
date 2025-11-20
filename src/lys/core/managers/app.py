@@ -15,6 +15,7 @@ from lys.core.configs import LysAppSettings, AppSettings
 from lys.core.consts.component_types import AppComponentTypeEnum
 from lys.core.consts.environments import EnvironmentEnum
 from lys.core.contexts import get_context
+from lys.core.graphql.extensions import DatabaseSessionExtension
 from lys.core.graphql.registers import GraphqlRegister, LysGraphqlRegister
 from lys.core.graphql.types import DefaultQuery
 from lys.core.interfaces.middlewares import MiddlewareInterface
@@ -339,8 +340,11 @@ class AppManager:
         if self.graphql_register.is_empty:
             return None
 
-        # Configure security extensions
+        # Configure extensions
         extensions = [
+            # Database session management: opens session at start of GraphQL operation
+            # and keeps it open for entire resolution (including nested fields)
+            DatabaseSessionExtension(),
             # security: limit query depth to avoid high query complexity
             QueryDepthLimiter(self.settings.query_depth_limit),
             # security: limit number of alias in a same query to avoid malicious batch requests
@@ -453,9 +457,15 @@ class AppManager:
         schema = self._load_schema()
 
         if schema is not None:
+            # Create context getter that includes app_manager reference
+            def context_getter_with_app_manager():
+                context = get_context()
+                context.app_manager = self
+                return context
+
             graphql_app = GraphQLRouter(
                 schema,
-                context_getter=get_context,
+                context_getter=context_getter_with_app_manager,
                 # security enabled graphql ide only on dev environment
                 graphql_ide="graphiql" if self.settings.env == EnvironmentEnum.DEV else None
             )

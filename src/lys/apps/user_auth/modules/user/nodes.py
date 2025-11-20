@@ -1,7 +1,9 @@
 from datetime import datetime
 from typing import Optional, Dict, Any
 
+import strawberry
 from strawberry import relay
+from strawberry.types import Info
 
 from lys.apps.base.modules.language.nodes import LanguageNode
 from lys.apps.user_auth.modules.user.entities import (
@@ -68,24 +70,29 @@ class UserEmailAddressNode(EntityNode[UserEmailAddressService], relay.Node):
 @register_node()
 class UserNode(EntityNode[UserService], relay.Node):
     id: relay.NodeID[str]
-    email_address: UserEmailAddressNode
-    status: UserStatusNode
-    language: LanguageNode
-    private_data: Optional["UserPrivateDataNode"]
     created_at: datetime
     updated_at: Optional[datetime]
+    _entity: strawberry.Private[User]
 
-    @classmethod
-    def from_obj(cls, entity: User):
-        return cls(
-            id=entity.id,
-            email_address=UserEmailAddressNode.from_obj(entity.email_address),
-            status=UserStatusNode.from_obj(entity.status),
-            language=LanguageNode.from_obj(entity.language),
-            private_data=UserPrivateDataNode.from_obj(entity.private_data) if entity.private_data else None,
-            created_at=entity.created_at,
-            updated_at=entity.updated_at,
-        )
+    @strawberry.field(description="User email address")
+    async def email_address(self, info: Info) -> UserEmailAddressNode:
+        """Get the user's email address."""
+        return await self._lazy_load_relation('email_address', UserEmailAddressNode, info)
+
+    @strawberry.field(description="User status")
+    async def status(self, info: Info) -> UserStatusNode:
+        """Get the user's status."""
+        return await self._lazy_load_relation('status', UserStatusNode, info)
+
+    @strawberry.field(description="User preferred language")
+    async def language(self, info: Info) -> LanguageNode:
+        """Get the user's preferred language."""
+        return await self._lazy_load_relation('language', LanguageNode, info)
+
+    @strawberry.field(description="User private data (GDPR protected)")
+    async def private_data(self, info: Info) -> Optional["UserPrivateDataNode"]:
+        """Get the user's private data (nullable)."""
+        return await self._lazy_load_relation('private_data', UserPrivateDataNode, info)
 
     @classproperty
     def order_by_attribute_map(self) -> Dict[str, Any]:
@@ -126,22 +133,15 @@ class UserPrivateDataNode(EntityNode[UserPrivateDataService], relay.Node):
     id: relay.NodeID[str]
     first_name: Optional[str]
     last_name: Optional[str]
-    gender: Optional[GenderNode]
     created_at: datetime
     updated_at: Optional[datetime]
     anonymized_at: Optional[datetime]
+    _entity: strawberry.Private[UserPrivateData]
 
-    @classmethod
-    def from_obj(cls, entity: UserPrivateData) -> "UserPrivateDataNode":
-        return cls(
-            id=entity.id,
-            first_name=entity.first_name,
-            last_name=entity.last_name,
-            gender=GenderNode.from_obj(entity.gender) if entity.gender else None,
-            created_at=entity.created_at,
-            updated_at=entity.updated_at,
-            anonymized_at=entity.anonymized_at,
-        )
+    @strawberry.field(description="User gender")
+    async def gender(self, info: Info) -> Optional[GenderNode]:
+        """Get the user's gender (nullable)."""
+        return await self._lazy_load_relation('gender', GenderNode, info)
 
 
 @register_node()
@@ -152,19 +152,12 @@ class UserOneTimeTokenNode(EntityNode[UserOneTimeTokenService], relay.Node):
     used_at: Optional[datetime]
     status_id: str
     type_id: str
-    user: UserNode
+    _entity: strawberry.Private[UserOneTimeToken]
 
-    @classmethod
-    def from_obj(cls, entity: UserOneTimeToken) -> "UserOneTimeTokenNode":
-        return cls(
-            id=entity.id,
-            created_at=entity.created_at,
-            updated_at=entity.updated_at,
-            used_at=entity.used_at,
-            status_id=entity.status_id,
-            type_id=entity.type_id,
-            user=UserNode.from_obj(entity.user),
-        )
+    @strawberry.field(description="User associated with this token")
+    async def user(self, info: Info) -> UserNode:
+        """Get the user associated with this one-time token."""
+        return await self._lazy_load_relation('user', UserNode, info)
 
 
 @register_node()
@@ -208,27 +201,26 @@ class UserAuditLogNode(EntityNode[UserAuditLogService], relay.Node):
     Provides audit trail for status changes, anonymization, and manual observations.
     """
     id: relay.NodeID[str]
-    target_user: UserNode
-    author_user: UserNode
-    log_type: UserAuditLogTypeNode
     message: str
     created_at: datetime
     updated_at: Optional[datetime]
     deleted_at: Optional[datetime]
+    _entity: strawberry.Private[UserAuditLog]
 
-    @classmethod
-    def from_obj(cls, entity: UserAuditLog) -> "UserAuditLogNode":
-        effective_user_node = UserNode.get_effective_node()
-        return cls(
-            id=entity.id,
-            target_user=effective_user_node.from_obj(entity.target_user),
-            author_user=effective_user_node.from_obj(entity.author_user),
-            log_type=UserAuditLogTypeNode.from_obj(entity.log_type),
-            message=entity.message,
-            created_at=entity.created_at,
-            updated_at=entity.updated_at,
-            deleted_at=entity.deleted_at,
-        )
+    @strawberry.field(description="User targeted by this audit log")
+    async def target_user(self, info: Info) -> UserNode:
+        """Get the user targeted by this audit log entry."""
+        return await self._lazy_load_relation('target_user', UserNode, info)
+
+    @strawberry.field(description="User who authored this audit log")
+    async def author_user(self, info: Info) -> UserNode:
+        """Get the user who created this audit log entry."""
+        return await self._lazy_load_relation('author_user', UserNode, info)
+
+    @strawberry.field(description="Type of audit log entry")
+    async def log_type(self, info: Info) -> UserAuditLogTypeNode:
+        """Get the type of this audit log entry."""
+        return await self._lazy_load_relation('log_type', UserAuditLogTypeNode, info)
 
     @classproperty
     def order_by_attribute_map(self) -> Dict[str, Any]:

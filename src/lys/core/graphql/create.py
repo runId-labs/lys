@@ -17,39 +17,35 @@ def _creation_resolver_generator(resolver: Callable, ensure_type: Type[EntityNod
     async def inner_resolver(self, *args, info: Info, **kwargs) -> EntityNode:
         info.context.app_manager = ensure_type.app_manager
 
-        async def wrapped() -> EntityNode:
-            # update the object with the resolver
-            # update the retrieved object with the resolver
-            async with ensure_type.app_manager.database.get_session() as session:
-                info.context.session = session
+        # Use session from context (set by DatabaseSessionExtension)
+        # The session is kept open by the extension for the entire GraphQL operation
+        session = info.context.session
 
-                entity_obj: Entity = await resolver(self, *args, info=info, **kwargs)
+        entity_obj: Entity = await resolver(self, *args, info=info, **kwargs)
 
-                # check if the object is the same type of ensure type entity
-                if not isinstance(entity_obj, ensure_type.entity_class):
-                    raise ValueError(
-                        "Wrong entity type '%s'. (Expected: '%s')" % (
-                            entity_obj.__class__.__name__,
-                            ensure_type.entity_class.__name__
-                        )
-                    )
+        # check if the object is the same type of ensure type entity
+        if not isinstance(entity_obj, ensure_type.entity_class):
+            raise ValueError(
+                "Wrong entity type '%s'. (Expected: '%s')" % (
+                    entity_obj.__class__.__name__,
+                    ensure_type.entity_class.__name__
+                )
+            )
 
-                # check permission again after updating
-                await check_access_to_object(entity_obj, info.context)
+        # check permission again after updating
+        await check_access_to_object(entity_obj, info.context)
 
-                # add object to database
-                session.add(entity_obj)
+        # add object to database
+        session.add(entity_obj)
 
-                # Flush changes to database before refresh
-                await session.flush()
+        # Flush changes to database before refresh
+        await session.flush()
 
-                # Refresh to load all relationships before creating the node
-                await session.refresh(entity_obj)
+        # Refresh to load all relationships before creating the node
+        await session.refresh(entity_obj)
 
-                # return node
-                return ensure_type.from_obj(entity_obj)
-
-        return await wrapped()
+        # return node
+        return ensure_type.from_obj(entity_obj)
 
     inner_resolver.__name__ = resolver.__name__
     inner_resolver.__module__ = resolver.__module__

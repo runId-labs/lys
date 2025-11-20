@@ -4,6 +4,7 @@ from typing import Type, Dict, List, Callable, Set
 
 import strawberry
 from strawberry.types.field import StrawberryField
+from strawberry.annotation import StrawberryAnnotation
 
 from lys.core.consts.component_types import AppComponentTypeEnum
 from lys.core.graphql.interfaces import NodeInterface
@@ -345,9 +346,10 @@ class AppRegister:
         - Node overriding via register (last registered wins)
         - Automatic Strawberry type application after all registrations complete
         - Node references in annotations are replaced with effective registered versions
+        - Method return type annotations are also updated for @strawberry.field methods
         """
         for node_name, node_class in self.nodes.items():
-            # Replace node references in annotations with effective registered versions
+            # 1. Replace node references in class field annotations with effective registered versions
             # This ensures that when a node is overridden (e.g., UserNode with roles),
             # all references to it in other nodes point to the latest version
             if hasattr(node_class, '__annotations__'):
@@ -355,9 +357,38 @@ class AppRegister:
                     new_type = replace_node_in_annotation(attr_type, self.nodes)
                     if new_type is not attr_type:
                         node_class.__annotations__[attr_name] = new_type
-                        logging.debug(f"  Updated {node_name}.{attr_name} type annotation")
+                        logging.debug(f"  Updated {node_name}.{attr_name} field type annotation")
 
-            # Apply strawberry.type decorator
+            # 2. Replace node references in method return type annotations
+            # This handles @strawberry.field methods that return other nodes
+            for attr_name in dir(node_class):
+                try:
+                    attr = getattr(node_class, attr_name)
+
+                    # Check if it's a StrawberryField (decorated with @strawberry.field)
+                    if isinstance(attr, StrawberryField):
+                        # Access the original function's annotations via base_resolver
+                        if hasattr(attr, 'base_resolver') and hasattr(attr.base_resolver, 'wrapped_func'):
+                            wrapped_func = attr.base_resolver.wrapped_func
+                            if hasattr(wrapped_func, '__annotations__'):
+                                return_annotation = wrapped_func.__annotations__.get('return')
+                                if return_annotation:
+                                    new_type = replace_node_in_annotation(return_annotation, self.nodes)
+                                    if new_type is not return_annotation:
+                                        # Update the wrapped function's annotations
+                                        wrapped_func.__annotations__['return'] = new_type
+                                        # Update the StrawberryField's type_annotation
+                                        if hasattr(attr, 'type_annotation'):
+                                            attr.type_annotation = StrawberryAnnotation(new_type)
+                                        logging.debug(
+                                            f"  Updated {node_name}.{attr_name}() return type annotation "
+                                            f"from {return_annotation} to {new_type}"
+                                        )
+                except (AttributeError, TypeError):
+                    # Skip attributes that can't be accessed or don't have annotations
+                    continue
+
+            # 3. Apply strawberry.type decorator
             strawberry_node = strawberry.type(node_class)
             self.nodes[node_name] = strawberry_node
             logging.info(f"✓ Finalized node: {node_name}")
