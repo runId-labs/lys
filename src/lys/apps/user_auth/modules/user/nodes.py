@@ -163,21 +163,25 @@ class UserOneTimeTokenNode(EntityNode[UserOneTimeTokenService], relay.Node):
 @register_node()
 class PasswordResetRequestNode(ServiceNode[UserService]):
     success: bool
+    message: str = "Password reset email sent"
 
 
 @register_node()
 class ResetPasswordNode(ServiceNode[UserService]):
     success: bool
+    message: str = "Password reset successfully"
 
 
 @register_node()
 class VerifyEmailNode(ServiceNode[UserService]):
     success: bool
+    message: str = "Email verified successfully"
 
 
 @register_node()
 class AnonymizeUserNode(ServiceNode[UserService]):
     success: bool
+    message: str = "User data anonymized successfully"
 
 
 @register_node()
@@ -188,6 +192,7 @@ class ConnectedUserSessionNode(ServiceNode[UserService]):
     Returns session metadata including token expiration and XSRF protection.
     """
     success: bool
+    message: str = "Session retrieved successfully"
     access_token_expire_in: int
     xsrf_token: str
 
@@ -242,6 +247,7 @@ class UserAuditLogNode(EntityNode[UserAuditLogService], relay.Node):
 @register_node()
 class CreateUserObservationNode(ServiceNode[UserAuditLogService]):
     """Result node for creating user observation."""
+    message: str = "User observation created successfully"
     audit_log: UserAuditLogNode
 
 
@@ -249,8 +255,9 @@ class CreateUserObservationNode(ServiceNode[UserAuditLogService]):
 class DeleteUserObservationNode(EntityNode[UserAuditLogService]):
     """Result node for deleting user observation."""
     success: bool
+    message: str = "User observation deleted successfully"
 
     @classmethod
     def from_obj(cls, entity: UserAuditLog) -> "DeleteUserObservationNode":
-        return cls(success=True)
+        return cls(success=True, message="User observation deleted successfully")
 

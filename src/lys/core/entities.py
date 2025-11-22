@@ -131,6 +131,9 @@ class ParametricEntity(Entity):
     # Control flag for enabling/disabling parametric values
     enabled: Mapped[bool] = mapped_column(default=True)
 
+    # AI-friendly description for system prompts and tool context
+    description: Mapped[str] = mapped_column(nullable=True)
+
     @property
     def code(self):
         """

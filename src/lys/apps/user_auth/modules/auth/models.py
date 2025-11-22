@@ -1,4 +1,4 @@
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, field_validator, Field
 from pydantic_core.core_schema import ValidationInfo
 
 from lys.apps.user_auth.errors import EMPTY_LOGIN_ERROR
@@ -8,10 +8,14 @@ from lys.core.utils.validators import validate_password_for_login
 
 class LoginInputModel(BaseModel):
     """
-    Model to create superuser
+    Input model for user authentication.
     """
-    login: str
-    password: str
+    login: str = Field(
+        description="User login (email address or username)"
+    )
+    password: str = Field(
+        description="User password"
+    )
 
     @field_validator('login')
     @classmethod

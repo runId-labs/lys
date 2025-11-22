@@ -37,13 +37,15 @@ class AccessLevelFixtures(EntityFixtures[AccessLevelService]):
         {
             "id": CONNECTED_ACCESS_LEVEL,  # "CONNECTED"
             "attributes": {
-                "enabled": True  # Active and available for use
+                "enabled": True,
+                "description": "Grants access to any authenticated user. Use for public data that requires login but not ownership."
             }
         },
         {
             "id": OWNER_ACCESS_LEVEL,  # "OWNER"
             "attributes": {
-                "enabled": True  # Active and available for use
+                "enabled": True,
+                "description": "Restricts access to the user who owns the data. Use for personal or private information."
             }
         }
     ]

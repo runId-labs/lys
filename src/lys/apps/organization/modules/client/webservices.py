@@ -19,7 +19,8 @@ class ClientMutation(Mutation):
         ensure_type=ClientNode,
         is_public=True,
         is_licenced=False,
-        description="Create a new client with an owner user. The owner will have full administrative access."
+        description="Create a new client with an owner user. The owner will have full administrative access.",
+        options={"generate_tool": True}
     )
     async def create_client(
         self,

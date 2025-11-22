@@ -1,3 +1,4 @@
+import json
 import logging
 from collections import defaultdict, deque
 from typing import Type, Dict, List, Callable, Set
@@ -6,6 +7,7 @@ import strawberry
 from strawberry.types.field import StrawberryField
 from strawberry.annotation import StrawberryAnnotation
 
+from lys.core.configs import LysAppSettings
 from lys.core.consts.component_types import AppComponentTypeEnum
 from lys.core.graphql.interfaces import NodeInterface
 from lys.core.interfaces.entities import EntityInterface
@@ -15,6 +17,7 @@ from lys.core.managers.database import Base
 from lys.core.utils.decorators import singleton
 from lys.core.utils.generic import replace_node_in_annotation
 from lys.core.utils.webservice import WebserviceIsPublicType, generate_webservice_fixture
+from lys.core.utils.tool_generator import extract_tool_from_field
 
 
 class AppRegister:
@@ -24,6 +27,7 @@ class AppRegister:
         self.fixtures: List[Type[EntityFixtureInterface]] = []
         self._fixture_dependencies: Dict[str, List[str]] = {}  # fixture_name -> [dependencies]
         self.webservices: dict[str, dict] = {}
+        self.tools: Dict[str, dict] = {}  # LLM tool definitions
         self.nodes: Dict[str, Type[NodeInterface]] = {}
 
         # When True, prevents further registrations to ensure consistency
@@ -240,6 +244,79 @@ class AppRegister:
 
         return result
 
+    def register_tool(self, name: str, tool_definition: dict, resolver: Callable = None, node_type: type = None):
+        """
+        Register an LLM tool definition with its resolver.
+
+        Args:
+            name: Tool name (typically the webservice function name)
+            tool_definition: Tool definition dict in LLM function calling format
+            resolver: The resolver function to call when the tool is invoked
+            node_type: The Strawberry node type for result serialization
+        """
+        if not self.is_locked(AppComponentTypeEnum.WEBSERVICES):
+            self.tools[name] = {
+                "definition": tool_definition,
+                "resolver": resolver,
+                "node_type": node_type
+            }
+
+    def get_tools(self) -> List[dict]:
+        """
+        Get all registered tool definitions as a list.
+
+        Returns:
+            List of tool definitions for LLM function calling
+        """
+        return [tool["definition"] for tool in self.tools.values()]
+
+    def get_tool(self, name: str) -> dict:
+        """
+        Get a specific tool by name (definition + resolver).
+
+        Args:
+            name: Tool name to lookup
+
+        Returns:
+            Dict with 'definition' and 'resolver' keys
+
+        Raises:
+            KeyError: If tool is not found
+        """
+        if name not in self.tools:
+            raise KeyError(f"Tool '{name}' not found. Available: {list(self.tools.keys())}")
+        return self.tools[name]
+
+    def get_tool_definition(self, name: str) -> dict:
+        """
+        Get only the tool definition (without resolver).
+
+        Args:
+            name: Tool name to lookup
+
+        Returns:
+            Tool definition dict
+
+        Raises:
+            KeyError: If tool is not found
+        """
+        return self.get_tool(name)["definition"]
+
+    def get_tool_resolver(self, name: str) -> Callable:
+        """
+        Get the resolver function for a tool.
+
+        Args:
+            name: Tool name to lookup
+
+        Returns:
+            Resolver function
+
+        Raises:
+            KeyError: If tool is not found
+        """
+        return self.get_tool(name)["resolver"]
+
     def register_webservice(
             self,
             field_or_fct: StrawberryField | Callable,
@@ -248,6 +325,8 @@ class AppRegister:
             access_levels: List[str] = None,
             is_licenced: bool = True,
             allow_override: bool = True,
+            description: str = None,
+            options: dict = None,
     ):
         if not self.is_locked(AppComponentTypeEnum.WEBSERVICES):
             if type(field_or_fct) is StrawberryField:
@@ -272,6 +351,42 @@ class AppRegister:
                 logging.warning(f"⚠ Overwriting webservice '{webservice_name}' with new configuration")
 
             self.webservices[webservice_name] = webservice_fixture
+
+            # Generate and register tool definition if field is provided
+            # Check options for generate_tool (default: False - must be explicitly enabled)
+            # Only generate tools if AI is configured in settings
+            generate_tool = False
+            if options and "generate_tool" in options:
+                generate_tool = options["generate_tool"]
+
+            # Check if AI is configured before generating tools
+            settings = LysAppSettings()
+            if generate_tool and settings.ai.configured() and type(field_or_fct) is StrawberryField:
+                try:
+                    # Extract node type from field first (needed for tool description)
+                    node_type = None
+                    field_type = field_or_fct.type
+                    # Handle Connection types (for @lys_connection)
+                    if hasattr(field_type, '__origin__'):
+                        # Generic type like Connection[UserNode]
+                        args = getattr(field_type, '__args__', ())
+                        if args:
+                            node_type = args[0]
+                    elif hasattr(field_type, 'node_type'):
+                        # Connection class with node_type attribute
+                        node_type = field_type.node_type
+                    elif isinstance(field_type, type) and hasattr(field_type, '__strawberry_definition__'):
+                        # Direct node type (avoid issubclass check which triggers relay.Node introspection)
+                        node_type = field_type
+
+                    tool_definition = extract_tool_from_field(field_or_fct, description, node_type)
+                    # Use the wrapped resolver (inner_resolver) that includes session management
+                    # This is the resolver after lys_field wrapping
+                    resolver = field_or_fct.base_resolver
+
+                    self.register_tool(webservice_name, tool_definition, resolver, node_type)
+                except Exception as e:
+                    logging.warning(f"⚠ Could not generate tool for '{webservice_name}': {e}")
 
     def validate_webservice_configuration(self):
         """
@@ -304,6 +419,18 @@ class AppRegister:
             raise ValueError(error_msg)
 
         logging.info(f"✓ Validated {len(self.webservices)} webservice configurations")
+
+    def finalize_webservices(self):
+        """
+        Finalize webservices registration and log all registered tools.
+
+        This method is automatically called after all webservices have been registered.
+        It logs the final tool configurations after all overrides have been applied.
+        """
+        if self.tools:
+            logging.info(f"Registered {len(self.tools)} AI tools:")
+            for tool_name, tool_data in self.tools.items():
+                logging.info(f"✓ Tool: {tool_name}\n{json.dumps(tool_data['definition'], indent=2)}")
 
     def register_node(self, name: str, node_class: Type[NodeInterface]):
         if not self.is_locked(AppComponentTypeEnum.NODES):
@@ -438,19 +565,23 @@ def register_webservice(
         access_levels: List[str] = None,
         is_licenced: bool = True,
         allow_override: bool = True,
-        register: AppRegister = None
+        description: str = None,
+        register: AppRegister = None,
+        options: dict = None
 ):
     if register is None:
         register = LysAppRegister()
 
     def decorator(cls):
         register.register_webservice(
-            cls,
-            is_public,
-            enabled,
-            access_levels,
-            is_licenced,
-            allow_override,
+            field_or_fct=cls,
+            is_public=is_public,
+            enabled=enabled,
+            access_levels=access_levels,
+            is_licenced=is_licenced,
+            allow_override=allow_override,
+            description=description,
+            options=options,
         )
         return cls
     return decorator

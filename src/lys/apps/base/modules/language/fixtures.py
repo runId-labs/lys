@@ -22,13 +22,15 @@ class LanguageFixtures(EntityFixtures[LanguageService]):
         {
             "id": FRENCH_LANGUAGE,
             "attributes": {
-                "enabled": True
+                "enabled": True,
+                "description": "French language for user interface and email communications."
             }
         },
         {
             "id": ENGLISH_LANGUAGE,
             "attributes": {
-                "enabled": True
+                "enabled": True,
+                "description": "English language for user interface and email communications."
             }
         }
     ]

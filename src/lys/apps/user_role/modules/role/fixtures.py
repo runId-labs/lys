@@ -19,6 +19,7 @@ class RoleFixtures(EntityFixtures[RoleService]):
             "id": USER_ADMIN_ROLE,
             "attributes": {
                 "enabled": True,
+                "description": "Administrator role with full user management capabilities including creating, updating, and searching users, managing roles, and viewing audit logs.",
                 "webservices": [
                     "create_user",
                     "user",

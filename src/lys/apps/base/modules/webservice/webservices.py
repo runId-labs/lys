@@ -16,7 +16,8 @@ class WebserviceQuery(Query):
         ensure_type=WebserviceNode,
         is_public=True,
         is_licenced=False,
-        description="Get all accessible webservices by a user (connected or not) based on their roles."
+        description="Get all accessible webservices by a user (connected or not) based on their roles.",
+        options={"generate_tool": False}
     )
     async def all_accessible_webservices(self, info: Info) -> Select:
         webservice_service = info.context.app_manager.get_service("webservice")
@@ -26,7 +27,8 @@ class WebserviceQuery(Query):
     @lys_connection(
         ensure_type=WebserviceNode,
         is_licenced=False,
-        description="Get all webservices (super admin only)."
+        description="Get all webservices (super admin only).",
+        options={"generate_tool": False}
     )
     async def all_webservices(self, info: Info) -> Select:
         webservice_service = info.context.app_manager.get_service("webservice")

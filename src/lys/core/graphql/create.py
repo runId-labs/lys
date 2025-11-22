@@ -72,6 +72,7 @@ def lys_creation(
     extensions: Optional[List[FieldExtension]] = None,
     graphql_type: Optional[Any] = None,
     init: Literal[True, False, None] = None,
+    options: dict = None,
 ) -> Any:
     """
     Field used to update a specified database object
@@ -113,4 +114,5 @@ def lys_creation(
         extensions=extensions,
         graphql_type=graphql_type,
         init=init,
+        options=options,
     )

@@ -16,7 +16,8 @@ class AccessLevelQuery(Query):
         ensure_type=AccessLevelNode,
         is_public=True,
         is_licenced=False,
-        description="Return possible access levels."
+        description="List all access level types (PUBLIC, CONNECTED, OWNER, etc.). Use to understand permission system.",
+        options={"generate_tool": False}
     )
     async def all_access_levels(self, info: Info, enabled: bool | None = None) -> Select:
         entity_type = info.context.app_manager.get_entity("access_level")

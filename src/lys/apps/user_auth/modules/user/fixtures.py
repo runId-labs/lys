@@ -36,25 +36,29 @@ class UserStatusFixtures(EntityFixtures[UserStatusService]):
         {
             "id": ENABLED_USER_STATUS,
             "attributes": {
-                "enabled": True
+                "enabled": True,
+                "description": "Active user who can log in and access the system normally."
             }
         },
         {
             "id": DISABLED_USER_STATUS,
             "attributes": {
-                "enabled": True
+                "enabled": True,
+                "description": "Temporarily deactivated user. Cannot log in but account can be re-enabled."
             }
         },
         {
             "id": REVOKED_USER_STATUS,
             "attributes": {
-                "enabled": True
+                "enabled": True,
+                "description": "Permanently banned user. Cannot log in and requires admin intervention to restore."
             }
         },
         {
             "id": DELETED_USER_STATUS,
             "attributes": {
-                "enabled": True
+                "enabled": True,
+                "description": "Anonymized user for GDPR compliance. Personal data has been removed."
             }
         }
     ]
@@ -72,19 +76,22 @@ class GenderFixtures(EntityFixtures[GenderService]):
         {
             "id": MALE_GENDER,
             "attributes": {
-                "enabled": True
+                "enabled": True,
+                "description": "Male gender identity option for user profiles."
             }
         },
         {
             "id": FEMALE_GENDER,
             "attributes": {
-                "enabled": True
+                "enabled": True,
+                "description": "Female gender identity option for user profiles."
             }
         },
         {
             "id": OTHER_GENDER,
             "attributes": {
-                "enabled": True
+                "enabled": True,
+                "description": "Non-binary or other gender identity option for user profiles."
             }
         }
     ]
@@ -105,19 +112,22 @@ class UserAuditLogTypeFixtures(EntityFixtures[UserAuditLogTypeService]):
         {
             "id": STATUS_CHANGE_LOG_TYPE,
             "attributes": {
-                "enabled": True
+                "enabled": True,
+                "description": "Automatic audit entry when user status changes (enabled, disabled, revoked)."
             }
         },
         {
             "id": ANONYMIZATION_LOG_TYPE,
             "attributes": {
-                "enabled": True
+                "enabled": True,
+                "description": "Automatic audit entry when user data is anonymized for GDPR compliance."
             }
         },
         {
             "id": OBSERVATION_LOG_TYPE,
             "attributes": {
-                "enabled": True
+                "enabled": True,
+                "description": "Manual note or observation added by administrator about a user."
             }
         }
     ]

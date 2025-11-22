@@ -13,6 +13,7 @@ class EntityFixturesModel(EntityModel):
 class ParametricEntityFixturesModel(EntityFixturesModel):
     class AttributesModel(EntityFixturesModel.AttributesModel):
         enabled: bool | None = None
+        description: str | None = None
 
     attributes: AttributesModel | dict = dict()
 

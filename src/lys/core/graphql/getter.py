@@ -41,7 +41,8 @@ def lys_getter(
         extensions: Optional[List[FieldExtension]] = None,
         graphql_type: Optional[Any] = None,
         init: Literal[True, False, None] = None,
-        register: AppRegister=None
+        register: AppRegister = None,
+        options: dict = None
 ) -> Any:
     """
     Field used to get a specified database object
@@ -85,4 +86,5 @@ def lys_getter(
         graphql_type=graphql_type,
         init=init,
         register=register,
+        options=options,
     )

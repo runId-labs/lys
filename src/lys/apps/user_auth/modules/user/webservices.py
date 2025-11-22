@@ -1,6 +1,6 @@
 import logging
 from datetime import datetime
-from typing import Optional
+from typing import Annotated, Optional
 
 import strawberry
 from sqlalchemy import Select, select, or_
@@ -54,7 +54,8 @@ class UserQuery(Query):
         ensure_type=UserNode,
         is_public=True,
         is_licenced=False,
-        description="Return the currently connected user, or null if not authenticated."
+        description="Return the currently connected user, or null if not authenticated.",
+        options={"generate_tool": True}
     )
     async def connected_user(self, info: Info) -> Optional[UserNode]:
         """
@@ -94,7 +95,8 @@ class UserQuery(Query):
         is_public=False,
         access_levels=[OWNER_ACCESS_LEVEL],
         is_licenced=False,
-        description="Return user information."
+        description="Get a specific user by ID. Returns user profile with email, status, and private data.",
+        options={"generate_tool": True}
     )
     async def user(self):
         pass
@@ -103,9 +105,14 @@ class UserQuery(Query):
         UserNode,
         is_public=False,
         is_licenced=False,
-        description="Return all users. Only accessible to super users."
+        description="Search and list all users by name or email. Use 'search' parameter to filter. Super users only.",
+        options={"generate_tool": True}
     )
-    async def all_users(self, info: Info, search: Optional[str] = None) -> Select:
+    async def all_users(
+        self,
+        info: Info,
+        search: Annotated[Optional[str], strawberry.argument(description="Search by email, first name, or last name")] = None
+    ) -> Select:
         """
         Get all users in the system with optional search filtering.
 
@@ -148,9 +155,14 @@ class UserQuery(Query):
         UserNode,
         is_public=False,
         is_licenced=False,
-        description="Return all super users. Only accessible to super users."
+        description="Search and list all super users by name or email. Use 'search' parameter to filter. Super users only.",
+        options={"generate_tool": True}
     )
-    async def all_super_users(self, info: Info, search: Optional[str] = None) -> Select:
+    async def all_super_users(
+        self,
+        info: Info,
+        search: Annotated[Optional[str], strawberry.argument(description="Search by email, first name, or last name")] = None
+    ) -> Select:
         """
         Get all super users in the system with optional search filtering.
 
@@ -198,9 +210,14 @@ class UserStatusQuery(Query):
         UserStatusNode,
         is_public=True,
         is_licenced=False,
-        description="Return all possible user statuses."
+        description="List all user status types (ACTIVE, INACTIVE, SUSPENDED, DELETED). Use to get valid status codes.",
+        options={"generate_tool": True}
     )
-    async def all_user_statuses(self, info: Info, enabled: bool | None = None) -> Select:
+    async def all_user_statuses(
+        self,
+        info: Info,
+        enabled: Annotated[bool | None, strawberry.argument(description="Filter by enabled status: true=active statuses, false=disabled")] = None
+    ) -> Select:
         entity_type = info.context.app_manager.get_entity("user_status")
         stmt = select(entity_type).order_by(entity_type.id.asc())
         if enabled is not None:
@@ -215,7 +232,8 @@ class GenderQuery(Query):
         GenderNode,
         is_public=True,
         is_licenced=False,
-        description="Return all available genders."
+        description="List all gender options (MALE, FEMALE, OTHER). Use to get valid gender codes for user creation.",
+        options={"generate_tool": True}
     )
     async def all_genders(self, info: Info) -> Select:
         entity_type = info.context.app_manager.get_entity("gender")
@@ -229,7 +247,8 @@ class UserOneTimeTokenQuery(Query):
     @lys_connection(
         ensure_type=UserOneTimeTokenNode,
         is_licenced=False,
-        description="Return user one-time tokens filtered by optional criteria."
+        description="List one-time tokens (password reset, email verification) with filters by status, type, user, or date range.",
+        options={"generate_tool": False}
     )
     async def all_user_one_time_tokens(
         self,
@@ -269,7 +288,8 @@ class UserMutation(Mutation):
         ensure_type=PasswordResetRequestNode,
         is_public=True,
         is_licenced=False,
-        description="Send a password reset email to the user."
+        description="Send a password reset email to the user.",
+        options={"generate_tool": False}
     )
     async def request_password_reset(self, email: str, info: Info) -> PasswordResetRequestNode:
         """
@@ -301,7 +321,8 @@ class UserMutation(Mutation):
         ensure_type=ResetPasswordNode,
         is_public=True,
         is_licenced=False,
-        description="Reset user password using a one-time token from email."
+        description="Reset user password using a one-time token from email.",
+        options={"generate_tool": False}
     )
     async def reset_password(self, inputs: ResetPasswordInput, info: Info) -> ResetPasswordNode:
         """
@@ -335,7 +356,8 @@ class UserMutation(Mutation):
         ensure_type=VerifyEmailNode,
         is_public=True,
         is_licenced=False,
-        description="Verify user email address using a one-time token from email."
+        description="Verify user email address using a one-time token from email.",
+        options={"generate_tool": False}
     )
     async def verify_email(self, inputs: VerifyEmailInput, info: Info) -> VerifyEmailNode:
         """
@@ -367,7 +389,8 @@ class UserMutation(Mutation):
         ensure_type=UserNode,
         is_public=False,
         is_licenced=False,
-        description="Send email verification to a user. Only accessible to super users."
+        description="Send email verification to a user. Only accessible to super users.",
+        options={"generate_tool": False}
     )
     async def send_email_verification(
         self,
@@ -409,7 +432,8 @@ class UserMutation(Mutation):
         ensure_type=UserNode,
         is_public=False,
         is_licenced=False,
-        description="Create a new super user. Only accessible to super users."
+        description="Create a new super user. Only accessible to super users.",
+        options={"generate_tool": True}
     )
     async def create_super_user(
         self,
@@ -462,7 +486,8 @@ class UserMutation(Mutation):
         ensure_type=UserNode,
         is_public=False,
         is_licenced=False,
-        description="Create a new regular user. Only accessible to super users."
+        description="Create a new regular user. Only accessible to super users.",
+        options={"generate_tool": True}
     )
     async def create_user(
         self,
@@ -516,7 +541,8 @@ class UserMutation(Mutation):
         is_public=False,
         access_levels=[OWNER_ACCESS_LEVEL],
         is_licenced=False,
-        description="Update user email address. Only the owner can update their own email."
+        description="Update user email address. Only the owner can update their own email.",
+        options={"generate_tool": True}
     )
     async def update_email(
         self,
@@ -563,7 +589,8 @@ class UserMutation(Mutation):
         is_public=False,
         access_levels=[OWNER_ACCESS_LEVEL],
         is_licenced=False,
-        description="Update user password. Only the owner can update their own password."
+        description="Update user password. Only the owner can update their own password.",
+        options={"generate_tool": False}
     )
     async def update_password(
         self,
@@ -610,7 +637,8 @@ class UserMutation(Mutation):
         is_public=False,
         access_levels=[OWNER_ACCESS_LEVEL],
         is_licenced=False,
-        description="Update user private data. Only the owner can update their own private data."
+        description="Update user profile (first_name, last_name, gender, language). Owner access only.",
+        options={"generate_tool": True}
     )
     async def update_user_private_data(
         self,
@@ -661,7 +689,8 @@ class UserMutation(Mutation):
         ensure_type=UserNode,
         is_public=False,
         is_licenced=False,
-        description="Update user status with audit trail. Only accessible to super users."
+        description="Update user status with audit trail. Only accessible to super users.",
+        options={"generate_tool": True}
     )
     async def update_user_status(
         self,
@@ -707,7 +736,8 @@ class UserMutation(Mutation):
         ensure_type=AnonymizeUserNode,
         is_public=False,
         is_licenced=False,
-        description="Anonymize user data (GDPR). Only accessible to super users. IRREVERSIBLE."
+        description="Anonymize user data (GDPR). Only accessible to super users. IRREVERSIBLE.",
+        options={"generate_tool": True}
     )
     async def anonymize_user(self, user_id: relay.GlobalID, inputs: AnonymizeUserInput, info: Info) -> AnonymizeUserNode:
         """
@@ -760,15 +790,16 @@ class UserAuditLogQuery(Query):
         ensure_type=UserAuditLogNode,
         is_public=False,
         is_licenced=False,
-        description="List user audit logs with filters. Only accessible to super users and USER_ADMIN role."
+        description="Search audit logs by type (STATUS_CHANGE, ANONYMIZATION, OBSERVATION), email, or user. Filter by author or target user.",
+        options={"generate_tool": True}
     )
     async def list_user_audit_logs(
         self,
         info: Info,
-        log_type_code: Optional[str] = None,
-        email_search: Optional[str] = None,
-        user_filter: Optional[str] = None,
-        include_deleted: Optional[bool] = False
+        log_type_code: Annotated[Optional[str], strawberry.argument(description="Filter by log type: STATUS_CHANGE, ANONYMIZATION, or OBSERVATION")] = None,
+        email_search: Annotated[Optional[str], strawberry.argument(description="Search in target or author email addresses")] = None,
+        user_filter: Annotated[Optional[str], strawberry.argument(description="Filter by user role: 'author', 'target', or null for both")] = None,
+        include_deleted: Annotated[Optional[bool], strawberry.argument(description="Include soft-deleted observations")] = False
     ) -> Select:
         """
         List user audit logs with optional filters.
@@ -811,7 +842,8 @@ class UserAuditLogMutation(Mutation):
         ensure_type=UserAuditLogNode,
         is_public=False,
         is_licenced=False,
-        description="Create user observation (manual audit log). Only accessible to super users and USER_ADMIN role."
+        description="Create user observation (manual audit log). Only accessible to super users and USER_ADMIN role.",
+        options={"generate_tool": True}
     )
     async def create_user_observation(
         self,
@@ -857,7 +889,8 @@ class UserAuditLogMutation(Mutation):
         is_public=False,
         access_levels=[OWNER_ACCESS_LEVEL],
         is_licenced=False,
-        description="Update user audit log (OBSERVATION only). Only owner and super users can update."
+        description="Update user audit log (OBSERVATION only). Only owner and super users can update.",
+        options={"generate_tool": True}
     )
     async def update_user_audit_log(
         self,
@@ -903,7 +936,8 @@ class UserAuditLogMutation(Mutation):
         is_public=False,
         access_levels=[OWNER_ACCESS_LEVEL],
         is_licenced=False,
-        description="Delete user observation (soft delete). Only owner and super users can delete."
+        description="Delete user observation (soft delete). Only owner and super users can delete.",
+        options={"generate_tool": True}
     )
     async def delete_user_observation(
         self,

@@ -1,5 +1,5 @@
 import logging
-from typing import Optional
+from typing import Annotated, Optional
 
 import strawberry
 from sqlalchemy import Select, select, or_, exists
@@ -33,14 +33,15 @@ class OrganizationUserQuery(Query):
         access_levels=[ROLE_ACCESS_LEVEL],
         is_licenced=False,
         allow_override=True,
-        description="Return all users with optional organization and role filtering. Accessible to user admins."
+        description="Return all users with optional organization and role filtering. Accessible to user admins.",
+        options={"generate_tool": True}
     )
     async def all_users(
         self,
         info: Info,
-        search: Optional[str] = None,
-        is_client_user: Optional[bool] = None,
-        role_code: Optional[str] = None
+        search: Annotated[Optional[str], strawberry.argument(description="Search term to filter by email, first name, or last name")] = None,
+        is_client_user: Annotated[Optional[bool], strawberry.argument(description="Filter by organization membership: true=with org, false=without org")] = None,
+        role_code: Annotated[Optional[str], strawberry.argument(description="Filter by role code (e.g., 'ADMIN', 'USER_ADMIN')")] = None
     ) -> Select:
         """
         Get all users in the system with optional search, organization, and role filtering.
@@ -115,7 +116,8 @@ class OrganizationUserQuery(Query):
         is_public=False,
         access_levels=[ROLE_ACCESS_LEVEL, ORGANIZATION_ROLE_ACCESS_LEVEL],
         is_licenced=False,
-        description="Return client user information. Accessible to users with USER_ADMIN role."
+        description="Get a specific client-user relationship by ID. Returns user info within organization context.",
+        options={"generate_tool": True}
     )
     async def client_user(self):
         pass
@@ -124,14 +126,15 @@ class OrganizationUserQuery(Query):
         ClientUserNode,
         access_levels=[ROLE_ACCESS_LEVEL, ORGANIZATION_ROLE_ACCESS_LEVEL],
         is_licenced=False,
-        description="Return all client-user relationships with optional filtering. Accessible to USER_ADMIN role."
+        description="Search client users by name/email, filter by client_id or organization role. Lists users within organizations.",
+        options={"generate_tool": True}
     )
     async def all_client_users(
         self,
         info: Info,
-        client_id: Optional[relay.GlobalID] = None,
-        search: Optional[str] = None,
-        role_code: Optional[str] = None
+        client_id: Annotated[Optional[relay.GlobalID], strawberry.argument(description="Filter by organization/client ID")] = None,
+        search: Annotated[Optional[str], strawberry.argument(description="Search by user email, first name, or last name")] = None,
+        role_code: Annotated[Optional[str], strawberry.argument(description="Filter by organization role code")] = None
     ) -> Select:
         """
         Get all client-user relationships with optional filtering.
@@ -204,7 +207,8 @@ class OrganizationUserMutation(Mutation):
         is_public=False,
         access_levels=[ROLE_ACCESS_LEVEL, ORGANIZATION_ROLE_ACCESS_LEVEL],
         is_licenced=False,
-        description="Update client user email address. Accessible to users with USER_ADMIN role."
+        description="Update client user email address. Accessible to users with USER_ADMIN role.",
+        options={"generate_tool": True}
     )
     async def update_client_user_email(
         self,
@@ -253,7 +257,8 @@ class OrganizationUserMutation(Mutation):
         is_public=False,
         access_levels=[ROLE_ACCESS_LEVEL, ORGANIZATION_ROLE_ACCESS_LEVEL],
         is_licenced=False,
-        description="Update client user private data. Accessible to users with USER_ADMIN role."
+        description="Update client user profile (first_name, last_name, gender, language) within organization.",
+        options={"generate_tool": True}
     )
     async def update_client_user_private_data(
         self,
@@ -305,7 +310,8 @@ class OrganizationUserMutation(Mutation):
         is_public=False,
         access_levels=[ROLE_ACCESS_LEVEL, ORGANIZATION_ROLE_ACCESS_LEVEL],
         is_licenced=False,
-        description="Update client user role assignments within their organization. Accessible to users with USER_ADMIN role."
+        description="Update client user role assignments within their organization. Accessible to users with USER_ADMIN role.",
+        options={"generate_tool": True}
     )
     async def update_client_user_roles(
         self,

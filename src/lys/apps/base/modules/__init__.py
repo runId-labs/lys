@@ -1,4 +1,5 @@
 from . import access_level
+from . import ai
 from . import emailing
 from . import job
 from . import language
@@ -13,5 +14,6 @@ __submodules__ = [
     emailing,
     log,
     access_level,
-    webservice
+    webservice,
+    ai
 ]

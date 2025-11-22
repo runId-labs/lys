@@ -46,9 +46,22 @@ class UserPrivateDataInputModel(BaseModel):
 
     Reusable across different user creation/update operations.
     """
-    first_name: Optional[str] = Field(None, min_length=1, max_length=100)
-    last_name: Optional[str] = Field(None, min_length=1, max_length=100)
-    gender_code: Optional[str] = None
+    first_name: Optional[str] = Field(
+        None,
+        min_length=1,
+        max_length=100,
+        description="First name (GDPR-protected)"
+    )
+    last_name: Optional[str] = Field(
+        None,
+        min_length=1,
+        max_length=100,
+        description="Last name (GDPR-protected)"
+    )
+    gender_code: Optional[str] = Field(
+        None,
+        description="Gender code (MALE, FEMALE, OTHER)"
+    )
 
     @field_validator('first_name', 'last_name')
     @classmethod
@@ -69,9 +82,19 @@ class CreateUserInputModel(UserPrivateDataInputModel):
     Inherits from UserPrivateDataInputModel for consistent validation.
     Used by both user_auth and user_role create_user webservices.
     """
-    email: EmailStr
-    password: str = Field(min_length=8, max_length=128)
-    language_code: str = Field(min_length=2, max_length=5)
+    email: EmailStr = Field(
+        description="Email address for the new user (will be normalized to lowercase)"
+    )
+    password: str = Field(
+        min_length=8,
+        max_length=128,
+        description="Password (min 8 chars, must contain at least one letter and one digit)"
+    )
+    language_code: str = Field(
+        min_length=2,
+        max_length=5,
+        description="Language code in format 'en' or 'en-US'"
+    )
 
     @field_validator('password')
     @classmethod
@@ -108,7 +131,12 @@ class UpdateUserPrivateDataInputModel(UserPrivateDataInputModel):
     All fields are optional to allow partial updates.
     Inherits validation from UserPrivateDataInputModel.
     """
-    language_code: Optional[str] = Field(None, min_length=2, max_length=5)
+    language_code: Optional[str] = Field(
+        None,
+        min_length=2,
+        max_length=5,
+        description="Language code to update in format 'en' or 'en-US'"
+    )
 
     @field_validator('language_code')
     @classmethod
@@ -124,7 +152,12 @@ class UpdateUserInputModel(BaseModel):
 
     All fields are optional to allow partial updates.
     """
-    language_code: Optional[str] = Field(None, min_length=2, max_length=5)
+    language_code: Optional[str] = Field(
+        None,
+        min_length=2,
+        max_length=5,
+        description="Language code to update in format 'en' or 'en-US'"
+    )
 
     @field_validator('language_code')
     @classmethod
@@ -141,7 +174,9 @@ class UpdateEmailInputModel(BaseModel):
     Requires new email address. The email will be set to unverified state
     and a verification email will be sent to the new address.
     """
-    new_email: EmailStr
+    new_email: EmailStr = Field(
+        description="New email address (will be set to unverified state)"
+    )
 
     @field_validator('new_email')
     @classmethod
@@ -158,8 +193,15 @@ class UpdatePasswordInputModel(BaseModel):
     Requires current password for security and validates new password strength.
     Used with lys_edition and OWNER access level.
     """
-    current_password: str = Field(min_length=1)
-    new_password: str = Field(min_length=8, max_length=128)
+    current_password: str = Field(
+        min_length=1,
+        description="Current password for verification"
+    )
+    new_password: str = Field(
+        min_length=8,
+        max_length=128,
+        description="New password (min 8 chars, must contain at least one letter and one digit)"
+    )
 
     @field_validator('current_password')
     @classmethod
@@ -178,8 +220,15 @@ class ChangePasswordInputModel(BaseModel):
 
     Requires current password for security and validates new password strength.
     """
-    current_password: str = Field(min_length=1)
-    new_password: str = Field(min_length=8, max_length=128)
+    current_password: str = Field(
+        min_length=1,
+        description="Current password for verification"
+    )
+    new_password: str = Field(
+        min_length=8,
+        max_length=128,
+        description="New password (min 8 chars, must contain at least one letter and one digit)"
+    )
 
     @field_validator('current_password')
     @classmethod
@@ -198,8 +247,15 @@ class ResetPasswordInputModel(BaseModel):
 
     Used when user forgot password and received reset link via email.
     """
-    token: str = Field(min_length=1)
-    new_password: str = Field(min_length=8, max_length=128)
+    token: str = Field(
+        min_length=1,
+        description="One-time reset token from email"
+    )
+    new_password: str = Field(
+        min_length=8,
+        max_length=128,
+        description="New password (min 8 chars, must contain at least one letter and one digit)"
+    )
 
     @field_validator('token')
     @classmethod
@@ -219,7 +275,10 @@ class VerifyEmailInputModel(BaseModel):
 
     Used when user clicks verification link in email.
     """
-    token: str = Field(min_length=1)
+    token: str = Field(
+        min_length=1,
+        description="One-time verification token from email"
+    )
 
     @field_validator('token')
     @classmethod
@@ -247,8 +306,15 @@ class UpdateUserStatusInputModel(BaseModel):
     Cannot be used to set status to DELETED - use anonymize_user instead.
     Requires a reason for audit trail purposes.
     """
-    status_code: str = Field(min_length=1, max_length=50)
-    reason: str = Field(min_length=10, description="Reason for status change (min 10 characters, required for audit)")
+    status_code: str = Field(
+        min_length=1,
+        max_length=50,
+        description="New status code (ACTIVE, INACTIVE, SUSPENDED). Cannot be DELETED - use anonymizeUser instead."
+    )
+    reason: str = Field(
+        min_length=10,
+        description="Reason for status change (min 10 characters, required for audit trail)"
+    )
 
     @field_validator('status_code')
     @classmethod
@@ -273,7 +339,11 @@ class AnonymizeUserInputModel(BaseModel):
     This is an irreversible operation that removes all personal data
     and sets the user status to DELETED.
     """
-    reason: str = Field(min_length=10, max_length=500, description="Reason for anonymization (required for audit)")
+    reason: str = Field(
+        min_length=10,
+        max_length=500,
+        description="Reason for anonymization (min 10 chars, required for audit). IRREVERSIBLE operation."
+    )
 
     @field_validator('reason')
     @classmethod
@@ -289,8 +359,13 @@ class CreateUserObservationInputModel(BaseModel):
 
     Used by administrators to add notes/observations about users.
     """
-    target_user_id: relay.GlobalID
-    message: str = Field(min_length=10, description="Observation message (min 10 characters)")
+    target_user_id: relay.GlobalID = Field(
+        description="ID of the user to create observation for"
+    )
+    message: str = Field(
+        min_length=10,
+        description="Observation message (min 10 characters)"
+    )
 
     @field_validator('target_user_id')
     @classmethod

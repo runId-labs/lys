@@ -154,6 +154,42 @@ class EmailSettings(BaseSettings):
             )
 
 
+class AISettings(BaseSettings):
+    """Configuration for AI/LLM integration and tool generation."""
+
+    def __init__(self):
+        # Master switch for AI features
+        self.enabled: bool = False
+
+        # LLM provider configuration
+        self.provider: Optional[str] = None  # "mistral", "openai", "anthropic"
+        self.api_key: Optional[str] = None
+        self.base_url: Optional[str] = None  # Optional custom endpoint
+
+        # Model configuration
+        self.model: Optional[str] = None  # e.g., "mistral-large-latest"
+
+        # Custom system prompt for the application
+        self.system_prompt: Optional[str] = None  # Application-specific instructions
+
+    def configured(self) -> bool:
+        """Check if AI is properly configured for tool generation."""
+        return self.enabled and self.api_key is not None
+
+    def validate(self):
+        """
+        Validate that required AI settings are configured.
+
+        Raises:
+            ValueError: If enabled but api_key is missing
+        """
+        if self.enabled and not self.api_key:
+            raise ValueError(
+                "AI is enabled but api_key is not configured. "
+                "Use settings.ai.configure(enabled=True, api_key='...', provider='mistral')"
+            )
+
+
 class AppSettings(BaseSettings):
     def __init__(self):
         # Environment configuration - drives other settings
@@ -171,6 +207,7 @@ class AppSettings(BaseSettings):
         self.database: DatabaseSettings = DatabaseSettings()
         self.celery: Optional[CelerySettings] = None  # Celery task queue (optional)
         self.email: EmailSettings = EmailSettings()  # Email configuration
+        self.ai: AISettings = AISettings()  # AI/LLM configuration for tool generation
         self.log_format:str = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 
         # graphql configurations

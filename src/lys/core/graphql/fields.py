@@ -1,9 +1,10 @@
 import dataclasses
 import inspect
-from typing import Optional, Callable, List, Any, Union, Mapping, Sequence, Literal, Type, get_origin, get_args
+from typing import Annotated, Optional, Callable, List, Any, Union, Mapping, Sequence, Literal, Type, get_origin, get_args
 
 import strawberry
 from strawberry.extensions import FieldExtension
+from strawberry.annotation import StrawberryAnnotation
 
 from lys.core.contexts import Info
 from lys.core.graphql.interfaces import NodeInterface
@@ -49,14 +50,17 @@ def _create_strawberry_field_config(
 
 def _apply_webservice_config(field, is_public: WebserviceIsPublicType, enabled: bool,
                                   access_levels: List[str], is_licenced: bool,
-                                  allow_override: bool, register: AppRegister=None):
+                                  allow_override: bool, description: str = None,
+                                  register: AppRegister = None, options: dict = None):
     return register_webservice(
         is_public=is_public,
         enabled=enabled,
         access_levels=access_levels,
         is_licenced=is_licenced,
         allow_override=allow_override,
+        description=description,
         register=register,
+        options=options,
     )(field)
 
 
@@ -80,7 +84,8 @@ def lys_typed_field(
         extensions: Optional[List[FieldExtension]] = None,
         graphql_type: Optional[Any] = None,
         init: Literal[True, False, None] = None,
-        register: AppRegister=None
+        register: AppRegister = None,
+        options: dict = None
 ) -> Any:
     effective_ensure_type = ensure_type.get_effective_node()
 
@@ -114,13 +119,13 @@ def lys_typed_field(
             args = get_args(original_return_type)
             if type(None) in args:
                 # It's Optional, preserve it
-                field.base_resolver.type_annotation = Optional[effective_ensure_type]
+                field.base_resolver.type_annotation = StrawberryAnnotation(Optional[effective_ensure_type])
             else:
-                field.base_resolver.type_annotation = effective_ensure_type
+                field.base_resolver.type_annotation = StrawberryAnnotation(effective_ensure_type)
         else:
-            field.base_resolver.type_annotation = effective_ensure_type
+            field.base_resolver.type_annotation = StrawberryAnnotation(effective_ensure_type)
 
-        return _apply_webservice_config(field, is_public, enabled, access_levels, is_licenced, allow_override, register)
+        return _apply_webservice_config(field, is_public, enabled, access_levels, is_licenced, allow_override, description, register, options)
 
     return wrapper
 
@@ -143,8 +148,9 @@ def lys_field(
         extensions: Optional[List[FieldExtension]] = None,
         graphql_type: Optional[Any] = None,
         init: Literal[True, False, None] = None,
-        register: AppRegister=None,
-        has_session=True
+        register: AppRegister = None,
+        has_session=True,
+        options: dict = None
 ) -> Any:
     def _resolver_generator(resolver: Callable, ensure_type_: Type[EntityNode]):
         async def inner_resolver(self, *args, info: Info, **kwargs) -> EntityNode:
@@ -206,7 +212,8 @@ def lys_field(
         extensions=extensions,
         graphql_type=graphql_type,
         init=init,
-        register=register
+        register=register,
+        options=options
     )
 
 
@@ -229,6 +236,7 @@ def lys_connection_field(
         extensions: Optional[List[FieldExtension]] = None,
         graphql_type: Optional[Any] = None,
         init: Literal[True, False, None] = None,
+        options: dict = None
 ) -> Any:
     effective_ensure_type = ensure_type.get_effective_node()
 
@@ -257,14 +265,18 @@ def lys_connection_field(
 
         # add it to the webservice parameters
         if order_by_type is not None:
+            # Build dynamic description with available sort fields
+            sort_fields = list(effective_ensure_type.order_by_attribute_map.keys())
+            order_by_description = f"Sort results by field. Available: {', '.join(sort_fields)}. Use true for ASC, false for DESC"
+
             parameter_value_list.append(
                 inspect.Parameter(
                     "order_by",
                     inspect.Parameter.POSITIONAL_OR_KEYWORD,
-                    annotation=strawberry.input(
-                        order_by_type,
-                        one_of=True
-                    ) | None,
+                    annotation=Annotated[
+                        strawberry.input(order_by_type, one_of=True) | None,
+                        strawberry.argument(description=order_by_description)
+                    ],
                     default=None
                 )
             )
@@ -273,7 +285,7 @@ def lys_connection_field(
             inspect.Parameter(
                 "limit",
                 inspect.Parameter.POSITIONAL_OR_KEYWORD,
-                annotation=int | None,
+                annotation=Annotated[int | None, strawberry.argument(description="Maximum number of results to return")],
                 default=None
             )
         )
@@ -339,6 +351,6 @@ def lys_connection_field(
         )
 
         field = strawberry.field(**field_config)
-        return _apply_webservice_config(field, is_public, enabled, access_levels, is_licenced, allow_override)
+        return _apply_webservice_config(field, is_public, enabled, access_levels, is_licenced, allow_override, description, None, options)
 
     return wrapper

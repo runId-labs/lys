@@ -1,3 +1,5 @@
+from typing import Annotated
+
 import strawberry
 from sqlalchemy import Select, select
 
@@ -17,9 +19,14 @@ class RoleQuery(Query):
         is_public=False,
         access_levels=[ROLE_ACCESS_LEVEL],
         is_licenced=False,
-        description="Return all roles."
+        description="List all available roles for user assignment. Filter by 'enabled' status. Use to get valid role codes.",
+        options={"generate_tool": True}
     )
-    async def all_roles(self, info: Info, enabled: bool | None = None) -> Select:
+    async def all_roles(
+        self,
+        info: Info,
+        enabled: Annotated[bool | None, strawberry.argument(description="Filter by enabled status: true=active roles, false=disabled roles")] = None
+    ) -> Select:
         entity_type = info.context.app_manager.get_entity("role")
         stmt = select(entity_type).order_by(entity_type.id.asc())
         if enabled is not None:

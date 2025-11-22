@@ -17,7 +17,8 @@ class LogQuery(Query):
     @lys_connection(
         ensure_type=LogNode,
         is_licenced=False,
-        description="Return logs filtered by date range and optional filters."
+        description="Search system logs by date range (start_date, end_date) and file name. For debugging and monitoring.",
+        options={"generate_tool": False}
     )
     async def all_logs(
         self,

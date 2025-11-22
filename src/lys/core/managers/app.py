@@ -15,7 +15,7 @@ from lys.core.configs import LysAppSettings, AppSettings
 from lys.core.consts.component_types import AppComponentTypeEnum
 from lys.core.consts.environments import EnvironmentEnum
 from lys.core.contexts import get_context
-from lys.core.graphql.extensions import DatabaseSessionExtension
+from lys.core.graphql.extensions import DatabaseSessionExtension, AIContextExtension
 from lys.core.graphql.registers import GraphqlRegister, LysGraphqlRegister
 from lys.core.graphql.types import DefaultQuery
 from lys.core.interfaces.middlewares import MiddlewareInterface
@@ -350,6 +350,10 @@ class AppManager:
             # security: limit number of alias in a same query to avoid malicious batch requests
             MaxAliasesLimiter(self.settings.query_alias_limit)
         ]
+
+        # Add AI context extension only if AI is configured
+        if self.settings.ai.configured():
+            extensions.insert(1, AIContextExtension())
 
         # secure graphql schema on non-dev environment
         if not self.settings.env == EnvironmentEnum.DEV:

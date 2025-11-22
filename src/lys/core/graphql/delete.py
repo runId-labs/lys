@@ -71,6 +71,7 @@ def lys_delete(
         extensions: Optional[List[FieldExtension]] = None,
         graphql_type: Optional[Any] = None,
         init: Literal[True, False, None] = None,
+        options: dict = None,
 ) -> Any:
     """
     Field used to update a specified database object
@@ -122,6 +123,7 @@ def lys_delete(
         extensions=extensions,
         graphql_type=graphql_type,
         init=init,
+        options=options,
     )
 
     field.base_resolver.type_annotation = SuccessNode

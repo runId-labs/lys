@@ -2,13 +2,12 @@ import strawberry
 from starlette.responses import Response
 
 from lys.apps.user_auth.consts import REFRESH_COOKIE_KEY
-from lys.apps.user_auth.errors import INVALID_REFRESH_TOKEN_ERROR, MISSING_REFRESH_TOKEN_ERROR, BLOCKED_USER_ERROR
+from lys.apps.user_auth.errors import MISSING_REFRESH_TOKEN_ERROR, BLOCKED_USER_ERROR
 from lys.apps.user_auth.modules.auth.inputs import LoginInput
 from lys.apps.user_auth.modules.auth.nodes import LoginNode, LogoutNode
 from lys.apps.user_auth.modules.auth.services import AuthService
 from lys.apps.user_auth.modules.user.consts import ENABLED_USER_STATUS
 from lys.apps.user_auth.modules.user.models import GetUserRefreshTokenInputModel
-from lys.apps.user_auth.modules.user.nodes import UserNode
 from lys.apps.user_auth.modules.user.services import UserRefreshTokenService
 from lys.apps.user_auth.utils import AuthUtils
 from lys.core.contexts import Info
@@ -25,7 +24,8 @@ class AuthTokenMutation(Mutation):
         ensure_type=LoginNode,
         is_public="disconnected",
         is_licenced=False,
-        description="Log user via password and return some information about him/her."
+        description="Authenticate user with email/username and password. Returns access token and session info.",
+        options={"generate_tool": False}
     )
     async def login(self, inputs: LoginInput, info: Info) -> LoginNode:
         node: type[LoginNode] = LoginNode.get_effective_node()
@@ -46,7 +46,8 @@ class AuthTokenMutation(Mutation):
         ensure_type=LoginNode,
         is_public=True,
         is_licenced=False,
-        description="Create a new access token based on the refresh one in request header."
+        description="Refresh expired access token using refresh token from cookie. Returns new access token.",
+        options={"generate_tool": False}
     )
     async def refresh_access_token(self, info: Info) -> LoginNode:
         node = LoginNode.get_effective_node()
@@ -111,7 +112,8 @@ class AuthTokenMutation(Mutation):
         ensure_type=LogoutNode,
         is_public=True,
         is_licenced=False,
-        description="Disconnect user by removing his/her refresh token."
+        description="Log out current user by invalidating refresh token and clearing authentication cookies.",
+        options={"generate_tool": False}
     )
     async def logout(self, info: Info) -> LogoutNode:
         node = LogoutNode.get_effective_node()

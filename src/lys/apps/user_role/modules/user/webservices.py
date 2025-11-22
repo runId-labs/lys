@@ -1,5 +1,5 @@
 import logging
-from typing import Optional
+from typing import Annotated, Optional
 
 import strawberry
 from sqlalchemy import Select, select, or_
@@ -38,13 +38,14 @@ class UserRoleQuery(Query):
         access_levels=[ROLE_ACCESS_LEVEL],
         is_licenced=False,
         allow_override=True,
-        description="Return all users with optional search and role filtering. Accessible to USER_ADMIN role."
+        description="Return all users with optional search and role filtering. Accessible to USER_ADMIN role.",
+        options={"generate_tool": True}
     )
     async def all_users(
         self,
         info: Info,
-        search: Optional[str] = None,
-        role_code: Optional[str] = None
+        search: Annotated[Optional[str], strawberry.argument(description="Search by email, first name, or last name")] = None,
+        role_code: Annotated[Optional[str], strawberry.argument(description="Filter by role code (e.g., 'ADMIN', 'USER_ADMIN')")] = None
     ) -> Select:
         """
         Get all users in the system with optional search and role filtering.
@@ -104,7 +105,8 @@ class UserMutation(Mutation):
         access_levels=[ROLE_ACCESS_LEVEL],
         is_licenced=False,
         allow_override=True,
-        description="Create a new user with role assignments. Accessible to users with ROLE access level."
+        description="Create a new user with role assignments. Accessible to users with ROLE access level.",
+        options={"generate_tool": True}
     )
     async def create_user(
         self,
@@ -190,7 +192,8 @@ class UserMutation(Mutation):
         is_public=False,
         access_levels=[ROLE_ACCESS_LEVEL],
         is_licenced=False,
-        description="Update user role assignments. Accessible to users with USER_ADMIN role."
+        description="Update user role assignments. Accessible to users with USER_ADMIN role.",
+        options={"generate_tool": True}
     )
     async def update_user_roles(
         self,

@@ -387,15 +387,19 @@ def parametric_node(service_class: Type[ServiceInterface]):
             id: relay.NodeID[str]
             code: str
             enabled: bool
+            description: Optional[str]
             created_at: datetime
             updated_at: Optional[datetime]
+            _entity: strawberry.Private[ParametricEntity]
 
-            def __init__(self, id: str, code: str, enabled: bool, created_at: datetime, updated_at: Optional[datetime]):
-                self.id = id
-                self.code = code
-                self.enabled = enabled
-                self.created_at = created_at
-                self.updated_at = updated_at
+            def __init__(self, entity: ParametricEntity):
+                self.id = entity.id
+                self.code = entity.code
+                self.enabled = entity.enabled
+                self.description = entity.description
+                self.created_at = entity.created_at
+                self.updated_at = entity.updated_at
+                self._entity = entity
 
             @classmethod
             def from_obj(cls, entity: ParametricEntity):
@@ -403,13 +407,7 @@ def parametric_node(service_class: Type[ServiceInterface]):
                 if not isinstance(entity, entity_class):
                     raise ValueError("Entity type error: %s != %s" % (entity.__class__, entity_class.__name__))
 
-                return cls(
-                    id=entity.id,
-                    code=entity.code,
-                    enabled=entity.enabled,
-                    created_at=entity.created_at,
-                    updated_at=entity.updated_at
-                )
+                return cls(entity)
 
             @classproperty
             def order_by_attribute_map(self) -> Dict[str, Any]:

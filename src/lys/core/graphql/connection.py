@@ -81,7 +81,8 @@ def lys_connection(
         default_factory: Union[Callable[..., object], object] = dataclasses.MISSING,
         metadata: Optional[Mapping[Any, Any]] = None,
         directives: Optional[Sequence[object]] = (),
-        extensions: List[FieldExtension] = ()
+        extensions: List[FieldExtension] = (),
+        options: dict = None
 ) -> Any:
     return lys_connection_field(
         ensure_type=ensure_type,
@@ -100,4 +101,5 @@ def lys_connection(
         directives=directives or (),
         graphql_type=ensure_type.build_list_connection(),
         extensions=[*extensions, LysConnectionExtension()],
+        options=options,
     )
