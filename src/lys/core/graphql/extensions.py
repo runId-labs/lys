@@ -8,6 +8,8 @@ from typing import Any, List, Dict
 
 from strawberry.extensions import SchemaExtension
 
+from lys.apps.base.modules.ai.guardrails import CONFIRM_ACTION_TOOL
+
 
 class DatabaseSessionExtension(SchemaExtension):
     """
@@ -121,6 +123,9 @@ class AIContextExtension(SchemaExtension):
             if tool_name in accessible_webservice_ids:
                 filtered_tools.append(tool_data["definition"])
 
+        # Add confirm_action tool for guardrail confirmations
+        filtered_tools.append(CONFIRM_ACTION_TOOL)
+
         context.ai_tools = filtered_tools
 
         # Build system prompt with user context
@@ -148,7 +153,16 @@ class AIContextExtension(SchemaExtension):
                     system_prompt_parts.append(f"- Name: {name}")
                 if user_details.get("status"):
                     system_prompt_parts.append(f"- Status: {user_details['status']}")
+                if user_details.get("language_code"):
+                    system_prompt_parts.append(f"- Language: {user_details['language_code']}")
             system_prompt_parts.append(f"- Super User: {'Yes' if is_super_user else 'No'}")
+
+            # Add User ID for tool calls that need to reference the current user
+            system_prompt_parts.append(f"- User ID: {user_id}")
+
+            # Add language instruction if user has a preferred language
+            if user_details and user_details.get("language_code"):
+                system_prompt_parts.append(f"\n**Important: Always respond in the user's language ({user_details['language_code']}).**")
 
             # Get user roles with descriptions if available
             if not is_super_user:
@@ -257,14 +271,20 @@ class AIContextExtension(SchemaExtension):
                 "status": getattr(user, "status", None),
             }
 
-            # Get name from private_data if available
+            # Get name and language from private_data if available
             if hasattr(user, "private_data") and user.private_data:
                 details["first_name"] = getattr(user.private_data, "first_name", None)
                 details["last_name"] = getattr(user.private_data, "last_name", None)
+                details["language_code"] = getattr(user.private_data, "language_code", None)
 
-            # Convert status enum to string if needed
-            if details["status"] and hasattr(details["status"], "value"):
-                details["status"] = details["status"].value
+            # Convert status to string if needed
+            if details["status"]:
+                if hasattr(details["status"], "code"):
+                    # ParametricItem from register
+                    details["status"] = details["status"].code
+                elif hasattr(details["status"], "value"):
+                    # Standard enum
+                    details["status"] = details["status"].value
 
             return details
 

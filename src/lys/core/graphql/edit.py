@@ -5,6 +5,7 @@ from typing import Optional, Callable, List, Any, Union, Mapping, Sequence, Lite
 from strawberry import relay
 from strawberry.extensions import FieldExtension
 
+from lys.core.consts.ai import ToolRiskLevel
 from lys.core.consts.errors import NOT_FOUND_ERROR
 from lys.core.contexts import Info
 from lys.core.entities import Entity
@@ -116,6 +117,11 @@ def lys_edition(
     :return:
     """
 
+    # Set default risk_level for edition operations
+    effective_options = options.copy() if options else {}
+    if "risk_level" not in effective_options:
+        effective_options["risk_level"] = ToolRiskLevel.UPDATE
+
     return lys_typed_field(
         ensure_type=ensure_type,
         resolver_wrapper=_edition_resolver_generator,
@@ -135,6 +141,6 @@ def lys_edition(
         extensions=extensions,
         graphql_type=graphql_type,
         init=init,
-        options=options,
+        options=effective_options,
     )
 

@@ -8,6 +8,7 @@ from strawberry.types.field import StrawberryField
 from strawberry.annotation import StrawberryAnnotation
 
 from lys.core.configs import LysAppSettings
+from lys.core.consts.ai import ToolRiskLevel
 from lys.core.consts.component_types import AppComponentTypeEnum
 from lys.core.graphql.interfaces import NodeInterface
 from lys.core.interfaces.entities import EntityInterface
@@ -244,21 +245,41 @@ class AppRegister:
 
         return result
 
-    def register_tool(self, name: str, tool_definition: dict, resolver: Callable = None, node_type: type = None):
+    def register_tool(
+        self,
+        name: str,
+        tool_definition: dict,
+        resolver: Callable = None,
+        node_type: type = None,
+        options: dict = None
+    ):
         """
-        Register an LLM tool definition with its resolver.
+        Register an LLM tool definition with its resolver and risk metadata.
 
         Args:
             name: Tool name (typically the webservice function name)
             tool_definition: Tool definition dict in LLM function calling format
             resolver: The resolver function to call when the tool is invoked
             node_type: The Strawberry node type for result serialization
+            options: Tool options including risk_level and confirmation_fields
         """
         if not self.is_locked(AppComponentTypeEnum.WEBSERVICES):
+            # Extract risk metadata from options
+            risk_level = ToolRiskLevel.READ
+            confirmation_fields = []
+
+            if options:
+                if "risk_level" in options:
+                    risk_level = options["risk_level"]
+                if "confirmation_fields" in options:
+                    confirmation_fields = options["confirmation_fields"]
+
             self.tools[name] = {
                 "definition": tool_definition,
                 "resolver": resolver,
-                "node_type": node_type
+                "node_type": node_type,
+                "risk_level": risk_level,
+                "confirmation_fields": confirmation_fields
             }
 
     def get_tools(self) -> List[dict]:
@@ -384,7 +405,7 @@ class AppRegister:
                     # This is the resolver after lys_field wrapping
                     resolver = field_or_fct.base_resolver
 
-                    self.register_tool(webservice_name, tool_definition, resolver, node_type)
+                    self.register_tool(webservice_name, tool_definition, resolver, node_type, options)
                 except Exception as e:
                     logging.warning(f"⚠ Could not generate tool for '{webservice_name}': {e}")
 

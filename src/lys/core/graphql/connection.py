@@ -9,6 +9,7 @@ from strawberry.relay.exceptions import RelayWrongAnnotationError
 from strawberry.types.arguments import StrawberryArgument
 from strawberry.types.field import StrawberryField
 
+from lys.core.consts.ai import ToolRiskLevel
 from lys.core.graphql.fields import lys_connection_field
 from lys.core.graphql.nodes import EntityNode
 from lys.core.utils.webservice import WebserviceIsPublicType
@@ -84,6 +85,11 @@ def lys_connection(
         extensions: List[FieldExtension] = (),
         options: dict = None
 ) -> Any:
+    # Set default risk_level for connection (list) operations
+    effective_options = options.copy() if options else {}
+    if "risk_level" not in effective_options:
+        effective_options["risk_level"] = ToolRiskLevel.READ
+
     return lys_connection_field(
         ensure_type=ensure_type,
         is_public=is_public,
@@ -101,5 +107,5 @@ def lys_connection(
         directives=directives or (),
         graphql_type=ensure_type.build_list_connection(),
         extensions=[*extensions, LysConnectionExtension()],
-        options=options,
+        options=effective_options,
     )

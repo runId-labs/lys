@@ -12,6 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.sql import Select as SQLSelect
 
 from lys.apps.base.modules.ai.entities import AIConversation
+from lys.apps.base.modules.ai.guardrails import AIGuardrailService, CONFIRM_ACTION_TOOL
 from lys.core.configs import LysAppSettings
 from lys.core.registers import register_service
 from lys.core.services import EntityService, Service
@@ -82,7 +83,8 @@ class AIConversationService(EntityService[AIConversation]):
             messages: List of messages to add
         """
         # Append new messages to existing history
-        current_messages = conversation.messages or []
+        # Create a new list to ensure SQLAlchemy detects the change
+        current_messages = list(conversation.messages or [])
         current_messages.extend(messages)
 
         conversation.messages = current_messages
@@ -457,24 +459,99 @@ class AIService(Service):
         """
         app_manager = info.context.app_manager
 
-        # Get the tool resolver from registry
+        # Handle confirm_action as a special tool
+        if tool_name == "confirm_action":
+            action_id = tool_args.get("action_id", "")
+            confirmed = tool_args.get("confirmed", False)
+
+            result = await AIGuardrailService.confirm_action(action_id, confirmed, info)
+
+            # If confirmed and status is "execute", execute the actual tool
+            if result.get("status") == "execute":
+                return await cls._execute_tool_internal(
+                    result["tool_name"],
+                    result["tool_data"],
+                    result["tool_args"],
+                    session,
+                    info
+                )
+
+            return result
+
+        # Get the tool from registry
         try:
             tool_data = app_manager.register.get_tool(tool_name)
-            resolver = tool_data["resolver"]
-            node_type = tool_data.get("node_type")
         except KeyError:
             raise ValueError(f"Tool '{tool_name}' not found in registry")
 
-        # Execute the resolver
-        # The resolver is the original async function from the webservice
-        # We need to call it with the right arguments
-
-        logger.info(f"Executing tool: {tool_name} with args: {tool_args}")
+        # Get resolver info for argument conversion
+        resolver = tool_data["resolver"]
+        node_type = tool_data.get("node_type")
 
         # Get the actual callable from the resolver
-        # resolver is a StrawberryResolver object, we need to call it properly
         if hasattr(resolver, 'wrapped_func'):
-            # It's the inner_resolver from lys_field
+            actual_resolver = resolver.wrapped_func
+        else:
+            actual_resolver = resolver
+
+        sig = inspect.signature(actual_resolver)
+
+        # Convert string arguments to GlobalID where needed
+        converted_args = cls._convert_tool_args(sig, tool_args, node_type)
+
+        # Reconstruct Strawberry input objects from flattened arguments
+        converted_args = cls._reconstruct_input_args(sig, converted_args)
+
+        # Pass through guardrail
+        guardrail_result = await AIGuardrailService.process_tool_call(
+            tool_name,
+            tool_data,
+            converted_args,
+            info
+        )
+
+        # If confirmation is required, return that to the LLM
+        if guardrail_result.get("status") == "confirmation_required":
+            return guardrail_result
+
+        # Execute the tool
+        return await cls._execute_tool_internal(
+            tool_name,
+            tool_data,
+            converted_args,
+            session,
+            info
+        )
+
+    @classmethod
+    async def _execute_tool_internal(
+        cls,
+        tool_name: str,
+        tool_data: Dict[str, Any],
+        converted_args: Dict[str, Any],
+        session: AsyncSession,
+        info: Any
+    ) -> Any:
+        """
+        Internal method to execute a tool after guardrail approval.
+
+        Args:
+            tool_name: Name of the tool
+            tool_data: Tool data from registry
+            converted_args: Already converted and reconstructed arguments
+            session: Database session
+            info: GraphQL info context
+
+        Returns:
+            Tool execution result
+        """
+        resolver = tool_data["resolver"]
+        node_type = tool_data.get("node_type")
+
+        logger.info(f"Executing tool: {tool_name} with args: {converted_args}")
+
+        # Get the actual callable from the resolver
+        if hasattr(resolver, 'wrapped_func'):
             actual_resolver = resolver.wrapped_func
         else:
             actual_resolver = resolver
@@ -482,9 +559,6 @@ class AIService(Service):
         # Check if resolver needs 'self' parameter (mutations vs queries)
         sig = inspect.signature(actual_resolver)
         params = list(sig.parameters.keys())
-
-        # Convert string arguments to GlobalID where needed
-        converted_args = cls._convert_tool_args(sig, tool_args)
 
         if params and params[0] == 'self':
             # Mutation - pass None as self
@@ -519,20 +593,27 @@ class AIService(Service):
     def _convert_tool_args(
         cls,
         sig: inspect.Signature,
-        tool_args: Dict[str, Any]
+        tool_args: Dict[str, Any],
+        node_type: type = None
     ) -> Dict[str, Any]:
         """
         Convert tool arguments to the expected types.
 
-        Handles conversion of string IDs to relay.GlobalID objects.
+        Handles conversion of string UUIDs to relay.GlobalID objects.
+        The GlobalID type name is determined from:
+        1. The node_type of the tool (for 'id' parameter from lys_edition/lys_getter)
+        2. The parameter name (for explicit parameters like 'user_id', 'client_id')
 
         Args:
             sig: Function signature
-            tool_args: Raw arguments from LLM
+            tool_args: Raw arguments from LLM (contains UUIDs as strings)
+            node_type: The Strawberry node type associated with the tool
 
         Returns:
-            Converted arguments
+            Converted arguments with GlobalID objects where needed
         """
+        from typing import Union
+
         converted = {}
 
         for param_name, value in tool_args.items():
@@ -543,15 +624,125 @@ class AIService(Service):
             param = sig.parameters[param_name]
             param_type = param.annotation
 
+            # Handle Optional[GlobalID] - unwrap the Union
+            actual_type = param_type
+            origin = get_origin(param_type)
+            if origin is Union:
+                args = get_args(param_type)
+                non_none_args = [a for a in args if a is not type(None)]
+                if non_none_args:
+                    actual_type = non_none_args[0]
+
             # Check if parameter expects GlobalID
-            type_name = getattr(param_type, "__name__", str(param_type))
+            type_name = getattr(actual_type, "__name__", str(actual_type))
             if "GlobalID" in type_name and isinstance(value, str):
-                # Convert string to GlobalID
-                converted[param_name] = relay.GlobalID.from_id(value)
+                # Determine the GraphQL type name for the GlobalID
+                if param_name == "id" and node_type:
+                    # For 'id' parameter (from lys_edition/lys_getter), use the tool's node_type
+                    gid_type_name = node_type.__name__
+                else:
+                    # For explicit parameters like 'user_id', 'client_id', derive from param name
+                    # user_id → UserNode, client_id → ClientNode
+                    base_name = param_name.replace("_id", "")
+                    # Convert snake_case to PascalCase and add Node suffix
+                    parts = base_name.split("_")
+                    pascal_name = "".join(part.capitalize() for part in parts)
+                    gid_type_name = f"{pascal_name}Node"
+
+                # Create GlobalID with the type name and UUID
+                converted[param_name] = relay.GlobalID(gid_type_name, value)
+                logger.debug(f"Converted {param_name}={value} to GlobalID({gid_type_name}, {value})")
             else:
                 converted[param_name] = value
 
         return converted
+
+    @classmethod
+    def _reconstruct_input_args(
+        cls,
+        sig: inspect.Signature,
+        tool_args: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """
+        Reconstruct Strawberry input objects from flattened arguments.
+
+        When tools are generated, Strawberry input types are flattened into
+        individual parameters. This method reconstructs the input objects
+        from those flattened arguments.
+
+        Args:
+            sig: Function signature
+            tool_args: Flattened arguments from LLM
+
+        Returns:
+            Arguments with reconstructed input objects
+        """
+        from typing import Union, Annotated
+
+        result = dict(tool_args)
+
+        for param_name, param in sig.parameters.items():
+            # Skip non-input parameters
+            if param_name in ("self", "info", "obj"):
+                continue
+
+            param_type = param.annotation
+            if param_type is inspect.Parameter.empty:
+                continue
+
+            # Handle Annotated types
+            origin = get_origin(param_type)
+            if origin is Annotated:
+                args = get_args(param_type)
+                if args:
+                    param_type = args[0]
+
+            # Handle Optional types
+            origin = get_origin(param_type)
+            if origin is Union:
+                args = get_args(param_type)
+                non_none_args = [a for a in args if a is not type(None)]
+                if non_none_args:
+                    param_type = non_none_args[0]
+
+            # Check if it's a Strawberry input type
+            if not hasattr(param_type, "__strawberry_definition__"):
+                continue
+
+            # Get the field names from the Strawberry input
+            strawberry_def = param_type.__strawberry_definition__
+            if not hasattr(strawberry_def, "fields"):
+                continue
+
+            # Collect arguments that belong to this input
+            input_args = {}
+            fields_to_remove = []
+
+            for field in strawberry_def.fields:
+                field_name = field.name
+                if field_name in result:
+                    input_args[field_name] = result[field_name]
+                    fields_to_remove.append(field_name)
+
+            # If we found any fields for this input, create the input object
+            if input_args:
+                # Remove the flattened fields from result
+                for field_name in fields_to_remove:
+                    del result[field_name]
+
+                # Create the input object
+                # Strawberry inputs can be instantiated directly with kwargs
+                try:
+                    input_obj = param_type(**input_args)
+                    result[param_name] = input_obj
+                    logger.debug(f"Reconstructed {param_name} input with fields: {list(input_args.keys())}")
+                except Exception as e:
+                    logger.error(f"Failed to reconstruct input {param_name}: {e}")
+                    # Put the fields back and let the error propagate naturally
+                    for field_name in fields_to_remove:
+                        result[field_name] = input_args.get(field_name)
+
+        return result
 
     @classmethod
     def _serialize_result(cls, result: Any) -> Any:

@@ -4,6 +4,7 @@ from typing import Optional, Callable, List, Any, Union, Mapping, Sequence, Lite
 
 from strawberry.extensions import FieldExtension
 
+from lys.core.consts.ai import ToolRiskLevel
 from lys.core.contexts import Info
 from lys.core.entities import Entity
 from lys.core.graphql.fields import lys_typed_field
@@ -95,6 +96,11 @@ def lys_creation(
     :return:
     """
 
+    # Set default risk_level for creation operations
+    effective_options = options.copy() if options else {}
+    if "risk_level" not in effective_options:
+        effective_options["risk_level"] = ToolRiskLevel.CREATE
+
     return lys_typed_field(
         ensure_type=ensure_type,
         resolver_wrapper=_creation_resolver_generator,
@@ -114,5 +120,5 @@ def lys_creation(
         extensions=extensions,
         graphql_type=graphql_type,
         init=init,
-        options=options,
+        options=effective_options,
     )

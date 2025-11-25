@@ -4,6 +4,7 @@ from typing import Optional, Callable, List, Any, Union, Mapping, Sequence, Lite
 from strawberry import relay
 from strawberry.extensions import FieldExtension
 
+from lys.core.consts.ai import ToolRiskLevel
 from lys.core.contexts import Info
 from lys.core.graphql.fields import lys_typed_field
 from lys.core.graphql.nodes import EntityNode
@@ -66,6 +67,11 @@ def lys_getter(
     :return:
     """
 
+    # Set default risk_level for getter operations
+    effective_options = options.copy() if options else {}
+    if "risk_level" not in effective_options:
+        effective_options["risk_level"] = ToolRiskLevel.READ
+
     return lys_typed_field(
         ensure_type=ensure_type,
         resolver_wrapper=_getter_resolver_generator,
@@ -86,5 +92,5 @@ def lys_getter(
         graphql_type=graphql_type,
         init=init,
         register=register,
-        options=options,
+        options=effective_options,
     )

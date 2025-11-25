@@ -4,6 +4,7 @@ from typing import Optional, Callable, List, Any, Union, Mapping, Sequence, Lite
 from strawberry import relay
 from strawberry.extensions import FieldExtension
 
+from lys.core.consts.ai import ToolRiskLevel
 from lys.core.consts.errors import NOT_FOUND_ERROR
 from lys.core.contexts import Info
 from lys.core.entities import Entity
@@ -104,6 +105,11 @@ def lys_delete(
         )
     ) + "\n" + ("UNDER LICENCE" if is_licenced else "LICENCE FREE")
 
+    # Set default risk_level for delete operations
+    effective_options = options.copy() if options else {}
+    if "risk_level" not in effective_options:
+        effective_options["risk_level"] = ToolRiskLevel.DELETE
+
     field = lys_typed_field(
         ensure_type=ensure_type,
         resolver_wrapper=_delete_resolver_generator,
@@ -123,7 +129,7 @@ def lys_delete(
         extensions=extensions,
         graphql_type=graphql_type,
         init=init,
-        options=options,
+        options=effective_options,
     )
 
     field.base_resolver.type_annotation = SuccessNode
