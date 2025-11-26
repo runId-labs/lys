@@ -19,25 +19,7 @@ class ClientNode(EntityNode[ClientService], relay.Node):
     """
     id: relay.NodeID[str]
     name: str
-    owner_id: str
+    owner_id: relay.NodeID[str]
     created_at: datetime
     updated_at: Optional[datetime]
-
-    @classmethod
-    def from_obj(cls, entity: Client) -> "ClientNode":
-        """
-        Convert a Client entity to a ClientNode.
-
-        Args:
-            entity: The Client entity to convert
-
-        Returns:
-            ClientNode instance
-        """
-        return cls(
-            id=entity.id,
-            name=entity.name,
-            owner_id=entity.owner_id,
-            created_at=entity.created_at,
-            updated_at=entity.updated_at,
-        )
+    _entity: strawberry.Private[Client]
