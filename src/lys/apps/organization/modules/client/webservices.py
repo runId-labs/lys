@@ -1,15 +1,59 @@
 import logging
+from typing import Annotated, Optional
 
 import strawberry
+from sqlalchemy import Select, select
 
+from lys.apps.organization.consts import ORGANIZATION_ROLE_ACCESS_LEVEL
 from lys.apps.organization.modules.client.inputs import CreateClientInput
 from lys.apps.organization.modules.client.nodes import ClientNode
+from lys.apps.user_role.consts import ROLE_ACCESS_LEVEL
 from lys.core.contexts import Info
+from lys.core.graphql.connection import lys_connection
 from lys.core.graphql.create import lys_creation
-from lys.core.graphql.registers import register_mutation
-from lys.core.graphql.types import Mutation
+from lys.core.graphql.registries import register_query, register_mutation
+from lys.core.graphql.types import Query, Mutation
 
 logger = logging.getLogger(__name__)
+
+
+@strawberry.type
+@register_query()
+class ClientQuery(Query):
+    @lys_connection(
+        ClientNode,
+        access_levels=[ROLE_ACCESS_LEVEL, ORGANIZATION_ROLE_ACCESS_LEVEL],
+        is_licenced=False,
+        description="List all clients with optional search by name. Accessible to client administrators.",
+        options={"generate_tool": True}
+    )
+    async def all_clients(
+        self,
+        info: Info,
+        search: Annotated[Optional[str], strawberry.argument(description="Search term to filter by client name")] = None
+    ) -> Select:
+        """
+        Get all clients with optional search filtering.
+
+        This query is accessible to users with ROLE or ORGANIZATION_ROLE access level.
+        Search filters by client name (case-insensitive).
+
+        Args:
+            info: GraphQL context
+            search: Optional search string to filter by client name
+
+        Returns:
+            Select: SQLAlchemy select statement for clients ordered by creation date
+        """
+        client_entity = info.context.app_manager.get_entity("client")
+
+        stmt = select(client_entity).order_by(client_entity.created_at.desc())
+
+        if search:
+            search_pattern = f"%{search.lower()}%"
+            stmt = stmt.where(client_entity.name.ilike(search_pattern))
+
+        return stmt
 
 
 @register_mutation()

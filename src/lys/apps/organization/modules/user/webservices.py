@@ -19,7 +19,7 @@ from lys.core.contexts import Info
 from lys.core.graphql.connection import lys_connection
 from lys.core.graphql.edit import lys_edition
 from lys.core.graphql.getter import lys_getter
-from lys.core.graphql.registers import register_query, register_mutation
+from lys.core.graphql.registries import register_query, register_mutation
 from lys.core.graphql.types import Query, Mutation
 
 logger = logging.getLogger(__name__)
@@ -56,7 +56,7 @@ class OrganizationUserQuery(Query):
             search: Optional search string to filter by email, first_name, or last_name
             is_client_user: Optional filter for organization membership:
                 - True: users with at least one client_user relationship
-                - False: users with no client_user relationships
+                - False: users with no client_user relationships AND not a client owner
                 - None: no filtering on organization membership
             role_code: Optional role code to filter users by.
                        Returns users who have this specific role.
@@ -101,7 +101,12 @@ class OrganizationUserQuery(Query):
                 stmt = stmt.where(client_user_exists)
             else:
                 # Filter users who have no client_user relationships
-                stmt = stmt.where(~client_user_exists)
+                # Also exclude users who are client owners
+                client_entity = info.context.app_manager.get_entity("client")
+                client_owner_exists = exists().where(
+                    client_entity.owner_id == entity_type.id
+                )
+                stmt = stmt.where(~client_user_exists & ~client_owner_exists)
 
         # Apply role filter if provided
         if role_code:
