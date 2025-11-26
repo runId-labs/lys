@@ -4,7 +4,7 @@ from sqlalchemy.orm import declared_attr, relationship
 
 from lys.apps.user_auth.modules.user.entities import User as BasUser
 from lys.core.managers.database import Base
-from lys.core.registers import register_entity
+from lys.core.registries import register_entity
 
 user_role = Table(
     "user_role",

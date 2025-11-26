@@ -8,7 +8,7 @@ from lys.core.consts.ai import ToolRiskLevel
 from lys.core.contexts import Info
 from lys.core.graphql.fields import lys_typed_field
 from lys.core.graphql.nodes import EntityNode
-from lys.core.registers import AppRegister
+from lys.core.registries import AppRegistry
 from lys.core.utils.webservice import WebserviceIsPublicType
 
 
@@ -42,7 +42,7 @@ def lys_getter(
         extensions: Optional[List[FieldExtension]] = None,
         graphql_type: Optional[Any] = None,
         init: Literal[True, False, None] = None,
-        register: AppRegister = None,
+        register: AppRegistry = None,
         options: dict = None
 ) -> Any:
     """

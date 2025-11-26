@@ -7,7 +7,7 @@ from lys.apps.user_role.consts import ROLE_ACCESS_LEVEL
 from lys.apps.user_role.modules.role.nodes import RoleNode
 from lys.core.contexts import Info
 from lys.core.graphql.connection import lys_connection
-from lys.core.graphql.registers import register_query
+from lys.core.graphql.registries import register_query
 from lys.core.graphql.types import Query
 
 

@@ -8,7 +8,7 @@ from strawberry import relay
 from lys.apps.base.modules.webservice.entities import Webservice
 from lys.apps.base.modules.webservice.services import WebserviceService
 from lys.core.graphql.nodes import EntityNode
-from lys.core.registers import register_node
+from lys.core.registries import register_node
 
 
 @register_node()

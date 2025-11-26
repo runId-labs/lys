@@ -4,7 +4,7 @@ GraphQL nodes for language module.
 
 from lys.apps.base.modules.language.services import LanguageService
 from lys.core.graphql.nodes import parametric_node
-from lys.core.registers import register_node
+from lys.core.registries import register_node
 
 
 @register_node()

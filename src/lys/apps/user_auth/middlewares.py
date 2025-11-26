@@ -1,3 +1,9 @@
+"""
+Authentication middleware for the user_auth app.
+
+This module provides:
+- JWTAuthMiddleware: JWT token validation and user context injection
+"""
 import logging
 from typing import Union, Dict, Any
 
@@ -13,6 +19,8 @@ from lys.core.interfaces.middlewares import MiddlewareInterface
 
 
 class JWTAuthMiddleware(MiddlewareInterface, BaseHTTPMiddleware):
+    """JWT authentication middleware that validates tokens and injects user context."""
+
     REQUIRED_JWT_CLAIMS = ["user", "exp", "xsrf_token"]
 
     def __init__(self, app):

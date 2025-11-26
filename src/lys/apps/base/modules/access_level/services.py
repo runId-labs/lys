@@ -1,5 +1,5 @@
 from lys.apps.base.modules.access_level.entities import AccessLevel
-from lys.core.registers import register_service
+from lys.core.registries import register_service
 from lys.core.services import EntityService
 
 

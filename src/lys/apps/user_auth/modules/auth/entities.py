@@ -6,7 +6,7 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship, declared_attr
 from sqlalchemy.types import DateTime
 
 from lys.core.entities import ParametricEntity, Entity
-from lys.core.registers import register_entity
+from lys.core.registries import register_entity
 
 
 @register_entity()

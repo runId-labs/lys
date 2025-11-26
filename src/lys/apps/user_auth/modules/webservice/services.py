@@ -6,7 +6,7 @@ from lys.apps.base.modules.access_level.entities import AccessLevel
 from lys.apps.base.modules.webservice.services import WebserviceService
 from lys.apps.user_auth.modules.webservice.entities import WebservicePublicType
 from lys.core.consts.webservices import CONNECTED_ACCESS_LEVEL, OWNER_ACCESS_LEVEL
-from lys.core.registers import register_service
+from lys.core.registries import register_service
 from lys.core.services import EntityService
 
 

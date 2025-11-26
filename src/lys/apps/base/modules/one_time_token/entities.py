@@ -9,7 +9,7 @@ from sqlalchemy.orm import Mapped, mapped_column, declared_attr, relationship
 
 from lys.apps.base.modules.one_time_token.consts import PENDING_TOKEN_STATUS
 from lys.core.entities import Entity, ParametricEntity
-from lys.core.registers import register_entity
+from lys.core.registries import register_entity
 from lys.core.utils.datetime import now_utc
 
 

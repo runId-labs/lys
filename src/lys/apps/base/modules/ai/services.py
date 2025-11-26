@@ -14,7 +14,7 @@ from sqlalchemy.sql import Select as SQLSelect
 from lys.apps.base.modules.ai.entities import AIConversation
 from lys.apps.base.modules.ai.guardrails import AIGuardrailService, CONFIRM_ACTION_TOOL
 from lys.core.configs import LysAppSettings
-from lys.core.registers import register_service
+from lys.core.registries import register_service
 from lys.core.services import EntityService, Service
 from lys.core.utils.tool_generator import entity_to_dict, node_to_dict
 
@@ -480,7 +480,7 @@ class AIService(Service):
 
         # Get the tool from registry
         try:
-            tool_data = app_manager.register.get_tool(tool_name)
+            tool_data = app_manager.registry.get_tool(tool_name)
         except KeyError:
             raise ValueError(f"Tool '{tool_name}' not found in registry")
 

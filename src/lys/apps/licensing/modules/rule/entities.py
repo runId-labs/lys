@@ -7,7 +7,7 @@ LicenseRule defines the types of constraints that can be applied to license plan
 """
 
 from lys.core.entities import ParametricEntity
-from lys.core.registers import register_entity
+from lys.core.registries import register_entity
 
 
 @register_entity()

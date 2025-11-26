@@ -116,7 +116,7 @@ class AIContextExtension(SchemaExtension):
         accessible_webservice_ids = {ws.id for ws in accessible_webservices}
 
         # Filter tools based on accessible webservices
-        all_tools = app_manager.register.tools
+        all_tools = app_manager.registry.tools
         filtered_tools: List[Dict[str, Any]] = []
 
         for tool_name, tool_data in all_tools.items():

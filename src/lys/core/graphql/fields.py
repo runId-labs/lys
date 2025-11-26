@@ -10,7 +10,7 @@ from lys.core.contexts import Info
 from lys.core.graphql.interfaces import NodeInterface
 from lys.core.graphql.nodes import EntityNode, ServiceNode
 from lys.core.permissions import generate_webservice_permission
-from lys.core.registers import AppRegister, register_webservice
+from lys.core.registries import AppRegistry, register_webservice
 from lys.core.utils.webservice import WebserviceIsPublicType, format_filed_description
 
 
@@ -51,7 +51,7 @@ def _create_strawberry_field_config(
 def _apply_webservice_config(field, is_public: WebserviceIsPublicType, enabled: bool,
                                   access_levels: List[str], is_licenced: bool,
                                   allow_override: bool, description: str = None,
-                                  register: AppRegister = None, options: dict = None):
+                                  register: AppRegistry = None, options: dict = None):
     return register_webservice(
         is_public=is_public,
         enabled=enabled,
@@ -84,7 +84,7 @@ def lys_typed_field(
         extensions: Optional[List[FieldExtension]] = None,
         graphql_type: Optional[Any] = None,
         init: Literal[True, False, None] = None,
-        register: AppRegister = None,
+        register: AppRegistry = None,
         options: dict = None
 ) -> Any:
     effective_ensure_type = ensure_type.get_effective_node()
@@ -148,7 +148,7 @@ def lys_field(
         extensions: Optional[List[FieldExtension]] = None,
         graphql_type: Optional[Any] = None,
         init: Literal[True, False, None] = None,
-        register: AppRegister = None,
+        register: AppRegistry = None,
         has_session=True,
         options: dict = None
 ) -> Any:

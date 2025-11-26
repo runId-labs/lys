@@ -6,7 +6,7 @@ from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship, declared_attr
 
 from lys.core.entities import Entity
-from lys.core.registers import register_entity
+from lys.core.registries import register_entity
 
 
 @register_entity()

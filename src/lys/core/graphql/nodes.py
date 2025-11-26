@@ -37,7 +37,7 @@ class ServiceNodeMixin(AppManagerCallerMixin, NodeInterface):
 
     @classmethod
     def get_node_by_name(cls, name: str) -> type[Self]:
-        return cls.app_manager.register.get_node(name)
+        return cls.app_manager.registry.get_node(name)
 
     @classmethod
     def get_effective_node(cls) -> type[Self]:

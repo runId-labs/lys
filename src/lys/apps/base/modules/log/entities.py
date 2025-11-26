@@ -3,7 +3,7 @@ from sqlalchemy.orm import mapped_column, Mapped
 
 from lys.core.consts.tablenames import LOG_TABLENAME
 from lys.core.entities import Entity
-from lys.core.registers import register_entity
+from lys.core.registries import register_entity
 
 
 @register_entity()

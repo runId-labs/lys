@@ -1,5 +1,5 @@
 from lys.apps.user_role.modules.role.entities import Role
-from lys.core.registers import register_service
+from lys.core.registries import register_service
 from lys.core.services import EntityService
 
 

@@ -9,7 +9,7 @@ from lys.apps.base.modules.language.consts import FRENCH_LANGUAGE
 from lys.apps.base.modules.language.entities import Language
 from lys.apps.user_auth.errors import INVALID_LANGUAGE
 from lys.core.errors import LysError
-from lys.core.registers import register_service
+from lys.core.registries import register_service
 from lys.core.services import EntityService
 
 

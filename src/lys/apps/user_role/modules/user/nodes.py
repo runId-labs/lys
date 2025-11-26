@@ -16,7 +16,7 @@ from lys.apps.user_role.modules.role.nodes import RoleNode
 from lys.apps.user_role.modules.user.entities import User
 from lys.apps.user_role.modules.user.services import UserService
 from lys.core.graphql.nodes import EntityNode
-from lys.core.registers import register_node
+from lys.core.registries import register_node
 
 @register_node()
 class UserNode(EntityNode[UserService], relay.Node):

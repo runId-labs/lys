@@ -7,7 +7,7 @@ from strawberry import relay
 from lys.apps.organization.modules.client.entities import Client
 from lys.apps.organization.modules.client.services import ClientService
 from lys.core.graphql.nodes import EntityNode
-from lys.core.registers import register_node
+from lys.core.registries import register_node
 
 
 @register_node()

@@ -3,7 +3,7 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship, declared_attr
 
 from lys.apps.base.modules.webservice.entities import Webservice as BaseWebservice
 from lys.core.entities import ParametricEntity
-from lys.core.registers import register_entity
+from lys.core.registries import register_entity
 
 
 @register_entity()

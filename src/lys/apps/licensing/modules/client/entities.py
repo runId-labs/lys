@@ -8,7 +8,7 @@ to add Stripe billing integration fields.
 from sqlalchemy.orm import Mapped, mapped_column
 
 from lys.apps.organization.modules.client.entities import Client as BaseClient
-from lys.core.registers import register_entity
+from lys.core.registries import register_entity
 
 
 @register_entity()

@@ -5,7 +5,7 @@ from lys.apps.base.modules.access_level.nodes import AccessLevelNode
 from lys.core.consts.webservices import CONNECTED_ACCESS_LEVEL
 from lys.core.contexts import Info
 from lys.core.graphql.connection import lys_connection
-from lys.core.graphql.registers import register_query
+from lys.core.graphql.registries import register_query
 from lys.core.graphql.types import Query
 
 

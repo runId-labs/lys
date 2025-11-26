@@ -7,7 +7,7 @@ from lys.apps.user_auth.modules.user.consts import FEMALE_GENDER
 from lys.apps.user_auth.modules.user.fixtures import UserDevFixtures
 from lys.apps.user_role.consts import USER_ADMIN_ROLE
 from lys.apps.user_role.modules.role.entities import Role
-from lys.core.registers import register_fixture
+from lys.core.registries import register_fixture
 
 
 @register_fixture(depends_on=["UserStatusFixtures", "GenderFixtures", "RoleFixtures"])

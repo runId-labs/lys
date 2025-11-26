@@ -11,7 +11,7 @@ from lys.apps.organization.modules.user.services import ClientUserService
 from lys.apps.user_auth.modules.user.nodes import UserNode
 from lys.apps.user_role.modules.role.nodes import RoleNode
 from lys.core.graphql.nodes import EntityNode
-from lys.core.registers import register_node
+from lys.core.registries import register_node
 
 
 @register_node()

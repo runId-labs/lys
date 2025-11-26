@@ -5,7 +5,7 @@ from sqlalchemy.orm import Mapped, mapped_column, declared_attr, relationship
 
 from lys.apps.base.modules.emailing.consts import WAITING_EMAILING_STATUS
 from lys.core.entities import Entity, ParametricEntity
-from lys.core.registers import register_entity
+from lys.core.registries import register_entity
 
 
 @register_entity()

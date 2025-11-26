@@ -4,7 +4,7 @@ from sqlalchemy import ForeignKey
 from sqlalchemy.orm import declared_attr, Mapped, mapped_column, relationship
 
 from lys.apps.organization.abstracts import AbstractOrganizationEntity
-from lys.core.registers import register_entity
+from lys.core.registries import register_entity
 
 
 @register_entity()

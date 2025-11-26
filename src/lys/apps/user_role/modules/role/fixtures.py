@@ -7,7 +7,7 @@ from lys.apps.user_role.consts import USER_ADMIN_ROLE
 from lys.apps.user_role.models import RoleFixturesModel
 from lys.apps.user_role.modules.role.services import RoleService
 from lys.core.fixtures import EntityFixtures
-from lys.core.registers import register_fixture
+from lys.core.registries import register_fixture
 
 
 @register_fixture()

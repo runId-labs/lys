@@ -13,7 +13,7 @@ from lys.apps.user_auth.utils import AuthUtils
 from lys.core.contexts import Info
 from lys.core.errors import LysError
 from lys.core.graphql.fields import lys_field
-from lys.core.graphql.registers import register_mutation
+from lys.core.graphql.registries import register_mutation
 from lys.core.graphql.types import Mutation
 
 

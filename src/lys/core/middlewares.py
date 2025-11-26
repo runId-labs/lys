@@ -1,12 +1,27 @@
+"""
+Core middlewares for the lys framework.
+
+This module provides:
+- LysCorsMiddleware: CORS middleware with plugin configuration
+- ErrorManagerMiddleware: Error handling and logging middleware
+"""
 import os
 import sys
 import traceback
 from typing import List, Union, Dict, Any
 
-from fastapi import HTTPException
+from fastapi import FastAPI, HTTPException
 from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.middleware.cors import CORSMiddleware
 from starlette.requests import Request
 
+from lys.apps.base.consts import (
+    CORS_PLUGIN_KEY,
+    CORS_PLUGIN_ALLOW_ORIGINS_KEY,
+    CORS_PLUGIN_ALLOW_METHODS_KEY,
+    CORS_PLUGIN_ALLOW_HEADERS_KEY,
+    CORS_PLUGIN_ALLOW_CREDENTIALS_KEY,
+)
 from lys.core.consts.environments import EnvironmentEnum
 from lys.core.consts.tablenames import LOG_TABLENAME
 from lys.core.errors import LysError
@@ -15,7 +30,25 @@ from lys.core.interfaces.services import EntityServiceInterface
 from lys.core.utils.manager import AppManagerCallerMixin
 
 
+class LysCorsMiddleware(MiddlewareInterface, AppManagerCallerMixin, CORSMiddleware):
+    """CORS middleware with configuration from plugins."""
+
+    def __init__(self, app: FastAPI):
+        self.config: dict[str, Any] = self.app_manager.settings.plugins.get(CORS_PLUGIN_KEY, {})
+
+        CORSMiddleware.__init__(
+            self,
+            app,
+            allow_origins=self.config.get(CORS_PLUGIN_ALLOW_ORIGINS_KEY, ()),
+            allow_methods=self.config.get(CORS_PLUGIN_ALLOW_METHODS_KEY, ("GET",)),
+            allow_headers=self.config.get(CORS_PLUGIN_ALLOW_HEADERS_KEY, ()),
+            allow_credentials=self.config.get(CORS_PLUGIN_ALLOW_CREDENTIALS_KEY, False),
+        )
+
+
 class _MiddlewareLysError(AppManagerCallerMixin, HTTPException):
+    """Internal error class for middleware error handling."""
+
     def __init__(
             self,
             code: int,
@@ -50,7 +83,7 @@ class _MiddlewareLysError(AppManagerCallerMixin, HTTPException):
         )
 
     async def save_error_in_database(self, context: Union[Dict[str, Any], None] = None) -> None:
-        log_service: EntityServiceInterface | None = self.app_manager.register.services.get(LOG_TABLENAME)
+        log_service: EntityServiceInterface | None = self.app_manager.registry.services.get(LOG_TABLENAME)
 
         if log_service is not None:
             async with self.app_manager.database.get_session() as session:
@@ -63,7 +96,9 @@ class _MiddlewareLysError(AppManagerCallerMixin, HTTPException):
                     context=context
                 )
 
+
 class ErrorManagerMiddleware(MiddlewareInterface, BaseHTTPMiddleware):
+    """Error handling middleware that catches and logs exceptions."""
 
     def __init__(self, app, saved_context_keys: List[str] = None):
         BaseHTTPMiddleware.__init__(self, app)
@@ -126,5 +161,3 @@ class ErrorManagerMiddleware(MiddlewareInterface, BaseHTTPMiddleware):
             return None
 
         return context
-
-

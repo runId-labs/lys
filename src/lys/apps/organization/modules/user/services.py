@@ -5,7 +5,7 @@ from sqlalchemy.orm import aliased, selectinload
 from lys.apps.organization.abstracts import AbstractUserOrganizationRoleEntity
 from lys.apps.organization.modules.user.entities import ClientUser, ClientUserRole
 from lys.apps.user_role.modules.user.services import UserService as UserRoleService
-from lys.core.registers import register_service
+from lys.core.registries import register_service
 from lys.core.services import EntityService
 
 

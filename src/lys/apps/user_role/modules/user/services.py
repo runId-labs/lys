@@ -7,7 +7,7 @@ from lys.apps.user_auth.modules.user.services import UserService as AuthUserServ
 from lys.apps.user_role.errors import CANNOT_UPDATE_SUPER_USER_ROLES
 from lys.apps.user_role.modules.user.entities import User
 from lys.core.errors import LysError
-from lys.core.registers import register_service
+from lys.core.registries import register_service
 
 
 @register_service()

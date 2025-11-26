@@ -45,7 +45,7 @@ from lys.apps.user_auth.modules.user.consts import (
 )
 from lys.apps.user_auth.utils import AuthUtils
 from lys.core.errors import LysError
-from lys.core.registers import register_service
+from lys.core.registries import register_service
 from lys.core.services import EntityService
 from lys.core.utils.datetime import now_utc
 

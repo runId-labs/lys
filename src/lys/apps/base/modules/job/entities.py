@@ -4,7 +4,7 @@ from sqlalchemy import ForeignKey, DateTime, JSON
 from sqlalchemy.orm import mapped_column, Mapped, relationship, declared_attr
 
 from lys.core.entities import ParametricEntity, Entity
-from lys.core.registers import register_entity
+from lys.core.registries import register_entity
 
 
 @register_entity()

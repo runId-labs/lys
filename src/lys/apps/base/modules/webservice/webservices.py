@@ -5,7 +5,7 @@ from lys.apps.base.modules.webservice.nodes import WebserviceNode
 from lys.apps.base.modules.webservice.services import WebserviceService
 from lys.core.contexts import Info
 from lys.core.graphql.connection import lys_connection
-from lys.core.graphql.registers import register_query
+from lys.core.graphql.registries import register_query
 from lys.core.graphql.types import Query
 
 

@@ -4,7 +4,7 @@ from sqlalchemy import Select, select, and_
 
 from lys.apps.user_auth.modules.webservice.services import AuthWebserviceService
 from lys.apps.user_role.consts import ROLE_ACCESS_LEVEL
-from lys.core.registers import register_service
+from lys.core.registries import register_service
 
 
 @register_service()

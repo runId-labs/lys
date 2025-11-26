@@ -24,7 +24,7 @@ from lys.apps.user_auth.modules.user.services import (
     UserAuditLogService
 )
 from lys.core.graphql.nodes import parametric_node, EntityNode, ServiceNode
-from lys.core.registers import register_node
+from lys.core.registries import register_node
 from lys.core.utils.manager import classproperty
 
 

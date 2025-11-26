@@ -9,7 +9,7 @@ from lys.core.consts.webservices import NO_LIMITATION_WEBSERVICE_PUBLIC_TYPE, DI
 from lys.core.fixtures import EntityFixtures
 from lys.core.models.fixtures import ParametricEntityFixturesModel
 from lys.core.models.webservices import WebserviceFixturesModel
-from lys.core.registers import register_fixture
+from lys.core.registries import register_fixture
 
 
 @register_fixture()
@@ -36,7 +36,7 @@ class WebserviceFixtures(EntityFixtures[AuthWebserviceService]):
 
     @classproperty
     def data_list(self):
-        return self.app_manager.register.webservices.values()
+        return self.app_manager.registry.webservices.values()
 
     @classmethod
     async def format_public_type(cls, public_type_id: str | None, session:AsyncSession) -> WebservicePublicType | None:

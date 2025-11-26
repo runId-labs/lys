@@ -5,7 +5,7 @@ from lys.apps.base.modules.ai.nodes import AIMessageNode
 from lys.core.consts.webservices import CONNECTED_ACCESS_LEVEL
 from lys.core.contexts import Info
 from lys.core.graphql.fields import lys_field
-from lys.core.graphql.registers import register_mutation
+from lys.core.graphql.registries import register_mutation
 from lys.core.graphql.types import Mutation
 
 

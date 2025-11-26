@@ -2,7 +2,7 @@ from lys.apps.base.modules.access_level.services import AccessLevelService
 from lys.apps.organization.consts import ORGANIZATION_ROLE_ACCESS_LEVEL
 from lys.core.fixtures import EntityFixtures
 from lys.core.models.fixtures import ParametricEntityFixturesModel
-from lys.core.registers import register_fixture
+from lys.core.registries import register_fixture
 
 
 @register_fixture()

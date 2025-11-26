@@ -3,7 +3,7 @@ from sqlalchemy.orm import relationship, declared_attr
 
 from lys.core.entities import ParametricEntity
 from lys.core.managers.database import Base
-from lys.core.registers import register_entity
+from lys.core.registries import register_entity
 
 
 # many to many

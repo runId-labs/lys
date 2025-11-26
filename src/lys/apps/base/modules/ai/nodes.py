@@ -3,7 +3,7 @@ from typing import Optional, List
 from lys.apps.base.modules.ai.inputs import AIToolResult
 from lys.apps.base.modules.ai.services import AIService
 from lys.core.graphql.nodes import ServiceNode
-from lys.core.registers import register_node
+from lys.core.registries import register_node
 
 
 @register_node()

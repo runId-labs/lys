@@ -169,9 +169,9 @@ class TestAppManagerComponentLoading:
         app_manager.load_all_components()
 
         # Check that entities were registered
-        assert len(app_manager.register.entities) > 0
+        assert len(app_manager.registry.entities) > 0
         # Language entity should be present
-        assert "language" in app_manager.register.entities
+        assert "language" in app_manager.registry.entities
 
     def test_load_all_components_loads_services(self):
         """Test that services are loaded and registered."""
@@ -186,9 +186,9 @@ class TestAppManagerComponentLoading:
         app_manager.load_all_components()
 
         # Check that services were registered
-        assert len(app_manager.register.services) > 0
+        assert len(app_manager.registry.services) > 0
         # LanguageService should be present
-        assert "language" in app_manager.register.services
+        assert "language" in app_manager.registry.services
 
     def test_load_all_components_tracks_loaded_modules(self):
         """Test that loaded modules are tracked."""
@@ -226,7 +226,7 @@ class TestAppManagerComponentLoading:
 
         # Verify all were attempted to load (even if fixtures are empty)
         # Entities should be finalized (abstract to concrete)
-        assert len(app_manager.register.entities) > 0
+        assert len(app_manager.registry.entities) > 0
 
 
 class TestAppManagerInitialization:
@@ -281,8 +281,8 @@ class TestAppManagerInitialization:
         )
 
         # Verify components were loaded
-        assert len(app_manager.register.entities) > 0
-        assert len(app_manager.register.services) > 0
+        assert len(app_manager.registry.entities) > 0
+        assert len(app_manager.registry.services) > 0
 
     @pytest.mark.asyncio
     async def test_initialize_app_with_graphql(self):

@@ -16,9 +16,9 @@ from lys.core.errors import LysError
 from lys.core.graphql.connection import lys_connection
 from lys.core.graphql.create import lys_creation
 from lys.core.graphql.edit import lys_edition
-from lys.core.graphql.registers import register_mutation, register_query
+from lys.core.graphql.registries import register_mutation, register_query
 from lys.core.graphql.types import Mutation, Query
-from lys.core.registers import override_webservice
+from lys.core.registries import override_webservice
 
 logger = logging.getLogger(__name__)
 

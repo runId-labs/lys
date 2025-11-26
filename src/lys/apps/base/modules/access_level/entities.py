@@ -1,6 +1,6 @@
 from lys.core.consts.tablenames import ACCESS_LEVEL_TABLENAME
 from lys.core.entities import ParametricEntity
-from lys.core.registers import register_entity
+from lys.core.registries import register_entity
 
 
 @register_entity()

@@ -4,7 +4,7 @@ from sqlalchemy.orm import declared_attr, relationship, Mapped, mapped_column
 from lys.core.abstracts.webservices import AbstractWebservice
 from lys.core.consts.tablenames import WEBSERVICE_TABLENAME, ACCESS_LEVEL_TABLENAME
 from lys.core.managers.database import Base
-from lys.core.registers import register_entity
+from lys.core.registries import register_entity
 
 # Many-to-many association table for webservice access levels
 # This table links webservices to their allowed access levels (CONNECTED, OWNER, etc.)

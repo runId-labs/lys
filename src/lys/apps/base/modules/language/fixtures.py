@@ -6,7 +6,7 @@ from lys.apps.base.modules.language.consts import FRENCH_LANGUAGE, ENGLISH_LANGU
 from lys.apps.base.modules.language.services import LanguageService
 from lys.core.fixtures import EntityFixtures
 from lys.core.models.fixtures import ParametricEntityFixturesModel
-from lys.core.registers import register_fixture
+from lys.core.registries import register_fixture
 
 
 @register_fixture()

@@ -21,7 +21,48 @@ from lys.core.utils.webservice import WebserviceIsPublicType, generate_webservic
 from lys.core.utils.tool_generator import extract_tool_from_field
 
 
-class AppRegister:
+class CustomRegistry:
+    """
+    Base class for custom registries that apps can define.
+
+    Apps can extend this class to create their own registries
+    (e.g., validators, downgraders, hooks, etc.)
+
+    The `name` attribute determines:
+    - The registry identifier in AppRegistry
+    - The file to load from modules (e.g., name="validators" -> validators.py)
+
+    Example:
+        class ValidatorRegistry(CustomRegistry):
+            name = "validators"
+
+        class DowngraderRegistry(CustomRegistry):
+            name = "downgraders"
+    """
+    name: str  # e.g., "validators", "downgraders"
+
+    def __init__(self):
+        self._items: Dict[str, any] = {}
+
+    def register(self, key: str, item: any) -> None:
+        """Register an item with the given key."""
+        self._items[key] = item
+        logging.info(f"✓ Registered {self.name}: {key}")
+
+    def get(self, key: str) -> any:
+        """Get an item by key."""
+        return self._items.get(key)
+
+    def all(self) -> Dict[str, any]:
+        """Get all registered items."""
+        return self._items.copy()
+
+    def keys(self) -> List[str]:
+        """Get all registered keys."""
+        return list(self._items.keys())
+
+
+class AppRegistry:
     def __init__(self):
         self.entities: Dict[str, Type[EntityInterface]] = {}
         self.services: Dict[str, Type[ServiceInterface]] = {}
@@ -31,8 +72,42 @@ class AppRegister:
         self.tools: Dict[str, dict] = {}  # LLM tool definitions
         self.nodes: Dict[str, Type[NodeInterface]] = {}
 
+        # Custom registries for app-specific components (validators, downgraders, etc.)
+        self._custom_registries: Dict[str, CustomRegistry] = {}
+
         # When True, prevents further registrations to ensure consistency
         self._locked_component_types: Set[AppComponentTypeEnum] = set()
+
+    def add_custom_registry(self, registry: CustomRegistry) -> None:
+        """
+        Add a custom registry.
+
+        Args:
+            registry: Instance of a CustomRegistry subclass
+        """
+        self._custom_registries[registry.name] = registry
+        logging.info(f"✓ Added custom registry: {registry.name}")
+
+    def get_registry(self, name: str) -> CustomRegistry | None:
+        """
+        Get a custom registry by name.
+
+        Args:
+            name: Registry name (e.g., "validators")
+
+        Returns:
+            The CustomRegistry instance or None
+        """
+        return self._custom_registries.get(name)
+
+    def get_custom_component_files(self) -> List[str]:
+        """
+        Get the list of custom component files to load.
+
+        Returns:
+            List of file names (e.g., ["validators", "downgraders"])
+        """
+        return list(self._custom_registries.keys())
 
     def is_locked(self, component_type: AppComponentTypeEnum):
         return component_type in self._locked_component_types
@@ -543,13 +618,13 @@ class AppRegister:
 
 
 @singleton
-class LysAppRegister(AppRegister):
+class LysAppRegistry(AppRegistry):
     pass
 
 
-def register_entity(register: AppRegister=None):
+def register_entity(register: AppRegistry=None):
     if register is None:
-        register = LysAppRegister()
+        register = LysAppRegistry()
 
     def decorator(cls):
         register.register_entity(cls.__tablename__, cls)
@@ -558,9 +633,9 @@ def register_entity(register: AppRegister=None):
     return decorator
 
 
-def register_service(register: AppRegister=None):
+def register_service(register: AppRegistry=None):
     if register is None:
-        register = LysAppRegister()
+        register = LysAppRegistry()
 
     def decorator(cls):
         register.register_service(cls.service_name, cls)
@@ -569,9 +644,9 @@ def register_service(register: AppRegister=None):
     return decorator
 
 
-def register_fixture(depends_on: List[str] = None, register: AppRegister=None):
+def register_fixture(depends_on: List[str] = None, register: AppRegistry=None):
     if register is None:
-        register = LysAppRegister()
+        register = LysAppRegistry()
 
     def decorator(cls):
         register.register_fixture(cls, depends_on=depends_on)
@@ -587,11 +662,11 @@ def register_webservice(
         is_licenced: bool = True,
         allow_override: bool = True,
         description: str = None,
-        register: AppRegister = None,
+        register: AppRegistry = None,
         options: dict = None
 ):
     if register is None:
-        register = LysAppRegister()
+        register = LysAppRegistry()
 
     def decorator(cls):
         register.register_webservice(
@@ -608,9 +683,9 @@ def register_webservice(
     return decorator
 
 
-def register_node(register: AppRegister=None):
+def register_node(register: AppRegistry=None):
     if register is None:
-        register = LysAppRegister()
+        register = LysAppRegistry()
 
     def decorator(cls):
         register.register_node(cls.__name__, cls)
@@ -625,7 +700,7 @@ def override_webservice(
     is_public: WebserviceIsPublicType | None = None,
     is_licenced: bool | None = None,
     enabled: bool | None = None,
-    register: AppRegister = None
+    register: AppRegistry = None
 ):
     """
     Override an existing webservice fixture with new parameters.
@@ -640,7 +715,7 @@ def override_webservice(
         is_public: New is_public value
         is_licenced: New is_licenced value
         enabled: New enabled value
-        register: Optional custom register (defaults to LysAppRegister singleton)
+        register: Optional custom register (defaults to LysAppRegistry singleton)
 
     Raises:
         ValueError: If webservice not found in registry or no parameters provided
@@ -652,7 +727,7 @@ def override_webservice(
         ... )
     """
     if register is None:
-        register = LysAppRegister()
+        register = LysAppRegistry()
 
     if name not in register.webservices:
         raise ValueError(
@@ -697,7 +772,7 @@ def override_webservice(
 
 def disable_webservice(
     name: str,
-    register: AppRegister = None
+    register: AppRegistry = None
 ):
     """
     Disable an existing webservice.
@@ -708,7 +783,7 @@ def disable_webservice(
 
     Args:
         name: Name of the webservice to disable
-        register: Optional custom register (defaults to LysAppRegister singleton)
+        register: Optional custom register (defaults to LysAppRegistry singleton)
 
     Raises:
         ValueError: If webservice not found in registry
@@ -717,7 +792,7 @@ def disable_webservice(
         >>> disable_webservice("create_super_user")
     """
     if register is None:
-        register = LysAppRegister()
+        register = LysAppRegistry()
 
     if name not in register.webservices:
         raise ValueError(

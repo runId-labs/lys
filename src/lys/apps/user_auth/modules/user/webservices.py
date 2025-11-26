@@ -41,7 +41,7 @@ from lys.core.graphql.create import lys_creation
 from lys.core.graphql.edit import lys_edition
 from lys.core.graphql.fields import lys_field
 from lys.core.graphql.getter import lys_getter
-from lys.core.graphql.registers import register_query, register_mutation
+from lys.core.graphql.registries import register_query, register_mutation
 from lys.core.graphql.types import Query, Mutation
 
 logger = logging.getLogger(__name__)

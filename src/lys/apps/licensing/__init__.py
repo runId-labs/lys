@@ -7,3 +7,10 @@ This app provides:
 - Rule-based quotas and feature toggles
 - Stripe integration for billing
 """
+from lys.apps.licensing.registries import ValidatorRegistry, DowngraderRegistry
+
+
+__registries__ = [
+    ValidatorRegistry,
+    DowngraderRegistry,
+]

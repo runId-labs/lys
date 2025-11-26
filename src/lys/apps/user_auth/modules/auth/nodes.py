@@ -3,7 +3,7 @@ import strawberry
 from lys.apps.user_auth.modules.auth.services import AuthService
 from lys.apps.user_auth.modules.user.nodes import UserNode
 from lys.core.graphql.nodes import ServiceNode
-from lys.core.registers import register_node
+from lys.core.registries import register_node
 
 
 @register_node()

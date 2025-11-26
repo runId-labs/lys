@@ -16,35 +16,36 @@ from lys.core.consts.component_types import AppComponentTypeEnum
 from lys.core.consts.environments import EnvironmentEnum
 from lys.core.contexts import get_context
 from lys.core.graphql.extensions import DatabaseSessionExtension, AIContextExtension
-from lys.core.graphql.registers import GraphqlRegister, LysGraphqlRegister
+from lys.core.graphql.registries import GraphqlRegistry, LysGraphqlRegistry
 from lys.core.graphql.types import DefaultQuery
 from lys.core.interfaces.middlewares import MiddlewareInterface
 from lys.core.interfaces.permissions import PermissionInterface
 from lys.core.managers.database import DatabaseManager
-from lys.core.registers import AppRegister, LysAppRegister
+from lys.core.registries import AppRegistry, LysAppRegistry, CustomRegistry
 from lys.core.utils.decorators import singleton
+from lys.core.utils.import_string import import_string
 
 
 class AppManager:
     def __init__(
             self,
             settings: AppSettings = None,
-            register: AppRegister = None,
-            graphql_register: GraphqlRegister = None
+            registry: AppRegistry = None,
+            graphql_registry: GraphqlRegistry = None
     ):
         if settings is None:
             settings = LysAppSettings()
         self.settings = settings
 
-        if register is None:
-            register = LysAppRegister()
-        self.register = register
+        if registry is None:
+            registry = LysAppRegistry()
+        self.registry = registry
 
         self.database = DatabaseManager(settings.database)
 
-        if graphql_register is None:
-            graphql_register = LysGraphqlRegister()
-        self.graphql_register = graphql_register
+        if graphql_registry is None:
+            graphql_registry = LysGraphqlRegistry()
+        self.graphql_registry = graphql_registry
 
         self.component_types: List[AppComponentTypeEnum] = []
 
@@ -74,7 +75,7 @@ class AppManager:
         Example:
             user_entity = app_manager.get_entity("users")
         """
-        return self.register.get_entity(name)
+        return self.registry.get_entity(name)
 
     def get_service(self, name: str):
         """
@@ -94,7 +95,7 @@ class AppManager:
         Example:
             user_service = app_manager.get_service("users")
         """
-        return self.register.get_service(name)
+        return self.registry.get_service(name)
 
     ####################################################################################################################
     #                                                    PROTECTED
@@ -126,12 +127,12 @@ class AppManager:
         logging.info(f"Loaded {loaded_count} {component_type} components")
 
         # locked the component type registry because is load now
-        self.register.lock(component_type)
+        self.registry.lock(component_type)
 
         # call extra logique to apply after the registration of a component type
         method_name = "finalize_" + component_type.value
 
-        method = getattr(self.register, method_name, None)
+        method = getattr(self.registry, method_name, None)
         if callable(method):
             method()
 
@@ -195,6 +196,57 @@ class AppManager:
         if module_name not in self._loaded_modules:
             self._loaded_modules.append(module_name)
 
+    def _load_custom_component_files(self) -> None:
+        """
+        Load custom component files from all app modules.
+
+        For each custom registry (e.g., "validators", "downgraders"), this method
+        attempts to import the corresponding file from each app submodule.
+
+        Example: If "validators" registry is registered, this will try to import:
+        - lys.apps.licensing.modules.rule.validators
+        - lys.apps.licensing.modules.subscription.validators
+        - etc.
+        """
+        custom_files = self.registry.get_custom_component_files()
+        if not custom_files:
+            return
+
+        logging.info("=" * 50)
+        logging.info("Loading custom component files...")
+        logging.info(f"Custom component types: {custom_files}")
+
+        loaded_count = 0
+
+        for app_string in self.settings.apps:
+            app_modules_string = f"{app_string}.modules"
+
+            try:
+                app_module = importlib.import_module(app_modules_string)
+            except ModuleNotFoundError:
+                continue
+
+            if not hasattr(app_module, '__submodules__'):
+                continue
+
+            for submodule in app_module.__submodules__:
+                for custom_file in custom_files:
+                    try:
+                        component_module_name = f"{submodule.__name__}.{custom_file}"
+                        importlib.import_module(component_module_name)
+                        self._track_loaded_module(component_module_name)
+                        logging.info(f"✓ Loaded {custom_file} from {submodule.__name__}")
+                        loaded_count += 1
+                    except ModuleNotFoundError:
+                        # File doesn't exist in this module, that's OK
+                        logging.debug(f"No {custom_file} module in {submodule.__name__}")
+                    except Exception as e:
+                        logging.error(f"✗ Error loading {custom_file} from {submodule.__name__}: {e}")
+                        traceback.print_exc()
+
+        logging.info(f"Loaded {loaded_count} custom component files")
+        logging.info("=" * 50)
+
     async def _load_fixtures_in_order(self) -> bool:
         """
         Load all registered fixtures in dependency order.
@@ -203,7 +255,7 @@ class AppManager:
             bool: True if all fixtures loaded successfully, False otherwise
         """
         try:
-            fixtures_in_order = self.register.get_fixtures_in_dependency_order()
+            fixtures_in_order = self.registry.get_fixtures_in_dependency_order()
 
             if not fixtures_in_order:
                 logging.info("No fixtures to load")
@@ -243,6 +295,47 @@ class AppManager:
         except Exception as e:
             logging.error(f"Error in fixture loading process: {e}")
             return False
+
+    def _load_custom_registries(self) -> None:
+        """
+        Load custom registries from apps and add them to AppRegistry.
+
+        This is called during app initialization, before loading app modules.
+        Custom registries are discovered from __registries__ attribute in each app's __init__.py.
+
+        Example app __init__.py:
+            from lys.apps.licensing.registries import ValidatorRegistry, DowngraderRegistry
+
+            __registries__ = [
+                ValidatorRegistry,
+                DowngraderRegistry,
+            ]
+        """
+        loaded_count = 0
+
+        for app_string in self.settings.apps:
+            try:
+                app_module = importlib.import_module(app_string)
+                registries = getattr(app_module, '__registries__', [])
+
+                for registry_class in registries:
+                    # Verify it's a CustomRegistry subclass
+                    if not issubclass(registry_class, CustomRegistry):
+                        raise TypeError(f"'{registry_class.__name__}' must be a subclass of CustomRegistry")
+
+                    # Instantiate and add to AppRegistry
+                    registry = registry_class()
+                    self.registry.add_custom_registry(registry)
+                    loaded_count += 1
+
+            except ModuleNotFoundError:
+                logging.debug(f"App module not found: {app_string}")
+            except Exception as e:
+                logging.error(f"✗ Failed to load custom registries from '{app_string}': {e}")
+                raise
+
+        if loaded_count > 0:
+            logging.info(f"Loaded {loaded_count} custom registries")
 
     def _load_permissions(self):
         """Load permission classes from configured permission modules."""
@@ -284,47 +377,35 @@ class AppManager:
         logging.info("=" * 50)
 
     def _load_middlewares(self, app: FastAPI):
-        """Load middleware classes from configured middleware modules."""
-        if not self.settings.permissions:
+        """
+        Load middleware classes from configured middleware class paths.
+
+        Middlewares are specified as full dotted paths to middleware classes.
+        Example: "lys.core.middlewares.cors.LysCorsMiddleware"
+        """
+        if not self.settings.middlewares:
             logging.info("No middlewares configured")
             return
 
         logging.info("=" * 50)
         logging.info("Starting middleware loading process...")
-        logging.info(f"Middleware modules to load: {self.settings.middlewares}")
+        logging.info(f"Middlewares to load: {self.settings.middlewares}")
 
         loaded_count = 0
-        total_modules = len(self.settings.middlewares)
 
-        middlewares = []
-
-        for middleware_import in self.settings.middlewares:
+        for middleware_path in self.settings.middlewares:
             try:
-                logging.info(f"Loading middleware module: {middleware_import}")
-                middleware_module = importlib.import_module(middleware_import)
-
-                module_middlewares = [
-                    cls for name, cls in inspect.getmembers(middleware_module, inspect.isclass)
-                    if issubclass(cls, MiddlewareInterface) and cls is not MiddlewareInterface
-                ]
-
-                for middleware in module_middlewares:
-                    app.add_middleware(middleware)
-
-                middlewares += module_middlewares
+                middleware_class = import_string(middleware_path)
+                app.add_middleware(middleware_class)
                 loaded_count += 1
-
-                middleware_import_names = [cls.__name__ for cls in module_middlewares]
-                logging.info(f"✓ Loaded {len(module_middlewares)} middlewares from {middleware_import}: {middleware_import_names}")
+                logging.info(f"✓ Loaded middleware: {middleware_class.__name__}")
 
             except Exception as e:
-                logging.error(f"✗ Failed to load middleware module {middleware_import}: {e}")
+                logging.error(f"✗ Failed to load middleware '{middleware_path}': {e}")
+                raise
 
         logging.info("=" * 50)
-        logging.info(f"Middleware loading completed - Success: {loaded_count}/{total_modules} modules")
-        total_middlewares = len(middlewares)
-        middleware_names = [cls.__name__ for cls in middlewares]
-        logging.info(f"Total middlewares loaded: {total_middlewares} ({middleware_names})")
+        logging.info(f"Middleware loading completed: {loaded_count} middlewares")
         logging.info("=" * 50)
 
     def _load_schema(self):
@@ -337,7 +418,7 @@ class AppManager:
         Returns:
             strawberry.Schema or None if no GraphQL components are registered
         """
-        if self.graphql_register.is_empty:
+        if self.graphql_registry.is_empty:
             return None
 
         # Configure extensions
@@ -363,13 +444,13 @@ class AppManager:
         schema_name = self.settings.graphql_schema_name
         schema_types = {}
 
-        register_mapping = {
-            "Query": self.graphql_register.queries,
-            "Mutation": self.graphql_register.mutations,
-            "Subscription": self.graphql_register.subscriptions,
+        registry_mapping = {
+            "Query": self.graphql_registry.queries,
+            "Mutation": self.graphql_registry.mutations,
+            "Subscription": self.graphql_registry.subscriptions,
         }
 
-        for type_name, schema_type in register_mapping.items():
+        for type_name, schema_type in registry_mapping.items():
             component_list = schema_type.get(schema_name, [])
             if len(component_list) > 0:
                 component_list.reverse()
@@ -414,6 +495,9 @@ class AppManager:
         Returns:
             bool: True if all components loaded successfully, False otherwise
         """
+        # Phase 0: Load custom registries first (before app components)
+        self._load_custom_registries()
+
         logging.info("=" * 50)
         logging.info("Starting component loading process...")
         logging.info(f"Apps to process: {self.settings.apps}")
@@ -424,16 +508,19 @@ class AppManager:
             if not self._load_component_type(component_type):
                 success = False
 
+        # Load custom component files (validators.py, downgraders.py, etc.)
+        self._load_custom_component_files()
+
         # Summary logging
         logging.info("=" * 50)
         logging.info(f"Component loading completed - Success: {success}")
         logging.info(f"Total modules loaded: {len(self._loaded_modules)}")
         logging.info(f"Loaded modules: {self._loaded_modules}")
         logging.info(f"Registry summary:")
-        logging.info(f"  - Services: {len(self.register.services)} ({list(self.register.services.keys())})")
-        logging.info(f"  - Entities: {len(self.register.entities)} ({list(self.register.entities.keys())})")
-        fixture_names = [f.__name__ for f in self.register.fixtures]
-        logging.info(f"  - Fixtures: {len(self.register.fixtures)} ({fixture_names})")
+        logging.info(f"  - Services: {len(self.registry.services)} ({list(self.registry.services.keys())})")
+        logging.info(f"  - Entities: {len(self.registry.entities)} ({list(self.registry.entities.keys())})")
+        fixture_names = [f.__name__ for f in self.registry.fixtures]
+        logging.info(f"  - Fixtures: {len(self.registry.fixtures)} ({fixture_names})")
         logging.info("=" * 50)
 
         return success

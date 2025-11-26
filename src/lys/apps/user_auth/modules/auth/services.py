@@ -23,7 +23,7 @@ from lys.apps.user_auth.modules.user.models import GetUserRefreshTokenInputModel
 from lys.apps.user_auth.modules.user.services import UserService, UserRefreshTokenService
 from lys.apps.user_auth.utils import AuthUtils
 from lys.core.errors import LysError
-from lys.core.registers import register_service
+from lys.core.registries import register_service
 from lys.core.services import Service, EntityService
 from lys.core.utils.datetime import now_utc
 

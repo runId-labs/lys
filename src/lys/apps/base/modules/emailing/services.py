@@ -10,7 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from lys.apps.base.modules.emailing.consts import SENT_EMAILING_STATUS, ERROR_EMAILING_STATUS
 from lys.apps.base.modules.emailing.entities import Emailing, EmailingType, EmailingStatus
 from lys.core.entities import Entity
-from lys.core.registers import register_service
+from lys.core.registries import register_service
 from lys.core.services import EntityService
 
 logger = logging.getLogger(__name__)
