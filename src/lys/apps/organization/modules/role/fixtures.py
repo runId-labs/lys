@@ -22,7 +22,9 @@ class OrganizationRoleFixtures(EntityFixtures[RoleService]):
                 "enabled": True,
                 "description": "Administrator role with client management capabilities including listing and viewing clients.",
                 "webservices": [
-                    "all_clients"
+                    "all_clients",
+                    "client",
+                    "update_client"
                 ]
             }
         }

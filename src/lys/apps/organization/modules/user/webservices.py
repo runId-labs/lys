@@ -124,7 +124,7 @@ class OrganizationUserQuery(Query):
         description="Get a specific client-user relationship by ID. Returns user info within organization context.",
         options={"generate_tool": True}
     )
-    async def client_user(self):
+    async def client_user(self, obj: ClientUser, info: Info):
         pass
 
     @lys_connection(

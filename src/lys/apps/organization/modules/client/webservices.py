@@ -4,13 +4,16 @@ from typing import Annotated, Optional
 import strawberry
 from sqlalchemy import Select, select
 
-from lys.apps.organization.consts import ORGANIZATION_ROLE_ACCESS_LEVEL
-from lys.apps.organization.modules.client.inputs import CreateClientInput
+from lys.apps.organization.consts import ORGANIZATION_ROLE_ACCESS_LEVEL, CLIENT_ADMIN_ROLE
+from lys.apps.organization.modules.client.entities import Client
+from lys.apps.organization.modules.client.inputs import CreateClientInput, UpdateClientInput
 from lys.apps.organization.modules.client.nodes import ClientNode
 from lys.apps.user_role.consts import ROLE_ACCESS_LEVEL
 from lys.core.contexts import Info
 from lys.core.graphql.connection import lys_connection
 from lys.core.graphql.create import lys_creation
+from lys.core.graphql.edit import lys_edition
+from lys.core.graphql.getter import lys_getter
 from lys.core.graphql.registries import register_query, register_mutation
 from lys.core.graphql.types import Query, Mutation
 
@@ -54,6 +57,17 @@ class ClientQuery(Query):
             stmt = stmt.where(client_entity.name.ilike(search_pattern))
 
         return stmt
+
+    @lys_getter(
+        ClientNode,
+        is_public=False,
+        access_levels=[ROLE_ACCESS_LEVEL, ORGANIZATION_ROLE_ACCESS_LEVEL],
+        is_licenced=False,
+        description="Get a specific client by ID. Accessible to client administrators.",
+        options={"generate_tool": True}
+    )
+    async def client(self, obj: Client, info: Info):
+        pass
 
 
 @register_mutation()
@@ -119,3 +133,40 @@ class ClientMutation(Mutation):
         logger.info(f"Client created: {input_data.client_name} with owner: {input_data.email}")
 
         return client
+
+    @lys_edition(
+        ensure_type=ClientNode,
+        is_public=False,
+        access_levels=[ROLE_ACCESS_LEVEL, ORGANIZATION_ROLE_ACCESS_LEVEL],
+        is_licenced=False,
+        description="Update client name. Accessible to client administrators.",
+        options={"generate_tool": True}
+    )
+    async def update_client(
+        self,
+        obj: Client,
+        inputs: UpdateClientInput,
+        info: Info
+    ):
+        """
+        Update a client's name.
+
+        This webservice is accessible to users with ROLE or ORGANIZATION_ROLE access level
+        and CLIENT_ADMIN_ROLE role.
+
+        Args:
+            obj: Client entity (fetched and validated by lys_edition)
+            inputs: Input containing:
+                - name: New name for the client organization
+            info: GraphQL context
+
+        Returns:
+            Client: The updated client
+        """
+        input_data = inputs.to_pydantic()
+
+        obj.name = input_data.name
+
+        logger.info(f"Client {obj.id} name updated to: {input_data.name}")
+
+        return obj

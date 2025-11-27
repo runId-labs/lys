@@ -6,14 +6,14 @@ import strawberry
 from sqlalchemy import Select, select, or_
 from strawberry import relay
 
-from lys.apps.user_auth.modules.user.consts import OBSERVATION_LOG_TYPE
+from lys.apps.user_auth.modules.user.consts import OBSERVATION_LOG_TYPE, NOT_SUPER_USER
 from lys.apps.user_auth.modules.user.entities import User, UserAuditLog
 from lys.apps.user_auth.modules.user.inputs import (
     CreateUserInput,
     CreateSuperUserInput,
     ResetPasswordInput,
     VerifyEmailInput,
-    UpdateEmailInput,
+    UpdateUserEmailInput,
     UpdatePasswordInput,
     UpdateUserPrivateDataInput,
     UpdateUserStatusInput,
@@ -35,6 +35,7 @@ from lys.apps.user_auth.modules.user.nodes import (
 )
 from lys.apps.user_auth.modules.user.services import UserService
 from lys.core.consts.webservices import OWNER_ACCESS_LEVEL
+from lys.core.errors import LysError
 from lys.core.contexts import Info
 from lys.core.graphql.connection import lys_connection
 from lys.core.graphql.create import lys_creation
@@ -98,8 +99,20 @@ class UserQuery(Query):
         description="Get a specific user by ID. Returns user profile with email, status, and private data.",
         options={"generate_tool": True}
     )
-    async def user(self):
-        pass
+    async def user(self, obj: User, info: Info):
+        if obj.is_super_user:
+            raise LysError(NOT_SUPER_USER, "Cannot access super user via this endpoint")
+
+    @lys_getter(
+        UserNode,
+        is_public=False,
+        is_licenced=False,
+        description="Get a specific super user by ID. Only accessible to super users.",
+        options={"generate_tool": True}
+    )
+    async def super_user(self, obj: User, info: Info):
+        if not obj.is_super_user:
+            raise LysError(NOT_SUPER_USER, "Target user is not a super user")
 
     @lys_connection(
         UserNode,
@@ -544,10 +557,10 @@ class UserMutation(Mutation):
         description="Update user email address. Only the owner can update their own email.",
         options={"generate_tool": True}
     )
-    async def update_email(
+    async def update_user_email(
         self,
         obj: User,
-        inputs: UpdateEmailInput,
+        inputs: UpdateUserEmailInput,
         info: Info
     ):
         """
@@ -669,7 +682,6 @@ class UserMutation(Mutation):
 
         session = info.context.session
         user_service = info.context.app_manager.get_service("user")
-        language_service = info.context.app_manager.get_service("language")
 
         # Delegate all business logic to the service
         await user_service.update_user(
@@ -682,6 +694,111 @@ class UserMutation(Mutation):
         )
 
         logger.info(f"User {obj.id} private data updated successfully")
+
+        return obj
+
+    @lys_edition(
+        ensure_type=UserNode,
+        is_public=False,
+        is_licenced=False,
+        description="Update super user email address. Only accessible to super users.",
+        options={"generate_tool": True}
+    )
+    async def update_super_user_email(
+        self,
+        obj: User,
+        inputs: UpdateUserEmailInput,
+        info: Info
+    ):
+        """
+        Update super user email address and send verification email to the new address.
+
+        This webservice is only accessible to super users.
+        The target user must be a super user.
+
+        Args:
+            obj: User entity (fetched and validated by lys_edition)
+            inputs: Input containing:
+                - new_email: New email address
+            info: GraphQL context
+
+        Returns:
+            User: The updated user with new unverified email address
+
+        Raises:
+            LysError: If target user is not a super user
+        """
+        if not obj.is_super_user:
+            raise LysError(NOT_SUPER_USER, "Target user is not a super user")
+
+        input_data = inputs.to_pydantic()
+
+        session = info.context.session
+        user_service = info.context.app_manager.get_service("user")
+
+        await user_service.update_email(
+            user=obj,
+            new_email=input_data.new_email,
+            session=session,
+            background_tasks=info.context.background_tasks
+        )
+
+        logger.info(f"Super user {obj.id} email updated to: {input_data.new_email}")
+
+        return obj
+
+    @lys_edition(
+        ensure_type=UserNode,
+        is_public=False,
+        is_licenced=False,
+        description="Update super user profile (first_name, last_name, gender, language). Only accessible to super users.",
+        options={"generate_tool": True}
+    )
+    async def update_super_user_private_data(
+        self,
+        obj: User,
+        inputs: UpdateUserPrivateDataInput,
+        info: Info
+    ):
+        """
+        Update super user private data (GDPR-protected fields) and language preference.
+
+        This webservice is only accessible to super users.
+        The target user must be a super user.
+
+        Args:
+            obj: User entity (fetched and validated by lys_edition)
+            inputs: Input containing:
+                - first_name: Optional first name to update
+                - last_name: Optional last name to update
+                - gender_code: Optional gender code to update
+                - language_code: Optional language code to update
+            info: GraphQL context
+
+        Returns:
+            User: The user with updated private data and/or language preference
+
+        Raises:
+            LysError: If target user is not a super user
+        """
+        if not obj.is_super_user:
+            raise LysError(NOT_SUPER_USER, "Target user is not a super user")
+
+        input_data = inputs.to_pydantic()
+
+        session = info.context.session
+        user_service = info.context.app_manager.get_service("user")
+
+        await user_service.update_user(
+            user=obj,
+            first_name=input_data.first_name,
+            last_name=input_data.last_name,
+            gender_id=input_data.gender_code,
+            language_id=input_data.language_code,
+            session=session
+        )
+
+        logger.info(f"Super user {obj.id} private data updated successfully")
 
         return obj
 

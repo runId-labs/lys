@@ -242,7 +242,7 @@ class UserMutation(Mutation):
 
 # Override webservices from user_auth to extend access levels to include ROLE
 override_webservice(
-    name="update_email",
+    name="update_user_email",
     access_levels=[OWNER_ACCESS_LEVEL, ROLE_ACCESS_LEVEL]
 )
 

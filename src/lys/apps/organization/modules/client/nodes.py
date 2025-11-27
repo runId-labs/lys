@@ -1,7 +1,8 @@
 from datetime import datetime
-from typing import Optional
+from typing import Any, Dict, Optional
 
 import strawberry
+from sqlalchemy.util import classproperty
 from strawberry import relay
 
 from lys.apps.organization.modules.client.entities import Client
@@ -19,7 +20,18 @@ class ClientNode(EntityNode[ClientService], relay.Node):
     """
     id: relay.NodeID[str]
     name: str
-    owner_id: relay.NodeID[str]
     created_at: datetime
     updated_at: Optional[datetime]
     _entity: strawberry.Private[Client]
+
+    @strawberry.field
+    def owner_id(self) -> relay.GlobalID:
+        return relay.GlobalID("UserNode", self._entity.owner_id)
+
+    @classproperty
+    def order_by_attribute_map(self) -> Dict[str, Any]:
+        return {
+            "created_at": self.entity_class.created_at,
+            "updated_at": self.entity_class.updated_at,
+            "name": self.entity_class.name
+        }

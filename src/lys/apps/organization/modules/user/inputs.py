@@ -1,10 +1,10 @@
 import strawberry
 
-from lys.apps.user_auth.modules.user.models import UpdateEmailInputModel, UpdateUserPrivateDataInputModel
+from lys.apps.user_auth.modules.user.models import UpdateUserEmailInputModel, UpdateUserPrivateDataInputModel
 from lys.apps.user_role.modules.user.models import UpdateUserRolesInputModel
 
 
-@strawberry.experimental.pydantic.input(model=UpdateEmailInputModel)
+@strawberry.experimental.pydantic.input(model=UpdateUserEmailInputModel)
 class UpdateClientUserEmailInput:
     new_email: strawberry.auto = strawberry.field(
         description="New email address for the client user (will be set to unverified state)"

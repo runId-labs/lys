@@ -1,6 +1,6 @@
 import strawberry
 
-from lys.apps.organization.modules.client.models import CreateClientInputModel
+from lys.apps.organization.modules.client.models import CreateClientInputModel, UpdateClientInputModel
 
 
 @strawberry.experimental.pydantic.input(model=CreateClientInputModel)
@@ -25,4 +25,11 @@ class CreateClientInput:
     )
     gender_code: strawberry.auto = strawberry.field(
         description="Optional gender code (MALE, FEMALE, OTHER)"
+    )
+
+
+@strawberry.experimental.pydantic.input(model=UpdateClientInputModel)
+class UpdateClientInput:
+    name: strawberry.auto = strawberry.field(
+        description="New name of the client organization"
     )

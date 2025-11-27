@@ -1,7 +1,7 @@
 from typing import Any
 
 from sqlalchemy import ForeignKey
-from sqlalchemy.orm import Mapped, mapped_column, relationship, declared_attr
+from sqlalchemy.orm import Mapped, mapped_column, relationship, declared_attr, backref
 
 from lys.apps.organization.abstracts import AbstractOrganizationEntity, AbstractUserOrganizationRoleEntity
 from lys.core.entities import Entity
@@ -56,7 +56,7 @@ class ClientUserRole(AbstractUserOrganizationRoleEntity):
     def client_user(self):
         return relationship(
             "client_user",
-            backref="client_user_roles",
+            backref=backref("client_user_roles", lazy='selectin'),
             lazy='selectin'
         )
 

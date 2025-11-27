@@ -167,7 +167,7 @@ class UpdateUserInputModel(BaseModel):
         return validate_language_format(value)
 
 
-class UpdateEmailInputModel(BaseModel):
+class UpdateUserEmailInputModel(BaseModel):
     """
     Input model for updating user email address.
 

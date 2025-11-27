@@ -5,7 +5,7 @@ from lys.apps.user_auth.modules.user.models import (
     CreateSuperUserInputModel,
     UpdateUserInputModel,
     UpdateUserPrivateDataInputModel,
-    UpdateEmailInputModel,
+    UpdateUserEmailInputModel,
     UpdatePasswordInputModel,
     ChangePasswordInputModel,
     ResetPasswordInputModel,
@@ -84,8 +84,8 @@ class UpdateUserPrivateDataInput:
     )
 
 
-@strawberry.experimental.pydantic.input(model=UpdateEmailInputModel)
-class UpdateEmailInput:
+@strawberry.experimental.pydantic.input(model=UpdateUserEmailInputModel)
+class UpdateUserEmailInput:
     new_email: strawberry.auto = strawberry.field(
         description="New email address (will be set to unverified state)"
     )

@@ -73,6 +73,18 @@ class EntityNode(Generic[T], ServiceNodeMixin):
     def entity_class(self) -> Type[EntityInterface]:
         return self.app_manager.get_entity(self.service_name)
 
+    def get_entity(self) -> EntityInterface:
+        """
+        Get the underlying entity instance.
+
+        This method provides access to the entity stored in the private _entity field.
+        Use this instead of accessing _entity directly.
+
+        Returns:
+            EntityInterface: The underlying entity instance
+        """
+        return self._entity
+
     @classmethod
     def from_obj(cls, entity: EntityInterface) -> 'EntityNode':
         """
