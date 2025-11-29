@@ -1,20 +1,21 @@
-from typing import List
-
-from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
-
 from lys.apps.organization.consts import CLIENT_ADMIN_ROLE
-from lys.apps.user_role.models import RoleFixturesModel
-from lys.apps.user_role.modules.role.services import RoleService
-from lys.core.fixtures import EntityFixtures
+from lys.apps.user_role.consts import USER_ADMIN_ROLE
+from lys.apps.user_role.modules.role.fixtures import USER_ADMIN_ROLE_WEBSERVICES, RoleFixtures
 from lys.core.registries import register_fixture
 
 
-@register_fixture()
-class OrganizationRoleFixtures(EntityFixtures[RoleService]):
-    model = RoleFixturesModel
-    delete_previous_data: bool = False
+USER_ADMIN_ROLE_ORGANIZATION_WEBSERVICES = USER_ADMIN_ROLE_WEBSERVICES + [
+    "all_client_users",
+    "client_user",
+    "update_client_user_email",
+    "update_client_user_private_data",
+    "update_client_user_roles",
+    "create_client_user",
+]
 
+
+@register_fixture()
+class OrganizationRoleFixtures(RoleFixtures):
     data_list = [
         {
             "id": CLIENT_ADMIN_ROLE,
@@ -27,14 +28,13 @@ class OrganizationRoleFixtures(EntityFixtures[RoleService]):
                     "update_client"
                 ]
             }
+        },
+        {
+            "id": USER_ADMIN_ROLE,
+            "attributes": {
+                "enabled": True,
+                "description": "Administrator role with full user management capabilities including creating, updating, and searching users, managing roles, and viewing audit logs.",
+                "webservices": USER_ADMIN_ROLE_ORGANIZATION_WEBSERVICES
+            }
         }
     ]
-
-    @classmethod
-    async def format_webservices(cls, webservice_ids: List[str], session: AsyncSession) -> List:
-        webservice_class = cls.app_manager.get_entity("webservice")
-        stmt = select(webservice_class).where(webservice_class.id.in_(webservice_ids))
-
-        result = await session.execute(stmt)
-        webservices: List = list(result.scalars().all())
-        return webservices

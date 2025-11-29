@@ -10,6 +10,22 @@ from lys.core.fixtures import EntityFixtures
 from lys.core.registries import register_fixture
 
 
+USER_ADMIN_ROLE_WEBSERVICES = [
+    "create_user",
+    "user",
+    "update_user_email",
+    "update_password",
+    "update_user_private_data",
+    "update_user_status",
+    "update_user_roles",
+    "send_email_verification",
+    "create_user_observation",
+    "list_user_audit_logs",
+    "all_roles",
+    "all_users",
+]
+
+
 @register_fixture()
 class RoleFixtures(EntityFixtures[RoleService]):
     model = RoleFixturesModel
@@ -20,25 +36,7 @@ class RoleFixtures(EntityFixtures[RoleService]):
             "attributes": {
                 "enabled": True,
                 "description": "Administrator role with full user management capabilities including creating, updating, and searching users, managing roles, and viewing audit logs.",
-                "webservices": [
-                    "create_user",
-                    "user",
-                    "update_user_email",
-                    "update_password",
-                    "update_user_private_data",
-                    "update_user_status",
-                    "update_user_roles",
-                    "send_email_verification",
-                    "create_user_observation",
-                    "list_user_audit_logs",
-                    "all_roles",
-                    "all_users",
-                    "all_client_users",
-                    "client_user",
-                    "update_client_user_email",
-                    "update_client_user_private_data",
-                    "update_client_user_roles"
-                ]
+                "webservices": USER_ADMIN_ROLE_WEBSERVICES
             }
         }
     ]

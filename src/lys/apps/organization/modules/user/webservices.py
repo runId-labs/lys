@@ -8,6 +8,7 @@ from strawberry import relay
 from lys.apps.organization.consts import ORGANIZATION_ROLE_ACCESS_LEVEL
 from lys.apps.organization.modules.user.entities import ClientUser
 from lys.apps.organization.modules.user.inputs import (
+    CreateClientUserInput,
     UpdateClientUserEmailInput,
     UpdateClientUserPrivateDataInput,
     UpdateClientUserRolesInput
@@ -17,6 +18,7 @@ from lys.apps.user_auth.modules.user.nodes import UserNode
 from lys.apps.user_role.consts import ROLE_ACCESS_LEVEL
 from lys.core.contexts import Info
 from lys.core.graphql.connection import lys_connection
+from lys.core.graphql.create import lys_creation
 from lys.core.graphql.edit import lys_edition
 from lys.core.graphql.getter import lys_getter
 from lys.core.graphql.registries import register_query, register_mutation
@@ -363,3 +365,64 @@ class OrganizationUserMutation(Mutation):
         )
 
         return obj
+
+    @lys_creation(
+        ensure_type=ClientUserNode,
+        is_public=False,
+        access_levels=[ROLE_ACCESS_LEVEL, ORGANIZATION_ROLE_ACCESS_LEVEL],
+        is_licenced=False,
+        description="Create a new user and associate them with a client organization. Accessible to users with USER_ADMIN role.",
+        options={"generate_tool": True}
+    )
+    async def create_client_user(
+        self,
+        inputs: CreateClientUserInput,
+        info: Info
+    ):
+        """
+        Create a new user and associate them with a client organization.
+
+        This webservice is accessible to users with ROLE or ORGANIZATION_ROLE access level.
+        It creates a new user and a ClientUser relationship linking them to the specified client.
+        Organization roles can optionally be assigned during creation.
+
+        Args:
+            inputs: Input containing:
+                - client_id: GlobalID of the client/organization to associate the user with
+                - email: Email address for the new user
+                - password: Password for the new user
+                - language_code: Language code for the user
+                - first_name: Optional first name (GDPR-protected)
+                - last_name: Optional last name (GDPR-protected)
+                - gender_code: Optional gender code (MALE, FEMALE, OTHER)
+                - role_codes: Optional list of organization role codes to assign
+            info: GraphQL context
+
+        Returns:
+            ClientUser: The created client user with organization roles
+        """
+        input_data = inputs.to_pydantic()
+
+        session = info.context.session
+        client_user_service = info.context.app_manager.get_service("client_user")
+
+        client_user = await client_user_service.create_client_user(
+            session=session,
+            client_id=input_data.client_id,
+            email=input_data.email,
+            password=input_data.password,
+            language_id=input_data.language_code,
+            send_verification_email=True,
+            background_tasks=info.context.background_tasks,
+            first_name=input_data.first_name,
+            last_name=input_data.last_name,
+            gender_id=input_data.gender_code,
+            role_codes=input_data.role_codes
+        )
+
+        logger.info(
+            f"Client user created for client {input_data.client_id} with email {input_data.email} "
+            f"by {info.context.connected_user['id']}"
+        )
+
+        return client_user

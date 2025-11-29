@@ -100,6 +100,106 @@ class ClientUserService(EntityService[ClientUser]):
     """
 
     @classmethod
+    async def create_client_user(
+        cls,
+        session: AsyncSession,
+        client_id: str,
+        email: str,
+        password: str,
+        language_id: str,
+        send_verification_email: bool = True,
+        background_tasks=None,
+        first_name: str | None = None,
+        last_name: str | None = None,
+        gender_id: str | None = None,
+        role_codes: list[str] | None = None
+    ) -> ClientUser:
+        """
+        Create a new user and associate them with a client organization.
+
+        This method:
+        1. Creates a new user via user_service.create_user()
+        2. Creates a ClientUser relationship linking the user to the client
+        3. Assigns organization roles if provided
+
+        Args:
+            session: Database session
+            client_id: ID of the client to associate the user with
+            email: Email address for the new user
+            password: Plain text password (will be hashed)
+            language_id: Language ID for the user
+            send_verification_email: Whether to send email verification (default: True)
+            background_tasks: FastAPI BackgroundTasks for scheduling email
+            first_name: Optional first name (GDPR-protected)
+            last_name: Optional last name (GDPR-protected)
+            gender_id: Optional gender ID
+            role_codes: Optional list of organization role codes to assign
+
+        Returns:
+            Created ClientUser entity
+        """
+        user_service = cls.app_manager.get_service("user")
+
+        # Step 1: Create the user
+        user = await user_service.create_user(
+            session=session,
+            email=email,
+            password=password,
+            language_id=language_id,
+            send_verification_email=send_verification_email,
+            background_tasks=background_tasks,
+            first_name=first_name,
+            last_name=last_name,
+            gender_id=gender_id
+        )
+
+        # Step 2: Create ClientUser relationship
+        client_user = cls.entity_class(
+            user_id=user.id,
+            client_id=client_id
+        )
+        session.add(client_user)
+        await session.flush()
+
+        # Step 3: Assign organization roles if provided
+        if role_codes:
+            await cls._assign_roles(client_user, role_codes, session)
+
+        return client_user
+
+    @classmethod
+    async def _assign_roles(
+        cls,
+        client_user: ClientUser,
+        role_codes: list[str],
+        session: AsyncSession
+    ) -> None:
+        """
+        Assign organization roles to a client user.
+
+        Args:
+            client_user: ClientUser entity to assign roles to
+            role_codes: List of role codes to assign
+            session: Database session
+        """
+        role_service = cls.app_manager.get_service("role")
+        role_entity = role_service.entity_class
+        client_user_role_entity = cls.app_manager.get_entity("client_user_role")
+
+        # Fetch role entities
+        stmt = select(role_entity).where(role_entity.id.in_(role_codes))
+        result = await session.execute(stmt)
+        roles = list(result.scalars().all())
+
+        # Create ClientUserRole entities
+        for role in roles:
+            client_user_role = client_user_role_entity(
+                client_user_id=client_user.id,
+                role_id=role.id
+            )
+            session.add(client_user_role)
+
+    @classmethod
     async def update_client_user_roles(
         cls,
         client_user: ClientUser,
