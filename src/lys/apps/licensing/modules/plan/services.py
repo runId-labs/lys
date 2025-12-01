@@ -4,14 +4,14 @@ License plan services.
 This module provides:
 - LicensePlanService: CRUD operations for license plans
 - LicensePlanVersionService: CRUD operations for plan versions
-- VersionRuleService: CRUD operations for version-rule associations
+- LicensePlanVersionRuleService: CRUD operations for version-rule associations
 """
 from typing import List
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from lys.apps.licensing.modules.plan.entities import LicensePlan, LicensePlanVersion, VersionRule
+from lys.apps.licensing.modules.plan.entities import LicensePlan, LicensePlanVersion, LicensePlanVersionRule
 from lys.core.registries import register_service
 from lys.core.services import EntityService
 
@@ -147,7 +147,7 @@ class LicensePlanVersionService(EntityService[LicensePlanVersion]):
 
 
 @register_service()
-class VersionRuleService(EntityService[VersionRule]):
+class LicensePlanVersionRuleService(EntityService[LicensePlanVersionRule]):
     """
     Service for managing version-rule associations.
 
@@ -159,7 +159,7 @@ class VersionRuleService(EntityService[VersionRule]):
         cls,
         plan_version_id: str,
         session: AsyncSession
-    ) -> List[VersionRule]:
+    ) -> List[LicensePlanVersionRule]:
         """
         Get all rules associated with a plan version.
 
@@ -168,7 +168,7 @@ class VersionRuleService(EntityService[VersionRule]):
             session: Database session
 
         Returns:
-            List of VersionRule entities
+            List of LicensePlanVersionRule entities
         """
         stmt = select(cls.entity_class).where(
             cls.entity_class.plan_version_id == plan_version_id
@@ -183,7 +183,7 @@ class VersionRuleService(EntityService[VersionRule]):
         rule_id: str,
         limit_value: int | None,
         session: AsyncSession
-    ) -> VersionRule:
+    ) -> LicensePlanVersionRule:
         """
         Set or update a rule limit for a plan version.
 
@@ -194,7 +194,7 @@ class VersionRuleService(EntityService[VersionRule]):
             session: Database session
 
         Returns:
-            VersionRule entity (created or updated)
+            LicensePlanVersionRule entity (created or updated)
         """
         # Check if association already exists
         stmt = select(cls.entity_class).where(

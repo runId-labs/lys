@@ -25,7 +25,7 @@ class LicenseRule(ParametricEntity):
         enabled: If False, rule is not enforced
 
     Rule Types:
-        - Quota rules: Have a numeric limit_value in VersionRule (e.g., MAX_USERS=50)
-        - Feature toggles: Presence in VersionRule means enabled, limit_value is NULL
+        - Quota rules: Have a numeric limit_value in LicensePlanVersionRule (e.g., MAX_USERS=50)
+        - Feature toggles: Presence in LicensePlanVersionRule means enabled, limit_value is NULL
     """
     __tablename__ = "license_rule"

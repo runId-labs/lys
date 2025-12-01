@@ -66,7 +66,7 @@ class LicenseCheckerService(Service):
             )
 
         # Get rule limit from subscription's plan version
-        version_rule_service = cls.app_manager.get_service("version_rule")
+        version_rule_service = cls.app_manager.get_service("license_plan_version_rule")
         version_rules = await version_rule_service.get_rules_for_version(
             subscription.plan_version_id, session
         )
@@ -160,7 +160,7 @@ class LicenseCheckerService(Service):
             )
 
         # Get rules from subscription's plan version
-        version_rule_service = cls.app_manager.get_service("version_rule")
+        version_rule_service = cls.app_manager.get_service("license_plan_version_rule")
         version_rules = await version_rule_service.get_rules_for_version(
             subscription.plan_version_id, session
         )
@@ -233,7 +233,7 @@ class LicenseCheckerService(Service):
             )
 
         # Get rules from subscription's plan version
-        version_rule_service = cls.app_manager.get_service("version_rule")
+        version_rule_service = cls.app_manager.get_service("license_plan_version_rule")
         version_rules = await version_rule_service.get_rules_for_version(
             subscription.plan_version_id, session
         )
@@ -289,7 +289,7 @@ class LicenseCheckerService(Service):
             return violations
 
         # Get new plan version rules
-        version_rule_service = cls.app_manager.get_service("version_rule")
+        version_rule_service = cls.app_manager.get_service("license_plan_version_rule")
         new_rules = await version_rule_service.get_rules_for_version(
             new_plan_version_id, session
         )

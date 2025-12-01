@@ -4,7 +4,7 @@ License plan entity definitions.
 This module defines:
 - LicensePlan: Plan types (FREE, STARTER, PRO, ENTERPRISE)
 - LicensePlanVersion: Versioned plans with pricing for grandfathering
-- VersionRule: Association between a version and a rule with its limit value
+- LicensePlanVersionRule: Association between a version and a rule with its limit value
 """
 
 from typing import TYPE_CHECKING
@@ -116,7 +116,7 @@ class LicensePlanVersion(Entity):
     def rules(self):
         """Rules associated with this version."""
         return relationship(
-            "version_rule",
+            "license_plan_version_rule",
             back_populates="plan_version",
             lazy="selectin"
         )
@@ -132,7 +132,7 @@ class LicensePlanVersion(Entity):
 
 
 @register_entity()
-class VersionRule(Entity):
+class LicensePlanVersionRule(Entity):
     """
     Association between a plan version and a rule with its limit value.
 
@@ -144,7 +144,7 @@ class VersionRule(Entity):
                      - Integer for quotas (e.g., 50 for MAX_USERS)
                      - NULL with quota rule = unlimited
     """
-    __tablename__ = "version_rule"
+    __tablename__ = "license_plan_version_rule"
 
     plan_version_id: Mapped[str] = mapped_column(
         ForeignKey("license_plan_version.id", ondelete="CASCADE"),
@@ -171,5 +171,5 @@ class VersionRule(Entity):
         return relationship("license_rule", lazy="selectin")
 
     __table_args__ = (
-        UniqueConstraint("plan_version_id", "rule_id", name="uq_version_rule"),
+        UniqueConstraint("plan_version_id", "rule_id", name="uq_license_plan_version_rule"),
     )
