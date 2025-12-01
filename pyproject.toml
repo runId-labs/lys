@@ -25,6 +25,7 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest", "pytest-asyncio", "pytest-cov"]
+stripe = ["stripe>=8.0.0"]
 
 [build-system]
 requires = ["setuptools", "wheel"]
