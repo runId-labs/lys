@@ -1,8 +1,13 @@
+import logging
+
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from lys.apps.organization.modules.client.entities import Client
 from lys.core.registries import register_service
 from lys.core.services import EntityService
+
+logger = logging.getLogger(__name__)
 
 
 @register_service()
@@ -94,4 +99,60 @@ class ClientService(EntityService[Client]):
         session.add(client_user)
         await session.flush()
 
+        # Step 4: Assign FREE plan subscription (if licensing app is enabled)
+        await cls._assign_free_plan(client.id, session)
+
         return client
+
+    @classmethod
+    async def _assign_free_plan(cls, client_id: str, session: AsyncSession) -> None:
+        """
+        Assign the FREE plan subscription to a newly created client.
+
+        This method is called automatically during client creation.
+        It assigns the current enabled version of the FREE plan.
+
+        If the licensing app is not enabled or the FREE plan doesn't exist,
+        this method logs a warning and skips subscription creation.
+
+        Args:
+            client_id: The ID of the newly created client
+            session: Database session
+        """
+        # Check if licensing entities are available
+        try:
+            plan_version_entity = cls.app_manager.get_entity("license_plan_version")
+            subscription_entity = cls.app_manager.get_entity("subscription")
+        except KeyError:
+            # Licensing app not enabled - skip
+            logger.debug("Licensing app not enabled, skipping FREE plan assignment")
+            return
+
+        # Import here to avoid circular imports when licensing app is not enabled
+        from lys.apps.licensing.consts import FREE_PLAN
+
+        # Get FREE plan's current (enabled) version
+        stmt = select(plan_version_entity).where(
+            plan_version_entity.plan_id == FREE_PLAN,
+            plan_version_entity.enabled == True
+        )
+        result = await session.execute(stmt)
+        free_version = result.scalar_one_or_none()
+
+        if not free_version:
+            logger.warning(
+                "FREE plan version not found. Ensure licensing fixtures are loaded. "
+                f"Client {client_id} created without subscription."
+            )
+            return
+
+        # Create subscription (no Stripe for free plan)
+        subscription = subscription_entity(
+            client_id=client_id,
+            plan_version_id=free_version.id,
+            stripe_subscription_id=None
+        )
+
+        session.add(subscription)
+        await session.flush()
+        logger.info(f"Assigned FREE plan (version {free_version.version}) to client {client_id}")
