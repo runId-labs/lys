@@ -7,7 +7,7 @@ behaviors for parametric entities (reference data) vs business entities (test da
 from abc import ABC, abstractmethod
 from typing import Type, Dict, Any, List, Optional, Tuple
 
-from sqlalchemy import delete, select, update
+from sqlalchemy import delete, select, update, UniqueConstraint
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from lys.core.consts.environments import EnvironmentEnum
@@ -128,10 +128,35 @@ class BusinessFixtureLoadingStrategy(FixtureLoadingStrategy):
 
     Business entities are operational data used for testing/demo purposes.
     This strategy:
-    - Deletes all existing data (clean slate)
-    - Inserts all data from data_list
+    - Deletes all existing data (clean slate) when delete_previous_data=True
+    - Uses upsert logic when delete_previous_data=False (based on unique constraints)
     - Only runs in non-PROD environments
     """
+
+    def _get_unique_key_fields(self, entity_class: Type[Entity]) -> Optional[List[str]]:
+        """
+        Extract unique key fields from entity's __table_args__.
+
+        Args:
+            entity_class: The entity class to inspect
+
+        Returns:
+            List of column names from the first UniqueConstraint found, or None
+        """
+        table_args = getattr(entity_class, "__table_args__", None)
+        if not table_args:
+            return None
+
+        # table_args can be a tuple or a dict
+        if isinstance(table_args, dict):
+            return None
+
+        for arg in table_args:
+            if isinstance(arg, UniqueConstraint):
+                # Extract column names from the constraint
+                return [col.name if hasattr(col, "name") else str(col) for col in arg.columns]
+
+        return None
 
     async def load(
         self,
@@ -144,12 +169,14 @@ class BusinessFixtureLoadingStrategy(FixtureLoadingStrategy):
         Load business entity data (non-PROD only).
 
         Returns:
-            Tuple of (deleted_count, added_count, 0, 0)
-            Note: updated_count and unchanged_count are always 0 for business data
+            Tuple of (deleted_count, added_count, updated_count, unchanged_count)
         """
         import logging
 
         deleted_count = 0
+        added_count = 0
+        updated_count = 0
+        unchanged_count = 0
 
         if fixture_class.delete_previous_data:
             # Delete all existing rows
@@ -157,63 +184,92 @@ class BusinessFixtureLoadingStrategy(FixtureLoadingStrategy):
             result = await session.execute(stmt)
             deleted_count = result.rowcount
 
-        # Prepare formatted attributes
-        formatted_attributes_list = []
+        # Check if we should use upsert logic
+        unique_key_fields = self._get_unique_key_fields(entity_class)
+        use_upsert = not fixture_class.delete_previous_data and unique_key_fields is not None
+
+        # Insert or upsert data from data_list
+        created_objects = []
         for i, data in enumerate(fixture_class.data_list):
             try:
-                formatted_attributes_list.append(
-                    await fixture_class._format_attributes(
-                        data.get("attributes", {}), session=session
-                    )
-                )
-            except Exception as e:
-                logging.error(
-                    f"Failed to format attributes for data item {i+1}/{len(fixture_class.data_list)} "
-                    f"in {fixture_class.__name__}: {str(e)}"
-                )
-                logging.error(f"Problematic data: {data}")
-                raise
+                raw_attributes = data.get("attributes", {})
+                existing_obj = None
+                extra_data = None
 
-        # Insert all data from data_list
-        created_objects = []
-        for i, attributes in enumerate(formatted_attributes_list):
-            try:
+                if use_upsert:
+                    # First format without extra_data to get unique key values
+                    temp_attributes = await fixture_class._format_attributes(
+                        raw_attributes, session=session
+                    )
+
+                    # Build filter for unique key lookup
+                    filters = [
+                        getattr(entity_class, field) == temp_attributes.get(field)
+                        for field in unique_key_fields
+                    ]
+                    stmt = select(entity_class).where(*filters).limit(1)
+                    result = await session.execute(stmt)
+                    existing_obj = result.scalars().one_or_none()
+
+                    if existing_obj is not None:
+                        # Re-format with extra_data containing parent_id
+                        extra_data = {"parent_id": existing_obj.id}
+                        attributes = await fixture_class._format_attributes(
+                            raw_attributes, session=session, extra_data=extra_data
+                        )
+
+                        # Update existing entity
+                        obj_updated, is_updated = await service.check_and_update(
+                            entity=existing_obj, **attributes
+                        )
+                        if is_updated:
+                            updated_count += 1
+                        else:
+                            unchanged_count += 1
+                        continue
+
+                # Format attributes for new entity (no extra_data needed)
+                attributes = await fixture_class._format_attributes(
+                    raw_attributes, session=session
+                )
+
+                # Create new entity
                 obj = entity_class(**attributes)
                 await fixture_class._do_before_add(obj)
                 session.add(obj)
                 created_objects.append(obj)
             except Exception as e:
                 logging.error(
-                    f"Failed to create object {i+1}/{len(formatted_attributes_list)} "
+                    f"Failed to create/update object {i+1}/{len(fixture_class.data_list)} "
                     f"for {entity_class.__tablename__}: {str(e)}"
                 )
-                logging.error(f"Problematic attributes: {attributes}")
+                logging.error(f"Problematic attributes: {raw_attributes}")
                 raise
 
         # Flush to persist objects and generate IDs
-        try:
-            await session.flush()
-        except Exception as e:
-            logging.error(
-                f"Failed to flush fixtures for {entity_class.__tablename__}: {str(e)}"
-            )
-            logging.error(f"Session state: {len(session.new)} new, {len(session.dirty)} dirty, "
-                         f"{len(session.deleted)} deleted")
-            raise
+        if created_objects:
+            try:
+                await session.flush()
+            except Exception as e:
+                logging.error(
+                    f"Failed to flush fixtures for {entity_class.__tablename__}: {str(e)}"
+                )
+                logging.error(f"Session state: {len(session.new)} new, {len(session.dirty)} dirty, "
+                             f"{len(session.deleted)} deleted")
+                raise
 
-        # Count objects that were successfully persisted (have an ID)
-        added_count = sum(1 for obj in created_objects if hasattr(obj, 'id') and obj.id is not None)
+            # Count objects that were successfully persisted (have an ID)
+            added_count = sum(1 for obj in created_objects if hasattr(obj, "id") and obj.id is not None)
 
-        # Log warning if some objects failed to persist
-        failed_count = len(created_objects) - added_count
-        if failed_count > 0:
-            logging.warning(
-                f"{failed_count} objects were added to session but failed to persist "
-                f"for {entity_class.__tablename__}"
-            )
+            # Log warning if some objects failed to persist
+            failed_count = len(created_objects) - added_count
+            if failed_count > 0:
+                logging.warning(
+                    f"{failed_count} objects were added to session but failed to persist "
+                    f"for {entity_class.__tablename__}"
+                )
 
-        # Business fixtures don't track updates/unchanged
-        return deleted_count, added_count, 0, 0
+        return deleted_count, added_count, updated_count, unchanged_count
 
 
 class FixtureLoadingStrategyFactory:

@@ -99,15 +99,27 @@ class EntityFixtures(Generic[T], AppManagerCallerMixin, EntityFixtureInterface):
     ####################################################################################################################
 
     @classmethod
-    async def _format_attributes(cls, attributes: Dict[str, Any], session: AsyncSession) -> Dict[str, Any]:
+    async def _format_attributes(
+        cls,
+        attributes: Dict[str, Any],
+        session: AsyncSession,
+        extra_data: Optional[Dict[str, Any]] = None
+    ) -> Dict[str, Any]:
         formatted_attributes: Dict[str, Any] = {}
 
         for key, attribute in attributes.items():
             method_name = "format_" + key
             if hasattr(cls, method_name) and callable(getattr(cls, method_name)):
                 method = getattr(cls, method_name)
-                if check_is_needing_session(method):
+                needs_session = check_is_needing_session(method)
+                needs_extra_data = "extra_data" in method.__annotations__
+
+                if needs_session and needs_extra_data:
+                    formatted_attributes[key] = await method(attribute, session=session, extra_data=extra_data)
+                elif needs_session:
                     formatted_attributes[key] = await method(attribute, session=session)
+                elif needs_extra_data:
+                    formatted_attributes[key] = await method(attribute, extra_data=extra_data)
                 else:
                     formatted_attributes[key] = await method(attribute)
             else:
