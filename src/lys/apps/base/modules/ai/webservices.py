@@ -82,9 +82,24 @@ class AIMutation(Mutation):
                 for tr in result["tool_results"]
             ]
 
+        # Convert frontend actions to Strawberry types
+        frontend_actions = None
+        if result.get("frontend_actions"):
+            from lys.apps.base.modules.ai.inputs import FrontendAction
+            frontend_actions = [
+                FrontendAction(
+                    type=fa["type"],
+                    path=fa.get("path"),
+                    params=fa.get("params"),
+                    nodes=fa.get("nodes")
+                )
+                for fa in result["frontend_actions"]
+            ]
+
         return AIMessageNode(
             content=result["content"],
             conversation_id=result.get("conversation_id"),
             tool_calls_count=result["tool_calls_count"],
-            tool_results=tool_results
+            tool_results=tool_results,
+            frontend_actions=frontend_actions
         )

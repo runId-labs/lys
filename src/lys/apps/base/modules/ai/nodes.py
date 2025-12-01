@@ -1,6 +1,6 @@
 from typing import Optional, List
 
-from lys.apps.base.modules.ai.inputs import AIToolResult
+from lys.apps.base.modules.ai.inputs import AIToolResult, FrontendAction
 from lys.apps.base.modules.ai.services import AIService
 from lys.core.graphql.nodes import ServiceNode
 from lys.core.registries import register_node
@@ -13,5 +13,6 @@ class AIMessageNode(ServiceNode[AIService]):
     conversation_id: Optional[str] = None
     tool_calls_count: int = 0
     tool_results: Optional[List[AIToolResult]] = None
+    frontend_actions: Optional[List[FrontendAction]] = None
 
     message: str = "AI response generated successfully"

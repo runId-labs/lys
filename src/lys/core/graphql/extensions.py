@@ -9,6 +9,7 @@ from typing import Any, List, Dict
 from strawberry.extensions import SchemaExtension
 
 from lys.apps.base.modules.ai.guardrails import CONFIRM_ACTION_TOOL
+from lys.core.utils.routes import filter_routes_by_permissions, build_navigate_tool
 
 
 class DatabaseSessionExtension(SchemaExtension):
@@ -127,6 +128,20 @@ class AIContextExtension(SchemaExtension):
         filtered_tools.append(CONFIRM_ACTION_TOOL)
 
         context.ai_tools = filtered_tools
+
+        # Load and filter navigation routes based on user permissions
+        manifest = app_manager.settings.ai.get_routes_manifest()
+        if manifest and "routes" in manifest:
+            context.ai_accessible_routes = filter_routes_by_permissions(
+                manifest["routes"],
+                accessible_webservice_ids
+            )
+            # Add navigate tool with accessible routes as enum
+            if context.ai_accessible_routes:
+                navigate_tool = build_navigate_tool(context.ai_accessible_routes)
+                filtered_tools.append(navigate_tool)
+        else:
+            context.ai_accessible_routes = []
 
         # Build system prompt with user context
         system_prompt_parts = []

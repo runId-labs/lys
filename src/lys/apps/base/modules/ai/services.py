@@ -217,6 +217,9 @@ class AIService(Service):
         tool_calls_count = 0
         new_messages = [{"role": "user", "content": message}]  # Track new messages to save
 
+        # Initialize frontend_actions in context for collection during tool execution
+        info.context.frontend_actions = []
+
         # Agent loop: call LLM, execute tools, repeat until no more tool calls
         for iteration in range(max_tool_iterations):
             response = await cls._call_llm(
@@ -236,11 +239,15 @@ class AIService(Service):
                 # Save new messages to conversation
                 await conversation_service.add_messages(session, conversation, new_messages)
 
+                # Collect frontend_actions from context
+                frontend_actions = getattr(info.context, "frontend_actions", [])
+
                 return {
                     "content": response.get("content", ""),
                     "conversation_id": conversation.id,
                     "tool_calls_count": tool_calls_count,
-                    "tool_results": tool_results
+                    "tool_results": tool_results,
+                    "frontend_actions": frontend_actions if frontend_actions else None
                 }
 
             # Execute tool calls
@@ -305,11 +312,15 @@ class AIService(Service):
         # Max iterations reached - save what we have
         await conversation_service.add_messages(session, conversation, new_messages)
 
+        # Collect frontend_actions from context
+        frontend_actions = getattr(info.context, "frontend_actions", [])
+
         return {
             "content": "Maximum tool iterations reached. Please try a simpler request.",
             "conversation_id": conversation.id,
             "tool_calls_count": tool_calls_count,
-            "tool_results": tool_results
+            "tool_results": tool_results,
+            "frontend_actions": frontend_actions if frontend_actions else None
         }
 
     @classmethod
@@ -383,8 +394,16 @@ class AIService(Service):
             choice = data.get("choices", [{}])[0]
             message = choice.get("message", {})
 
+            # Handle both string and structured content formats
+            content = message.get("content", "")
+            if isinstance(content, list):
+                # Structured content: extract text from each part
+                content = "".join(
+                    part.get("text", "") for part in content if part.get("type") == "text"
+                )
+
             return {
-                "content": message.get("content", ""),
+                "content": content,
                 "tool_calls": message.get("tool_calls", [])
             }
 
@@ -468,7 +487,7 @@ class AIService(Service):
 
             # If confirmed and status is "execute", execute the actual tool
             if result.get("status") == "execute":
-                return await cls._execute_tool_internal(
+                executed_result = await cls._execute_tool_internal(
                     result["tool_name"],
                     result["tool_data"],
                     result["tool_args"],
@@ -476,7 +495,52 @@ class AIService(Service):
                     info
                 )
 
+                # Add refresh action for frontend to reload data
+                tool_data = result.get("tool_data", {})
+                node_type = tool_data.get("node_type")
+                logger.debug(f"confirm_action executed: tool_name={result.get('tool_name')}, node_type={node_type}")
+                if node_type:
+                    if not hasattr(info.context, "frontend_actions"):
+                        info.context.frontend_actions = []
+                    info.context.frontend_actions.append({
+                        "type": "refresh",
+                        "nodes": [node_type.__name__]
+                    })
+                    logger.info(f"Added refresh action for nodes: {[node_type.__name__]}")
+                else:
+                    logger.warning(f"No node_type found for tool: {result.get('tool_name')}")
+
+                return executed_result
+
             return result
+
+        # Handle navigate as a frontend passthrough tool
+        if tool_name == "navigate":
+            path = tool_args.get("path", "")
+
+            # Validate path against accessible routes
+            accessible_routes = getattr(info.context, "ai_accessible_routes", [])
+            valid_paths = [route["path"] for route in accessible_routes]
+
+            if path not in valid_paths:
+                return {
+                    "status": "error",
+                    "message": f"Path '{path}' is not accessible. Available paths: {', '.join(valid_paths)}"
+                }
+
+            # Store frontend action in context for later collection
+            if not hasattr(info.context, "frontend_actions"):
+                info.context.frontend_actions = []
+
+            info.context.frontend_actions.append({
+                "type": "navigate",
+                "path": path
+            })
+
+            return {
+                "status": "navigation_scheduled",
+                "message": f"Navigation to '{path}' has been scheduled. The user will be redirected."
+            }
 
         # Get the tool from registry
         try:

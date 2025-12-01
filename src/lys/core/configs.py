@@ -172,9 +172,34 @@ class AISettings(BaseSettings):
         # Custom system prompt for the application
         self.system_prompt: Optional[str] = None  # Application-specific instructions
 
+        # Routes manifest for frontend navigation
+        self.routes_manifest_path: Optional[str] = None  # Path to routes-manifest.json
+        self._routes_manifest_cache: Optional[Dict[str, Any]] = None
+
     def configured(self) -> bool:
         """Check if AI is properly configured for tool generation."""
         return self.enabled and self.api_key is not None
+
+    def get_routes_manifest(self) -> Optional[Dict[str, Any]]:
+        """
+        Get the routes manifest, loading from file if not cached.
+
+        Returns:
+            Routes manifest dict or None if not configured/not found
+        """
+        if self._routes_manifest_cache is not None:
+            return self._routes_manifest_cache
+
+        if not self.routes_manifest_path:
+            return None
+
+        from lys.core.utils.routes import load_routes_manifest
+        self._routes_manifest_cache = load_routes_manifest(self.routes_manifest_path)
+        return self._routes_manifest_cache
+
+    def clear_routes_cache(self):
+        """Clear the routes manifest cache to force reload."""
+        self._routes_manifest_cache = None
 
     def validate(self):
         """
