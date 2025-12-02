@@ -94,6 +94,9 @@ class EntityNode(Generic[T], ServiceNodeMixin):
         based on the node's type annotations. Fields starting with '_' are handled specially:
         - '_entity' is automatically set to store the source entity for lazy loading
 
+        This method automatically uses get_effective_node() to resolve the correct
+        node class when a node has been overridden by another app.
+
         Subclasses can override this method for custom mapping logic.
 
         Args:
@@ -102,17 +105,20 @@ class EntityNode(Generic[T], ServiceNodeMixin):
         Returns:
             EntityNode instance with mapped fields
         """
+        # Get the effective node class (handles overrides from other apps)
+        effective_cls = cls.get_effective_node()
+
         # Collect all non-private fields from annotations
         fields = {}
-        for field_name in cls.__annotations__:
+        for field_name in effective_cls.__annotations__:
             # Skip private fields (will be handled separately)
             if field_name.startswith('_'):
                 continue
 
             # Skip methods decorated with @strawberry.field (lazy-loaded relations)
             # These are computed properties that should not be passed to __init__
-            if hasattr(cls, field_name):
-                class_attr = getattr(cls, field_name)
+            if hasattr(effective_cls, field_name):
+                class_attr = getattr(effective_cls, field_name)
                 if callable(class_attr) or hasattr(class_attr, '__func__'):
                     continue
 
@@ -121,10 +127,10 @@ class EntityNode(Generic[T], ServiceNodeMixin):
                 fields[field_name] = getattr(entity, field_name)
 
         # Store entity if _entity field is defined
-        if '_entity' in cls.__annotations__:
+        if '_entity' in effective_cls.__annotations__:
             fields['_entity'] = entity
 
-        return cls(**fields)
+        return effective_cls(**fields)
 
     async def _lazy_load_relation(
         self,
@@ -181,7 +187,7 @@ class EntityNode(Generic[T], ServiceNodeMixin):
                 )
             return None
 
-        return node_class.get_effective_node().from_obj(entity_relation)
+        return node_class.from_obj(entity_relation)
 
     def _is_relation_nullable(self, relation_name: str) -> bool:
         """
@@ -247,7 +253,7 @@ class EntityNode(Generic[T], ServiceNodeMixin):
 
         # Now we can safely access the relationship collection (it's loaded in memory)
         entity_relations = getattr(self._entity, relation_name, [])
-        return [node_class.get_effective_node().from_obj(item) for item in entity_relations]
+        return [node_class.from_obj(item) for item in entity_relations]
 
     @classmethod
     async def resolve_node(cls, node_id: str, *,
@@ -403,23 +409,6 @@ def parametric_node(service_class: Type[ServiceInterface]):
             created_at: datetime
             updated_at: Optional[datetime]
             _entity: strawberry.Private[ParametricEntity]
-
-            def __init__(self, entity: ParametricEntity):
-                self.id = entity.id
-                self.code = entity.code
-                self.enabled = entity.enabled
-                self.description = entity.description
-                self.created_at = entity.created_at
-                self.updated_at = entity.updated_at
-                self._entity = entity
-
-            @classmethod
-            def from_obj(cls, entity: ParametricEntity):
-                entity_class = cls.service_class.entity_class
-                if not isinstance(entity, entity_class):
-                    raise ValueError("Entity type error: %s != %s" % (entity.__class__, entity_class.__name__))
-
-                return cls(entity)
 
             @classproperty
             def order_by_attribute_map(self) -> Dict[str, Any]:

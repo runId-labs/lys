@@ -174,8 +174,16 @@ class AppManager:
         for submodule in app_module.__submodules__:
             try:
                 component_module_name = f"{submodule.__name__}.{component_type}"
-                importlib.import_module(component_module_name)
+                module = importlib.import_module(component_module_name)
                 self._track_loaded_module(component_module_name)
+
+                # Collect APIRouter from webservices modules
+                if component_type == "webservices":
+                    router = getattr(module, "router", None)
+                    if router is not None:
+                        self.registry.routers.append(router)
+                        logging.info(f"✓ Collected REST router from {component_module_name}")
+
                 logging.info(f"Successfully loaded {component_type} from {submodule.__name__}")
                 loaded = True
             except ModuleNotFoundError:
@@ -562,6 +570,11 @@ class AppManager:
             )
 
             app.include_router(graphql_app, prefix=f"/{self.settings.graphql_schema_name}")
+
+        # Phase 6: Mount REST routers
+        for router in self.registry.routers:
+            app.include_router(router)
+            logging.info(f"✓ Mounted REST router: {router.prefix}")
 
         return app
 

@@ -16,10 +16,6 @@ from lys.core.entities import Entity, ParametricEntity
 from lys.core.registries import register_entity
 
 
-if TYPE_CHECKING:
-    from lys.apps.licensing.modules.rule.entities import LicenseRule
-
-
 @register_entity()
 class LicensePlan(ParametricEntity):
     """

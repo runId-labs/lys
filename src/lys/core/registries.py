@@ -71,6 +71,7 @@ class AppRegistry:
         self.webservices: dict[str, dict] = {}
         self.tools: Dict[str, dict] = {}  # LLM tool definitions
         self.nodes: Dict[str, Type[NodeInterface]] = {}
+        self.routers: List = []  # REST APIRouter instances
 
         # Custom registries for app-specific components (validators, downgraders, etc.)
         self._custom_registries: Dict[str, CustomRegistry] = {}

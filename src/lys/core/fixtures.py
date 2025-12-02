@@ -99,6 +99,28 @@ class EntityFixtures(Generic[T], AppManagerCallerMixin, EntityFixtureInterface):
     ####################################################################################################################
 
     @classmethod
+    async def create_from_service(
+        cls,
+        attributes: Dict[str, Any],
+        session: AsyncSession
+    ) -> Entity | None:
+        """
+        Override to use a custom service method for entity creation.
+
+        When defined in a subclass, this method is called instead of the standard
+        entity instantiation for NEW entities only. If the entity already exists
+        (upsert mode), the standard update logic is used.
+
+        Args:
+            attributes: Raw fixture attributes (before formatting)
+            session: Database session
+
+        Returns:
+            Created entity, or None to use standard creation behavior
+        """
+        return None
+
+    @classmethod
     async def _format_attributes(
         cls,
         attributes: Dict[str, Any],

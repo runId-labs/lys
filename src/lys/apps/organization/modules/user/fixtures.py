@@ -13,54 +13,16 @@ from lys.core.registries import register_fixture
 @register_fixture(depends_on=["UserStatusFixtures", "GenderFixtures"])
 class ClientRelatedUserDevFixtures(UserDevFixtures):
     """
-    Development fixtures for Client-related users.
+    Development fixtures for additional Client-related users.
 
-    Creates both owner users and additional users for client organizations
-    without deleting existing users.
+    Creates additional users for client organizations (non-owners).
+    Owner users are created automatically by ClientDevFixtures via create_client_with_owner.
     Inherits formatting methods from UserDevFixtures.
     """
-    _allowed_envs = [EnvironmentEnum.DEV,]
+    _allowed_envs = [EnvironmentEnum.DEV]
     delete_previous_data = False
 
     data_list = [
-        # ==================== OWNER USERS ====================
-        {
-            "attributes": {
-                "email_address": "owner-acme@lys-test.fr",
-                "password": "password",
-                "language_id": "fr",
-                "private_data": {
-                    "first_name": "Robert",
-                    "last_name": "Smith",
-                    "gender_id": MALE_GENDER
-                }
-            }
-        },
-        {
-            "attributes": {
-                "email_address": "owner-tech@lys-test.fr",
-                "password": "password",
-                "language_id": "fr",
-                "private_data": {
-                    "first_name": "Sarah",
-                    "last_name": "Johnson",
-                    "gender_id": FEMALE_GENDER
-                }
-            }
-        },
-        {
-            "attributes": {
-                "email_address": "owner-global@lys-test.fr",
-                "password": "password",
-                "language_id": "fr",
-                "private_data": {
-                    "first_name": "Michael",
-                    "last_name": "Brown",
-                    "gender_id": MALE_GENDER
-                }
-            }
-        },
-        # ==================== ADDITIONAL CLIENT USERS ====================
         {
             "attributes": {
                 "email_address": "user-acme-john@lys-test.fr",

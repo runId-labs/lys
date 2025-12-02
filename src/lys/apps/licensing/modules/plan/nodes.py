@@ -76,6 +76,10 @@ class LicensePlanVersionNode(EntityNode[LicensePlanVersionService], relay.Node):
     def plan_id(self) -> relay.GlobalID:
         return relay.GlobalID("LicensePlanNode", self._entity.plan_id)
 
+    @strawberry.field(description="The parent license plan")
+    async def plan(self, info: Info) -> "LicensePlanNode":
+        return LicensePlanNode.from_obj(self._entity.plan)
+
     @strawberry.field(description="Whether this is a free plan (no pricing)")
     def is_free(self) -> bool:
         return self._entity.is_free
@@ -107,6 +111,7 @@ class LicensePlanNode(EntityNode[LicensePlanService], relay.Node):
     Represents a license plan type (FREE, STARTER, PRO, ENTERPRISE).
     """
     id: relay.NodeID[str]
+    code: str
     description: Optional[str]
     enabled: bool
     created_at: datetime

@@ -24,7 +24,6 @@ class SubscriptionNode(EntityNode[SubscriptionService], relay.Node):
     Represents a client's subscription to a license plan.
     """
     id: relay.NodeID[str]
-    stripe_subscription_id: Optional[str]
     created_at: datetime
     updated_at: Optional[datetime]
     _entity: strawberry.Private[Subscription]
@@ -47,10 +46,6 @@ class SubscriptionNode(EntityNode[SubscriptionService], relay.Node):
     async def plan_version(self, info: Info) -> LicensePlanVersionNode:
         return LicensePlanVersionNode.from_obj(self._entity.plan_version)
 
-    @strawberry.field(description="The license plan")
-    async def plan(self, info: Info) -> LicensePlanNode:
-        return LicensePlanNode.from_obj(self._entity.plan)
-
     @strawberry.field(description="Pending plan version for scheduled downgrade")
     async def pending_plan_version(self, info: Info) -> Optional[LicensePlanVersionNode]:
         if self._entity.pending_plan_version is None:
@@ -64,14 +59,3 @@ class SubscriptionNode(EntityNode[SubscriptionService], relay.Node):
     @strawberry.field(description="Whether this is a free subscription (no Stripe)")
     def is_free(self) -> bool:
         return self._entity.stripe_subscription_id is None
-
-    @strawberry.field(description="Number of users consuming license seats")
-    async def user_count(self, info: Info) -> int:
-        return len(self._entity.users)
-
-    @strawberry.field(description="Client users consuming license seats")
-    async def users(self, info: Info) -> List[relay.GlobalID]:
-        return [
-            relay.GlobalID("ClientUserNode", user.id)
-            for user in self._entity.users
-        ]

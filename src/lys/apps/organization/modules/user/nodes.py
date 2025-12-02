@@ -81,6 +81,6 @@ class ClientUserNode(EntityNode[ClientUserService], relay.Node):
         for client_user_role in self._entity.client_user_roles:
             await session.refresh(client_user_role, ['role'])
             if client_user_role.role is not None:
-                result.append(RoleNode.get_effective_node().from_obj(client_user_role.role))
+                result.append(RoleNode.from_obj(client_user_role.role))
 
         return result

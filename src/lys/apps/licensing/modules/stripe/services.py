@@ -1,10 +1,12 @@
 """
-Stripe synchronization service.
+Stripe services for licensing module.
 
-This module provides StripeSyncService to synchronize license plans with Stripe.
+This module provides:
+- StripeSyncService: Synchronize license plans with Stripe
+- StripeWebhookService: Handle Stripe webhook events
 """
 import logging
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -311,3 +313,268 @@ class StripeSyncService(Service):
         except stripe_module.error.StripeError as e:
             logger.error(f"Stripe error creating checkout session: {e}")
             return None
+
+
+@register_service()
+class StripeWebhookService(Service):
+    """
+    Service for handling Stripe webhook events.
+
+    Processes events sent by Stripe to update subscription state.
+    Called by the REST webhook endpoint in mimir-api.
+
+    Handled events:
+    - checkout.session.completed: New subscription created via Checkout
+    - invoice.payment_succeeded: Subscription renewed, apply pending changes
+    - invoice.payment_failed: Payment failed, notify client
+    - customer.subscription.updated: Plan changed or cancelled
+    - customer.subscription.deleted: Subscription ended, downgrade to FREE
+    """
+
+    service_name = "stripe_webhook"
+
+    EVENT_HANDLERS = {
+        "checkout.session.completed": "_handle_checkout_completed",
+        "invoice.payment_succeeded": "_handle_payment_succeeded",
+        "invoice.payment_failed": "_handle_payment_failed",
+        "customer.subscription.updated": "_handle_subscription_updated",
+        "customer.subscription.deleted": "_handle_subscription_deleted",
+    }
+
+    @classmethod
+    async def handle_event(
+        cls,
+        event_type: str,
+        event_data: Dict[str, Any],
+        session: AsyncSession
+    ) -> Dict[str, Any]:
+        """
+        Main entry point for processing Stripe webhook events.
+
+        Args:
+            event_type: Stripe event type (e.g., "checkout.session.completed")
+            event_data: Event data from Stripe (event.data.object)
+            session: Database session
+
+        Returns:
+            Dict with processing result: {"handled": bool, "message": str}
+        """
+        handler_name = cls.EVENT_HANDLERS.get(event_type)
+
+        if not handler_name:
+            logger.debug(f"Unhandled Stripe event type: {event_type}")
+            return {"handled": False, "message": f"Event type {event_type} not handled"}
+
+        handler = getattr(cls, handler_name)
+
+        try:
+            await handler(event_data, session)
+            logger.info(f"Successfully processed Stripe event: {event_type}")
+            return {"handled": True, "message": "Event processed successfully"}
+        except Exception as e:
+            logger.error(f"Error processing Stripe event {event_type}: {str(e)}")
+            raise
+
+    @classmethod
+    async def _handle_checkout_completed(
+        cls,
+        data: Dict[str, Any],
+        session: AsyncSession
+    ) -> None:
+        """
+        Handle checkout.session.completed event.
+
+        Links the Stripe subscription to our Subscription entity.
+        """
+        subscription_entity = cls.app_manager.get_entity("subscription")
+        client_entity = cls.app_manager.get_entity("client")
+
+        stripe_subscription_id = data.get("subscription")
+        stripe_customer_id = data.get("customer")
+        metadata = data.get("metadata", {})
+
+        client_id = metadata.get("client_id")
+        plan_version_id = metadata.get("plan_version_id")
+
+        if not client_id:
+            logger.warning("checkout.session.completed missing client_id in metadata")
+            return
+
+        # Find existing subscription for this client
+        stmt = select(subscription_entity).where(
+            subscription_entity.client_id == client_id
+        )
+        result = await session.execute(stmt)
+        subscription = result.scalar_one_or_none()
+
+        if subscription:
+            # Update existing subscription with Stripe IDs
+            subscription.stripe_subscription_id = stripe_subscription_id
+            if plan_version_id:
+                subscription.plan_version_id = plan_version_id
+            logger.info(f"Updated subscription {subscription.id} with stripe_subscription_id")
+        else:
+            # Create new subscription
+            if not plan_version_id:
+                logger.error("Cannot create subscription: missing plan_version_id")
+                return
+
+            new_subscription = subscription_entity(
+                client_id=client_id,
+                plan_version_id=plan_version_id,
+                stripe_subscription_id=stripe_subscription_id
+            )
+            session.add(new_subscription)
+            logger.info(f"Created new subscription for client {client_id}")
+
+        # Update client's stripe_customer_id if not set
+        stmt = select(client_entity).where(client_entity.id == client_id)
+        result = await session.execute(stmt)
+        client = result.scalar_one_or_none()
+
+        if client and not client.stripe_customer_id:
+            client.stripe_customer_id = stripe_customer_id
+            logger.info(f"Updated client {client_id} with stripe_customer_id")
+
+    @classmethod
+    async def _handle_payment_succeeded(
+        cls,
+        data: Dict[str, Any],
+        session: AsyncSession
+    ) -> None:
+        """
+        Handle invoice.payment_succeeded event.
+
+        Applies pending plan changes (downgrades scheduled at period end).
+        """
+        stripe_subscription_id = data.get("subscription")
+
+        if not stripe_subscription_id:
+            return
+
+        subscription_entity = cls.app_manager.get_entity("subscription")
+        subscription_service = cls.app_manager.get_service("subscription")
+
+        stmt = select(subscription_entity).where(
+            subscription_entity.stripe_subscription_id == stripe_subscription_id
+        )
+        result = await session.execute(stmt)
+        subscription = result.scalar_one_or_none()
+
+        if not subscription:
+            logger.warning(f"No subscription found for stripe_subscription_id={stripe_subscription_id}")
+            return
+
+        # Apply pending plan change if exists
+        if subscription.pending_plan_version_id:
+            await subscription_service.apply_pending_change(subscription.id, session)
+            logger.info(f"Applied pending plan change for subscription {subscription.id}")
+
+    @classmethod
+    async def _handle_payment_failed(
+        cls,
+        data: Dict[str, Any],
+        session: AsyncSession
+    ) -> None:
+        """
+        Handle invoice.payment_failed event.
+
+        Logs warning. Email notification can be added later.
+        """
+        stripe_subscription_id = data.get("subscription")
+
+        if not stripe_subscription_id:
+            return
+
+        subscription_entity = cls.app_manager.get_entity("subscription")
+
+        stmt = select(subscription_entity).where(
+            subscription_entity.stripe_subscription_id == stripe_subscription_id
+        )
+        result = await session.execute(stmt)
+        subscription = result.scalar_one_or_none()
+
+        if not subscription:
+            logger.warning(f"No subscription found for stripe_subscription_id={stripe_subscription_id}")
+            return
+
+        logger.warning(
+            f"Payment failed for subscription {subscription.id} (client_id={subscription.client_id})"
+        )
+
+    @classmethod
+    async def _handle_subscription_updated(
+        cls,
+        data: Dict[str, Any],
+        session: AsyncSession
+    ) -> None:
+        """
+        Handle customer.subscription.updated event.
+
+        Logs subscription state changes.
+        """
+        stripe_subscription_id = data.get("id")
+        cancel_at_period_end = data.get("cancel_at_period_end", False)
+        status = data.get("status")
+
+        subscription_entity = cls.app_manager.get_entity("subscription")
+
+        stmt = select(subscription_entity).where(
+            subscription_entity.stripe_subscription_id == stripe_subscription_id
+        )
+        result = await session.execute(stmt)
+        subscription = result.scalar_one_or_none()
+
+        if not subscription:
+            logger.warning(f"No subscription found for stripe_subscription_id={stripe_subscription_id}")
+            return
+
+        logger.info(
+            f"Subscription {subscription.id} updated: status={status}, "
+            f"cancel_at_period_end={cancel_at_period_end}"
+        )
+
+    @classmethod
+    async def _handle_subscription_deleted(
+        cls,
+        data: Dict[str, Any],
+        session: AsyncSession
+    ) -> None:
+        """
+        Handle customer.subscription.deleted event.
+
+        Downgrades the client to FREE plan.
+        """
+        stripe_subscription_id = data.get("id")
+
+        subscription_entity = cls.app_manager.get_entity("subscription")
+        plan_version_service = cls.app_manager.get_service("license_plan_version")
+
+        stmt = select(subscription_entity).where(
+            subscription_entity.stripe_subscription_id == stripe_subscription_id
+        )
+        result = await session.execute(stmt)
+        subscription = result.scalar_one_or_none()
+
+        if not subscription:
+            logger.warning(f"No subscription found for stripe_subscription_id={stripe_subscription_id}")
+            return
+
+        # Get FREE plan's current version
+        from lys.apps.licensing.consts import FREE_PLAN
+
+        free_version = await plan_version_service.get_current_version(FREE_PLAN, session)
+
+        if not free_version:
+            logger.error("FREE plan version not found, cannot downgrade")
+            return
+
+        # Downgrade to FREE plan
+        subscription.plan_version_id = free_version.id
+        subscription.stripe_subscription_id = None
+        subscription.pending_plan_version_id = None
+
+        logger.info(
+            f"Subscription {subscription.id} cancelled, "
+            f"downgraded to FREE plan for client {subscription.client_id}"
+        )

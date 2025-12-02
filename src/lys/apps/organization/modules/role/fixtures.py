@@ -5,12 +5,13 @@ from lys.core.registries import register_fixture
 
 
 USER_ADMIN_ROLE_ORGANIZATION_WEBSERVICES = USER_ADMIN_ROLE_WEBSERVICES + [
+    "all_clients",
     "all_client_users",
     "client_user",
+    "create_client_user",
     "update_client_user_email",
     "update_client_user_private_data",
     "update_client_user_roles",
-    "create_client_user",
 ]
 
 

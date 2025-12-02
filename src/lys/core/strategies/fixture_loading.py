@@ -228,14 +228,17 @@ class BusinessFixtureLoadingStrategy(FixtureLoadingStrategy):
                             unchanged_count += 1
                         continue
 
-                # Format attributes for new entity (no extra_data needed)
-                attributes = await fixture_class._format_attributes(
-                    raw_attributes, session=session
-                )
+                # Try custom service creation first
+                obj = await fixture_class.create_from_service(raw_attributes, session)
 
-                # Create new entity
-                obj = entity_class(**attributes)
-                await fixture_class._do_before_add(obj)
+                if obj is None:
+                    # Standard entity creation
+                    attributes = await fixture_class._format_attributes(
+                        raw_attributes, session=session
+                    )
+                    obj = entity_class(**attributes)
+                    await fixture_class._do_before_add(obj)
+
                 session.add(obj)
                 created_objects.append(obj)
             except Exception as e:

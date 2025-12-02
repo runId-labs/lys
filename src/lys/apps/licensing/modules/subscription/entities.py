@@ -6,7 +6,7 @@ This module defines:
 - subscription_user: Association table linking subscriptions to client users
 """
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Dict, List, Self
 
 from sqlalchemy import Column, DateTime, ForeignKey, Table, func
 from sqlalchemy.orm import Mapped, mapped_column, declared_attr, relationship
@@ -17,8 +17,7 @@ from lys.core.registries import register_entity
 
 
 if TYPE_CHECKING:
-    from lys.apps.licensing.modules.plan.entities import LicensePlan, LicensePlanVersion
-    from lys.apps.organization.modules.client.entities import Client
+    from lys.apps.licensing.modules.plan.entities import LicensePlan
     from lys.apps.organization.modules.client_user.entities import ClientUser
 
 
@@ -46,6 +45,7 @@ class Subscription(Entity):
         stripe_subscription_id: Stripe Subscription ID for billing management (NULL for free plans)
         pending_plan_version_id: Plan version to switch to at period end (for scheduled downgrades)
     """
+
     __tablename__ = "subscription"
 
     client_id: Mapped[str] = mapped_column(
@@ -108,3 +108,13 @@ class Subscription(Entity):
     def has_pending_downgrade(self) -> bool:
         """Returns True if a downgrade is scheduled."""
         return self.pending_plan_version_id is not None
+
+    def accessing_users(self) -> List:
+        """Users who can access this subscription."""
+        return []
+
+    def accessing_organizations(self) -> Dict[str, List[Self]]:
+        """Organizations that can access this subscription."""
+        return {
+            "client": [self.client]
+        }

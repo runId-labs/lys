@@ -7,7 +7,6 @@ from strawberry.types import Info
 
 from lys.apps.base.modules.language.nodes import LanguageNode
 from lys.apps.user_auth.modules.user.entities import (
-    UserEmailAddress,
     User,
     UserOneTimeToken,
     UserPrivateData,
@@ -54,17 +53,6 @@ class UserEmailAddressNode(EntityNode[UserEmailAddressService], relay.Node):
     updated_at: Optional[datetime]
     validated_at: Optional[datetime]
     last_validation_request_at: Optional[datetime]
-
-    @classmethod
-    def from_obj(cls, entity: UserEmailAddress) -> "UserEmailAddressNode":
-        return cls(
-            id=entity.id,
-            address=entity.address,
-            created_at=entity.created_at,
-            updated_at=entity.updated_at,
-            validated_at=entity.validated_at,
-            last_validation_request_at=entity.last_validation_request_at,
-        )
 
 
 @register_node()
