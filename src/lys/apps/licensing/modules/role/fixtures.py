@@ -11,7 +11,10 @@ from lys.core.registries import register_fixture
 
 LICENSE_ADMIN_ROLE_WEBSERVICES = [
     "all_clients",
+    "client",
     "subscription",
+    "create_checkout_session",
+    "create_billing_portal_session",
 ]
 
 

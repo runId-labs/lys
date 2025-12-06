@@ -45,7 +45,7 @@ class ClientUser(Entity):
 
     @classmethod
     def organization_accessing_filters(cls, stmt, organization_id_dict):
-        return stmt, [cls.client_id.in_(organization_id_dict.get(cls.client.__tablename__, []))]
+        return stmt, [cls.client_id.in_(organization_id_dict.get("client", []))]
 
 
 @register_entity()
@@ -74,6 +74,5 @@ class ClientUserRole(AbstractUserOrganizationRoleEntity):
 
     @classmethod
     def organization_accessing_filters(cls, stmt, organization_id_dict):
-        tablename = cls.client_user.client.__tablename__
-        return stmt, [cls.client_user.client_id.in_(organization_id_dict.get(tablename, []))]
+        return stmt, [cls.client_user_id.in_(organization_id_dict.get("client", []))]
 

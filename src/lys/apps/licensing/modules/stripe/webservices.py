@@ -7,15 +7,23 @@ Contains:
 """
 
 import logging
-from enum import Enum
 
 import stripe
 import strawberry
 from fastapi import APIRouter, Request, HTTPException
 from sqlalchemy import select
 
+from lys.apps.licensing.consts import (
+    AUTHENTICATION_REQUIRED_ERROR,
+    CHECKOUT_SESSION_FAILED_ERROR,
+    NO_STRIPE_CUSTOMER_ERROR,
+    NOT_CLIENT_ASSOCIATED_USER_ERROR,
+)
+from lys.apps.licensing.modules.stripe.inputs import CreateCheckoutSessionInput
 from lys.apps.licensing.modules.stripe.nodes import CheckoutSessionNode, BillingPortalNode
 from lys.apps.licensing.modules.stripe.services import StripeSyncService, StripeWebhookService
+from lys.apps.organization.consts import ORGANIZATION_ROLE_ACCESS_LEVEL
+from lys.apps.user_role.consts import ROLE_ACCESS_LEVEL
 from lys.core.configs import settings
 from lys.core.contexts import Info
 from lys.core.graphql.fields import lys_field
@@ -82,12 +90,6 @@ async def stripe_webhook(request: Request):
 # GraphQL Mutations
 # =============================================================================
 
-@strawberry.enum
-class BillingPeriod(Enum):
-    MONTHLY = "monthly"
-    YEARLY = "yearly"
-
-
 @register_mutation()
 @strawberry.type
 class StripeMutation(Mutation):
@@ -95,16 +97,14 @@ class StripeMutation(Mutation):
     @lys_field(
         ensure_type=CheckoutSessionNode,
         is_public=False,
+        access_levels=[ROLE_ACCESS_LEVEL, ORGANIZATION_ROLE_ACCESS_LEVEL],
         is_licenced=False,
         description="Create a Stripe Checkout session for subscribing to a plan"
     )
     async def create_checkout_session(
         self,
         info: Info,
-        plan_version_id: str,
-        billing_period: BillingPeriod,
-        success_url: str,
-        cancel_url: str
+        input: CreateCheckoutSessionInput
     ):
         """
         Create a Stripe Checkout session.
@@ -114,13 +114,14 @@ class StripeMutation(Mutation):
         a webhook event to complete the subscription setup.
         """
         session = info.context.session
+        data = input.to_pydantic()
 
         # Get client_id from authenticated user
         connected_user = info.context.connected_user
         if not connected_user:
             return CheckoutSessionNode(
                 success=False,
-                error="Authentication required"
+                error=AUTHENTICATION_REQUIRED_ERROR
             )
 
         user_id = connected_user["id"]
@@ -145,24 +146,24 @@ class StripeMutation(Mutation):
         if not client:
             return CheckoutSessionNode(
                 success=False,
-                error="User has no associated client"
+                error=NOT_CLIENT_ASSOCIATED_USER_ERROR
             )
 
         client_id = client.id
 
         checkout_url = await StripeSyncService.create_checkout_session(
             client_id=client_id,
-            plan_version_id=plan_version_id,
-            billing_period=billing_period.value,
+            plan_version_id=data.plan_version_id,
+            billing_period=data.billing_period.value,
             session=session,
-            success_url=success_url,
-            cancel_url=cancel_url
+            success_url=data.success_url,
+            cancel_url=data.cancel_url
         )
 
         if not checkout_url:
             return CheckoutSessionNode(
                 success=False,
-                error="Failed to create checkout session"
+                error=CHECKOUT_SESSION_FAILED_ERROR
             )
 
         return CheckoutSessionNode(
@@ -173,6 +174,7 @@ class StripeMutation(Mutation):
     @lys_field(
         ensure_type=BillingPortalNode,
         is_public=False,
+        access_levels=[ROLE_ACCESS_LEVEL, ORGANIZATION_ROLE_ACCESS_LEVEL],
         is_licenced=False,
         description="Create a Stripe Billing Portal session for managing subscription"
     )
@@ -196,7 +198,7 @@ class StripeMutation(Mutation):
         if not connected_user:
             return BillingPortalNode(
                 success=False,
-                error="Authentication required"
+                error=AUTHENTICATION_REQUIRED_ERROR
             )
 
         user_id = connected_user["id"]
@@ -221,13 +223,13 @@ class StripeMutation(Mutation):
         if not client:
             return BillingPortalNode(
                 success=False,
-                error="User has no associated client"
+                error=NOT_CLIENT_ASSOCIATED_USER_ERROR
             )
 
-        if not client or not client.stripe_customer_id:
+        if not client.stripe_customer_id:
             return BillingPortalNode(
                 success=False,
-                error="No Stripe customer found for this client"
+                error=NO_STRIPE_CUSTOMER_ERROR
             )
 
         try:

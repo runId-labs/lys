@@ -7,7 +7,7 @@ This module defines:
 - LicensePlanVersionRule: Association between a version and a rule with its limit value
 """
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Dict, List, Self
 
 from sqlalchemy import ForeignKey, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, declared_attr, relationship
@@ -126,6 +126,14 @@ class LicensePlanVersion(Entity):
         """Returns True if this is a free plan (no prices defined)."""
         return self.price_monthly is None and self.price_yearly is None
 
+    def accessing_users(self) -> List:
+        """Users who can access this plan version."""
+        return []
+
+    def accessing_organizations(self) -> Dict[str, List[Self]]:
+        """Organizations that can access this plan version."""
+        return {}
+
 
 @register_entity()
 class LicensePlanVersionRule(Entity):
@@ -169,3 +177,11 @@ class LicensePlanVersionRule(Entity):
     __table_args__ = (
         UniqueConstraint("plan_version_id", "rule_id", name="uq_license_plan_version_rule"),
     )
+
+    def accessing_users(self) -> List:
+        """Users who can access this plan version rule."""
+        return []
+
+    def accessing_organizations(self) -> Dict[str, List[Self]]:
+        """Organizations that can access this plan version rule."""
+        return {}

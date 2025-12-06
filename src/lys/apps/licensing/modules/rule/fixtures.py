@@ -3,15 +3,11 @@ Fixtures for license rule definitions.
 
 License rules define the types of constraints that can be applied to plans:
 - Quota rules: MAX_USERS, MAX_PROJECTS_PER_MONTH
-- Feature toggles: EXPORT_PDF_ACCESS, PRIORITY_SUPPORT, API_ACCESS
 """
 
 from lys.apps.licensing.consts import (
     MAX_USERS,
     MAX_PROJECTS_PER_MONTH,
-    EXPORT_PDF_ACCESS,
-    PRIORITY_SUPPORT,
-    API_ACCESS,
 )
 from lys.apps.licensing.modules.rule.services import LicenseRuleService
 from lys.core.fixtures import EntityFixtures
@@ -42,27 +38,6 @@ class LicenseRuleFixtures(EntityFixtures[LicenseRuleService]):
             "attributes": {
                 "enabled": True,
                 "description": "Maximum number of projects that can be created per month"
-            }
-        },
-        {
-            "id": EXPORT_PDF_ACCESS,
-            "attributes": {
-                "enabled": True,
-                "description": "Access to PDF export feature"
-            }
-        },
-        {
-            "id": PRIORITY_SUPPORT,
-            "attributes": {
-                "enabled": True,
-                "description": "Access to priority support"
-            }
-        },
-        {
-            "id": API_ACCESS,
-            "attributes": {
-                "enabled": True,
-                "description": "Access to API endpoints"
             }
         },
     ]

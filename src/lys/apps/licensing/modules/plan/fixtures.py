@@ -2,7 +2,7 @@
 Fixtures for license plans and plan versions.
 
 This module provides:
-- LicensePlanDevFixtures: Default plans (FREE, STARTER, PRO, ENTERPRISE)
+- LicensePlanDevFixtures: Default plans (FREE, STARTER, PRO)
 - LicensePlanVersionDevFixtures: Plan versions with pricing and rule associations
 
 After loading plan versions, automatically syncs paid plans to Stripe if configured.
@@ -18,12 +18,8 @@ from lys.apps.licensing.consts import (
     FREE_PLAN,
     STARTER_PLAN,
     PRO_PLAN,
-    ENTERPRISE_PLAN,
     MAX_USERS,
     MAX_PROJECTS_PER_MONTH,
-    EXPORT_PDF_ACCESS,
-    PRIORITY_SUPPORT,
-    API_ACCESS,
 )
 from lys.apps.licensing.modules.plan.services import (
     LicensePlanService,
@@ -68,13 +64,6 @@ class LicensePlanDevFixtures(EntityFixtures[LicensePlanService]):
             "attributes": {
                 "enabled": True,
                 "description": "Professional plan for growing businesses"
-            }
-        },
-        {
-            "id": ENTERPRISE_PLAN,
-            "attributes": {
-                "enabled": True,
-                "description": "Enterprise plan with unlimited features and dedicated support"
             }
         },
     ]
@@ -139,7 +128,6 @@ class LicensePlanVersionDevFixtures(EntityFixtures[LicensePlanVersionService]):
                 "rules": [
                     {"rule_id": MAX_USERS, "limit_value": 25},
                     {"rule_id": MAX_PROJECTS_PER_MONTH, "limit_value": 20},
-                    {"rule_id": EXPORT_PDF_ACCESS, "limit_value": None},
                 ]
             }
         },
@@ -155,27 +143,6 @@ class LicensePlanVersionDevFixtures(EntityFixtures[LicensePlanVersionService]):
                 "rules": [
                     {"rule_id": MAX_USERS, "limit_value": 100},
                     {"rule_id": MAX_PROJECTS_PER_MONTH, "limit_value": None},  # Unlimited
-                    {"rule_id": EXPORT_PDF_ACCESS, "limit_value": None},
-                    {"rule_id": PRIORITY_SUPPORT, "limit_value": None},
-                    {"rule_id": API_ACCESS, "limit_value": None},
-                ]
-            }
-        },
-        # ENTERPRISE v1: 199€/month or 1990€/year
-        {
-            "attributes": {
-                "plan_id": ENTERPRISE_PLAN,
-                "version": 1,
-                "price_monthly": 19900,
-                "price_yearly": 199000,
-                "currency": "eur",
-                "enabled": True,
-                "rules": [
-                    {"rule_id": MAX_USERS, "limit_value": None},  # Unlimited
-                    {"rule_id": MAX_PROJECTS_PER_MONTH, "limit_value": None},  # Unlimited
-                    {"rule_id": EXPORT_PDF_ACCESS, "limit_value": None},
-                    {"rule_id": PRIORITY_SUPPORT, "limit_value": None},
-                    {"rule_id": API_ACCESS, "limit_value": None},
                 ]
             }
         },

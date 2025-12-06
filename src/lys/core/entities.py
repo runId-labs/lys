@@ -74,11 +74,11 @@ class Entity(EntityInterface):
 
         # check if user has access by an organization role
         elif access_type.get(ORGANIZATION_ROLE_ACCESS_KEY, False):
-            for accessing_organization_key, accessing_organization_id_list in self.accessing_organizations().items():
-                organization_list = access_type[ORGANIZATION_ROLE_ACCESS_KEY].get(accessing_organization_key, [])
-                for organization in organization_list:
-                    for accessing_organization_id in accessing_organization_id_list:
-                        if organization.id == accessing_organization_id:
+            for accessing_organization_key, accessing_organization_obj_list in self.accessing_organizations().items():
+                organization_id_list = access_type[ORGANIZATION_ROLE_ACCESS_KEY].get(accessing_organization_key, [])
+                for organization_id in organization_id_list:
+                    for accessing_organization_obj in accessing_organization_obj_list:
+                        if organization_id == accessing_organization_obj.id:
                             has_right = True
                             break
                     if has_right:

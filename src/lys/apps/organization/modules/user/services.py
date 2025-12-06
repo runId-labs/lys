@@ -90,6 +90,7 @@ class UserService(UserRoleService):
         # Execute query and return results with preloaded relationships
         result = await session.execute(stmt)
         organization_roles: list[ClientUserRole] = list(result.scalars().all())
+
         return organization_roles
 
 

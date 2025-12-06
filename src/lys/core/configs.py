@@ -270,7 +270,7 @@ class AppSettings(BaseSettings):
 
         # graphql configurations
         self.graphql_schema_name: str = "graphql"
-        self.query_depth_limit = 5
+        self.query_depth_limit = 10
         self.query_alias_limit = 10
 
     @property
