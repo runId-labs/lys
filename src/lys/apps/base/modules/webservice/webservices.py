@@ -1,7 +1,7 @@
 import strawberry
 from sqlalchemy import Select, select
 
-from lys.apps.base.modules.webservice.nodes import WebserviceNode
+from lys.apps.base.modules.webservice.nodes import AccessedWebserviceNode, WebserviceNode
 from lys.apps.base.modules.webservice.services import WebserviceService
 from lys.core.contexts import Info
 from lys.core.graphql.connection import lys_connection
@@ -13,7 +13,7 @@ from lys.core.graphql.types import Query
 @strawberry.type
 class WebserviceQuery(Query):
     @lys_connection(
-        ensure_type=WebserviceNode,
+        ensure_type=AccessedWebserviceNode,
         is_public=True,
         is_licenced=False,
         description="Get all accessible webservices by a user (connected or not) based on their roles.",

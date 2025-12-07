@@ -1,3 +1,4 @@
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from lys.apps.organization.modules.client.entities import Client
@@ -95,3 +96,27 @@ class ClientService(EntityService[Client]):
         await session.flush()
 
         return client
+
+    @classmethod
+    async def user_is_client_owner(
+            cls,
+            user_id: str,
+            session: AsyncSession
+    ) -> bool:
+        """
+        Check if user is owner of at least one client.
+
+        Args:
+            user_id: The user ID
+            session: Database session
+
+        Returns:
+            True if user is owner of at least one client
+        """
+        stmt = (
+            select(cls.entity_class)
+            .where(cls.entity_class.owner_id == user_id)
+            .limit(1)
+        )
+        result = await session.execute(stmt)
+        return result.scalar_one_or_none() is not None
