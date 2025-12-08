@@ -15,6 +15,8 @@ LICENSE_ADMIN_ROLE_WEBSERVICES = [
     "subscription",
     "create_checkout_session",
     "create_billing_portal_session",
+    "add_client_user_to_subscription",
+    "remove_client_user_from_subscription"
 ]
 
 
