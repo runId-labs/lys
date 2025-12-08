@@ -8,6 +8,7 @@ from . import rule
 from . import plan
 from . import subscription
 from . import stripe
+from . import user
 from . import webservice
 
 
@@ -19,5 +20,6 @@ __submodules__ = [
     plan,
     subscription,
     stripe,
+    user,
     webservice,
 ]

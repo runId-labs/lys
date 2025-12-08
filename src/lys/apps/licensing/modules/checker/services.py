@@ -104,7 +104,8 @@ class LicenseCheckerService(Service):
         cls,
         client_id: str,
         rule_id: str,
-        session: AsyncSession
+        session: AsyncSession,
+        error: Tuple[int, str] | None = None
     ) -> None:
         """
         Enforce a quota rule - raises error if quota exceeded.
@@ -113,6 +114,8 @@ class LicenseCheckerService(Service):
             client_id: Client ID
             rule_id: Rule ID
             session: Database session
+            error: Optional custom error tuple (status_code, error_code).
+                   Defaults to QUOTA_EXCEEDED if not provided.
 
         Raises:
             LysError: If quota is exceeded
@@ -121,7 +124,7 @@ class LicenseCheckerService(Service):
 
         if not is_valid:
             raise LysError(
-                QUOTA_EXCEEDED,
+                error or QUOTA_EXCEEDED,
                 f"Quota exceeded for {rule_id}: {current}/{limit}"
             )
 

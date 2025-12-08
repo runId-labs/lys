@@ -3,13 +3,13 @@ GraphQL nodes for subscriptions.
 """
 
 from datetime import datetime
-from typing import Optional, List
+from typing import Optional
 
 import strawberry
 from strawberry import relay
 from strawberry.types import Info
 
-from lys.apps.licensing.modules.plan.nodes import LicensePlanNode, LicensePlanVersionNode
+from lys.apps.licensing.modules.plan.nodes import LicensePlanVersionNode
 from lys.apps.licensing.modules.subscription.entities import Subscription
 from lys.apps.licensing.modules.subscription.services import SubscriptionService
 from lys.core.graphql.nodes import EntityNode

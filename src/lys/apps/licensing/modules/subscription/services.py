@@ -4,7 +4,6 @@ Subscription services.
 This module provides:
 - SubscriptionService: Core subscription management
 """
-from typing import List
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -12,7 +11,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from lys.apps.licensing.errors import (
     SUBSCRIPTION_ALREADY_EXISTS,
     NO_ACTIVE_SUBSCRIPTION,
-    PLAN_VERSION_NOT_FOUND
+    PLAN_VERSION_NOT_FOUND,
+    USER_ALREADY_LICENSED,
+    USER_NOT_LICENSED
 )
 from lys.apps.licensing.modules.subscription.entities import Subscription, subscription_user
 from lys.core.errors import LysError
@@ -171,6 +172,31 @@ class SubscriptionService(EntityService[Subscription]):
         return subscription
 
     @classmethod
+    async def is_user_in_subscription(
+        cls,
+        subscription_id: str,
+        client_user_id: str,
+        session: AsyncSession
+    ) -> bool:
+        """
+        Check if a user is already in a subscription.
+
+        Args:
+            subscription_id: Subscription ID
+            client_user_id: Client user ID
+            session: Database session
+
+        Returns:
+            True if user is already in the subscription
+        """
+        stmt = select(subscription_user).where(
+            subscription_user.c.subscription_id == subscription_id,
+            subscription_user.c.client_user_id == client_user_id
+        ).limit(1)
+        result = await session.execute(stmt)
+        return result.first() is not None
+
+    @classmethod
     async def add_user_to_subscription(
         cls,
         subscription_id: str,
@@ -184,7 +210,17 @@ class SubscriptionService(EntityService[Subscription]):
             subscription_id: Subscription ID
             client_user_id: Client user ID
             session: Database session
+
+        Raises:
+            LysError: If user is already in the subscription
         """
+        # Check if user is already in the subscription
+        if await cls.is_user_in_subscription(subscription_id, client_user_id, session):
+            raise LysError(
+                USER_ALREADY_LICENSED,
+                f"User {client_user_id} is already in subscription {subscription_id}"
+            )
+
         stmt = subscription_user.insert().values(
             subscription_id=subscription_id,
             client_user_id=client_user_id
@@ -205,7 +241,17 @@ class SubscriptionService(EntityService[Subscription]):
             subscription_id: Subscription ID
             client_user_id: Client user ID
             session: Database session
+
+        Raises:
+            LysError: If user is not in the subscription
         """
+        # Check if user is in the subscription
+        if not await cls.is_user_in_subscription(subscription_id, client_user_id, session):
+            raise LysError(
+                USER_NOT_LICENSED,
+                f"User {client_user_id} is not in subscription {subscription_id}"
+            )
+
         stmt = subscription_user.delete().where(
             subscription_user.c.subscription_id == subscription_id,
             subscription_user.c.client_user_id == client_user_id
@@ -234,3 +280,25 @@ class SubscriptionService(EntityService[Subscription]):
         )
         result = await session.execute(stmt)
         return result.scalar() or 0
+
+    @classmethod
+    async def is_client_user_licensed(
+        cls,
+        client_user_id: str,
+        session: AsyncSession
+    ) -> bool:
+        """
+        Check if a client user has a license (is associated with any subscription).
+
+        Args:
+            client_user_id: Client user ID
+            session: Database session
+
+        Returns:
+            True if user is associated with a subscription
+        """
+        stmt = select(subscription_user).where(
+            subscription_user.c.client_user_id == client_user_id
+        ).limit(1)
+        result = await session.execute(stmt)
+        return result.first() is not None

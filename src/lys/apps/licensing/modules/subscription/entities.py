@@ -50,6 +50,7 @@ class Subscription(Entity):
 
     client_id: Mapped[str] = mapped_column(
         ForeignKey("client.id", ondelete="CASCADE"),
+        unique=True,
         index=True
     )
     plan_version_id: Mapped[str] = mapped_column(
