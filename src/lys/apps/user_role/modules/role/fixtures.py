@@ -21,7 +21,6 @@ USER_ADMIN_ROLE_WEBSERVICES = [
     "send_email_verification",
     "create_user_observation",
     "list_user_audit_logs",
-    "all_roles",
     "all_users",
 ]
 

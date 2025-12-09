@@ -58,35 +58,56 @@ class LicensingWebserviceService(OrganizationWebserviceService):
                 role_entity = cls.app_manager.get_entity("role")
                 client_user_role_entity = cls.app_manager.get_entity("client_user_role")
                 client_user_entity = cls.app_manager.get_entity("client_user")
+                client_entity = cls.app_manager.get_entity("client")
+                subscription_entity = cls.app_manager.get_entity("subscription")
 
-                # Base condition: ORGANIZATION_ROLE access level + user has org role
-                org_role_base_condition = and_(
-                    cls.entity_class.access_levels.any(
-                        access_level_entity.id == ORGANIZATION_ROLE_ACCESS_LEVEL,
-                        enabled=True
-                    ),
-                    cls.entity_class.roles.any(
-                        role_entity.client_user_roles.any(
-                            client_user_role_entity.client_user.has(
-                                client_user_entity.user_id == user_id
-                            )
+                # Base condition: ORGANIZATION_ROLE access level enabled
+                org_role_access_level_condition = cls.entity_class.access_levels.any(
+                    access_level_entity.id == ORGANIZATION_ROLE_ACCESS_LEVEL,
+                    enabled=True
+                )
+
+                # Condition: user has org role via client_user_role
+                user_has_org_role_condition = cls.entity_class.roles.any(
+                    role_entity.client_user_roles.any(
+                        client_user_role_entity.client_user.has(
+                            client_user_entity.user_id == user_id
                         )
                     )
                 )
 
-                # Condition for non-licensed webservices: no license check needed
+                # === NON-LICENSED WEBSERVICES ===
+                # For non-licensed webservices: owner OR user with org role has access
                 non_licensed_condition = and_(
                     cls.entity_class.is_licenced.is_(False),
-                    org_role_base_condition
+                    org_role_access_level_condition,
+                    or_(
+                        # Owner has access
+                        cls.entity_class.access_levels.any(
+                            and_(
+                                access_level_entity.id == ORGANIZATION_ROLE_ACCESS_LEVEL,
+                                client_entity.owner_id == user_id
+                            )
+                        ),
+                        # User with org role has access
+                        user_has_org_role_condition
+                    )
                 )
 
-                # Condition for licensed webservices: requires license verification
-                licensed_condition = and_(
-                    cls.entity_class.is_licenced.is_(True),
-                    cls.entity_class.access_levels.any(
-                        access_level_entity.id == ORGANIZATION_ROLE_ACCESS_LEVEL,
-                        enabled=True
-                    ),
+                # === LICENSED WEBSERVICES ===
+                # For licensed webservices: requires license verification
+                # Owner: needs client to have a subscription
+                owner_licensed_condition = and_(
+                    org_role_access_level_condition,
+                    client_entity.owner_id == user_id,
+                    client_entity.id.in_(
+                        select(subscription_entity.client_id)
+                    )
+                )
+
+                # Client user: needs to be in subscription_user table
+                client_user_licensed_condition = and_(
+                    org_role_access_level_condition,
                     cls.entity_class.roles.any(
                         role_entity.client_user_roles.any(
                             and_(
@@ -100,6 +121,11 @@ class LicensingWebserviceService(OrganizationWebserviceService):
                             )
                         )
                     )
+                )
+
+                licensed_condition = and_(
+                    cls.entity_class.is_licenced.is_(True),
+                    or_(owner_licensed_condition, client_user_licensed_condition)
                 )
 
                 # Combine: non-licensed OR licensed with valid subscription
@@ -133,16 +159,24 @@ class LicensingWebserviceService(OrganizationWebserviceService):
             True if user has an organization role that includes this webservice
             AND has an active license
         """
+        # Get required entities
         role_entity = cls.app_manager.get_entity("role")
         client_user_role_entity = cls.app_manager.get_entity("client_user_role")
         client_user_entity = cls.app_manager.get_entity("client_user")
 
+        # Query to find a role that:
+        # 1. Grants access to this webservice (role.webservices contains webservice_id)
+        # 2. Is assigned to a client_user belonging to this user
+        # 3. The client_user has an active license (exists in subscription_user table)
         stmt = (
             select(role_entity)
             .where(
+                # Condition 1: Role grants access to this webservice
                 role_entity.webservices.any(id=webservice_id),
+                # Condition 2 & 3: User has this role via client_user_role AND has license
                 role_entity.client_user_roles.any(
                     and_(
+                        # User has this role via their client_user
                         client_user_role_entity.client_user.has(
                             client_user_entity.user_id == user_id
                         ),
@@ -151,6 +185,38 @@ class LicensingWebserviceService(OrganizationWebserviceService):
                             select(subscription_user.c.client_user_id)
                         )
                     )
+                )
+            )
+            .limit(1)
+        )
+        result = await session.execute(stmt)
+        return result.scalar_one_or_none() is not None
+
+    @classmethod
+    async def _owner_client_has_subscription(
+            cls,
+            user_id: str,
+            session: AsyncSession
+    ) -> bool:
+        """
+        Check if the owner's client has an active subscription.
+
+        Args:
+            user_id: The owner's user ID
+            session: Database session
+
+        Returns:
+            True if the owner's client has a subscription
+        """
+        client_entity = cls.app_manager.get_entity("client")
+        subscription_entity = cls.app_manager.get_entity("subscription")
+
+        # Find if user owns a client that has a subscription
+        stmt = (
+            select(subscription_entity)
+            .where(
+                subscription_entity.client_id.in_(
+                    select(client_entity.id).where(client_entity.owner_id == user_id)
                 )
             )
             .limit(1)
@@ -168,8 +234,13 @@ class LicensingWebserviceService(OrganizationWebserviceService):
         """
         Get the access levels through which the user can access this webservice.
 
-        For licensed webservices (is_licenced=True), requires license verification.
-        For non-licensed webservices, uses standard organization role check.
+        For owners:
+        - Non-licensed webservices: full access to all ORGANIZATION_ROLE webservices
+        - Licensed webservices: access only if their client has a subscription
+
+        For client users:
+        - Non-licensed webservices: access via organization role check
+        - Licensed webservices: access if they have a license (in subscription_user table)
 
         Args:
             webservice: The Webservice entity
@@ -179,11 +250,24 @@ class LicensingWebserviceService(OrganizationWebserviceService):
         Returns:
             List of AccessLevel entities the user qualifies for
         """
-        # Client owner gets all enabled access levels (from parent)
         if user is not None:
             client_service = cls.app_manager.get_service("client")
-            if await client_service.user_is_client_owner(user["id"], session):
-                return [al for al in webservice.access_levels if al.enabled]
+            is_owner = await client_service.user_is_client_owner(user["id"], session)
+
+            if is_owner:
+                # Owner access depends on whether webservice requires license
+                if webservice.is_licenced:
+                    # Licensed webservice: owner needs client to have subscription
+                    if await cls._owner_client_has_subscription(user["id"], session):
+                        return [al for al in webservice.access_levels if al.enabled]
+                    else:
+                        # No subscription, fall through to base access levels (no ORGANIZATION_ROLE)
+                        return await RoleWebserviceService.get_user_access_levels(
+                            webservice, user, session
+                        )
+                else:
+                    # Non-licensed webservice: owner has full access
+                    return [al for al in webservice.access_levels if al.enabled]
 
         # For licensed webservices, override ORGANIZATION_ROLE check with license verification
         if webservice.is_licenced:

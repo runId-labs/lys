@@ -80,6 +80,10 @@ class OrganizationWebserviceService(RoleWebserviceService):
         """
         Check if user has an organization role that grants access to this webservice.
 
+        A user has access if:
+        - They are a client owner (owners have access to all ORGANIZATION_ROLE webservices)
+        - They have a client_user_role that includes this webservice
+
         Args:
             user_id: The user ID
             webservice_id: The webservice ID
@@ -88,6 +92,12 @@ class OrganizationWebserviceService(RoleWebserviceService):
         Returns:
             True if user has an organization role that includes this webservice
         """
+        # Check if user is a client owner - owners have access to all org role webservices
+        client_service = cls.app_manager.get_service("client")
+        if await client_service.user_is_client_owner(user_id, session):
+            return True
+
+        # Check if user has a client_user_role that grants access
         role_entity = cls.app_manager.get_entity("role")
         client_user_role_entity = cls.app_manager.get_entity("client_user_role")
         client_user_entity = cls.app_manager.get_entity("client_user")

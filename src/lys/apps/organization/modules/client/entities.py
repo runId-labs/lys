@@ -17,7 +17,8 @@ class Client(AbstractOrganizationEntity):
     def owner(self):
         return relationship(
             "user",
-            backref="clients",
+            backref="client",
+            uselist=False,
             lazy='selectin'
         )
 
