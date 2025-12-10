@@ -47,10 +47,10 @@ class UserEmailAddress(AbstractEmailAddress):
 
     user_id: Mapped[str] = mapped_column(ForeignKey("user.id", ondelete='CASCADE'))
 
-    def accessing_users(self):
+    def accessing_users(self) -> list[str]:
         return []
 
-    def accessing_organizations(self):
+    def accessing_organizations(self) -> dict[str, list[str]]:
         return {}
 
 
@@ -102,10 +102,10 @@ class User(Entity):
         """
         return "email_address"
 
-    def accessing_users(self):
-        return [self]
+    def accessing_users(self) -> list[str]:
+        return [self.id]
 
-    def accessing_organizations(self):
+    def accessing_organizations(self) -> dict[str, list[str]]:
         return {}
 
     @classmethod
@@ -157,14 +157,14 @@ class UserPrivateData(Entity):
     def gender(self):
         return relationship("gender", lazy='selectin')
 
-    def accessing_users(self):
+    def accessing_users(self) -> list[str]:
         """
         Only the user themselves can access their private data.
         Super users can access via permission check in the node/webservice.
         """
-        return [self.user] if self.user else []
+        return [self.user_id] if self.user_id else []
 
-    def accessing_organizations(self):
+    def accessing_organizations(self) -> dict[str, list[str]]:
         return {}
 
     @classmethod
@@ -234,10 +234,10 @@ class UserRefreshToken(Entity):
             (self.once_expire_at is None or now < self.once_expire_at) and \
             (not self.auth_utils.config.get("refresh_token_used_once") or not self.used_at)
 
-    def accessing_users(self):
+    def accessing_users(self) -> list[str]:
         return []
 
-    def accessing_organizations(self):
+    def accessing_organizations(self) -> dict[str, list[str]]:
         return {}
 
 
@@ -262,10 +262,10 @@ class UserEmailing(Entity):
             enable_typechecks = False
         )
 
-    def accessing_users(self):
-        return [self.user]
+    def accessing_users(self) -> list[str]:
+        return [self.user_id] if self.user_id else []
 
-    def accessing_organizations(self):
+    def accessing_organizations(self) -> dict[str, list[str]]:
         return {}
 
     @classmethod
@@ -288,10 +288,10 @@ class UserOneTimeToken(OneTimeToken):
     def user(self):
         return relationship("user", lazy='selectin')
 
-    def accessing_users(self):
-        return [self.user]
+    def accessing_users(self) -> list[str]:
+        return [self.user_id] if self.user_id else []
 
-    def accessing_organizations(self):
+    def accessing_organizations(self) -> dict[str, list[str]]:
         return {}
 
     @classmethod
@@ -365,14 +365,14 @@ class UserAuditLog(Entity):
     def log_type(self):
         return relationship("user_audit_log_type", lazy='selectin')
 
-    def accessing_users(self):
+    def accessing_users(self) -> list[str]:
         """
-        Returns the author user to enable OWNER access level.
+        Returns the author user ID to enable OWNER access level.
         Super users and users with USER_ADMIN role can access via webservice permissions.
         """
-        return [self.author_user] if self.author_user else []
+        return [self.author_user_id] if self.author_user_id else []
 
-    def accessing_organizations(self):
+    def accessing_organizations(self) -> dict[str, list[str]]:
         return {}
 
     @classmethod

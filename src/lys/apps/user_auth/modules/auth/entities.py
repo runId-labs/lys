@@ -1,5 +1,4 @@
 from datetime import datetime
-from typing import Dict, List, Self
 
 from sqlalchemy import ForeignKey, SmallInteger
 from sqlalchemy.orm import Mapped, mapped_column, relationship, declared_attr
@@ -26,10 +25,10 @@ class LoginAttempt(Entity):
     attempt_count: Mapped[int] = mapped_column(SmallInteger, default=1)
     blocked_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
-    def accessing_users(self):
+    def accessing_users(self) -> list[str]:
         return []
 
-    def accessing_organizations(self) -> Dict[str, List[Self]]:
+    def accessing_organizations(self) -> dict[str, list[str]]:
         return {}
 
 

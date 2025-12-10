@@ -15,8 +15,8 @@ class Log(Entity):
     traceback = mapped_column(Text, nullable=False)
     context = mapped_column(JSON, nullable=True)
 
-    def accessing_users(self):
+    def accessing_users(self) -> list[str]:
         return []
 
-    def accessing_organizations(self):
+    def accessing_organizations(self) -> dict[str, list[str]]:
         return {}

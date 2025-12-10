@@ -1,7 +1,7 @@
 """
-Unit tests for AppRegister.
+Unit tests for AppRegistry.
 
-AppRegister is the central registry that manages:
+AppRegistry is the central registry that manages:
 - Entity registration and retrieval
 - Service registration and retrieval
 - Fixture registration with dependency resolution
@@ -22,7 +22,7 @@ from lys.core.interfaces.entities import EntityInterface
 from lys.core.interfaces.services import ServiceInterface
 from lys.core.interfaces.fixtures import EntityFixtureInterface
 from lys.core.graphql.interfaces import NodeInterface
-from lys.core.registers import AppRegister, LysAppRegister
+from lys.core.registries import AppRegistry, LysAppRegistry
 from lys.core.managers.database import Base
 
 
@@ -36,10 +36,10 @@ class MockEntity(EntityInterface, Base):
     def get_tablename(cls):
         return cls.__tablename__
 
-    def accessing_users(self):
+    def accessing_users(self) -> list[str]:
         return []
 
-    def accessing_organizations(self):
+    def accessing_organizations(self) -> dict[str, list[str]]:
         return {}
 
     @classmethod
@@ -63,10 +63,10 @@ class MockConcreteEntity(EntityInterface, Base):
     def get_tablename(cls):
         return cls.__tablename__
 
-    def accessing_users(self):
+    def accessing_users(self) -> list[str]:
         return []
 
-    def accessing_organizations(self):
+    def accessing_organizations(self) -> dict[str, list[str]]:
         return {}
 
     @classmethod
@@ -197,12 +197,12 @@ class InvalidNode:
     pass
 
 
-class TestAppRegisterEntityRegistration:
+class TestAppRegistryEntityRegistration:
     """Test entity registration and retrieval."""
 
     def test_register_entity_success(self):
         """Test successful entity registration."""
-        register = AppRegister()
+        register = AppRegistry()
 
         register.register_entity("mock_entity", MockEntity)
 
@@ -211,7 +211,7 @@ class TestAppRegisterEntityRegistration:
 
     def test_register_entity_validates_interface(self):
         """Test that register_entity raises TypeError for invalid entities."""
-        register = AppRegister()
+        register = AppRegistry()
 
         with pytest.raises(TypeError) as exc_info:
             register.register_entity("invalid", InvalidEntity)
@@ -220,7 +220,7 @@ class TestAppRegisterEntityRegistration:
 
     def test_get_entity_returns_registered_entity(self):
         """Test get_entity returns a registered entity."""
-        register = AppRegister()
+        register = AppRegistry()
         register.register_entity("mock_entity", MockEntity)
 
         entity = register.get_entity("mock_entity")
@@ -229,7 +229,7 @@ class TestAppRegisterEntityRegistration:
 
     def test_get_entity_raises_keyerror_on_missing(self):
         """Test get_entity raises KeyError for non-existent entity."""
-        register = AppRegister()
+        register = AppRegistry()
 
         with pytest.raises(KeyError) as exc_info:
             register.get_entity("nonexistent")
@@ -243,7 +243,7 @@ class TestAppRegisterEntityRegistration:
         with real entities that have columns/primary keys. Unit testing with mock
         entities causes SQLAlchemy inspection errors.
         """
-        register = AppRegister()
+        register = AppRegistry()
 
         # Should not raise error with empty entities
         register.finalize_entities()
@@ -257,7 +257,7 @@ class TestAppRegisterEntityRegistration:
         though we can't fully test the SQLAlchemy transformation in unit tests
         without proper entity definitions with primary keys.
         """
-        register = AppRegister()
+        register = AppRegistry()
         register.register_entity("mock_entity", MockEntity)
 
         # Store original for comparison
@@ -275,12 +275,12 @@ class TestAppRegisterEntityRegistration:
             pass
 
 
-class TestAppRegisterServiceRegistration:
+class TestAppRegistryServiceRegistration:
     """Test service registration and retrieval."""
 
     def test_register_service_success(self):
         """Test successful service registration."""
-        register = AppRegister()
+        register = AppRegistry()
 
         register.register_service("mock_service", MockService)
 
@@ -289,7 +289,7 @@ class TestAppRegisterServiceRegistration:
 
     def test_register_service_validates_interface(self):
         """Test that register_service raises TypeError for invalid services."""
-        register = AppRegister()
+        register = AppRegistry()
 
         with pytest.raises(TypeError) as exc_info:
             register.register_service("invalid", InvalidService)
@@ -298,7 +298,7 @@ class TestAppRegisterServiceRegistration:
 
     def test_get_service_returns_registered_service(self):
         """Test get_service returns a registered service."""
-        register = AppRegister()
+        register = AppRegistry()
         register.register_service("mock_service", MockService)
 
         service = register.get_service("mock_service")
@@ -307,7 +307,7 @@ class TestAppRegisterServiceRegistration:
 
     def test_get_service_raises_keyerror_on_missing(self):
         """Test get_service raises KeyError for non-existent service."""
-        register = AppRegister()
+        register = AppRegistry()
 
         with pytest.raises(KeyError) as exc_info:
             register.get_service("nonexistent")
@@ -315,12 +315,12 @@ class TestAppRegisterServiceRegistration:
         assert "Service 'nonexistent' not found" in str(exc_info.value)
 
 
-class TestAppRegisterFixtureRegistration:
+class TestAppRegistryFixtureRegistration:
     """Test fixture registration with dependency resolution."""
 
     def test_register_fixture_success(self):
         """Test successful fixture registration."""
-        register = AppRegister()
+        register = AppRegistry()
 
         register.register_fixture(MockFixtureA)
 
@@ -331,7 +331,7 @@ class TestAppRegisterFixtureRegistration:
 
     def test_register_fixture_with_dependencies(self):
         """Test fixture registration with dependencies."""
-        register = AppRegister()
+        register = AppRegistry()
 
         register.register_fixture(MockFixtureA)
         register.register_fixture(MockFixtureB, depends_on=["MockFixtureA"])
@@ -343,7 +343,7 @@ class TestAppRegisterFixtureRegistration:
 
     def test_register_fixture_raises_on_duplicate(self):
         """Test that registering duplicate fixture raises ValueError."""
-        register = AppRegister()
+        register = AppRegistry()
 
         register.register_fixture(MockFixtureA)
 
@@ -354,7 +354,7 @@ class TestAppRegisterFixtureRegistration:
 
     def test_get_fixtures_in_dependency_order_simple(self):
         """Test get_fixtures_in_dependency_order with simple dependencies."""
-        register = AppRegister()
+        register = AppRegistry()
 
         # Register in reverse dependency order
         register.register_fixture(MockFixtureB, depends_on=["MockFixtureA"])
@@ -369,7 +369,7 @@ class TestAppRegisterFixtureRegistration:
 
     def test_get_fixtures_in_dependency_order_complex(self):
         """Test get_fixtures_in_dependency_order with complex dependencies."""
-        register = AppRegister()
+        register = AppRegistry()
 
         # C depends on B, B depends on A
         register.register_fixture(MockFixtureC, depends_on=["MockFixtureB"])
@@ -386,7 +386,7 @@ class TestAppRegisterFixtureRegistration:
 
     def test_get_fixtures_in_dependency_order_detects_cycles(self):
         """Test that circular dependencies are detected."""
-        register = AppRegister()
+        register = AppRegistry()
 
         # Create circular dependency: A -> B -> A
         # We need to manually manipulate _fixture_dependencies to create a cycle
@@ -403,7 +403,7 @@ class TestAppRegisterFixtureRegistration:
 
     def test_get_fixtures_in_dependency_order_with_missing_dependency(self):
         """Test that missing dependencies raise ValueError."""
-        register = AppRegister()
+        register = AppRegistry()
 
         # Register fixture with non-existent dependency
         register.register_fixture(MockFixtureB, depends_on=["NonExistentFixture"])
@@ -416,19 +416,19 @@ class TestAppRegisterFixtureRegistration:
 
     def test_get_fixtures_in_dependency_order_with_empty_fixtures(self):
         """Test get_fixtures_in_dependency_order with no fixtures."""
-        register = AppRegister()
+        register = AppRegistry()
 
         ordered = register.get_fixtures_in_dependency_order()
 
         assert ordered == []
 
 
-class TestAppRegisterWebserviceRegistration:
+class TestAppRegistryWebserviceRegistration:
     """Test webservice registration and configuration."""
 
     def test_register_webservice_success(self):
         """Test successful webservice registration."""
-        register = AppRegister()
+        register = AppRegistry()
 
         mock_function = Mock(__name__="test_webservice")
         register.register_webservice(
@@ -449,7 +449,7 @@ class TestAppRegisterWebserviceRegistration:
 
     def test_register_webservice_allows_override(self):
         """Test webservice override with allow_override=True."""
-        register = AppRegister()
+        register = AppRegistry()
 
         mock_function = Mock(__name__="test_webservice")
         register.register_webservice(mock_function, is_public=False, enabled=False, allow_override=True)
@@ -461,7 +461,7 @@ class TestAppRegisterWebserviceRegistration:
 
     def test_register_webservice_raises_on_no_override(self):
         """Test webservice registration raises error when override not allowed."""
-        register = AppRegister()
+        register = AppRegistry()
 
         mock_function = Mock(__name__="test_webservice")
         register.register_webservice(mock_function, is_public=False, enabled=False, allow_override=True)
@@ -472,12 +472,12 @@ class TestAppRegisterWebserviceRegistration:
         assert "already registered" in str(exc_info.value)
 
 
-class TestAppRegisterNodeRegistration:
+class TestAppRegistryNodeRegistration:
     """Test GraphQL node registration."""
 
     def test_register_node_success(self):
         """Test successful node registration."""
-        register = AppRegister()
+        register = AppRegistry()
 
         register.register_node("MockNode", MockNode)
 
@@ -486,7 +486,7 @@ class TestAppRegisterNodeRegistration:
 
     def test_register_node_validates_interface(self):
         """Test that register_node raises TypeError for invalid nodes."""
-        register = AppRegister()
+        register = AppRegistry()
 
         with pytest.raises(TypeError) as exc_info:
             register.register_node("InvalidNode", InvalidNode)
@@ -495,7 +495,7 @@ class TestAppRegisterNodeRegistration:
 
     def test_get_node_returns_registered_node(self):
         """Test get_node returns a registered node."""
-        register = AppRegister()
+        register = AppRegistry()
         register.register_node("MockNode", MockNode)
 
         node = register.get_node("MockNode")
@@ -504,7 +504,7 @@ class TestAppRegisterNodeRegistration:
 
     def test_get_node_raises_keyerror_on_missing(self):
         """Test get_node raises KeyError for non-existent node."""
-        register = AppRegister()
+        register = AppRegistry()
 
         with pytest.raises(KeyError) as exc_info:
             register.get_node("nonexistent")
@@ -512,12 +512,12 @@ class TestAppRegisterNodeRegistration:
         assert "Node 'nonexistent' not found" in str(exc_info.value)
 
 
-class TestAppRegisterLockingMechanism:
+class TestAppRegistryLockingMechanism:
     """Test component type locking for registration safety."""
 
     def test_lock_prevents_entity_registration(self):
         """Test that locking prevents further entity registrations."""
-        register = AppRegister()
+        register = AppRegistry()
 
         register.lock(AppComponentTypeEnum.ENTITIES)
         register.register_entity("mock_entity", MockEntity)
@@ -527,7 +527,7 @@ class TestAppRegisterLockingMechanism:
 
     def test_lock_prevents_service_registration(self):
         """Test that locking prevents further service registrations."""
-        register = AppRegister()
+        register = AppRegistry()
 
         register.lock(AppComponentTypeEnum.SERVICES)
         register.register_service("mock_service", MockService)
@@ -537,7 +537,7 @@ class TestAppRegisterLockingMechanism:
 
     def test_lock_prevents_fixture_registration(self):
         """Test that locking prevents further fixture registrations."""
-        register = AppRegister()
+        register = AppRegistry()
 
         register.lock(AppComponentTypeEnum.FIXTURES)
         register.register_fixture(MockFixtureA)
@@ -547,7 +547,7 @@ class TestAppRegisterLockingMechanism:
 
     def test_lock_prevents_webservice_registration(self):
         """Test that locking prevents further webservice registrations."""
-        register = AppRegister()
+        register = AppRegistry()
 
         register.lock(AppComponentTypeEnum.WEBSERVICES)
         mock_function = Mock(__name__="test_webservice")
@@ -558,7 +558,7 @@ class TestAppRegisterLockingMechanism:
 
     def test_lock_prevents_node_registration(self):
         """Test that locking prevents further node registrations."""
-        register = AppRegister()
+        register = AppRegistry()
 
         register.lock(AppComponentTypeEnum.NODES)
         register.register_node("MockNode", MockNode)
@@ -568,7 +568,7 @@ class TestAppRegisterLockingMechanism:
 
     def test_is_locked_checks_component_type(self):
         """Test is_locked correctly checks lock status."""
-        register = AppRegister()
+        register = AppRegistry()
 
         assert register.is_locked(AppComponentTypeEnum.ENTITIES) is False
 
@@ -578,13 +578,13 @@ class TestAppRegisterLockingMechanism:
         assert register.is_locked(AppComponentTypeEnum.SERVICES) is False
 
 
-class TestAppRegisterSingletonPattern:
-    """Test LysAppRegister singleton behavior."""
+class TestAppRegistrySingletonPattern:
+    """Test LysAppRegistry singleton behavior."""
 
     def test_lys_app_register_is_singleton(self):
-        """Test that LysAppRegister follows singleton pattern."""
-        instance1 = LysAppRegister()
-        instance2 = LysAppRegister()
+        """Test that LysAppRegistry follows singleton pattern."""
+        instance1 = LysAppRegistry()
+        instance2 = LysAppRegistry()
 
         assert instance1 is instance2
 
@@ -595,8 +595,8 @@ class TestAppRegisterSingletonPattern:
         singleton with real entities. We verify singleton behavior by checking
         that multiple instances reference the same object and share state.
         """
-        instance1 = LysAppRegister()
-        instance2 = LysAppRegister()
+        instance1 = LysAppRegistry()
+        instance2 = LysAppRegistry()
 
         # Verify singleton: both instances are the same object
         assert instance1 is instance2

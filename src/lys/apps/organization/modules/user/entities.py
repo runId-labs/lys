@@ -31,10 +31,10 @@ class ClientUser(Entity):
             lazy='selectin'
         )
 
-    def accessing_users(self):
-        return [self.user]
+    def accessing_users(self) -> list[str]:
+        return [self.user_id] if self.user_id else []
 
-    def accessing_organizations(self):
+    def accessing_organizations(self) -> dict[str, list[str]]:
         if self.client:
             return self.client.accessing_organizations()
         return {}

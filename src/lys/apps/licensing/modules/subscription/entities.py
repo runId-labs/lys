@@ -6,7 +6,7 @@ This module defines:
 - subscription_user: Association table linking subscriptions to client users
 """
 
-from typing import TYPE_CHECKING, Dict, List, Self
+from typing import TYPE_CHECKING
 
 from sqlalchemy import Column, DateTime, ForeignKey, Table, func
 from sqlalchemy.orm import Mapped, mapped_column, declared_attr, relationship
@@ -110,12 +110,12 @@ class Subscription(Entity):
         """Returns True if a downgrade is scheduled."""
         return self.pending_plan_version_id is not None
 
-    def accessing_users(self) -> List:
+    def accessing_users(self) -> list[str]:
         """Users who can access this subscription."""
         return []
 
-    def accessing_organizations(self) -> Dict[str, List[Self]]:
+    def accessing_organizations(self) -> dict[str, list[str]]:
         """Organizations that can access this subscription."""
         return {
-            "client": [self.client]
+            "client": [self.client_id] if self.client_id else []
         }

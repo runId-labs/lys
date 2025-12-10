@@ -15,7 +15,7 @@ from lys.core.utils.tool_generator import (
     extract_tool_from_field,
     extract_tool_from_resolver,
 )
-from lys.core.registers import AppRegister
+from lys.core.registries import AppRegistry
 
 
 class TestPythonTypeToJsonSchema:
@@ -302,7 +302,7 @@ class TestAppRegisterToolIntegration:
     """Tests for tool registration in AppRegister."""
 
     def test_register_tool(self):
-        register = AppRegister()
+        register = AppRegistry()
         tool_definition = {
             "type": "function",
             "function": {
@@ -325,7 +325,7 @@ class TestAppRegisterToolIntegration:
         assert register.tools["test_tool"]["resolver"] == mock_resolver
 
     def test_get_tools(self):
-        register = AppRegister()
+        register = AppRegistry()
         tool1 = {"type": "function", "function": {"name": "tool1"}}
         tool2 = {"type": "function", "function": {"name": "tool2"}}
 
@@ -339,7 +339,7 @@ class TestAppRegisterToolIntegration:
         assert tool2 in tools
 
     def test_get_tool_by_name(self):
-        register = AppRegister()
+        register = AppRegistry()
         tool_definition = {
             "type": "function",
             "function": {"name": "specific_tool"}
@@ -356,7 +356,7 @@ class TestAppRegisterToolIntegration:
         assert result["resolver"] == mock_resolver
 
     def test_get_tool_definition(self):
-        register = AppRegister()
+        register = AppRegistry()
         tool_definition = {
             "type": "function",
             "function": {"name": "my_tool"}
@@ -369,7 +369,7 @@ class TestAppRegisterToolIntegration:
         assert result == tool_definition
 
     def test_get_tool_resolver(self):
-        register = AppRegister()
+        register = AppRegistry()
 
         async def my_resolver():
             return "result"
@@ -381,7 +381,7 @@ class TestAppRegisterToolIntegration:
         assert result == my_resolver
 
     def test_get_tool_not_found(self):
-        register = AppRegister()
+        register = AppRegistry()
 
         with pytest.raises(KeyError) as exc_info:
             register.get_tool("nonexistent")
@@ -389,7 +389,7 @@ class TestAppRegisterToolIntegration:
         assert "nonexistent" in str(exc_info.value)
 
     def test_webservice_registration_generates_tool(self):
-        register = AppRegister()
+        register = AppRegistry()
 
         async def my_webservice(email: str, password: str) -> dict:
             """My webservice description."""

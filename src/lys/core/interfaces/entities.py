@@ -1,5 +1,5 @@
 from abc import abstractmethod
-from typing import Tuple, List, Self, Dict, Union, Any
+from typing import Tuple, List, Dict, Union, Any
 
 from sqlalchemy import Select, BinaryExpression
 
@@ -12,13 +12,13 @@ class EntityInterface:
         raise NotImplementedError
 
     @abstractmethod
-    def accessing_users(self) -> List[Self]:
-        """Returns a list of users who can access this entity."""
+    def accessing_users(self) -> List[str]:
+        """Returns a list of user IDs who can access this entity."""
         raise NotImplementedError
 
     @abstractmethod
-    def accessing_organizations(self) -> Dict[str, List[Self]]:
-        """Returns a dictionary of organizations and their associated users who can access this entity."""
+    def accessing_organizations(self) -> Dict[str, List[str]]:
+        """Returns a dictionary of organization table names to lists of organization IDs who can access this entity."""
         raise NotImplementedError
 
     @classmethod

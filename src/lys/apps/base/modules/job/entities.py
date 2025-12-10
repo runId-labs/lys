@@ -1,4 +1,4 @@
-from typing import Dict, List, Self, Any
+from typing import Any
 
 from sqlalchemy import ForeignKey, DateTime, JSON
 from sqlalchemy.orm import mapped_column, Mapped, relationship, declared_attr
@@ -38,10 +38,10 @@ class JobExecution(Entity):
     def started_at(self):
         return self.created_at
 
-    def accessing_users(self):
+    def accessing_users(self) -> list[str]:
         return []
 
-    def accessing_organizations(self) -> Dict[str, List[Self]]:
+    def accessing_organizations(self) -> dict[str, list[str]]:
         return {}
 
 

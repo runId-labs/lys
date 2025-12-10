@@ -70,18 +70,15 @@ class Entity(EntityInterface):
             has_right = True
         # check if the user is an owner
         elif access_type.get(OWNER_ACCESS_KEY, False):
-            has_right = user_id in [user_obj.id for user_obj in self.accessing_users()]
+            has_right = user_id in self.accessing_users()
 
         # check if user has access by an organization role
         elif access_type.get(ORGANIZATION_ROLE_ACCESS_KEY, False):
-            for accessing_organization_key, accessing_organization_obj_list in self.accessing_organizations().items():
-                organization_id_list = access_type[ORGANIZATION_ROLE_ACCESS_KEY].get(accessing_organization_key, [])
-                for organization_id in organization_id_list:
-                    for accessing_organization_obj in accessing_organization_obj_list:
-                        if organization_id == accessing_organization_obj.id:
-                            has_right = True
-                            break
-                    if has_right:
+            for accessing_organization_key, accessing_organization_id_list in self.accessing_organizations().items():
+                user_organization_id_list = access_type[ORGANIZATION_ROLE_ACCESS_KEY].get(accessing_organization_key, [])
+                for user_organization_id in user_organization_id_list:
+                    if user_organization_id in accessing_organization_id_list:
+                        has_right = True
                         break
                 if has_right:
                     break
@@ -152,10 +149,10 @@ class ParametricEntity(Entity):
         """
         return self.id
 
-    def accessing_users(self):
-        """Returns a list of users who can access this entity."""
+    def accessing_users(self) -> List[str]:
+        """Returns a list of user IDs who can access this entity."""
         return []
 
-    def accessing_organizations(self):
-        """Returns a dictionary of organizations and their associated users who can access this entity."""
+    def accessing_organizations(self) -> Dict[str, List[str]]:
+        """Returns a dictionary of organization table names to lists of organization IDs who can access this entity."""
         return {}

@@ -51,8 +51,8 @@ class Emailing(Entity):
     def language(self):
         return relationship("language", lazy='selectin')
 
-    def accessing_users(self):
+    def accessing_users(self) -> list[str]:
         return []
 
-    def accessing_organizations(self):
+    def accessing_organizations(self) -> dict[str, list[str]]:
         return {}

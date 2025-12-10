@@ -23,12 +23,12 @@ class AbstractOrganizationEntity(Entity):
         raise NotImplementedError
 
 
-    def accessing_users(self):
+    def accessing_users(self) -> list[str]:
         return []
 
-    def accessing_organizations(self):
+    def accessing_organizations(self) -> dict[str, list[str]]:
         new_accessing_organizations = {
-            self.__tablename__: [self]
+            self.__tablename__: [self.id]
         }
 
         # parent organization has access to the child organization
@@ -58,13 +58,13 @@ class AbstractUserOrganizationRoleEntity(Entity):
         raise NotImplementedError
 
 
-    def accessing_users(self):
+    def accessing_users(self) -> list[str]:
         return []
 
-    def accessing_organizations(self):
+    def accessing_organizations(self) -> dict[str, list[str]]:
         table_name = self.organization.__tablename__
         new_accessing_organizations = {
-            table_name: [self.organization]
+            table_name: [self.organization.id]
         }
 
         # parent organization has access to the child organization

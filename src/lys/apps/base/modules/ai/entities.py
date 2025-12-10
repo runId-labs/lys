@@ -39,10 +39,10 @@ class AIConversation(Entity):
     def user(cls):
         return relationship("user", lazy="selectin")
 
-    def accessing_users(self):
+    def accessing_users(self) -> list[str]:
         """Only the owner can access the conversation."""
-        return [self.user] if self.user else []
+        return [self.user_id] if self.user_id else []
 
-    def accessing_organizations(self):
+    def accessing_organizations(self) -> dict[str, list[str]]:
         """No organization-based access for conversations."""
         return {}
