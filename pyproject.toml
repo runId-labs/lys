@@ -19,7 +19,7 @@ dependencies = [
     "pydantic[email]==2.11.7",
     "PyJWT==2.10.1",
     "sqlalchemy[asyncio]==2.0.43",
-    "strawberry-graphql[fastapi]>=0.275.5",
+    "strawberry-graphql[fastapi]>=0.287.0",
     "graphene>=3.4.1"
 ]
 

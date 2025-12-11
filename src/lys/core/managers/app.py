@@ -9,6 +9,7 @@ from fastapi import FastAPI
 from graphql import NoSchemaIntrospectionCustomRule
 from strawberry.extensions import QueryDepthLimiter, MaxAliasesLimiter, AddValidationRules
 from strawberry.fastapi import GraphQLRouter
+from strawberry.federation import Schema as FederationSchema
 
 from lys.core.configs import LysAppSettings, AppSettings
 from lys.core.consts.component_types import AppComponentTypeEnum
@@ -465,8 +466,10 @@ class AppManager:
                 component_list.reverse()
                 schema_types[type_name] = strawberry.type(type(type_name, tuple(component_list), {}))
 
-        # Create and return the schema
-        return strawberry.Schema(
+        # Create and return the federation-compatible schema
+        # FederationSchema exposes _service { sdl } for Apollo Gateway/Router
+        # while remaining fully compatible with standalone usage
+        return FederationSchema(
             schema_types.get("Query", DefaultQuery),
             schema_types.get("Mutation"),
             schema_types.get("Subscription"),
