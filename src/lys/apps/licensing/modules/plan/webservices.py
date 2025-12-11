@@ -36,7 +36,7 @@ class LicensePlanQuery(Query):
         client_user_entity = info.context.app_manager.get_entity("client_user")
 
         connected_user = info.context.connected_user
-        user_id = connected_user["id"]
+        user_id = connected_user["sub"]
         session = info.context.session
 
         # Find user's client_id (owner or member)

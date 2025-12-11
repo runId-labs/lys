@@ -1,5 +1,4 @@
 import importlib
-import inspect
 import logging
 import traceback
 from contextlib import asynccontextmanager
@@ -346,42 +345,44 @@ class AppManager:
             logging.info(f"Loaded {loaded_count} custom registries")
 
     def _load_permissions(self):
-        """Load permission classes from configured permission modules."""
+        """
+        Load permission classes from configured permission class paths.
+
+        Permissions are specified as full dotted paths to permission classes.
+        Example: "lys.apps.user_auth.permissions.UserAuthPermission"
+        """
         if not len(self.settings.permissions):
             logging.info("No permissions configured")
             return
 
         logging.info("=" * 50)
         logging.info("Starting permission loading process...")
-        logging.info(f"Permission modules to load: {self.settings.permissions}")
+        logging.info(f"Permission classes to load: {self.settings.permissions}")
 
         loaded_count = 0
-        total_modules = len(self.settings.permissions)
 
-        for permission_import in self.settings.permissions:
+        for permission_path in self.settings.permissions:
             try:
-                logging.info(f"Loading permission module: {permission_import}")
-                permission_module = importlib.import_module(permission_import)
+                permission_class = import_string(permission_path)
 
-                module_permissions = [
-                    cls for name, cls in inspect.getmembers(permission_module, inspect.isclass)
-                    if issubclass(cls, PermissionInterface) and cls is not PermissionInterface
-                ]
+                # Verify it implements PermissionInterface
+                if not issubclass(permission_class, PermissionInterface):
+                    raise TypeError(
+                        f"'{permission_class.__name__}' must be a subclass of PermissionInterface"
+                    )
 
-                self.permissions += module_permissions
+                self.permissions.append(permission_class)
                 loaded_count += 1
-
-                permission_names = [cls.__name__ for cls in module_permissions]
-                logging.info(f"✓ Loaded {len(module_permissions)} permissions from {permission_import}: {permission_names}")
+                logging.info(f"✓ Loaded permission: {permission_class.__name__}")
 
             except Exception as e:
-                logging.error(f"✗ Failed to load permission module {permission_import}: {e}")
+                logging.error(f"✗ Failed to load permission '{permission_path}': {e}")
+                raise
 
         logging.info("=" * 50)
-        logging.info(f"Permission loading completed - Success: {loaded_count}/{total_modules} modules")
-        total_permissions = len(self.permissions)
+        logging.info(f"Permission loading completed: {loaded_count} permissions")
         permission_names = [cls.__name__ for cls in self.permissions]
-        logging.info(f"Total permissions loaded: {total_permissions} ({permission_names})")
+        logging.info(f"Permissions loaded: {permission_names}")
         logging.info("=" * 50)
 
     def _load_middlewares(self, app: FastAPI):

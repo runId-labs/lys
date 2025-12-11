@@ -33,7 +33,7 @@ class RoleWebserviceService(AuthWebserviceService):
 
         # Add role-based access if user is connected and not super user
         if user is not None and user.get("is_super_user", False) is False:
-            user_id = user.get("id")
+            user_id = user.get("sub")
             if user_id:
                 access_level_entity = cls.app_manager.get_entity("access_level")
                 role_entity = cls.app_manager.get_entity("role")
@@ -142,7 +142,7 @@ class RoleWebserviceService(AuthWebserviceService):
             # ROLE: user has a global role that includes this webservice
             if access_level.id == ROLE_ACCESS_LEVEL:
                 if user is not None:
-                    if await cls._user_has_role_for_webservice(user["id"], webservice.id, session):
+                    if await cls._user_has_role_for_webservice(user["sub"], webservice.id, session):
                         qualified.append(access_level)
 
         return qualified

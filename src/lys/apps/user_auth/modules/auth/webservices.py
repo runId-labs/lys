@@ -97,7 +97,7 @@ class AuthTokenMutation(Mutation):
         # System errors are NOT caught - they will be logged by the middleware
 
         # generate the user access token
-        access_token, claims = await auth_service.generate_access_token(refresh_token.user)
+        access_token, claims = await auth_service.generate_access_token(refresh_token.user, session)
 
         # set authentication cookies
         await auth_service.set_auth_cookies(response, refresh_token.id, access_token)

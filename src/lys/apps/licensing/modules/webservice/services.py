@@ -51,7 +51,7 @@ class LicensingWebserviceService(OrganizationWebserviceService):
 
         # Add organization role + license verification if user is connected and not super user
         if user is not None and user.get("is_super_user", False) is False:
-            user_id = user.get("id")
+            user_id = user.get("sub")
             if user_id:
                 # Get required entities
                 access_level_entity = cls.app_manager.get_entity("access_level")
@@ -252,13 +252,13 @@ class LicensingWebserviceService(OrganizationWebserviceService):
         """
         if user is not None:
             client_service = cls.app_manager.get_service("client")
-            is_owner = await client_service.user_is_client_owner(user["id"], session)
+            is_owner = await client_service.user_is_client_owner(user["sub"], session)
 
             if is_owner:
                 # Owner access depends on whether webservice requires license
                 if webservice.is_licenced:
                     # Licensed webservice: owner needs client to have subscription
-                    if await cls._owner_client_has_subscription(user["id"], session):
+                    if await cls._owner_client_has_subscription(user["sub"], session):
                         return [al for al in webservice.access_levels if al.enabled]
                     else:
                         # No subscription, fall through to base access levels (no ORGANIZATION_ROLE)
@@ -284,7 +284,7 @@ class LicensingWebserviceService(OrganizationWebserviceService):
                 if access_level.id == ORGANIZATION_ROLE_ACCESS_LEVEL:
                     if user is not None:
                         if await cls._user_has_org_role_for_webservice_with_license(
-                            user["id"], webservice.id, session
+                            user["sub"], webservice.id, session
                         ):
                             qualified.append(access_level)
 

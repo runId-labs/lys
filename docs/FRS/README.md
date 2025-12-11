@@ -34,11 +34,15 @@ Each FRS document follows this structure:
   - Rate limiting and security
   - Token refresh mechanism
 
-- **[organization_permissions.md](./organization_permissions.md)**: Organization-Based Permission System
-  - Multi-tenant access control
-  - Organization roles and hierarchies
-  - Data isolation and filtering
-  - Permission flows and use cases
+- **[jwt_permissions.md](./jwt_permissions.md)**: JWT-Based Permission System
+  - Stateless permission checking for microservices
+  - Permission classes: AnonymousPermission, JWTPermission, OrganizationPermission
+  - JWT claims structure (webservices, organizations)
+  - AuthService inheritance chain for claims generation
+  - Organization-based multi-tenant access control
+  - Row-level filtering (OWNER, ORGANIZATION_ROLE)
+  - License verification integration
+  - Migration guide from database-based permissions
 
 - **[webservice_management.md](./webservice_management.md)**: Webservice Management System
   - Webservice creation and registration

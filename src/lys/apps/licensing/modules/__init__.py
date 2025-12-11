@@ -1,6 +1,7 @@
 """
 Licensing app modules.
 """
+from . import auth
 from . import checker
 from . import client
 from . import role
@@ -13,6 +14,7 @@ from . import webservice
 
 
 __submodules__ = [
+    auth,
     checker,
     client,
     role,

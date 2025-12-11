@@ -21,7 +21,7 @@ from lys.core.interfaces.middlewares import MiddlewareInterface
 class JWTAuthMiddleware(MiddlewareInterface, BaseHTTPMiddleware):
     """JWT authentication middleware that validates tokens and injects user context."""
 
-    REQUIRED_JWT_CLAIMS = ["user", "exp", "xsrf_token"]
+    REQUIRED_JWT_CLAIMS = ["sub", "exp", "xsrf_token"]
 
     def __init__(self, app):
         BaseHTTPMiddleware.__init__(self, app)
@@ -87,9 +87,9 @@ class JWTAuthMiddleware(MiddlewareInterface, BaseHTTPMiddleware):
                     logging.error(f"XSRF validation error: {ex}")
                     raise LysError(INVALID_XSRF_TOKEN_ERROR, f"XSRF validation failed: {str(ex)}")
 
-                # Create an authenticated user context
-                connected_user = jwt_claims["user"]
-                logging.debug(f"User {connected_user["id"]} authenticated via JWT")
+                # Create an authenticated user context with all JWT claims at root level
+                connected_user = jwt_claims
+                logging.debug(f"User {connected_user['sub']} authenticated via JWT")
             else:
                 logging.debug("No valid JWT token - user remains anonymous")
 
@@ -101,5 +101,5 @@ class JWTAuthMiddleware(MiddlewareInterface, BaseHTTPMiddleware):
             response = await call_next(request)
             return response
         except Exception as e:
-            logging.error(f"Request processing failed for user {connected_user['id']}: {e}")
+            logging.error(f"Request processing failed for user {connected_user['sub']}: {e}")
             raise

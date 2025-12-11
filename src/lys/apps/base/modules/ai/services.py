@@ -186,7 +186,7 @@ class AIService(Service):
             raise ValueError("AI is not configured. Set AI_ENABLED=true and AI_API_KEY in environment.")
 
         # Get user ID from context
-        user_id = info.context.connected_user.get("id") if info.context.connected_user else None
+        user_id = info.context.connected_user.get("sub") if info.context.connected_user else None
 
         if not user_id:
             raise ValueError("User must be authenticated to use AI chat.")

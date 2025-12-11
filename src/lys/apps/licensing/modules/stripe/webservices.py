@@ -124,7 +124,7 @@ class StripeMutation(Mutation):
                 error=AUTHENTICATION_REQUIRED_ERROR
             )
 
-        user_id = connected_user["id"]
+        user_id = connected_user["sub"]
 
         # Find client where user is owner or member
         client_entity = info.context.app_manager.get_entity("client")
@@ -201,7 +201,7 @@ class StripeMutation(Mutation):
                 error=AUTHENTICATION_REQUIRED_ERROR
             )
 
-        user_id = connected_user["id"]
+        user_id = connected_user["sub"]
 
         # Find client where user is owner or member
         client_entity = info.context.app_manager.get_entity("client")

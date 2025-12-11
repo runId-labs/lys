@@ -40,7 +40,7 @@ class OrganizationWebserviceService(RoleWebserviceService):
 
         # Add organization role-based access if user is connected and not super user
         if user is not None and user.get("is_super_user", False) is False:
-            user_id = user.get("id")
+            user_id = user.get("sub")
             if user_id:
                 access_level_entity = cls.app_manager.get_entity("access_level")
                 role_entity = cls.app_manager.get_entity("role")
@@ -141,7 +141,7 @@ class OrganizationWebserviceService(RoleWebserviceService):
         # Client owner gets all enabled access levels
         if user is not None:
             client_service = cls.app_manager.get_service("client")
-            if await client_service.user_is_client_owner(user["id"], session):
+            if await client_service.user_is_client_owner(user["sub"], session):
                 return [al for al in webservice.access_levels if al.enabled]
 
         qualified = await super().get_user_access_levels(webservice, user, session)
@@ -153,7 +153,7 @@ class OrganizationWebserviceService(RoleWebserviceService):
             # ORGANIZATION_ROLE: user has an organization role that includes this webservice
             if access_level.id == ORGANIZATION_ROLE_ACCESS_LEVEL:
                 if user is not None:
-                    if await cls._user_has_org_role_for_webservice(user["id"], webservice.id, session):
+                    if await cls._user_has_org_role_for_webservice(user["sub"], webservice.id, session):
                         qualified.append(access_level)
 
         return qualified

@@ -254,7 +254,7 @@ class OrganizationUserMutation(Mutation):
 
         logger.info(
             f"Client user {obj.id} email updated to: {input_data.new_email} "
-            f"by {info.context.connected_user['id']}"
+            f"by {info.context.connected_user['sub']}"
         )
 
         return obj
@@ -307,7 +307,7 @@ class OrganizationUserMutation(Mutation):
         )
 
         logger.info(
-            f"Client user {obj.id} private data updated by {info.context.connected_user['id']}"
+            f"Client user {obj.id} private data updated by {info.context.connected_user['sub']}"
         )
 
         return obj
@@ -361,7 +361,7 @@ class OrganizationUserMutation(Mutation):
 
         logger.info(
             f"Client user {obj.id} roles updated to: {input_data.role_codes} "
-            f"by {info.context.connected_user['id']}"
+            f"by {info.context.connected_user['sub']}"
         )
 
         return obj
@@ -422,7 +422,7 @@ class OrganizationUserMutation(Mutation):
 
         logger.info(
             f"Client user created for client {input_data.client_id} with email {input_data.email} "
-            f"by {info.context.connected_user['id']}"
+            f"by {info.context.connected_user['sub']}"
         )
 
         return client_user

@@ -151,7 +151,7 @@ class UserMutation(Mutation):
         # Validate role assignments
         if input_data.role_codes and not is_super_user:
             # Get the connected user entity to access their roles
-            connected_user_entity = await user_service.get_by_id(connected_user["id"], session)
+            connected_user_entity = await user_service.get_by_id(connected_user["sub"], session)
 
             # Get role codes that the connected user has
             connected_user_role_codes = {role.id for role in connected_user_entity.roles}
@@ -237,7 +237,7 @@ class UserMutation(Mutation):
             session=session
         )
 
-        logger.info(f"User {obj.id} roles updated to: {input_data.role_codes} by {info.context.connected_user['id']}")
+        logger.info(f"User {obj.id} roles updated to: {input_data.role_codes} by {info.context.connected_user['sub']}")
 
 
 # Override webservices from user_auth to extend access levels to include ROLE

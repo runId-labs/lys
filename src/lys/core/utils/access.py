@@ -11,7 +11,7 @@ from lys.core.interfaces.services import EntityServiceInterface
 
 async def check_access_to_object(entity_obj: EntityInterface, context: Context) -> bool:
 
-    connected_user_id = context.connected_user.get('id') if context.connected_user else None
+    connected_user_id = context.connected_user.get('sub') if context.connected_user else None
     access_type = context.access_type
 
     if not entity_obj.check_permission(connected_user_id, access_type):

@@ -59,7 +59,7 @@ class AIGuardrailService:
 
         # Store pending action
         action_id = str(uuid.uuid4())
-        user_id = str(info.context.connected_user.get("id", ""))
+        user_id = str(info.context.connected_user.get("sub", ""))
 
         _pending_actions[action_id] = {
             "tool_name": tool_name,
@@ -107,7 +107,7 @@ class AIGuardrailService:
             }
 
         # Verify user owns this action
-        user_id = str(info.context.connected_user.get("id", ""))
+        user_id = str(info.context.connected_user.get("sub", ""))
         if action["user_id"] != user_id:
             return {
                 "status": "error",

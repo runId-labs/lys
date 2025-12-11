@@ -123,8 +123,28 @@ emailing = await session.get(Emailing, emailing_id)  # WILL FAIL
 
 ### Authentication & Permissions
 - Built-in user authentication system in `user_auth` app
+- JWT-based stateless permission checking for microservices architecture
 - Role-based and organization-based access control
-- Permission checking via `check_permission()` method on entities
+- Permission checking via JWT claims (no database queries on business servers)
+
+## Documentation Reference
+
+For detailed functional specifications, consult the `docs/FRS/` directory:
+
+- **`docs/FRS/jwt_permissions.md`**: Complete JWT permission system documentation
+  - Permission classes: AnonymousPermission, JWTPermission, OrganizationPermission
+  - JWT claims structure (webservices, organizations)
+  - AuthService inheritance chain for claims generation
+  - Row-level filtering (OWNER, ORGANIZATION_ROLE)
+  - Troubleshooting guide
+
+- **`docs/FRS/auth.md`**: Authentication system
+  - Login/logout flows, token refresh, rate limiting
+
+- **`docs/FRS/webservice_management.md`**: Webservice configuration
+  - Access levels, overrides, best practices
+
+- **`docs/todos/`**: Implementation notes and migration guides
 
 ## Development Guidelines
 

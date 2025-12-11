@@ -155,7 +155,7 @@ class LicensingUserMutation(Mutation):
 
         logger.info(
             f"Client user {obj.id} added to subscription "
-            f"by {info.context.connected_user['id']}"
+            f"by {info.context.connected_user['sub']}"
         )
 
         return obj
@@ -193,7 +193,7 @@ class LicensingUserMutation(Mutation):
 
         logger.info(
             f"Client user {obj.id} removed from subscription "
-            f"by {info.context.connected_user['id']}"
+            f"by {info.context.connected_user['sub']}"
         )
 
         return obj

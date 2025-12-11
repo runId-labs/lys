@@ -4,7 +4,7 @@ from datetime import datetime, timedelta
 from typing import Optional, Type
 
 import jwt
-from sqlalchemy import select, ColumnElement
+from sqlalchemy import select, ColumnElement, or_, and_
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Relationship, ColumnProperty, InstrumentedAttribute
 from starlette.requests import Request
@@ -242,7 +242,7 @@ class AuthService(Service):
         # generate the user refresh token
         refresh_token = await refresh_token_service.generate(user, session=session)
         # generate the user access token
-        access_token, claims = await cls.generate_access_token(user)
+        access_token, claims = await cls.generate_access_token(user, session)
 
         # set authentication cookies
         await cls.set_auth_cookies(response, refresh_token.id, access_token)
@@ -271,16 +271,134 @@ class AuthService(Service):
         return os.urandom(64).hex().encode("ascii")
 
     @classmethod
-    async def generate_access_token(cls, user: User) -> tuple[str, dict[str, datetime | str]]:
+    async def generate_access_claims(cls, user: User, session: AsyncSession) -> dict:
+        """
+        Generate JWT claims for access token.
+
+        This method builds the claims dictionary for the access token.
+        It can be overridden by subclasses to add additional claims.
+
+        Base claims include:
+        - sub: user ID (standard JWT claim for subject)
+        - is_super_user: boolean indicating super user status
+        - webservices: list of webservice names the user can access
+
+        The webservices claim includes:
+        - Public webservices with NO_LIMITATION type (accessible when connected)
+        - Webservices with CONNECTED_ACCESS_LEVEL
+        - Webservices with OWNER_ACCESS_LEVEL
+
+        Args:
+            user: The authenticated user entity
+            session: Database session for additional queries
+
+        Returns:
+            Dictionary of claims to include in the JWT
+        """
+        # Get base webservices accessible to any connected user
+        webservices = await cls._get_base_webservices(session)
+
+        return {
+            "sub": str(user.id),
+            "is_super_user": user.is_super_user,
+            "webservices": webservices,
+        }
+
+    @classmethod
+    async def _get_base_webservices(cls, session: AsyncSession) -> dict[str, str]:
+        """
+        Get webservices accessible to any connected user with their access type.
+
+        Includes:
+        - Public webservices with NO_LIMITATION type -> "full"
+        - Webservices with CONNECTED_ACCESS_LEVEL enabled -> "full"
+        - Webservices with OWNER_ACCESS_LEVEL enabled -> "owner" (unless also has CONNECTED)
+
+        Args:
+            session: Database session
+
+        Returns:
+            Dict mapping webservice name to access type ("full" or "owner")
+        """
+        from lys.core.consts.webservices import (
+            NO_LIMITATION_WEBSERVICE_PUBLIC_TYPE,
+            CONNECTED_ACCESS_LEVEL,
+            OWNER_ACCESS_LEVEL
+        )
+
+        webservice_entity = cls.app_manager.get_entity("webservice")
+        access_level_entity = cls.app_manager.get_entity("access_level")
+
+        # Query webservices that are:
+        # 1. Public with NO_LIMITATION type, OR
+        # 2. Have CONNECTED_ACCESS_LEVEL enabled, OR
+        # 3. Have OWNER_ACCESS_LEVEL enabled
+        stmt = (
+            select(webservice_entity)
+            .where(
+                or_(
+                    # Public NO_LIMITATION webservices (public_type_id is not null means is_public)
+                    webservice_entity.public_type_id == NO_LIMITATION_WEBSERVICE_PUBLIC_TYPE,
+                    # CONNECTED access level
+                    webservice_entity.access_levels.any(
+                        access_level_entity.id == CONNECTED_ACCESS_LEVEL,
+                        enabled=True
+                    ),
+                    # OWNER access level
+                    webservice_entity.access_levels.any(
+                        access_level_entity.id == OWNER_ACCESS_LEVEL,
+                        enabled=True
+                    )
+                )
+            )
+        )
+        result = await session.execute(stmt)
+        webservices = list(result.scalars().all())
+
+        # Determine access type for each webservice
+        webservice_access = {}
+        for ws in webservices:
+            # Load access_levels if needed
+            await session.refresh(ws, ["access_levels"])
+
+            enabled_access_levels = [al.id for al in ws.access_levels if al.enabled]
+
+            # Public NO_LIMITATION or CONNECTED = full access
+            # Note: ws.id is the webservice name (ParametricEntity uses id as business key)
+            if ws.is_public and ws.public_type_id == NO_LIMITATION_WEBSERVICE_PUBLIC_TYPE:
+                webservice_access[ws.id] = "full"
+            elif CONNECTED_ACCESS_LEVEL in enabled_access_levels:
+                webservice_access[ws.id] = "full"
+            elif OWNER_ACCESS_LEVEL in enabled_access_levels:
+                # OWNER only = filtered access
+                webservice_access[ws.id] = "owner"
+
+        return webservice_access
+
+    @classmethod
+    async def generate_access_token(cls, user: User, session: AsyncSession = None) -> tuple[str, dict]:
+        """
+        Generate a JWT access token for the user.
+
+        Args:
+            user: The authenticated user entity
+            session: Database session for additional queries (optional for backward compatibility)
+
+        Returns:
+            Tuple of (encoded_token, claims_dict)
+        """
         access_token_expire_minutes = cls.auth_utils.config.get("access_token_expire_minutes")
-        claims = {
-                "user": {
-                    "id": str(user.id),
-                    "is_super_user": user.is_super_user,
-                },
-                "exp": int(round((now_utc() + timedelta(minutes=access_token_expire_minutes)).timestamp())),
-                "xsrf_token": str(await cls.generate_xsrf_token())
-            }
+
+        # Build claims from generate_access_claims (can be overridden by subclasses)
+        claims = await cls.generate_access_claims(user, session)
+
+        # Add standard JWT claims
+        claims["exp"] = int(round((now_utc() + timedelta(minutes=access_token_expire_minutes)).timestamp()))
+        claims["xsrf_token"] = str(await cls.generate_xsrf_token())
+
+        # Debug: log generated claims
+        logger.debug(f"Generated JWT claims: {claims}")
+
         return jwt.encode(
             claims,
             cls.auth_utils.secret_key,

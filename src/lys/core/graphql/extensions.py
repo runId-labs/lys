@@ -153,7 +153,7 @@ class AIContextExtension(SchemaExtension):
 
         if connected_user:
             # User info from JWT
-            user_id = connected_user.get("id", "unknown")
+            user_id = connected_user.get("sub", "unknown")
             is_super_user = connected_user.get("is_super_user", False)
 
             # Load full user details from database

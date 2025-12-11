@@ -80,7 +80,7 @@ class UserQuery(Query):
         session = info.context.session
 
         # Get connected user ID from context
-        connected_user_id = info.context.connected_user["id"]
+        connected_user_id = info.context.connected_user["sub"]
 
         # Fetch user from database
         user = await user_service.get_by_id(connected_user_id, session)
@@ -841,11 +841,11 @@ class UserMutation(Mutation):
             user=obj,
             status_id=input_data.status_code,
             reason=input_data.reason,
-            author_user_id=info.context.connected_user["id"],
+            author_user_id=info.context.connected_user["sub"],
             session=session
         )
 
-        logger.info(f"User {obj.id} status updated to: {input_data.status_code} by {info.context.connected_user['id']}")
+        logger.info(f"User {obj.id} status updated to: {input_data.status_code} by {info.context.connected_user['sub']}")
 
         return obj
 
@@ -885,11 +885,11 @@ class UserMutation(Mutation):
         await user_service.anonymize_user(
             user_id=user_id.node_id,
             reason=input_data.reason,
-            anonymized_by=info.context.connected_user["id"],
+            anonymized_by=info.context.connected_user["sub"],
             session=session
         )
 
-        logger.info(f"User {user_id.node_id} anonymized by {info.context.connected_user['id']}")
+        logger.info(f"User {user_id.node_id} anonymized by {info.context.connected_user['sub']}")
 
         return node(success=True)
 
@@ -988,7 +988,7 @@ class UserAuditLogMutation(Mutation):
 
         audit_log = await audit_log_service.create_audit_log(
             target_user_id=input_data.target_user_id,
-            author_user_id=info.context.connected_user["id"],
+            author_user_id=info.context.connected_user["sub"],
             log_type_id=OBSERVATION_LOG_TYPE,
             message=input_data.message,
             session=session
@@ -996,7 +996,7 @@ class UserAuditLogMutation(Mutation):
 
         logger.info(
             f"Observation created for user {input_data.target_user_id} "
-            f"by {info.context.connected_user['id']}"
+            f"by {info.context.connected_user['sub']}"
         )
 
         return audit_log
@@ -1045,7 +1045,7 @@ class UserAuditLogMutation(Mutation):
         )
 
         logger.info(
-            f"Audit log {obj.id} updated by {info.context.connected_user['id']}"
+            f"Audit log {obj.id} updated by {info.context.connected_user['sub']}"
         )
 
     @lys_edition(
@@ -1087,5 +1087,5 @@ class UserAuditLogMutation(Mutation):
         )
 
         logger.info(
-            f"Observation {obj.id} deleted by {info.context.connected_user['id']}"
+            f"Observation {obj.id} deleted by {info.context.connected_user['sub']}"
         )
