@@ -15,3 +15,6 @@ CONNECTED_ACCESS_LEVEL = "CONNECTED"
 
 # If the requested data belong to the user, he can reach it
 OWNER_ACCESS_LEVEL = "OWNER"
+
+# Access level for internal service-to-service communication
+INTERNAL_SERVICE_ACCESS_LEVEL = "INTERNAL_SERVICE"

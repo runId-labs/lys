@@ -273,6 +273,10 @@ class AppSettings(BaseSettings):
         self.query_depth_limit = 10
         self.query_alias_limit = 10
 
+        # Inter-service communication
+        self.service_name: Optional[str] = None  # Name of this microservice
+        self.auth_server_url: Optional[str] = None  # URL of Auth Server for webservice registration
+
     @property
     def debug(self) -> bool:
         """

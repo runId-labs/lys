@@ -2,17 +2,15 @@
 Authentication-based permission implementations.
 
 This module provides two permission classes:
-- AnonymousPermission: For non-authenticated users (no JWT), checks DB for is_public
+- AnonymousPermission: For non-authenticated users (no JWT), checks registry for public_type
 - JWTPermission: For authenticated users, checks JWT claims for webservice access
 """
 from typing import Type, Tuple, Optional, Dict, Union, Any
 
 from sqlalchemy import Select, BinaryExpression, or_
-from sqlalchemy.ext.asyncio import AsyncSession
 
 from lys.apps.user_auth.consts import OWNER_ACCESS_KEY
 from lys.apps.user_auth.errors import ACCESS_DENIED_ERROR
-from lys.apps.user_auth.modules.webservice.entities import AuthWebservice
 from lys.core.contexts import Context
 from lys.core.interfaces.entities import EntityInterface
 from lys.core.interfaces.permissions import PermissionInterface
@@ -23,25 +21,24 @@ class AnonymousPermission(PermissionInterface):
     Permission handler for anonymous (non-authenticated) users.
 
     This class handles access for users without a JWT token.
-    It only checks if the webservice is marked as public in the database.
+    It checks if the webservice is marked as public via the registry config.
 
-    Used by: Auth Server (has access to webservice table)
+    Used by: All servers (stateless check via registry)
     """
 
     @classmethod
-    async def check_webservice_permission(cls, webservice: AuthWebservice, context: Context,
-                                          session: AsyncSession) -> tuple[bool | Dict | None, str | None]:
+    async def check_webservice_permission(cls, webservice_id: str,
+                                          context: Context) -> tuple[bool | Dict | None, str | None]:
         """
         Check if anonymous user can access a public webservice.
 
         Only grants access if:
         - User is not connected (no JWT)
-        - Webservice is marked as is_public=True
+        - Webservice has public_type set in registry config
 
         Args:
-            webservice: The webservice being accessed
-            context: Request context
-            session: Database session (not used)
+            webservice_id: The webservice identifier
+            context: Request context containing app_manager
 
         Returns:
             Tuple of (access_type, error_code):
@@ -53,8 +50,11 @@ class AnonymousPermission(PermissionInterface):
         if context.connected_user is not None:
             return None, None
 
-        # Anonymous user - check if webservice is public
-        if webservice.is_public:
+        # Anonymous user - check if webservice is public via registry
+        webservice_config = context.app_manager.registry.webservices.get(webservice_id, {})
+        public_type = webservice_config.get("attributes", {}).get("public_type")
+
+        if public_type is not None:
             return True, None
 
         # Not public and not connected - access denied
@@ -87,8 +87,8 @@ class JWTPermission(PermissionInterface):
     """
 
     @classmethod
-    async def check_webservice_permission(cls, webservice: AuthWebservice, context: Context,
-                                          session: AsyncSession) -> tuple[bool | Dict | None, str | None]:
+    async def check_webservice_permission(cls, webservice_id: str,
+                                          context: Context) -> tuple[bool | Dict | None, str | None]:
         """
         Check if authenticated user can access webservice via JWT claims.
 
@@ -97,9 +97,8 @@ class JWTPermission(PermissionInterface):
         - Webservice name is in user's JWT 'webservices' claim
 
         Args:
-            webservice: The webservice being accessed
+            webservice_id: The webservice identifier
             context: Request context containing JWT claims
-            session: Database session (not used for JWT checks)
 
         Returns:
             Tuple of (access_type, error_code):
@@ -120,8 +119,8 @@ class JWTPermission(PermissionInterface):
         # Check if webservice is in JWT claims
         user_webservices = connected_user.get("webservices", {})
 
-        if webservice.id in user_webservices:
-            access_type = user_webservices[webservice.id]
+        if webservice_id in user_webservices:
+            access_type = user_webservices[webservice_id]
 
             if access_type == "owner":
                 return {OWNER_ACCESS_KEY: True}, None

@@ -32,6 +32,7 @@ class AccessLevelFixtures(EntityFixtures[AccessLevelService]):
 
     # Use ParametricEntity fixture model for string ID entities
     model = ParametricEntityFixturesModel
+    delete_previous_data = False
 
     data_list = [
         {

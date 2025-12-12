@@ -9,8 +9,16 @@ from strawberry.types import Info
 from lys.apps.base.modules.access_level.nodes import AccessLevelNode
 from lys.apps.base.modules.webservice.entities import Webservice
 from lys.apps.base.modules.webservice.services import WebserviceService
-from lys.core.graphql.nodes import EntityNode
+from lys.core.graphql.nodes import EntityNode, ServiceNode
 from lys.core.registries import register_node
+
+
+@register_node()
+class RegisterWebservicesNode(ServiceNode[WebserviceService]):
+    """Response node for webservice registration from business microservices."""
+    success: bool
+    registered_count: int
+    message: str = "Webservices registered successfully"
 
 
 @register_node()

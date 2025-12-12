@@ -11,7 +11,7 @@
 - `lys/apps/user_role/modules/auth/services.py` - RoleAuthService
 - `lys/apps/organization/modules/auth/services.py` - OrganizationAuthService
 - `lys/apps/licensing/modules/auth/services.py` - LicensingAuthService
-- `lys/apps/user_auth/middlewares.py` - JWTAuthMiddleware
+- `lys/apps/user_auth/middlewares.py` - UserAuthMiddleware
 
 **Settings Configuration**:
 ```python
@@ -436,12 +436,12 @@ stmt = select(client_entity).where(client_entity.owner_id == user_id)
 
 ## Middleware Integration
 
-### JWTAuthMiddleware
+### UserAuthMiddleware
 
 **File**: `lys/apps/user_auth/middlewares.py`
 
 ```python
-class JWTAuthMiddleware(MiddlewareInterface, BaseHTTPMiddleware):
+class UserAuthMiddleware(MiddlewareInterface, BaseHTTPMiddleware):
     REQUIRED_JWT_CLAIMS = ["sub", "exp", "xsrf_token"]
 
     async def dispatch(self, request, call_next):
@@ -565,7 +565,7 @@ Licensed webservices require user to be in `subscription_user` table:
 # In AuthService.generate_access_token():
 logger.debug(f"Generated JWT claims: {claims}")
 
-# In JWTAuthMiddleware:
+# In UserAuthMiddleware:
 logger.debug(f"User {connected_user['sub']} authenticated via JWT")
 
 # In permission classes:

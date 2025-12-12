@@ -6,13 +6,14 @@ and access control constraints in the lys framework. It provides a pluggable
 architecture for different permission strategies.
 """
 from abc import abstractmethod, ABC
-from typing import Type, Tuple, Optional, Dict
+from typing import Type, Tuple, Optional, Dict, TYPE_CHECKING
 
 from sqlalchemy import Select, BinaryExpression
-from sqlalchemy.ext.asyncio import AsyncSession
 
-from lys.core.abstracts.webservices import AbstractWebservice
 from lys.core.interfaces.entities import EntityInterface
+
+if TYPE_CHECKING:
+    from lys.core.contexts import Context
 
 
 class PermissionInterface(ABC):
@@ -26,8 +27,8 @@ class PermissionInterface(ABC):
 
     @classmethod
     @abstractmethod
-    async def check_webservice_permission(cls, webservice: AbstractWebservice, context,
-                                          session: AsyncSession) -> tuple[bool | Dict | None, str | None]:
+    async def check_webservice_permission(cls, webservice_id: str,
+                                          context: "Context") -> tuple[bool | Dict | None, str | None]:
         """
         Check if a user has permission to access a specific webservice.
 
@@ -36,9 +37,8 @@ class PermissionInterface(ABC):
         and access levels.
 
         Args:
-            webservice: The webservice to check access for
-            context: Request context containing user information and access type
-            session: Database session for additional queries if needed
+            webservice_id: The webservice identifier to check access for
+            context: Request context containing user information, app_manager, and access type
 
         Returns:
             Tuple containing:

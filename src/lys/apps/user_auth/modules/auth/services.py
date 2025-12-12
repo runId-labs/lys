@@ -412,7 +412,7 @@ class AuthService(Service):
 
         Both cookies use path="/" (industry standard).
         Security is enforced by server-side validation:
-        - JWTAuthMiddleware extracts and validates ONLY the access token
+        - UserAuthMiddleware extracts and validates ONLY the access token
         - Refresh token is explicitly extracted only in auth operations (login, logout, refresh)
 
         Args:
@@ -433,7 +433,7 @@ class AuthService(Service):
 
         Both cookies use path="/" (industry standard).
         Security is enforced by server-side validation:
-        - JWTAuthMiddleware extracts and validates ONLY the access token
+        - UserAuthMiddleware extracts and validates ONLY the access token
         - Refresh token is explicitly extracted only in auth operations (login, logout, refresh)
 
         This provides defense-in-depth: even if both cookies are sent to all endpoints,

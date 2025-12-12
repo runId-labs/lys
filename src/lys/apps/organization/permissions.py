@@ -8,9 +8,7 @@ verification in microservices architecture.
 from typing import Type, Tuple, Optional, Dict
 
 from sqlalchemy import Select, BinaryExpression, or_
-from sqlalchemy.ext.asyncio import AsyncSession
 
-from lys.apps.user_auth.modules.webservice.entities import AuthWebservice
 from lys.core.consts.permissions import ORGANIZATION_ROLE_ACCESS_KEY
 from lys.core.contexts import Context
 from lys.core.interfaces.entities import EntityInterface
@@ -44,8 +42,8 @@ class OrganizationPermission(PermissionInterface):
     """
 
     @classmethod
-    async def check_webservice_permission(cls, webservice: AuthWebservice, context: Context,
-                                          session: AsyncSession) -> tuple[bool | Dict | None, str | None]:
+    async def check_webservice_permission(cls, webservice_id: str,
+                                          context: Context) -> tuple[bool | Dict | None, str | None]:
         """
         Check if user has permission via organization claims in JWT.
 
@@ -53,9 +51,8 @@ class OrganizationPermission(PermissionInterface):
         webservices list from the JWT claims.
 
         Args:
-            webservice: The webservice being accessed
+            webservice_id: The webservice identifier
             context: Request context containing JWT claims
-            session: Database session (not used for JWT checks)
 
         Returns:
             Tuple of (access_type, error_code):
@@ -84,7 +81,7 @@ class OrganizationPermission(PermissionInterface):
             org_level = org_data.get("level", "client")
             org_webservices = org_data.get("webservices", [])
 
-            if webservice.id in org_webservices:
+            if webservice_id in org_webservices:
                 # Initialize level list if needed
                 if org_level not in accessible_orgs:
                     accessible_orgs[org_level] = []

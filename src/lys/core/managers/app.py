@@ -4,6 +4,7 @@ import traceback
 from contextlib import asynccontextmanager
 from typing import List
 
+import httpx
 import strawberry
 from fastapi import FastAPI
 from graphql import NoSchemaIntrospectionCustomRule
@@ -18,10 +19,10 @@ from lys.core.contexts import get_context
 from lys.core.graphql.extensions import DatabaseSessionExtension, AIContextExtension
 from lys.core.graphql.registries import GraphqlRegistry, LysGraphqlRegistry
 from lys.core.graphql.types import DefaultQuery
-from lys.core.interfaces.middlewares import MiddlewareInterface
 from lys.core.interfaces.permissions import PermissionInterface
 from lys.core.managers.database import DatabaseManager
 from lys.core.registries import AppRegistry, LysAppRegistry, CustomRegistry
+from lys.core.utils.auth import AuthUtils
 from lys.core.utils.decorators import singleton
 from lys.core.utils.import_string import import_string
 
@@ -304,6 +305,107 @@ class AppManager:
             logging.error(f"Error in fixture loading process: {e}")
             return False
 
+    async def _register_webservices_to_auth_server(self) -> bool:
+        """
+        Register webservices with Auth Server at startup.
+
+        This is called by business microservices to register their webservices
+        with the Auth Server. The Auth Server stores these for JWT token generation.
+
+        Skipped if:
+        - auth_server_url is not configured
+        - service_name is not configured
+        - This is the Auth Server itself (has webservice entity)
+
+        Returns:
+            bool: True if registration succeeded or was skipped, False on error
+        """
+
+        # Skip if this is Auth Server (has webservice entity)
+        if "webservice" in self.registry.entities:
+            logging.debug("Skipping webservice registration: this is Auth Server")
+            return True
+
+        # Skip if not configured
+        if not self.settings.auth_server_url or not self.settings.service_name:
+            logging.debug("Skipping webservice registration: auth_server_url or service_name not configured")
+            return True
+
+        # Get webservices from registry
+        webservices = self.registry.webservices
+        if not webservices:
+            logging.debug("No webservices to register")
+            return True
+
+        logging.info("=" * 50)
+        logging.info("Registering webservices with Auth Server...")
+        logging.info(f"Auth Server URL: {self.settings.auth_server_url}")
+        logging.info(f"Service name: {self.settings.service_name}")
+        logging.info(f"Webservices to register: {list(webservices.keys())}")
+
+        try:
+            # Generate service JWT token
+            auth_utils = AuthUtils(self.settings.secret_key)
+            token = auth_utils.generate_token(self.settings.service_name)
+
+            # Build webservices payload for GraphQL mutation
+            webservices_input = []
+            for ws_id, ws_config in webservices.items():
+                webservices_input.append({
+                    "id": ws_id,
+                    "attributes": ws_config.get("attributes", {})
+                })
+
+            # GraphQL mutation
+            mutation = """
+                mutation RegisterWebservices($webservices: [WebserviceFixturesInput!]!) {
+                    registerWebservices(webservices: $webservices) {
+                        success
+                        registeredCount
+                        message
+                    }
+                }
+            """
+
+            # Call Auth Server
+            async with httpx.AsyncClient() as client:
+                response = await client.post(
+                    f"{self.settings.auth_server_url}/{self.settings.graphql_schema_name}",
+                    json={
+                        "query": mutation,
+                        "variables": {"webservices": webservices_input}
+                    },
+                    headers={
+                        "Authorization": f"Service {token}",
+                        "Content-Type": "application/json"
+                    },
+                    timeout=30.0
+                )
+
+            if response.status_code != 200:
+                logging.error(f"Failed to register webservices: HTTP {response.status_code}")
+                logging.error(f"Response: {response.text}")
+                return False
+
+            result = response.json()
+            if "errors" in result:
+                logging.error(f"GraphQL errors: {result['errors']}")
+                return False
+
+            data = result.get("data", {}).get("registerWebservices", {})
+            if data.get("success"):
+                logging.info(f"✓ Successfully registered {data.get('registeredCount', 0)} webservices")
+            else:
+                logging.error(f"Registration failed: {data.get('message', 'Unknown error')}")
+                return False
+
+            logging.info("=" * 50)
+            return True
+
+        except Exception as e:
+            logging.error(f"Error registering webservices with Auth Server: {e}")
+            return False
+
     def _load_custom_registries(self) -> None:
         """
         Load custom registries from apps and add them to AppRegistry.
@@ -489,6 +591,9 @@ class AppManager:
         # Phase 2: Load fixtures in dependency order (after database is ready)
         if AppComponentTypeEnum.FIXTURES in self.component_types:
             await self._load_fixtures_in_order()
+
+        # Phase 3: Register webservices with Auth Server (for business microservices)
+        await self._register_webservices_to_auth_server()
 
         yield
         # shutdown

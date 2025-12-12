@@ -15,24 +15,20 @@ Architecture:
 """
 import logging
 import traceback
-from typing import Any, Type, Optional
+from typing import Any, Optional
 
 from sqlalchemy import Select, false
-from sqlalchemy.ext.asyncio import AsyncSession
 from strawberry import BasePermission
 
-from lys.core.abstracts.webservices import AbstractWebservice
 from lys.core.consts.errors import PERMISSION_DENIED_ERROR, UNKNOWN_WEBSERVICE_ERROR
-from lys.core.consts.tablenames import WEBSERVICE_TABLENAME
 from lys.core.contexts import Context
 from lys.core.interfaces.entities import EntityInterface
 from lys.core.managers.app import AppManager
-from lys.core.services import EntityService
 from lys.core.utils.manager import AppManagerCallerMixin
 
 
-async def get_access_type(app_manager, webservice: AbstractWebservice | None, context,
-                          session: AsyncSession) -> tuple[dict | bool, tuple[int, str]]:
+async def get_access_type(app_manager, webservice_id: str,
+                          context: Context) -> tuple[dict | bool, tuple[int, str]]:
     """
     Compute access permissions for a webservice using the pluggable permission system.
 
@@ -44,9 +40,8 @@ async def get_access_type(app_manager, webservice: AbstractWebservice | None, co
 
     Args:
         app_manager: AppManager instance containing loaded permission modules
-        webservice: Target webservice entity to check permissions for
+        webservice_id: Target webservice identifier to check permissions for
         context: Request context containing user and session data
-        session: Database session for permission queries
 
     Returns:
         tuple: (access_type, error_tuple) where:
@@ -54,15 +49,19 @@ async def get_access_type(app_manager, webservice: AbstractWebservice | None, co
             - error_tuple: (error_code, error_message) for client responses
 
     Business Logic:
-        - False webservice → UNKNOWN_WEBSERVICE_ERROR
+        - Unknown/disabled webservice → UNKNOWN_WEBSERVICE_ERROR
         - Boolean permission result → immediate return (first wins)
         - Dict permission results → merged for complex access patterns
     """
     access_type: dict | bool = False
     message_tuple: tuple[int, str] = PERMISSION_DENIED_ERROR
 
+    # Check webservice config from registry
+    webservice_config = app_manager.registry.webservices.get(webservice_id, {})
+    webservice_enabled = webservice_config.get("attributes", {}).get("enabled", False)
+
     # Early validation: disabled/missing webservices are inaccessible
-    if webservice is None or not webservice.enabled:
+    if not webservice_config or not webservice_enabled:
         message_tuple = UNKNOWN_WEBSERVICE_ERROR
     else:
         # Execute permission chain: each module can grant, deny, or provide metadata
@@ -70,7 +69,7 @@ async def get_access_type(app_manager, webservice: AbstractWebservice | None, co
         for permission in app_manager.permissions:
             try:
                 computed_access_type, computed_message_tuple = \
-                    await permission.check_webservice_permission(webservice, context, session)
+                    await permission.check_webservice_permission(webservice_id, context)
 
                 # Boolean results are final decisions (grant/deny)
                 if isinstance(computed_access_type, bool):
@@ -145,15 +144,14 @@ def generate_webservice_permission(
             Core authorization logic for webservice access with explicit error handling.
 
             Flow:
-            1. Load webservice configuration from the database
-            2. Initialize user context (authentication)
-            3. Execute the permission chain via get_access_type()
-            4. Update context with computed access_type for resolvers
-            5. Return boolean decision for GraphQL framework
+            1. Check webservice configuration from registry
+            2. Execute the permission chain via get_access_type()
+            3. Update context with computed access_type for resolvers
+            4. Return boolean decision for GraphQL framework
 
             Error Handling:
-                - Service resolution failures → UNKNOWN_WEBSERVICE_ERROR
-                - Database/network failures → PERMISSION_DENIED_ERROR
+                - Unknown webservice → UNKNOWN_WEBSERVICE_ERROR
+                - Permission failures → PERMISSION_DENIED_ERROR
                 - All errors logged for debugging, access denied for security
 
             Side Effects:
@@ -161,21 +159,10 @@ def generate_webservice_permission(
                 - Updates self.code/self.message for error responses
             """
             try:
-                # Service resolution with explicit error handling
-                try:
-                    webservice_service: Type[EntityService] = self.app_manager.get_service(WEBSERVICE_TABLENAME)
-                except Exception as e:
-                    logging.error(e)
-                    self.code, self.message = UNKNOWN_WEBSERVICE_ERROR
-                    return False
-
-                async with self.app_manager.database.get_session() as session:
-                    webservice: AbstractWebservice | None = await webservice_service.get_by_id(webservice_id, session)
-
-                    # Execute the pluggable permission system
-                    access_type, (self.code, self.message) = await get_access_type(
-                        self.app_manager, webservice, context, session
-                    )
+                # Execute the pluggable permission system
+                access_type, (self.code, self.message) = await get_access_type(
+                    self.app_manager, webservice_id, context
+                )
 
                 # Populate context for downstream GraphQL resolvers
                 context.access_type = access_type

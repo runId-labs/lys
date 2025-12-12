@@ -57,6 +57,15 @@ class Context(BaseContext):
     def webservice_parameters(self, value: Dict[str, Any]):
         self.set_to_request_state("webservice_parameters", value)
 
+    @property
+    def service_caller(self) -> Union[Dict[str, Any], None]:
+        """Service caller info from service-to-service JWT authentication."""
+        return self.get_from_request_state("service_caller", None)
+
+    @service_caller.setter
+    def service_caller(self, value: Union[Dict[str, Any], None]):
+        self.set_to_request_state("service_caller", value)
+
 
 Info : TypeAlias = StrawberryInfo[Context, RootValueType]
 
