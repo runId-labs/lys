@@ -60,6 +60,7 @@ class WebserviceService(EntityService[Webservice]):
     async def register_webservices(
             cls,
             webservices: List[WebserviceFixturesModel],
+            app_name: str,
             session: AsyncSession
     ) -> int:
         """
@@ -70,6 +71,7 @@ class WebserviceService(EntityService[Webservice]):
 
         Args:
             webservices: List of webservice configurations to register
+            app_name: Name of the application/microservice registering the webservices
             session: Database session
 
         Returns:
@@ -95,7 +97,8 @@ class WebserviceService(EntityService[Webservice]):
                     public_type_id=ws_config.attributes.public_type,
                     is_licenced=ws_config.attributes.is_licenced,
                     enabled=ws_config.attributes.enabled,
-                    access_levels=access_levels
+                    access_levels=access_levels,
+                    app_name=app_name
                 )
                 session.add(webservice)
             else:
@@ -104,6 +107,7 @@ class WebserviceService(EntityService[Webservice]):
                 webservice.is_licenced = ws_config.attributes.is_licenced
                 webservice.enabled = ws_config.attributes.enabled
                 webservice.access_levels = access_levels
+                webservice.app_name = app_name
 
         await session.flush()
         return len(webservices)

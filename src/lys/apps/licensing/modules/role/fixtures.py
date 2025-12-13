@@ -36,7 +36,7 @@ class LicensingRoleFixtures(RoleFixtures):
             "attributes": {
                 "enabled": True,
                 "description": "Administrator role with license and subscription management capabilities.",
-                "webservices": LICENSE_ADMIN_ROLE_WEBSERVICES
+                "role_webservices": LICENSE_ADMIN_ROLE_WEBSERVICES
             }
         }
     ]

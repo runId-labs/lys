@@ -81,12 +81,9 @@ class RoleAuthService(AuthService):
         result = await session.execute(stmt)
         roles = list(result.scalars().all())
 
-        # Collect unique webservice names from all roles
-        webservice_names = set()
+        # Collect unique webservice IDs from all roles
+        webservice_ids = set()
         for role in roles:
-            # Load webservices relationship if not loaded
-            await session.refresh(role, ["webservices"])
-            for ws in role.webservices:
-                webservice_names.add(ws.id)
+            webservice_ids.update(role.get_webservice_ids())
 
-        return list(webservice_names)
+        return list(webservice_ids)

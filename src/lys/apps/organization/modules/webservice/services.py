@@ -6,7 +6,7 @@ Extends RoleWebserviceService to include organization role-based access.
 
 from typing import Any, List, Optional
 
-from sqlalchemy import Select, BinaryExpression, and_, select
+from sqlalchemy import Select, BinaryExpression, and_, exists, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from lys.apps.base.modules.webservice.entities import Webservice
@@ -44,20 +44,26 @@ class OrganizationWebserviceService(RoleWebserviceService):
             if user_id:
                 access_level_entity = cls.app_manager.get_entity("access_level")
                 role_entity = cls.app_manager.get_entity("role")
+                role_webservice_entity = cls.app_manager.get_entity("role_webservice")
                 client_user_role_entity = cls.app_manager.get_entity("client_user_role")
                 client_user_entity = cls.app_manager.get_entity("client_user")
 
                 # Webservices with ORGANIZATION_ROLE access level AND user has an org role that grants access
-                # Path: webservice -> roles -> client_user_roles -> client_user -> user_id
+                # Path: webservice -> role_webservice -> role -> client_user_roles -> client_user -> user_id
                 org_role_access_condition = and_(
                     cls.entity_class.access_levels.any(
                         access_level_entity.id == ORGANIZATION_ROLE_ACCESS_LEVEL,
                         enabled=True
                     ),
-                    cls.entity_class.roles.any(
-                        role_entity.client_user_roles.any(
-                            client_user_role_entity.client_user.has(
-                                client_user_entity.user_id == user_id
+                    exists(
+                        select(role_webservice_entity.id)
+                        .join(role_entity, role_webservice_entity.role_id == role_entity.id)
+                        .where(
+                            role_webservice_entity.webservice_id == cls.entity_class.id,
+                            role_entity.client_user_roles.any(
+                                client_user_role_entity.client_user.has(
+                                    client_user_entity.user_id == user_id
+                                )
                             )
                         )
                     )
@@ -99,13 +105,15 @@ class OrganizationWebserviceService(RoleWebserviceService):
 
         # Check if user has a client_user_role that grants access
         role_entity = cls.app_manager.get_entity("role")
+        role_webservice_entity = cls.app_manager.get_entity("role_webservice")
         client_user_role_entity = cls.app_manager.get_entity("client_user_role")
         client_user_entity = cls.app_manager.get_entity("client_user")
 
         stmt = (
             select(role_entity)
+            .join(role_webservice_entity, role_entity.id == role_webservice_entity.role_id)
             .where(
-                role_entity.webservices.any(id=webservice_id),
+                role_webservice_entity.webservice_id == webservice_id,
                 role_entity.client_user_roles.any(
                     client_user_role_entity.client_user.has(
                         client_user_entity.user_id == user_id

@@ -170,20 +170,18 @@ class OrganizationAuthService(RoleAuthService):
             await session.refresh(client_user, ["client_user_roles"])
 
             # Collect webservices from all roles
-            webservice_names = set()
+            webservice_ids = set()
             for client_user_role in client_user.client_user_roles:
                 await session.refresh(client_user_role, ["role"])
                 role = client_user_role.role
 
                 if role and role.enabled:
-                    await session.refresh(role, ["webservices"])
-                    for ws in role.webservices:
-                        webservice_names.add(ws.id)
+                    webservice_ids.update(role.get_webservice_ids())
 
-            if webservice_names:
+            if webservice_ids:
                 organizations[str(client_user.client_id)] = {
                     "level": "client",
-                    "webservices": list(webservice_names)
+                    "webservices": list(webservice_ids)
                 }
 
         return organizations

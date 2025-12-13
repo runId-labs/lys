@@ -138,6 +138,13 @@ For detailed functional specifications, consult the `docs/FRS/` directory:
   - Row-level filtering (OWNER, ORGANIZATION_ROLE)
   - Troubleshooting guide
 
+- **`docs/FRS/internal_service_communication.md`**: Service-to-service communication
+  - ServiceAuthMiddleware and InternalServicePermission
+  - AuthUtils for service JWT token generation
+  - Webservice registration flow at startup
+  - INTERNAL_SERVICE access level configuration
+  - Configuration checklist for Auth Server and business microservices
+
 - **`docs/FRS/auth.md`**: Authentication system
   - Login/logout flows, token refresh, rate limiting
 

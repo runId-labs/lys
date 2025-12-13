@@ -1,4 +1,4 @@
-from sqlalchemy import select
+from sqlalchemy import exists, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased, selectinload
 
@@ -85,7 +85,15 @@ class UserService(UserRoleService):
 
         # Optional filter: only roles that include the specified webservice
         if webservice_id is not None:
-            stmt = stmt.where(role_entity_alias.webservices.any(id=webservice_id))
+            role_webservice_entity = cls.app_manager.get_entity("role_webservice")
+            stmt = stmt.where(
+                exists(
+                    select(role_webservice_entity.id).where(
+                        role_webservice_entity.role_id == role_entity_alias.id,
+                        role_webservice_entity.webservice_id == webservice_id
+                    )
+                )
+            )
 
         # Execute query and return results with preloaded relationships
         result = await session.execute(stmt)

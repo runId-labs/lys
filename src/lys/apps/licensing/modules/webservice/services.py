@@ -8,7 +8,7 @@ webservices with ORGANIZATION_ROLE access level.
 
 from typing import Any, List, Optional
 
-from sqlalchemy import Select, BinaryExpression, and_, or_, select
+from sqlalchemy import Select, BinaryExpression, and_, exists, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from lys.apps.base.modules.webservice.entities import Webservice
@@ -56,6 +56,7 @@ class LicensingWebserviceService(OrganizationWebserviceService):
                 # Get required entities
                 access_level_entity = cls.app_manager.get_entity("access_level")
                 role_entity = cls.app_manager.get_entity("role")
+                role_webservice_entity = cls.app_manager.get_entity("role_webservice")
                 client_user_role_entity = cls.app_manager.get_entity("client_user_role")
                 client_user_entity = cls.app_manager.get_entity("client_user")
                 client_entity = cls.app_manager.get_entity("client")
@@ -68,10 +69,16 @@ class LicensingWebserviceService(OrganizationWebserviceService):
                 )
 
                 # Condition: user has org role via client_user_role
-                user_has_org_role_condition = cls.entity_class.roles.any(
-                    role_entity.client_user_roles.any(
-                        client_user_role_entity.client_user.has(
-                            client_user_entity.user_id == user_id
+                # Path: webservice -> role_webservice -> role -> client_user_roles -> client_user
+                user_has_org_role_condition = exists(
+                    select(role_webservice_entity.id)
+                    .join(role_entity, role_webservice_entity.role_id == role_entity.id)
+                    .where(
+                        role_webservice_entity.webservice_id == cls.entity_class.id,
+                        role_entity.client_user_roles.any(
+                            client_user_role_entity.client_user.has(
+                                client_user_entity.user_id == user_id
+                            )
                         )
                     )
                 )
@@ -108,15 +115,20 @@ class LicensingWebserviceService(OrganizationWebserviceService):
                 # Client user: needs to be in subscription_user table
                 client_user_licensed_condition = and_(
                     org_role_access_level_condition,
-                    cls.entity_class.roles.any(
-                        role_entity.client_user_roles.any(
-                            and_(
-                                client_user_role_entity.client_user.has(
-                                    client_user_entity.user_id == user_id
-                                ),
-                                # License verification: client_user exists in subscription_user
-                                client_user_role_entity.client_user_id.in_(
-                                    select(subscription_user.c.client_user_id)
+                    exists(
+                        select(role_webservice_entity.id)
+                        .join(role_entity, role_webservice_entity.role_id == role_entity.id)
+                        .where(
+                            role_webservice_entity.webservice_id == cls.entity_class.id,
+                            role_entity.client_user_roles.any(
+                                and_(
+                                    client_user_role_entity.client_user.has(
+                                        client_user_entity.user_id == user_id
+                                    ),
+                                    # License verification: client_user exists in subscription_user
+                                    client_user_role_entity.client_user_id.in_(
+                                        select(subscription_user.c.client_user_id)
+                                    )
                                 )
                             )
                         )
@@ -161,18 +173,20 @@ class LicensingWebserviceService(OrganizationWebserviceService):
         """
         # Get required entities
         role_entity = cls.app_manager.get_entity("role")
+        role_webservice_entity = cls.app_manager.get_entity("role_webservice")
         client_user_role_entity = cls.app_manager.get_entity("client_user_role")
         client_user_entity = cls.app_manager.get_entity("client_user")
 
         # Query to find a role that:
-        # 1. Grants access to this webservice (role.webservices contains webservice_id)
+        # 1. Grants access to this webservice (via role_webservice join)
         # 2. Is assigned to a client_user belonging to this user
         # 3. The client_user has an active license (exists in subscription_user table)
         stmt = (
             select(role_entity)
+            .join(role_webservice_entity, role_entity.id == role_webservice_entity.role_id)
             .where(
                 # Condition 1: Role grants access to this webservice
-                role_entity.webservices.any(id=webservice_id),
+                role_webservice_entity.webservice_id == webservice_id,
                 # Condition 2 & 3: User has this role via client_user_role AND has license
                 role_entity.client_user_roles.any(
                     and_(

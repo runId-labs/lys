@@ -125,25 +125,36 @@ class LicensingAuthService(OrganizationAuthService):
 
         organizations = {}
 
+        webservice_entity = cls.app_manager.get_entity("webservice")
+
         for client_user in client_users:
             await session.refresh(client_user, ["client_user_roles"])
 
             has_license = client_user.id in licensed_client_user_ids
 
-            # Collect webservices from all roles
-            webservice_names = set()
+            # Collect webservice IDs from all roles
+            role_webservice_ids = set()
             for client_user_role in client_user.client_user_roles:
                 await session.refresh(client_user_role, ["role"])
                 role = client_user_role.role
 
                 if role and role.enabled:
-                    await session.refresh(role, ["webservices"])
-                    for ws in role.webservices:
-                        # Include webservice only if:
-                        # - It's not licensed, OR
-                        # - User has a license
-                        if not ws.is_licenced or has_license:
-                            webservice_names.add(ws.id)
+                    role_webservice_ids.update(role.get_webservice_ids())
+
+            # Filter webservices by license status
+            webservice_names = set()
+            if role_webservice_ids:
+                stmt = select(webservice_entity).where(
+                    webservice_entity.id.in_(role_webservice_ids)
+                )
+                result = await session.execute(stmt)
+
+                for ws in result.scalars().all():
+                    # Include webservice only if:
+                    # - It's not licensed, OR
+                    # - User has a license
+                    if not ws.is_licenced or has_license:
+                        webservice_names.add(ws.id)
 
             if webservice_names:
                 organizations[str(client_user.client_id)] = {

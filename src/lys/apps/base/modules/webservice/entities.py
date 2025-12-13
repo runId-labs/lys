@@ -23,6 +23,10 @@ class Webservice(AbstractWebservice):
         nullable=False,
         comment="Defined if an active licence is mandatory to call the webservice"
     )
+    app_name: Mapped[str] = mapped_column(
+        nullable=True,
+        comment="Name of the application/microservice that provides this webservice"
+    )
 
     @property
     def is_public(self):

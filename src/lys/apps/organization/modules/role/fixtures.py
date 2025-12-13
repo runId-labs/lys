@@ -23,7 +23,7 @@ class OrganizationRoleFixtures(RoleFixtures):
             "attributes": {
                 "enabled": True,
                 "description": "Administrator role with client management capabilities including listing and viewing clients.",
-                "webservices": [
+                "role_webservices": [
                     "all_clients",
                     "client",
                     "update_client"
@@ -35,7 +35,7 @@ class OrganizationRoleFixtures(RoleFixtures):
             "attributes": {
                 "enabled": True,
                 "description": "Administrator role with full user management capabilities including creating, updating, and searching users, managing roles, and viewing audit logs.",
-                "webservices": USER_ADMIN_ROLE_ORGANIZATION_WEBSERVICES
+                "role_webservices": USER_ADMIN_ROLE_ORGANIZATION_WEBSERVICES
             }
         }
     ]

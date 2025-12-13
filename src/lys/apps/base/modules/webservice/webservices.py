@@ -79,8 +79,13 @@ class WebserviceMutation(Mutation):
         webservice_service: type[WebserviceService] = node.service_class
         session = info.context.session
 
+        # Get app_name from service caller context (set by ServiceAuthMiddleware)
+        service_caller = info.context.service_caller
+        app_name = service_caller.get("service_name") if service_caller else None
+
         registered_count = await webservice_service.register_webservices(
             webservices=[ws.to_pydantic() for ws in webservices],
+            app_name=app_name,
             session=session
         )
 

@@ -1,6 +1,6 @@
 from typing import Any, List, Optional
 
-from sqlalchemy import Select, BinaryExpression, and_, select
+from sqlalchemy import Select, BinaryExpression, and_, exists, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from lys.apps.base.modules.webservice.entities import Webservice
@@ -37,15 +37,22 @@ class RoleWebserviceService(AuthWebserviceService):
             if user_id:
                 access_level_entity = cls.app_manager.get_entity("access_level")
                 role_entity = cls.app_manager.get_entity("role")
+                role_webservice_entity = cls.app_manager.get_entity("role_webservice")
                 user_entity = cls.app_manager.get_entity("user")
 
+                # Check if webservice is assigned to a role the user has
                 role_access_condition = and_(
                     cls.entity_class.access_levels.any(
                         access_level_entity.id == ROLE_ACCESS_LEVEL,
                         enabled=True
                     ),
-                    cls.entity_class.roles.any(
-                        role_entity.users.any(user_entity.id == user_id)
+                    exists(
+                        select(role_webservice_entity.id)
+                        .join(role_entity, role_webservice_entity.role_id == role_entity.id)
+                        .where(
+                            role_webservice_entity.webservice_id == cls.entity_class.id,
+                            role_entity.users.any(user_entity.id == user_id)
+                        )
                     )
                 )
 
@@ -76,8 +83,15 @@ class RoleWebserviceService(AuthWebserviceService):
 
         # Apply role_code filter on result (filter webservices by role assignment)
         if role_code is not None:
-            role_entity = cls.app_manager.get_entity("role")
-            stmt = stmt.where(cls.entity_class.roles.any(role_entity.id == role_code))
+            role_webservice_entity = cls.app_manager.get_entity("role_webservice")
+            stmt = stmt.where(
+                exists(
+                    select(role_webservice_entity.id).where(
+                        role_webservice_entity.webservice_id == cls.entity_class.id,
+                        role_webservice_entity.role_id == role_code
+                    )
+                )
+            )
 
         return stmt
 
@@ -100,12 +114,14 @@ class RoleWebserviceService(AuthWebserviceService):
             True if user has a role that includes this webservice
         """
         role_entity = cls.app_manager.get_entity("role")
+        role_webservice_entity = cls.app_manager.get_entity("role_webservice")
         user_entity = cls.app_manager.get_entity("user")
 
         stmt = (
             select(role_entity)
+            .join(role_webservice_entity, role_entity.id == role_webservice_entity.role_id)
             .where(
-                role_entity.webservices.any(id=webservice_id),
+                role_webservice_entity.webservice_id == webservice_id,
                 role_entity.users.any(user_entity.id == user_id)
             )
             .limit(1)
