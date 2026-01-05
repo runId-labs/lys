@@ -20,6 +20,7 @@ class Query(QueryInterface, graphene.ObjectType):
     node = graphene.relay.Node.Field()
 
 
+@strawberry.type
 class DefaultQuery(Query):
     @strawberry.field(description="ping query")
     def ping(self) -> str:

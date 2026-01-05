@@ -8,7 +8,7 @@ from strawberry.annotation import StrawberryAnnotation
 
 from lys.core.contexts import Info
 from lys.core.graphql.interfaces import NodeInterface
-from lys.core.graphql.nodes import EntityNode, ServiceNode
+from lys.core.graphql.nodes import EntityNode, ServiceNode, ServiceNodeMixin
 from lys.core.permissions import generate_webservice_permission
 from lys.core.registries import AppRegistry, register_webservice
 from lys.core.utils.webservice import WebserviceIsPublicType, format_filed_description
@@ -131,7 +131,7 @@ def lys_typed_field(
 
 
 def lys_field(
-        ensure_type: Type[ServiceNode],
+        ensure_type: Type[ServiceNodeMixin],
         is_public: WebserviceIsPublicType = False,
         enabled: bool = True,
         access_levels: List[str] = None,
@@ -152,8 +152,8 @@ def lys_field(
         has_session=True,
         options: dict = None
 ) -> Any:
-    def _resolver_generator(resolver: Callable, ensure_type_: Type[EntityNode]):
-        async def inner_resolver(self, *args, info: Info, **kwargs) -> EntityNode:
+    def _resolver_generator(resolver: Callable, ensure_type_: Type[ServiceNodeMixin]):
+        async def inner_resolver(self, *args, info: Info, **kwargs) -> ServiceNodeMixin:
             info.context.app_manager = ensure_type_.app_manager
 
             async def resolve_node():
@@ -170,7 +170,7 @@ def lys_field(
 
                 return node
 
-            async def wrapped() -> EntityNode:
+            async def wrapped() -> ServiceNodeMixin:
                 if has_session:
                     # Check if session already exists in context (from DatabaseSessionExtension)
                     existing_session = getattr(info.context, 'session', None)

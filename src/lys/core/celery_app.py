@@ -37,6 +37,7 @@ def create_celery_app(settings, app_manager=None) -> Celery:
     celery_config = {
         'broker_url': settings.celery.broker_url,
         'result_backend': settings.celery.result_backend,
+        'broker_connection_retry_on_startup': settings.celery.broker_connection_retry_on_startup,
         'task_serializer': settings.celery.task_serializer,
         'result_serializer': settings.celery.result_serializer,
         'accept_content': settings.celery.accept_content,

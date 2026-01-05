@@ -4,12 +4,108 @@ GraphQL extensions for Strawberry.
 This module provides custom Strawberry extensions for the lys framework,
 including database session management for GraphQL operations.
 """
+import asyncio
 from typing import Any, List, Dict
 
+from sqlalchemy.ext.asyncio import AsyncSession
 from strawberry.extensions import SchemaExtension
 
 from lys.apps.base.modules.ai.guardrails import CONFIRM_ACTION_TOOL
 from lys.core.utils.routes import filter_routes_by_permissions, build_navigate_tool
+
+
+class ThreadSafeSessionProxy:
+    """
+    Proxy that serializes all access to an AsyncSession.
+
+    SQLAlchemy's AsyncSession is not thread-safe and cannot be used concurrently
+    by multiple coroutines. In GraphQL, multiple root field resolvers may execute
+    in parallel, all sharing the same session from the context.
+
+    This proxy wraps the session and uses an asyncio.Lock to ensure only one
+    coroutine accesses the session at a time, preventing race conditions.
+
+    Usage:
+        The proxy is transparent to resolvers - they continue using
+        info.context.session as before, but all operations are now serialized.
+    """
+
+    def __init__(self, session: AsyncSession):
+        self._session = session
+        self._lock = asyncio.Lock()
+
+    async def execute(self, *args, **kwargs):
+        async with self._lock:
+            return await self._session.execute(*args, **kwargs)
+
+    async def scalar(self, *args, **kwargs):
+        async with self._lock:
+            return await self._session.scalar(*args, **kwargs)
+
+    async def scalars(self, *args, **kwargs):
+        async with self._lock:
+            return await self._session.scalars(*args, **kwargs)
+
+    async def stream(self, *args, **kwargs):
+        async with self._lock:
+            return await self._session.stream(*args, **kwargs)
+
+    async def stream_scalars(self, *args, **kwargs):
+        async with self._lock:
+            return await self._session.stream_scalars(*args, **kwargs)
+
+    async def flush(self, *args, **kwargs):
+        async with self._lock:
+            return await self._session.flush(*args, **kwargs)
+
+    async def refresh(self, *args, **kwargs):
+        async with self._lock:
+            return await self._session.refresh(*args, **kwargs)
+
+    async def get(self, *args, **kwargs):
+        async with self._lock:
+            return await self._session.get(*args, **kwargs)
+
+    def add(self, instance, _warn=True):
+        # add is synchronous but we still protect state consistency
+        return self._session.add(instance, _warn=_warn)
+
+    def add_all(self, instances):
+        return self._session.add_all(instances)
+
+    async def delete(self, instance):
+        async with self._lock:
+            return await self._session.delete(instance)
+
+    async def merge(self, instance, *args, **kwargs):
+        async with self._lock:
+            return await self._session.merge(instance, *args, **kwargs)
+
+    def expunge(self, instance):
+        return self._session.expunge(instance)
+
+    def expunge_all(self):
+        return self._session.expunge_all()
+
+    @property
+    def is_active(self):
+        return self._session.is_active
+
+    @property
+    def dirty(self):
+        return self._session.dirty
+
+    @property
+    def new(self):
+        return self._session.new
+
+    @property
+    def deleted(self):
+        return self._session.deleted
+
+    def __getattr__(self, name):
+        # Fallback for any other attributes/methods not explicitly wrapped
+        return getattr(self._session, name)
 
 
 class DatabaseSessionExtension(SchemaExtension):
@@ -57,8 +153,10 @@ class DatabaseSessionExtension(SchemaExtension):
         else:
             # Open database session for the entire GraphQL operation
             async with app_manager.database.get_session() as session:
-                # Store session in GraphQL context so all resolvers can access it
-                self.execution_context.context.session = session
+                # Wrap session in thread-safe proxy to handle concurrent resolver access
+                # Multiple root field resolvers may execute in parallel, and AsyncSession
+                # is not safe for concurrent use. The proxy serializes all access.
+                self.execution_context.context.session = ThreadSafeSessionProxy(session)
 
                 # Yield to allow the GraphQL operation to execute with session open
                 # This includes the main resolver and all nested field resolvers

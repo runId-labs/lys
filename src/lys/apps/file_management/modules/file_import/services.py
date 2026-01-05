@@ -3,6 +3,7 @@ File import services for processing CSV/Excel imports.
 """
 import abc
 import logging
+from io import BytesIO
 from typing import Any, Type, Hashable
 
 from pandas import read_csv, read_excel, DataFrame
@@ -14,7 +15,6 @@ from lys.apps.file_management.modules.file_import.consts import (
     FILE_IMPORT_STATUS_PROCESSING,
     FILE_IMPORT_STATUS_COMPLETED,
     FILE_IMPORT_STATUS_FAILED,
-    REPORT_MESSAGE_WRONG_MIME_TYPE,
     REPORT_MESSAGE_NO_FILE,
     CSV_MIME_TYPE,
     XLS_MIME_TYPE,
@@ -167,6 +167,9 @@ class AbstractImportService(abc.ABC):
     # Override in subclass: the unique column used to identify existing entities
     unique_column: str = None
 
+    # Set to False in subclass to keep files after import
+    delete_file_after_import: bool = True
+
     # Pandas readers for supported MIME types
     READER_MAPPING = {
         CSV_MIME_TYPE: read_csv,
@@ -206,6 +209,65 @@ class AbstractImportService(abc.ABC):
             New or existing entity instance
         """
         raise NotImplementedError
+
+    def parse_file(
+        self,
+        file_import: FileImport,
+        raw_content: bytes,
+        config: ImportConfig,
+    ) -> DataFrame:
+        """
+        Parse raw file content into a DataFrame.
+
+        Override this method for custom file formats (DSN, XML, fixed-width, etc.).
+        Default implementation uses pandas readers for CSV/Excel based on MIME type.
+
+        Args:
+            file_import: FileImport entity
+            raw_content: Raw file content as bytes
+            config: Import configuration
+
+        Returns:
+            DataFrame ready for processing
+
+        Raises:
+            ValueError: If MIME type is not supported
+        """
+        mime_type = file_import.stored_file.mime_type
+        if mime_type not in self.READER_MAPPING:
+            raise ValueError(f"Unsupported MIME type: {mime_type}")
+
+        reader = self.READER_MAPPING[mime_type]
+        buffer = BytesIO(raw_content)
+
+        if mime_type == CSV_MIME_TYPE:
+            return reader(buffer, delimiter=config.delimiter, encoding=config.encoding)
+        return reader(buffer)
+
+    def prepare_import(
+        self,
+        file_import: FileImport,
+        df: DataFrame,
+        session: Session,
+    ) -> DataFrame:
+        """
+        Prepare data before row processing.
+
+        Override this method to:
+        - Fetch or create related entities (e.g., company, establishments)
+        - Enrich DataFrame with foreign keys
+        - Transform or normalize data
+        - Validate business rules
+
+        Args:
+            file_import: FileImport entity
+            df: DataFrame from parse_file
+            session: Database session
+
+        Returns:
+            Modified DataFrame ready for row processing
+        """
+        return df
 
     def on_import_start(self, file_import: FileImport, session: Session) -> None:
         """Hook called when import starts. Override for custom logic."""
@@ -428,35 +490,28 @@ class AbstractImportService(abc.ABC):
                 session.commit()
                 return
 
-            # Check MIME type
-            mime_type = file_import.stored_file.mime_type_id
-            if mime_type not in self.READER_MAPPING:
-                report.add_global_error(REPORT_MESSAGE_WRONG_MIME_TYPE, mime_type)
-                file_import_service.update_progress(
-                    file_import,
-                    FILE_IMPORT_STATUS_FAILED,
-                    report=report,
-                )
-                session.commit()
-                return
-
-            # Get presigned URL and read file
             try:
-                url = stored_file_service.get_presigned_url_sync(file_import.stored_file)
+                # Download raw file content
+                raw_content = stored_file_service.download_sync(file_import.stored_file)
 
                 # Parse config
                 config = ImportConfig.from_dict(file_import.config or {})
 
-                # Read file with pandas
-                reader = self.READER_MAPPING[mime_type]
-                if mime_type == CSV_MIME_TYPE:
-                    df = reader(url, delimiter=config.delimiter, encoding=config.encoding)
-                else:
-                    df = reader(url)
+                # Parse file into DataFrame (can be overridden for custom formats)
+                df = self.parse_file(file_import, raw_content, config)
+
+                # Prepare import (fetch/create related entities, enrich DataFrame)
+                df = self.prepare_import(file_import, df, session)
 
                 # Process the data
                 self._process_dataframe(file_import, df, report, session)
                 session.commit()
+
+                # Delete file after successful import if enabled
+                if self.delete_file_after_import and file_import.status_id == FILE_IMPORT_STATUS_COMPLETED:
+                    if file_import.stored_file:
+                        stored_file_service.delete_file_sync(file_import.stored_file)
+                        logger.info(f"Deleted file after import: {file_import_id}")
 
             except Exception as ex:
                 logger.error(f"Import error for {file_import_id}: {ex}")

@@ -109,6 +109,26 @@ class StorageBackend(ABC):
         """
         pass
 
+    @abstractmethod
+    async def get_presigned_upload_url(
+        self,
+        path: str,
+        content_type: Optional[str] = None,
+        expires_in: int = 300
+    ) -> str:
+        """
+        Generate a presigned URL for uploading a file.
+
+        Args:
+            path: Destination path in storage
+            content_type: Expected MIME type of the file
+            expires_in: URL expiration time in seconds
+
+        Returns:
+            Presigned URL string for PUT request
+        """
+        pass
+
     # Sync versions for Celery workers
 
     @abstractmethod
@@ -261,13 +281,33 @@ class S3StorageBackend(StorageBackend):
             async with self._async_session.client("s3", **self._get_client_config()) as client:
                 await client.head_object(Bucket=self.bucket, Key=path)
                 return True
-        except client.exceptions.ClientError as ex:
-            if ex.response["Error"]["Code"] == "404":
-                return False
-            raise StorageError(str(ex), "exists", ex)
         except Exception as ex:
+            error_code = getattr(ex, "response", {}).get("Error", {}).get("Code")
+            if error_code == "404":
+                return False
             logger.error(f"S3 exists error: {ex}")
             raise StorageError(str(ex), "exists", ex)
+
+    async def get_presigned_upload_url(
+        self,
+        path: str,
+        content_type: Optional[str] = None,
+        expires_in: int = 300
+    ) -> str:
+        try:
+            async with self._async_session.client("s3", **self._get_client_config()) as client:
+                params = {"Bucket": self.bucket, "Key": path}
+                if content_type:
+                    params["ContentType"] = content_type
+                url = await client.generate_presigned_url(
+                    "put_object",
+                    Params=params,
+                    ExpiresIn=expires_in
+                )
+            return url
+        except Exception as ex:
+            logger.error(f"S3 presigned upload URL error: {ex}")
+            raise StorageError(str(ex), "get_presigned_upload_url", ex)
 
     # Sync methods for Celery workers
 
@@ -278,25 +318,25 @@ class S3StorageBackend(StorageBackend):
         content_type: Optional[str] = None
     ) -> str:
         try:
-            with self._sync_session.client("s3", **self._get_client_config()) as client:
-                extra_args = {}
-                if content_type:
-                    extra_args["ContentType"] = content_type
+            client = self._sync_session.client("s3", **self._get_client_config())
+            extra_args = {}
+            if content_type:
+                extra_args["ContentType"] = content_type
 
-                if isinstance(data, bytes):
-                    client.put_object(
-                        Bucket=self.bucket,
-                        Key=path,
-                        Body=data,
-                        **extra_args
-                    )
-                else:
-                    client.upload_fileobj(
-                        data,
-                        self.bucket,
-                        path,
-                        ExtraArgs=extra_args if extra_args else None
-                    )
+            if isinstance(data, bytes):
+                client.put_object(
+                    Bucket=self.bucket,
+                    Key=path,
+                    Body=data,
+                    **extra_args
+                )
+            else:
+                client.upload_fileobj(
+                    data,
+                    self.bucket,
+                    path,
+                    ExtraArgs=extra_args if extra_args else None
+                )
             return path
         except Exception as ex:
             logger.error(f"S3 upload_sync error: {ex}")
@@ -304,8 +344,8 @@ class S3StorageBackend(StorageBackend):
 
     def upload_file_sync(self, path: str, local_file_path: str) -> str:
         try:
-            with self._sync_session.client("s3", **self._get_client_config()) as client:
-                client.upload_file(local_file_path, self.bucket, path)
+            client = self._sync_session.client("s3", **self._get_client_config())
+            client.upload_file(local_file_path, self.bucket, path)
             return path
         except Exception as ex:
             logger.error(f"S3 upload_file_sync error: {ex}")
@@ -313,29 +353,29 @@ class S3StorageBackend(StorageBackend):
 
     def download_sync(self, path: str) -> bytes:
         try:
-            with self._sync_session.client("s3", **self._get_client_config()) as client:
-                response = client.get_object(Bucket=self.bucket, Key=path)
-                return response["Body"].read()
+            client = self._sync_session.client("s3", **self._get_client_config())
+            response = client.get_object(Bucket=self.bucket, Key=path)
+            return response["Body"].read()
         except Exception as ex:
             logger.error(f"S3 download_sync error: {ex}")
             raise StorageError(str(ex), "download_sync", ex)
 
     def delete_sync(self, path: str) -> None:
         try:
-            with self._sync_session.client("s3", **self._get_client_config()) as client:
-                client.delete_object(Bucket=self.bucket, Key=path)
+            client = self._sync_session.client("s3", **self._get_client_config())
+            client.delete_object(Bucket=self.bucket, Key=path)
         except Exception as ex:
             logger.error(f"S3 delete_sync error: {ex}")
             raise StorageError(str(ex), "delete_sync", ex)
 
     def get_presigned_url_sync(self, path: str, expires_in: int = 300) -> str:
         try:
-            with self._sync_session.client("s3", **self._get_client_config()) as client:
-                url = client.generate_presigned_url(
-                    "get_object",
-                    Params={"Bucket": self.bucket, "Key": path},
-                    ExpiresIn=expires_in
-                )
+            client = self._sync_session.client("s3", **self._get_client_config())
+            url = client.generate_presigned_url(
+                "get_object",
+                Params={"Bucket": self.bucket, "Key": path},
+                ExpiresIn=expires_in
+            )
             return url
         except Exception as ex:
             logger.error(f"S3 presigned_url_sync error: {ex}")

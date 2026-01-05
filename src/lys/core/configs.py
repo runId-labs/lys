@@ -80,6 +80,7 @@ class CelerySettings(BaseSettings):
         # Broker configuration
         self.broker_url: str = "redis://localhost:6379/0"
         self.result_backend: Optional[str] = "redis://localhost:6379/0"
+        self.broker_connection_retry_on_startup: bool = True
 
         # Task configuration
         self.task_serializer: str = "json"

@@ -26,9 +26,12 @@ class FileImport(Entity):
     """File import job tracking."""
     __tablename__ = "file_import"
 
-    stored_file_id: Mapped[str] = mapped_column(
-        ForeignKey("stored_file.id", ondelete="RESTRICT"),
-        nullable=False
+    # Client ID (soft reference, no FK - microservices pattern)
+    client_id: Mapped[str] = mapped_column(nullable=False)
+
+    stored_file_id: Mapped[Optional[str]] = mapped_column(
+        ForeignKey("stored_file.id", ondelete="SET NULL"),
+        nullable=True
     )
 
     @declared_attr
@@ -77,4 +80,10 @@ class FileImport(Entity):
         return []
 
     def accessing_organizations(self) -> dict[str, list[str]]:
-        return {}
+        return {
+            "client": [self.client_id]
+        }
+
+    @classmethod
+    def organization_accessing_filters(cls, stmt, organization_id_dict):
+        return stmt, [cls.client_id.in_(organization_id_dict.get("client", []))]

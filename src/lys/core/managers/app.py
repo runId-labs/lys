@@ -349,11 +349,18 @@ class AppManager:
             token = auth_utils.generate_token(self.settings.service_name)
 
             # Build webservices payload for GraphQL mutation
+            # Convert snake_case to camelCase for GraphQL
             webservices_input = []
             for ws_id, ws_config in webservices.items():
+                attrs = ws_config.get("attributes", {})
                 webservices_input.append({
                     "id": ws_id,
-                    "attributes": ws_config.get("attributes", {})
+                    "attributes": {
+                        "enabled": attrs.get("enabled", True),
+                        "publicType": attrs.get("public_type"),
+                        "isLicenced": attrs.get("is_licenced", False),
+                        "accessLevels": attrs.get("access_levels", []),
+                    }
                 })
 
             # GraphQL mutation
