@@ -11,6 +11,8 @@ from datetime import datetime
 from typing import Annotated, Any, Dict, List, Optional, Union, get_args, get_origin
 
 import strawberry
+
+from lys.core.utils.strings import to_camel_case
 from strawberry.types.field import StrawberryField
 from sqlalchemy.inspection import inspect as sa_inspect
 
@@ -117,12 +119,13 @@ def node_to_dict(node) -> dict:
     }
 
 
-def python_type_to_json_schema(python_type: Any) -> Dict[str, Any]:
+def python_type_to_json_schema(python_type: Any, is_optional: bool = False) -> Dict[str, Any]:
     """
     Convert a Python type annotation to JSON Schema type definition.
 
     Args:
         python_type: Python type annotation (str, int, Optional[str], etc.)
+        is_optional: Whether this type is optional (for GraphQL type suffix)
 
     Returns:
         JSON Schema type definition dict
@@ -134,19 +137,30 @@ def python_type_to_json_schema(python_type: Any) -> Dict[str, Any]:
     if python_type is type(None):
         return {"type": "null"}
 
-    # Handle StrawberryOptional (Strawberry's wrapper for Optional types)
+    # Handle Strawberry wrapper types
     type_class_name = type(python_type).__name__
+
+    # StrawberryOptional (Strawberry's wrapper for Optional types)
     if type_class_name == "StrawberryOptional":
         if hasattr(python_type, "of_type"):
-            return python_type_to_json_schema(python_type.of_type)
+            return python_type_to_json_schema(python_type.of_type, is_optional=True)
         return {"type": "string"}
+
+    # StrawberryList (Strawberry's wrapper for List types)
+    if type_class_name == "StrawberryList":
+        if hasattr(python_type, "of_type"):
+            return {
+                "type": "array",
+                "items": python_type_to_json_schema(python_type.of_type)
+            }
+        return {"type": "array"}
 
     # Handle Optional (Union with None) - both typing.Union and types.UnionType (X | Y syntax)
     if origin is Union or isinstance(python_type, types.UnionType):
         non_none_args = [arg for arg in args if arg is not type(None)]
         if len(non_none_args) == 1:
             # It's Optional[X]
-            return python_type_to_json_schema(non_none_args[0])
+            return python_type_to_json_schema(non_none_args[0], is_optional=True)
         else:
             # It's a real Union, use anyOf
             return {
@@ -164,27 +178,27 @@ def python_type_to_json_schema(python_type: Any) -> Dict[str, Any]:
 
     # Handle basic types
     if python_type is str:
-        return {"type": "string"}
+        return {"type": "string", "_graphql_type": "String" if is_optional else "String!"}
     if python_type is int:
-        return {"type": "integer"}
+        return {"type": "integer", "_graphql_type": "Int" if is_optional else "Int!"}
     if python_type is float:
-        return {"type": "number"}
+        return {"type": "number", "_graphql_type": "Float" if is_optional else "Float!"}
     if python_type is bool:
-        return {"type": "boolean"}
+        return {"type": "boolean", "_graphql_type": "Boolean" if is_optional else "Boolean!"}
     if python_type is datetime:
-        return {"type": "string", "format": "date-time"}
+        return {"type": "string", "format": "date-time", "_graphql_type": "DateTime" if is_optional else "DateTime!"}
 
     # Handle strawberry.ID and relay.GlobalID
     type_name = getattr(python_type, "__name__", str(python_type))
     if "GlobalID" in type_name or type_name == "ID":
-        return {"type": "string", "description": "Global ID"}
+        return {"type": "string", "description": "Global ID", "_graphql_type": "ID" if is_optional else "ID!"}
 
     # Handle Strawberry input types
     if hasattr(python_type, "__strawberry_definition__"):
         return extract_strawberry_input_schema(python_type)
 
     # Default to string for unknown types
-    return {"type": "string"}
+    return {"type": "string", "_graphql_type": "String" if is_optional else "String!"}
 
 
 def extract_strawberry_input_schema(input_class: type) -> Dict[str, Any]:
@@ -265,15 +279,119 @@ def extract_strawberry_input_schema(input_class: type) -> Dict[str, Any]:
     return result
 
 
+def _is_scalar_type(field_type) -> bool:
+    """Check if a Strawberry field type is a scalar (not an object requiring subfields)."""
+    # Unwrap StrawberryOptional/StrawberryList
+    while hasattr(field_type, "of_type"):
+        field_type = field_type.of_type
+
+    # Scalar types that don't need subfield selection
+    scalar_types = {str, int, float, bool, datetime, type(None)}
+    type_name = getattr(field_type, "__name__", str(field_type))
+
+    return (
+        field_type in scalar_types or
+        type_name in {"str", "int", "float", "bool", "ID", "GlobalID", "UUID", "Date", "DateTime"} or
+        "Enum" in type_name or
+        not hasattr(field_type, "__strawberry_definition__")
+    )
+
+
+def _get_subfields(field_type) -> List[str]:
+    """Get minimal subfields for a complex type (id, code, name, email)."""
+    # Unwrap StrawberryOptional/StrawberryList
+    while hasattr(field_type, "of_type"):
+        field_type = field_type.of_type
+
+    strawberry_def = getattr(field_type, "__strawberry_definition__", None)
+    if not strawberry_def or not hasattr(strawberry_def, "fields"):
+        return ["id"]
+
+    # Priority fields for nested objects
+    priority_fields = ["id", "code", "name", "email", "value"]
+    subfields = []
+
+    for field in strawberry_def.fields:
+        if field.name.startswith("_"):
+            continue
+        if field.name in EXCLUDED_FIELDS:
+            continue
+        if field.name in priority_fields and _is_scalar_type(field.type):
+            subfields.append(field.name)
+
+    return subfields if subfields else ["id"]
+
+
+def _get_node_type_from_connection(connection_type) -> type:
+    """Extract the node type from a Relay Connection type."""
+    strawberry_def = getattr(connection_type, "__strawberry_definition__", None)
+    if not strawberry_def or not hasattr(strawberry_def, "fields"):
+        return None
+
+    # Find edges field
+    for field in strawberry_def.fields:
+        if field.name == "edges":
+            edge_type = field.type
+            # Unwrap List/Optional
+            while hasattr(edge_type, "of_type"):
+                edge_type = edge_type.of_type
+
+            # Get node from edge
+            edge_def = getattr(edge_type, "__strawberry_definition__", None)
+            if edge_def and hasattr(edge_def, "fields"):
+                for edge_field in edge_def.fields:
+                    if edge_field.name == "node":
+                        node_type = edge_field.type
+                        while hasattr(node_type, "of_type"):
+                            node_type = node_type.of_type
+                        return node_type
+    return None
+
+
+def extract_return_fields_from_type(return_type) -> str:
+    """
+    Extract GraphQL return fields from a Strawberry return type.
+
+    Handles both simple Node types and Relay Connection types.
+
+    Args:
+        return_type: The Strawberry type (can be Connection, Node, or wrapped type)
+
+    Returns:
+        String of GraphQL fields suitable for the query
+    """
+    # Unwrap StrawberryOptional/StrawberryList
+    while hasattr(return_type, "of_type"):
+        return_type = return_type.of_type
+
+    type_name = getattr(return_type, "__name__", "")
+
+    # Check if it's a Relay Connection type
+    if "Connection" in type_name:
+        # Extract node type and get its fields
+        node_type = _get_node_type_from_connection(return_type)
+        if node_type:
+            node_fields = extract_node_fields(node_type)
+            if node_fields:
+                return f"edges {{ node {{ {' '.join(node_fields)} }} }}"
+        return "edges { node { id } }"
+
+    # Simple Node type - extract fields directly
+    fields = extract_node_fields(return_type)
+    return " ".join(fields) if fields else "id"
+
+
 def extract_node_fields(node_type: type) -> List[str]:
     """
-    Extract field names from a Strawberry node type.
+    Extract field names from a Strawberry node type for GraphQL queries.
+
+    Generates proper GraphQL field selections including subfields for complex types.
 
     Args:
         node_type: Strawberry node class
 
     Returns:
-        List of field names (excluding private fields)
+        List of field selections (e.g., ["id", "name", "status { id code }"])
     """
     if node_type is None:
         return []
@@ -290,7 +408,13 @@ def extract_node_fields(node_type: type) -> List[str]:
         # Skip sensitive fields
         if field.name in EXCLUDED_FIELDS:
             continue
-        fields.append(field.name)
+
+        if _is_scalar_type(field.type):
+            fields.append(field.name)
+        else:
+            # Complex type - add with subfields
+            subfields = _get_subfields(field.type)
+            fields.append(f"{field.name} {{ {' '.join(subfields)} }}")
 
     return fields
 
@@ -346,6 +470,7 @@ def extract_tool_from_field(
     # Extract parameters
     properties = {}
     required = []
+    input_wrappers = []  # Track flattened input types for GraphQL reconstruction
 
     for param_name, param in signature.parameters.items():
         # Skip self, info, and obj parameters
@@ -376,9 +501,17 @@ def extract_tool_from_field(
         if hasattr(param_type, "__strawberry_definition__"):
             # Flatten the input type into parameters
             input_schema = extract_strawberry_input_schema(param_type)
+            input_field_names = list(input_schema.get("properties", {}).keys())
             for prop_name, prop_schema in input_schema.get("properties", {}).items():
                 properties[prop_name] = prop_schema
             required.extend(input_schema.get("required", []))
+
+            # Store metadata for GraphQL input reconstruction
+            input_wrappers.append({
+                "param_name": param_name,
+                "graphql_type": f"{param_type.__name__}!",
+                "fields": input_field_names,
+            })
         else:
             # Regular parameter
             schema = python_type_to_json_schema(param_type)
@@ -405,11 +538,15 @@ def extract_tool_from_field(
     # Build final description with return fields
     final_description = tool_description or f"Execute {func_name} operation"
 
-    # Add return fields from node_type if available
-    if node_type:
-        return_fields = extract_node_fields(node_type)
-        if return_fields:
-            final_description += f"\n\nReturns: {', '.join(return_fields)}"
+    # Extract return fields from the actual return type of the field
+    # This handles both simple Nodes and Relay Connections correctly
+    return_fields_str = "id"
+    if hasattr(field, "type") and field.type:
+        return_fields_str = extract_return_fields_from_type(field.type)
+    elif node_type:
+        # Fallback to node_type if field.type not available
+        fields = extract_node_fields(node_type)
+        return_fields_str = " ".join(fields) if fields else "id"
 
     # Build tool definition
     tool = {
@@ -421,6 +558,12 @@ def extract_tool_from_field(
                 "type": "object",
                 "properties": properties
             }
+        },
+        "_graphql": {
+            "operation_name": to_camel_case(func_name),
+            "return_fields": return_fields_str,
+            "node_type": node_type.__name__ if node_type else None,
+            "input_wrappers": input_wrappers if input_wrappers else None,
         }
     }
 
@@ -458,6 +601,7 @@ def extract_tool_from_resolver(
     # Extract parameters
     properties = {}
     required = []
+    input_wrappers = []
 
     for param_name, param in signature.parameters.items():
         # Skip self, info, and obj parameters
@@ -474,9 +618,17 @@ def extract_tool_from_resolver(
         if hasattr(param_type, "__strawberry_definition__"):
             # Flatten the input type into parameters
             input_schema = extract_strawberry_input_schema(param_type)
+            input_field_names = list(input_schema.get("properties", {}).keys())
             for prop_name, prop_schema in input_schema.get("properties", {}).items():
                 properties[prop_name] = prop_schema
             required.extend(input_schema.get("required", []))
+
+            # Store metadata for GraphQL input reconstruction
+            input_wrappers.append({
+                "param_name": param_name,
+                "graphql_type": f"{param_type.__name__}!",
+                "fields": input_field_names,
+            })
         else:
             # Regular parameter
             schema = python_type_to_json_schema(param_type)
@@ -501,6 +653,12 @@ def extract_tool_from_resolver(
                 "type": "object",
                 "properties": properties
             }
+        },
+        "_graphql": {
+            "operation_name": to_camel_case(func_name),
+            "return_fields": "id",
+            "node_type": None,
+            "input_wrappers": input_wrappers if input_wrappers else None,
         }
     }
 

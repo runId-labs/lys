@@ -1,27 +1,21 @@
+"""
+AI Conversation inputs.
+
+GraphQL input types for AI conversation mutations.
+"""
+
 from typing import Optional, List
 
 import strawberry
-from pydantic import BaseModel
 from strawberry.scalars import JSON
 
-
-class AIMessageInputModel(BaseModel):
-    """Pydantic model for AI message input validation."""
-    message: str
-    conversation_id: Optional[str] = None
+from lys.apps.ai.modules.conversation.models import AIMessageInputModel, AIToolResultModel
 
 
 @strawberry.experimental.pydantic.input(model=AIMessageInputModel, all_fields=True)
 class AIMessageInput:
     """Input for sending a message to the AI assistant."""
     pass
-
-
-class AIToolResultModel(BaseModel):
-    """Model for tool execution result."""
-    tool_name: str
-    result: str
-    success: bool
 
 
 @strawberry.experimental.pydantic.type(model=AIToolResultModel, all_fields=True)

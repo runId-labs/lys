@@ -30,6 +30,7 @@ class WebserviceNode(EntityNode[WebserviceService], relay.Node):
     updated_at: Optional[datetime]
     is_public: bool
     app_name: Optional[str]
+    operation_type: str
     _entity: strawberry.Private[Webservice]
 
     @strawberry.field(description="Access levels associated with this webservice")

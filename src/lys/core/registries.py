@@ -10,6 +10,7 @@ from strawberry.annotation import StrawberryAnnotation
 from lys.core.configs import LysAppSettings
 from lys.core.consts.ai import ToolRiskLevel
 from lys.core.consts.component_types import AppComponentTypeEnum
+from lys.core.consts.webservices import INTERNAL_SERVICE_ACCESS_LEVEL
 from lys.core.graphql.interfaces import NodeInterface
 from lys.core.interfaces.entities import EntityInterface
 from lys.core.interfaces.fixtures import EntityFixtureInterface
@@ -426,39 +427,43 @@ class AppRegistry:
             options: dict = None,
     ):
         if not self.is_locked(AppComponentTypeEnum.WEBSERVICES):
+            operation_type = None
+            # TODO: Move ai_tool to AI app only (currently in core for testing)
+            ai_tool = None
+
             if type(field_or_fct) is StrawberryField:
-                webservice_name = field_or_fct.base_resolver.wrapped_func.__name__
+                wrapped_func = field_or_fct.base_resolver.wrapped_func
+                webservice_name = wrapped_func.__name__
+                # Detect operation_type from class name convention (*Query -> query, *Mutation -> mutation)
+                qualname = wrapped_func.__qualname__
+                class_name = qualname.rsplit(".", 1)[0] if "." in qualname else None
+                if class_name:
+                    if class_name.endswith("Query"):
+                        operation_type = "query"
+                    elif class_name.endswith("Mutation"):
+                        operation_type = "mutation"
             else:
                 webservice_name = field_or_fct.__name__
 
-            webservice_fixture = generate_webservice_fixture(
-                webservice_name,
-                enabled, is_public,
-                access_levels,
-                is_licenced
-            ).model_dump()
-
-            existing = self.webservices.get(webservice_name)
-            if existing:
-                if not allow_override:
-                    raise ValueError(
-                        f"Webservice '{webservice_name}' already registered. "
-                        f"Set allow_override=True to explicitly override it."
-                    )
-                logging.warning(f"⚠ Overwriting webservice '{webservice_name}' with new configuration")
-
-            self.webservices[webservice_name] = webservice_fixture
-
             # Generate and register tool definition if field is provided
-            # Check options for generate_tool (default: False - must be explicitly enabled)
-            # Only generate tools if AI is configured in settings
+            # Only generate tools if:
+            # - generate_tool option is True
+            # - AI is configured in settings
+            # - operation_type is known (not None)
+            # - field is a StrawberryField
             generate_tool = False
             if options and "generate_tool" in options:
                 generate_tool = options["generate_tool"]
 
-            # Check if AI is configured before generating tools
             settings = LysAppSettings()
-            if generate_tool and settings.ai.configured() and type(field_or_fct) is StrawberryField:
+            ai_plugin_configured = bool(settings.get_plugin_config("ai"))
+
+            if (
+                generate_tool
+                and ai_plugin_configured
+                and operation_type is not None
+                and type(field_or_fct) is StrawberryField
+            ):
                 try:
                     # Extract node type from field first (needed for tool description)
                     node_type = None
@@ -482,8 +487,41 @@ class AppRegistry:
                     resolver = field_or_fct.base_resolver
 
                     self.register_tool(webservice_name, tool_definition, resolver, node_type, options)
+
+                    # Store ai_tool in fixture for Auth Server registration
+                    ai_tool = tool_definition
                 except Exception as e:
                     logging.warning(f"⚠ Could not generate tool for '{webservice_name}': {e}")
+
+            # If AI tool was generated, ensure INTERNAL_SERVICE_ACCESS_LEVEL is in access_levels
+            # This allows internal services (like AI executor) to call tools via GraphQL
+            # BUT only for non-public webservices (public webservices cannot have access_levels)
+            effective_access_levels = access_levels
+            if ai_tool is not None and not is_public:
+                effective_access_levels = list(access_levels) if access_levels else []
+                if INTERNAL_SERVICE_ACCESS_LEVEL not in effective_access_levels:
+                    effective_access_levels.append(INTERNAL_SERVICE_ACCESS_LEVEL)
+
+            webservice_fixture = generate_webservice_fixture(
+                webservice_name,
+                enabled,
+                is_public,
+                effective_access_levels,
+                is_licenced,
+                operation_type=operation_type,
+                ai_tool=ai_tool,
+            ).model_dump()
+
+            existing = self.webservices.get(webservice_name)
+            if existing:
+                if not allow_override:
+                    raise ValueError(
+                        f"Webservice '{webservice_name}' already registered. "
+                        f"Set allow_override=True to explicitly override it."
+                    )
+                logging.warning(f"⚠ Overwriting webservice '{webservice_name}' with new configuration")
+
+            self.webservices[webservice_name] = webservice_fixture
 
     def validate_webservice_configuration(self):
         """
@@ -743,6 +781,10 @@ def override_webservice(
 
     # Update only provided parameters
     if access_levels is not None:
+        # Preserve INTERNAL_SERVICE_ACCESS_LEVEL if webservice has an ai_tool
+        has_ai_tool = attributes.get("ai_tool") is not None
+        if has_ai_tool and INTERNAL_SERVICE_ACCESS_LEVEL not in access_levels:
+            access_levels = list(access_levels) + [INTERNAL_SERVICE_ACCESS_LEVEL]
         attributes["access_levels"] = access_levels
         modified = True
 

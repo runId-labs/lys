@@ -4,7 +4,6 @@ import traceback
 from contextlib import asynccontextmanager
 from typing import List
 
-import httpx
 import strawberry
 from fastapi import FastAPI
 from graphql import NoSchemaIntrospectionCustomRule
@@ -22,7 +21,7 @@ from lys.core.graphql.types import DefaultQuery
 from lys.core.interfaces.permissions import PermissionInterface
 from lys.core.managers.database import DatabaseManager
 from lys.core.registries import AppRegistry, LysAppRegistry, CustomRegistry
-from lys.core.utils.auth import AuthUtils
+from lys.core.graphql.client import GraphQLClient
 from lys.core.utils.decorators import singleton
 from lys.core.utils.import_string import import_string
 
@@ -344,10 +343,6 @@ class AppManager:
         logging.info(f"Webservices to register: {list(webservices.keys())}")
 
         try:
-            # Generate service JWT token
-            auth_utils = AuthUtils(self.settings.secret_key)
-            token = auth_utils.generate_token(self.settings.service_name)
-
             # Build webservices payload for GraphQL mutation
             # Convert snake_case to camelCase for GraphQL
             webservices_input = []
@@ -374,27 +369,14 @@ class AppManager:
                 }
             """
 
-            # Call Auth Server
-            async with httpx.AsyncClient() as client:
-                response = await client.post(
-                    f"{self.settings.auth_server_url}/{self.settings.graphql_schema_name}",
-                    json={
-                        "query": mutation,
-                        "variables": {"webservices": webservices_input}
-                    },
-                    headers={
-                        "Authorization": f"Service {token}",
-                        "Content-Type": "application/json"
-                    },
-                    timeout=30.0
-                )
+            # Call Auth Server using GraphQLClient
+            client = GraphQLClient(
+                url=f"{self.settings.auth_server_url}/{self.settings.graphql_schema_name}",
+                secret_key=self.settings.secret_key,
+                service_name=self.settings.service_name,
+            )
+            result = await client.execute(mutation, {"webservices": webservices_input})
 
-            if response.status_code != 200:
-                logging.error(f"Failed to register webservices: HTTP {response.status_code}")
-                logging.error(f"Response: {response.text}")
-                return False
-
-            result = response.json()
             if "errors" in result:
                 logging.error(f"GraphQL errors: {result['errors']}")
                 return False
@@ -551,8 +533,9 @@ class AppManager:
             MaxAliasesLimiter(self.settings.query_alias_limit)
         ]
 
-        # Add AI context extension only if AI is configured
-        if self.settings.ai.configured():
+        # Add AI context extension only if AI plugin is configured
+        ai_plugin_configured = bool(self.settings.get_plugin_config("ai"))
+        if ai_plugin_configured:
             extensions.insert(1, AIContextExtension())
 
         # secure graphql schema on non-dev environment

@@ -49,6 +49,7 @@ def _creation_resolver_generator(resolver: Callable, ensure_type: Type[EntityNod
         return ensure_type.from_obj(entity_obj)
 
     inner_resolver.__name__ = resolver.__name__
+    inner_resolver.__qualname__ = resolver.__qualname__
     inner_resolver.__module__ = resolver.__module__
     inner_resolver.__signature__ = inspect.signature(resolver)
 

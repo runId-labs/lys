@@ -1,7 +1,13 @@
+"""
+AI Conversation webservices.
+
+GraphQL mutations for AI conversation interactions.
+"""
+
 import strawberry
 
-from lys.apps.base.modules.ai.inputs import AIMessageInput
-from lys.apps.base.modules.ai.nodes import AIMessageNode
+from lys.apps.ai.modules.conversation.inputs import AIMessageInput, AIToolResult, FrontendAction
+from lys.apps.ai.modules.conversation.nodes import AIMessageNode
 from lys.core.consts.webservices import CONNECTED_ACCESS_LEVEL
 from lys.core.contexts import Info
 from lys.core.graphql.fields import lys_field
@@ -18,7 +24,7 @@ class AIMutation(Mutation):
         access_levels=[CONNECTED_ACCESS_LEVEL],
         is_licenced=False,
         description="Send a message to the AI assistant. Returns AI response with optional tool execution results.",
-        options={"generate_tool": False}  # Don't generate tool for this meta-endpoint
+        options={"generate_tool": False}
     )
     async def send_ai_message(
         self,
@@ -56,23 +62,37 @@ class AIMutation(Mutation):
                 tool_results=[]
             )
 
-        # Get AI service
-        ai_service = info.context.app_manager.get_service("ai")
+        # Get user ID from context
+        user_id = info.context.connected_user.get("sub") if info.context.connected_user else None
 
-        # Call AI service
-        result = await ai_service.chat(
-            message=input_data.message,
+        if not user_id:
+            return AIMessageNode(
+                content="User must be authenticated to use AI chat.",
+                conversation_id=input_data.conversation_id,
+                tool_calls_count=0,
+                tool_results=[]
+            )
+
+        # Get conversation service
+        conversation_service = info.context.app_manager.get_service("ai_conversations")
+
+        # Initialize frontend_actions in context for collection during tool execution
+        info.context.frontend_actions = []
+
+        # Call conversation service
+        result = await conversation_service.chat_with_tools(
+            user_id=user_id,
+            content=input_data.message,
+            session=info.context.session,
+            conversation_id=input_data.conversation_id,
             tools=ai_tools,
             system_prompt=ai_system_prompt,
-            session=info.context.session,
             info=info,
-            conversation_id=input_data.conversation_id
         )
 
         # Convert tool results to Strawberry types
         tool_results = None
         if result.get("tool_results"):
-            from lys.apps.base.modules.ai.inputs import AIToolResult
             tool_results = [
                 AIToolResult(
                     tool_name=tr["tool_name"],
@@ -85,7 +105,6 @@ class AIMutation(Mutation):
         # Convert frontend actions to Strawberry types
         frontend_actions = None
         if result.get("frontend_actions"):
-            from lys.apps.base.modules.ai.inputs import FrontendAction
             frontend_actions = [
                 FrontendAction(
                     type=fa["type"],
@@ -99,7 +118,7 @@ class AIMutation(Mutation):
         return AIMessageNode(
             content=result["content"],
             conversation_id=result.get("conversation_id"),
-            tool_calls_count=result["tool_calls_count"],
+            tool_calls_count=result.get("tool_calls_count", 0),
             tool_results=tool_results,
             frontend_actions=frontend_actions
         )

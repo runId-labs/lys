@@ -1,14 +1,17 @@
+"""
+AI Webservice queries and mutations.
+
+Extends webservice queries with AI-specific filters and mutations with AI tool support.
+"""
+
 from typing import List, Optional
 
 import strawberry
 from sqlalchemy import Select, select
 
-from lys.apps.base.modules.webservice.inputs import WebserviceFixturesInput
-from lys.apps.base.modules.webservice.nodes import (
-    AccessedWebserviceNode,
-    RegisterWebservicesNode,
-    WebserviceNode
-)
+from lys.apps.ai.modules.webservice.inputs import WebserviceFixturesInput
+from lys.apps.ai.modules.webservice.nodes import WebserviceNode
+from lys.apps.base.modules.webservice.nodes import RegisterWebservicesNode
 from lys.apps.base.modules.webservice.services import WebserviceService
 from lys.core.consts.webservices import INTERNAL_SERVICE_ACCESS_LEVEL
 from lys.core.contexts import Info
@@ -22,19 +25,8 @@ from lys.core.graphql.types import Query, Mutation
 @strawberry.type
 class WebserviceQuery(Query):
     @lys_connection(
-        ensure_type=AccessedWebserviceNode,
-        is_public=True,
-        is_licenced=False,
-        description="Get all accessible webservices by a user (connected or not) based on their roles.",
-        options={"generate_tool": False}
-    )
-    async def all_accessible_webservices(self, info: Info) -> Select:
-        webservice_service = info.context.app_manager.get_service("webservice")
-        connected_user = info.context.connected_user
-        return await webservice_service.accessible_webservices(connected_user)
-
-    @lys_connection(
         ensure_type=WebserviceNode,
+        access_levels=[INTERNAL_SERVICE_ACCESS_LEVEL],
         is_licenced=False,
         description="Get all webservices with optional filters.",
         options={"generate_tool": False},
@@ -43,16 +35,26 @@ class WebserviceQuery(Query):
     async def all_webservices(
         self,
         info: Info,
+        is_ai_tool: Optional[bool] = None,
         enabled: Optional[bool] = None,
         app_name: Optional[str] = None,
     ) -> Select:
         webservice_service = info.context.app_manager.get_service("webservice")
         entity_type = webservice_service.entity_class
+
         stmt = select(entity_type).order_by(entity_type.id.asc())
 
+        # Filter by AI tool status
+        if is_ai_tool is True:
+            stmt = stmt.where(entity_type.ai_tool.isnot(None))
+        elif is_ai_tool is False:
+            stmt = stmt.where(entity_type.ai_tool.is_(None))
+
+        # Filter by enabled status
         if enabled is not None:
             stmt = stmt.where(entity_type.enabled == enabled)
 
+        # Filter by app_name
         if app_name is not None:
             stmt = stmt.where(entity_type.app_name == app_name)
 
@@ -66,7 +68,7 @@ class WebserviceMutation(Mutation):
         ensure_type=RegisterWebservicesNode,
         access_levels=[INTERNAL_SERVICE_ACCESS_LEVEL],
         is_licenced=False,
-        description="Register webservices from a business microservice. Called at microservice startup.",
+        description="Register webservices from a business microservice with AI tool support.",
         options={"generate_tool": False},
         allow_override=True,
     )
@@ -76,15 +78,14 @@ class WebserviceMutation(Mutation):
         webservices: List[WebserviceFixturesInput]
     ) -> RegisterWebservicesNode:
         """
-        Register webservices from a business microservice.
+        Register webservices from a business microservice with AI tool support.
 
-        This mutation is called by business microservices at startup to register
-        their webservices with the Auth Server. The Auth Server stores these in
-        its database to enable proper JWT token generation.
+        This mutation extends the base register_webservices to support AI tool
+        definitions in the webservice configuration.
 
         Args:
             info: GraphQL context
-            webservices: List of webservice configurations to register
+            webservices: List of webservice configurations including AI tools
 
         Returns:
             RegisterWebservicesNode with success status and count

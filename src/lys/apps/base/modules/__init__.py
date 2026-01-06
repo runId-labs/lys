@@ -1,5 +1,5 @@
 from . import access_level
-from . import ai
+# from . import ai  # Old AI module - replaced by lys.apps.ai
 from . import emailing
 from . import job
 from . import language
@@ -15,5 +15,5 @@ __submodules__ = [
     log,
     access_level,
     webservice,
-    ai
+    # ai  # Old AI module - replaced by lys.apps.ai
 ]

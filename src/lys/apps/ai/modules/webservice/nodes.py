@@ -1,0 +1,48 @@
+"""
+AI Webservice nodes.
+
+Extends WebserviceNode with AI-specific fields.
+"""
+
+from datetime import datetime
+from typing import Optional, Dict, Any, List
+
+import strawberry
+from sqlalchemy.util import classproperty
+from strawberry import relay
+from strawberry.scalars import JSON
+from strawberry.types import Info
+
+from lys.apps.base.modules.access_level.nodes import AccessLevelNode
+from lys.apps.base.modules.webservice.services import WebserviceService
+from lys.core.graphql.nodes import EntityNode
+from lys.core.registries import register_node
+
+
+@register_node()
+class WebserviceNode(EntityNode[WebserviceService], relay.Node):
+    """Webservice node with AI tool support."""
+
+    id: relay.NodeID[str]
+    code: str
+    enabled: bool
+    created_at: datetime
+    updated_at: Optional[datetime]
+    is_public: bool
+    app_name: Optional[str]
+    operation_type: str
+
+    # AI-specific fields
+    ai_tool: Optional[JSON]
+
+    @strawberry.field(description="Access levels associated with this webservice")
+    async def access_levels(self, info: Info) -> List[AccessLevelNode]:
+        """Get the access levels associated with this webservice."""
+        return await self._lazy_load_relation_list("access_levels", AccessLevelNode, info)
+
+    @classproperty
+    def order_by_attribute_map(self) -> Dict[str, Any]:
+        return {
+            "code": self.entity_class.id,
+            "created_at": self.entity_class.created_at
+        }

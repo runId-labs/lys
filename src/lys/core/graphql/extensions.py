@@ -10,7 +10,7 @@ from typing import Any, List, Dict
 from sqlalchemy.ext.asyncio import AsyncSession
 from strawberry.extensions import SchemaExtension
 
-from lys.apps.base.modules.ai.guardrails import CONFIRM_ACTION_TOOL
+from lys.apps.ai.utils.guardrails import CONFIRM_ACTION_TOOL
 from lys.core.utils.routes import filter_routes_by_permissions, build_navigate_tool
 
 
@@ -213,6 +213,8 @@ class AIContextExtension(SchemaExtension):
         result = await session.execute(stmt)
         accessible_webservices = list(result.scalars().all())
         accessible_webservice_ids = {ws.id for ws in accessible_webservices}
+        # Map webservice id to operation_type from DB
+        webservice_operation_types = {ws.id: ws.operation_type for ws in accessible_webservices}
 
         # Filter tools based on accessible webservices
         all_tools = app_manager.registry.tools
@@ -220,15 +222,33 @@ class AIContextExtension(SchemaExtension):
 
         for tool_name, tool_data in all_tools.items():
             if tool_name in accessible_webservice_ids:
-                filtered_tools.append(tool_data["definition"])
+                filtered_tools.append({
+                    "definition": tool_data["definition"],
+                    "operation_type": webservice_operation_types.get(tool_name, "mutation"),
+                })
 
         # Add confirm_action tool for guardrail confirmations
-        filtered_tools.append(CONFIRM_ACTION_TOOL)
+        filtered_tools.append({
+            "definition": CONFIRM_ACTION_TOOL,
+            "operation_type": "mutation",
+        })
 
         context.ai_tools = filtered_tools
 
         # Load and filter navigation routes based on user permissions
-        manifest = app_manager.settings.ai.get_routes_manifest()
+        # Try plugin config first, fallback to old settings.ai
+        ai_plugin_config = app_manager.settings.get_plugin_config("ai")
+        routes_manifest_path = None
+
+        # Check chatbot options for routes_manifest_path (plugin system)
+        chatbot_config = ai_plugin_config.get("chatbot", {})
+        if isinstance(chatbot_config, dict):
+            routes_manifest_path = chatbot_config.get("options", {}).get("routes_manifest_path")
+
+        manifest = None
+        if routes_manifest_path:
+            from lys.core.utils.routes import load_routes_manifest
+            manifest = load_routes_manifest(routes_manifest_path)
         if manifest and "routes" in manifest:
             context.ai_accessible_routes = filter_routes_by_permissions(
                 manifest["routes"],
@@ -237,16 +257,21 @@ class AIContextExtension(SchemaExtension):
             # Add navigate tool with accessible routes as enum
             if context.ai_accessible_routes:
                 navigate_tool = build_navigate_tool(context.ai_accessible_routes)
-                filtered_tools.append(navigate_tool)
+                filtered_tools.append({
+                    "definition": navigate_tool,
+                    "operation_type": "mutation",
+                })
         else:
             context.ai_accessible_routes = []
 
         # Build system prompt with user context
         system_prompt_parts = []
 
-        # Add custom application system prompt if configured
-        if app_manager.settings.ai.system_prompt:
-            system_prompt_parts.append(app_manager.settings.ai.system_prompt)
+        # Add custom application system prompt if configured (from plugin config)
+        custom_system_prompt = chatbot_config.get("system_prompt") if isinstance(chatbot_config, dict) else None
+
+        if custom_system_prompt:
+            system_prompt_parts.append(custom_system_prompt)
             system_prompt_parts.append("")  # Empty line separator
 
         if connected_user:

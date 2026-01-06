@@ -1,4 +1,7 @@
-from sqlalchemy import Table, Column, ForeignKey, DateTime, func
+from typing import Optional
+
+from sqlalchemy import Table, Column, ForeignKey, DateTime, String, func
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import declared_attr, relationship, Mapped, mapped_column
 
 from lys.core.abstracts.webservices import AbstractWebservice
@@ -26,6 +29,11 @@ class Webservice(AbstractWebservice):
     app_name: Mapped[str] = mapped_column(
         nullable=True,
         comment="Name of the application/microservice that provides this webservice"
+    )
+    operation_type: Mapped[str] = mapped_column(
+        String(20),
+        nullable=True,
+        comment="GraphQL operation type (query or mutation)"
     )
 
     @property

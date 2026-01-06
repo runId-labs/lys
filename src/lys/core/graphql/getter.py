@@ -22,6 +22,7 @@ def _getter_resolver_generator(resolver: Callable, ensure_type: Type[EntityNode]
         return node
 
     inner_resolver.__name__ = resolver.__name__
+    inner_resolver.__qualname__ = resolver.__qualname__
     inner_resolver.__module__ = resolver.__module__
 
     return inner_resolver

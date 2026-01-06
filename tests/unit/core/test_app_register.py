@@ -616,3 +616,114 @@ class TestAppRegistrySingletonPattern:
             entity_name = list(instance1.entities.keys())[0]
             assert entity_name in instance2.entities
             assert instance1.entities[entity_name] is instance2.entities[entity_name]
+
+
+class TestAppRegistryInternalServiceAccessLevel:
+    """Test INTERNAL_SERVICE_ACCESS_LEVEL handling in webservice registration."""
+
+    def test_internal_access_not_added_to_public_webservice(self):
+        """Test that INTERNAL_SERVICE_ACCESS_LEVEL is not added to public webservices."""
+        from lys.core.consts.webservices import INTERNAL_SERVICE_ACCESS_LEVEL
+
+        register = AppRegistry()
+
+        # Mock the AI tool generation by patching
+        mock_function = Mock(__name__="public_webservice")
+
+        register.register_webservice(
+            mock_function,
+            is_public=True,
+            enabled=True,
+            is_licenced=False,
+        )
+
+        ws_config = register.webservices["public_webservice"]
+        access_levels = ws_config["attributes"].get("access_levels") or []
+
+        # Public webservices should not have INTERNAL_SERVICE_ACCESS_LEVEL
+        assert INTERNAL_SERVICE_ACCESS_LEVEL not in access_levels
+
+    def test_private_webservice_without_tool_no_internal_access(self):
+        """Test that private webservice without AI tool doesn't get INTERNAL_SERVICE_ACCESS_LEVEL."""
+        from lys.core.consts.webservices import INTERNAL_SERVICE_ACCESS_LEVEL
+
+        register = AppRegistry()
+
+        mock_function = Mock(__name__="private_webservice")
+
+        register.register_webservice(
+            mock_function,
+            is_public=False,
+            enabled=True,
+            access_levels=["admin"],
+            is_licenced=True,
+        )
+
+        ws_config = register.webservices["private_webservice"]
+        access_levels = ws_config["attributes"].get("access_levels") or []
+
+        # Without AI tool generation, should not add INTERNAL_SERVICE_ACCESS_LEVEL
+        assert INTERNAL_SERVICE_ACCESS_LEVEL not in access_levels
+
+    def test_webservice_preserves_existing_access_levels(self):
+        """Test that existing access levels are preserved."""
+        register = AppRegistry()
+
+        mock_function = Mock(__name__="admin_webservice")
+
+        register.register_webservice(
+            mock_function,
+            is_public=False,
+            enabled=True,
+            access_levels=["admin", "manager"],
+            is_licenced=True,
+        )
+
+        ws_config = register.webservices["admin_webservice"]
+        access_levels = ws_config["attributes"].get("access_levels") or []
+
+        assert "admin" in access_levels
+        assert "manager" in access_levels
+
+
+class TestAppRegistryOverrideWebservice:
+    """Test override_webservice functionality."""
+
+    def test_override_webservice_updates_attributes(self):
+        """Test that override_webservice updates attributes."""
+        from lys.core.registries import override_webservice
+
+        register = AppRegistry()
+
+        # Register initial webservice
+        mock_function = Mock(__name__="test_webservice")
+        register.register_webservice(
+            mock_function,
+            is_public=False,
+            enabled=True,
+            access_levels=["user"],
+            is_licenced=True,
+        )
+
+        # Override using standalone function with register parameter
+        override_webservice(
+            "test_webservice",
+            enabled=False,
+            access_levels=["admin", "user"],
+            register=register,
+        )
+
+        ws_config = register.webservices["test_webservice"]
+        assert ws_config["attributes"]["enabled"] is False
+        assert ws_config["attributes"]["access_levels"] == ["admin", "user"]
+
+    def test_override_nonexistent_webservice_raises(self):
+        """Test that overriding non-existent webservice raises ValueError."""
+        from lys.core.registries import override_webservice
+
+        register = AppRegistry()
+
+        with pytest.raises(ValueError) as exc_info:
+            override_webservice("nonexistent", enabled=False, register=register)
+
+        assert "not found" in str(exc_info.value)

@@ -1,4 +1,4 @@
-from typing import Literal, Set, List, Union, Optional
+from typing import Any, Dict, Literal, List, Optional, Set, Union
 
 from lys.core.consts.webservices import CONNECTED_ACCESS_LEVEL, NO_LIMITATION_WEBSERVICE_PUBLIC_TYPE, \
     DISCONNECTED_WEBSERVICE_PUBLIC_TYPE
@@ -42,7 +42,11 @@ def generate_webservice_fixture(
         webservice_name: str,
         enabled: bool,
         is_public: WebserviceIsPublicType,
-        access_levels: Union[List[str],None], is_licenced: bool
+        access_levels: Union[List[str], None],
+        is_licenced: bool,
+        operation_type: Optional[str] = None,
+        # TODO: Move ai_tool to AI app only (currently in core for testing)
+        ai_tool: Optional[Dict[str, Any]] = None,
 ):
     if access_levels is None:
         _access_levels = set()
@@ -69,7 +73,9 @@ def generate_webservice_fixture(
         public_type=is_public_,
         enabled=enabled,
         access_levels=list(_access_levels),
-        is_licenced=is_licenced
+        is_licenced=is_licenced,
+        operation_type=operation_type,
+        ai_tool=ai_tool,
     )
 
     return WebserviceFixturesModel(

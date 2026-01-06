@@ -23,39 +23,51 @@ class TestPythonTypeToJsonSchema:
 
     def test_string_type(self):
         result = python_type_to_json_schema(str)
-        assert result == {"type": "string"}
+        assert result["type"] == "string"
+        assert result["_graphql_type"] == "String!"
 
     def test_int_type(self):
         result = python_type_to_json_schema(int)
-        assert result == {"type": "integer"}
+        assert result["type"] == "integer"
+        assert result["_graphql_type"] == "Int!"
 
     def test_float_type(self):
         result = python_type_to_json_schema(float)
-        assert result == {"type": "number"}
+        assert result["type"] == "number"
+        assert result["_graphql_type"] == "Float!"
 
     def test_bool_type(self):
         result = python_type_to_json_schema(bool)
-        assert result == {"type": "boolean"}
+        assert result["type"] == "boolean"
+        assert result["_graphql_type"] == "Boolean!"
 
     def test_datetime_type(self):
         result = python_type_to_json_schema(datetime)
-        assert result == {"type": "string", "format": "date-time"}
+        assert result["type"] == "string"
+        assert result["format"] == "date-time"
+        assert result["_graphql_type"] == "DateTime!"
 
     def test_optional_string(self):
         result = python_type_to_json_schema(Optional[str])
-        assert result == {"type": "string"}
+        assert result["type"] == "string"
+        assert result["_graphql_type"] == "String"  # No ! for optional
 
     def test_optional_int(self):
         result = python_type_to_json_schema(Optional[int])
-        assert result == {"type": "integer"}
+        assert result["type"] == "integer"
+        assert result["_graphql_type"] == "Int"  # No ! for optional
 
     def test_list_of_strings(self):
         result = python_type_to_json_schema(List[str])
-        assert result == {"type": "array", "items": {"type": "string"}}
+        assert result["type"] == "array"
+        assert result["items"]["type"] == "string"
+        assert result["items"]["_graphql_type"] == "String!"
 
     def test_list_of_ints(self):
         result = python_type_to_json_schema(List[int])
-        assert result == {"type": "array", "items": {"type": "integer"}}
+        assert result["type"] == "array"
+        assert result["items"]["type"] == "integer"
+        assert result["items"]["_graphql_type"] == "Int!"
 
     def test_none_type(self):
         result = python_type_to_json_schema(type(None))
@@ -389,6 +401,15 @@ class TestAppRegisterToolIntegration:
         assert "nonexistent" in str(exc_info.value)
 
     def test_webservice_registration_generates_tool(self):
+        """Test that webservice registration stores webservice fixture.
+
+        Note: Tool generation requires:
+        - options={"generate_tool": True}
+        - AI plugin configured in settings
+        - StrawberryField with operation_type
+
+        This test verifies basic webservice registration without tool generation.
+        """
         register = AppRegistry()
 
         async def my_webservice(email: str, password: str) -> dict:
@@ -405,13 +426,169 @@ class TestAppRegisterToolIntegration:
             description="Create something"
         )
 
-        # Both webservice and tool should be registered
+        # Webservice should be registered
         assert "my_webservice" in register.webservices
-        assert "my_webservice" in register.tools
 
-        tool = register.tools["my_webservice"]
-        assert tool["definition"]["function"]["name"] == "my_webservice"
-        assert "email" in tool["definition"]["function"]["parameters"]["properties"]
-        assert "password" in tool["definition"]["function"]["parameters"]["properties"]
-        # Resolver should be stored
-        assert tool["resolver"] == my_webservice
+        webservice = register.webservices["my_webservice"]
+        assert webservice["id"] == "my_webservice"
+        assert webservice["attributes"]["public_type"] == "NO_LIMITATION"
+        assert webservice["attributes"]["enabled"] is True
+
+
+class TestInputWrappers:
+    """Tests for input_wrappers metadata in tool definitions."""
+
+    def test_tool_with_strawberry_input_has_input_wrappers(self):
+        """Test that tools with Strawberry inputs include input_wrappers metadata."""
+        @strawberry.input
+        class UpdateProfileInput:
+            bio: str
+            first_name: Optional[str] = None
+            last_name: Optional[str] = None
+
+        async def update_profile(self, inputs: UpdateProfileInput) -> dict:
+            """Update user profile."""
+            pass
+
+        result = extract_tool_from_resolver(update_profile, "Update profile")
+
+        # Check that _graphql metadata includes input_wrappers
+        graphql_meta = result.get("_graphql", {})
+        assert graphql_meta is not None
+        assert "input_wrappers" in graphql_meta
+
+        input_wrappers = graphql_meta["input_wrappers"]
+        assert len(input_wrappers) == 1
+
+        wrapper = input_wrappers[0]
+        assert wrapper["param_name"] == "inputs"
+        assert "UpdateProfileInput" in wrapper["graphql_type"]
+        assert "bio" in wrapper["fields"]
+        assert "first_name" in wrapper["fields"]
+        assert "last_name" in wrapper["fields"]
+
+    def test_tool_without_strawberry_input_has_no_input_wrappers(self):
+        """Test that tools without Strawberry inputs have no input_wrappers."""
+        async def create_user(email: str, password: str) -> dict:
+            """Create user with simple params."""
+            pass
+
+        result = extract_tool_from_resolver(create_user, "Create user")
+
+        graphql_meta = result.get("_graphql", {})
+        # input_wrappers should be None or empty
+        assert graphql_meta.get("input_wrappers") is None
+
+    def test_tool_with_pydantic_based_input_has_input_wrappers(self):
+        """Test that Pydantic-based Strawberry inputs include input_wrappers."""
+        class UpdateUserModel(BaseModel):
+            bio: Optional[str] = None
+            phone_number: Optional[str] = None
+
+        @strawberry.experimental.pydantic.input(model=UpdateUserModel)
+        class UpdateUserInput:
+            bio: strawberry.auto
+            phone_number: strawberry.auto
+
+        async def update_user(self, inputs: UpdateUserInput) -> dict:
+            """Update user data."""
+            pass
+
+        result = extract_tool_from_resolver(update_user, "Update user")
+
+        graphql_meta = result.get("_graphql", {})
+        assert "input_wrappers" in graphql_meta
+
+        input_wrappers = graphql_meta["input_wrappers"]
+        assert len(input_wrappers) == 1
+
+        wrapper = input_wrappers[0]
+        assert wrapper["param_name"] == "inputs"
+        assert "bio" in wrapper["fields"]
+        assert "phone_number" in wrapper["fields"]
+
+    def test_flattened_fields_are_in_parameters(self):
+        """Test that input fields are flattened into the top-level parameters."""
+        @strawberry.input
+        class CreateItemInput:
+            name: str
+            description: Optional[str] = None
+            price: float
+
+        async def create_item(self, inputs: CreateItemInput) -> dict:
+            """Create an item."""
+            pass
+
+        result = extract_tool_from_resolver(create_item, "Create item")
+
+        params = result["function"]["parameters"]
+        properties = params["properties"]
+
+        # Fields should be flattened to top level
+        assert "name" in properties
+        assert "description" in properties
+        assert "price" in properties
+
+        # The original 'inputs' param should NOT be in properties
+        assert "inputs" not in properties
+
+        # Required fields - check if present (may depend on how Strawberry marks fields)
+        required = params.get("required", [])
+        # Optional field should not be in required
+        assert "description" not in required
+
+    def test_graphql_metadata_includes_operation_name(self):
+        """Test that _graphql metadata includes operation_name in camelCase."""
+        async def update_user_profile(param: str) -> dict:
+            """Update profile."""
+            pass
+
+        result = extract_tool_from_resolver(update_user_profile, "Update profile")
+
+        graphql_meta = result.get("_graphql", {})
+        assert graphql_meta["operation_name"] == "updateUserProfile"
+
+    def test_multiple_input_types_in_resolver(self):
+        """Test resolver with multiple Strawberry input parameters."""
+        @strawberry.input
+        class AddressInput:
+            street: str
+            city: str
+
+        @strawberry.input
+        class ContactInput:
+            email: str
+            phone: Optional[str] = None
+
+        async def update_user_details(
+            self,
+            address: AddressInput,
+            contact: ContactInput
+        ) -> dict:
+            """Update user details with multiple inputs."""
+            pass
+
+        result = extract_tool_from_resolver(update_user_details, "Update details")
+
+        graphql_meta = result.get("_graphql", {})
+        input_wrappers = graphql_meta.get("input_wrappers", [])
+
+        # Should have 2 input wrappers
+        assert len(input_wrappers) == 2
+
+        # Check first wrapper (address)
+        address_wrapper = next(w for w in input_wrappers if w["param_name"] == "address")
+        assert "street" in address_wrapper["fields"]
+        assert "city" in address_wrapper["fields"]
+
+        # Check second wrapper (contact)
+        contact_wrapper = next(w for w in input_wrappers if w["param_name"] == "contact")
+        assert "email" in contact_wrapper["fields"]
+        assert "phone" in contact_wrapper["fields"]
+
+        # All fields should be flattened
+        params = result["function"]["parameters"]["properties"]
+        assert "street" in params
+        assert "city" in params
+        assert "email" in params
+        assert "phone" in params

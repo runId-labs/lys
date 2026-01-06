@@ -188,6 +188,7 @@ def lys_field(
             return await wrapped()
 
         inner_resolver.__name__ = resolver.__name__
+        inner_resolver.__qualname__ = resolver.__qualname__
         inner_resolver.__module__ = resolver.__module__
         inner_resolver.__signature__ = inspect.signature(resolver)
 
@@ -330,6 +331,7 @@ def lys_connection_field(
         )
 
         inner_resolver.__name__ = resolver.__name__
+        inner_resolver.__qualname__ = resolver.__qualname__
         inner_resolver.__module__ = resolver.__module__
 
         field_config = _create_strawberry_field_config(

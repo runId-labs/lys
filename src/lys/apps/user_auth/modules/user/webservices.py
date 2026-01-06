@@ -56,7 +56,6 @@ class UserQuery(Query):
         is_public=True,
         is_licenced=False,
         description="Return the currently connected user, or null if not authenticated.",
-        options={"generate_tool": True}
     )
     async def connected_user(self, info: Info) -> Optional[UserNode]:
         """
