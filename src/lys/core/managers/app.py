@@ -15,7 +15,7 @@ from lys.core.configs import LysAppSettings, AppSettings
 from lys.core.consts.component_types import AppComponentTypeEnum
 from lys.core.consts.environments import EnvironmentEnum
 from lys.core.contexts import get_context
-from lys.core.graphql.extensions import DatabaseSessionExtension, AIContextExtension
+from lys.core.graphql.extensions import DatabaseSessionExtension
 from lys.core.graphql.registries import GraphqlRegistry, LysGraphqlRegistry
 from lys.core.graphql.types import DefaultQuery
 from lys.core.interfaces.permissions import PermissionInterface
@@ -312,7 +312,7 @@ class AppManager:
         with the Auth Server. The Auth Server stores these for JWT token generation.
 
         Skipped if:
-        - auth_server_url is not configured
+        - gateway_server_url is not configured
         - service_name is not configured
         - This is the Auth Server itself (has webservice entity)
 
@@ -326,8 +326,8 @@ class AppManager:
             return True
 
         # Skip if not configured
-        if not self.settings.auth_server_url or not self.settings.service_name:
-            logging.debug("Skipping webservice registration: auth_server_url or service_name not configured")
+        if not self.settings.gateway_server_url or not self.settings.service_name:
+            logging.debug("Skipping webservice registration: gateway_server_url or service_name not configured")
             return True
 
         # Get webservices from registry
@@ -337,8 +337,8 @@ class AppManager:
             return True
 
         logging.info("=" * 50)
-        logging.info("Registering webservices with Auth Server...")
-        logging.info(f"Auth Server URL: {self.settings.auth_server_url}")
+        logging.info("Registering webservices with Gateway...")
+        logging.info(f"Gateway URL: {self.settings.gateway_server_url}")
         logging.info(f"Service name: {self.settings.service_name}")
         logging.info(f"Webservices to register: {list(webservices.keys())}")
 
@@ -355,6 +355,8 @@ class AppManager:
                         "publicType": attrs.get("public_type"),
                         "isLicenced": attrs.get("is_licenced", False),
                         "accessLevels": attrs.get("access_levels", []),
+                        "operationType": attrs.get("operation_type"),
+                        "aiTool": attrs.get("ai_tool"),
                     }
                 })
 
@@ -369,9 +371,9 @@ class AppManager:
                 }
             """
 
-            # Call Auth Server using GraphQLClient
+            # Call Gateway using GraphQLClient
             client = GraphQLClient(
-                url=f"{self.settings.auth_server_url}/{self.settings.graphql_schema_name}",
+                url=f"{self.settings.gateway_server_url}/{self.settings.graphql_schema_name}",
                 secret_key=self.settings.secret_key,
                 service_name=self.settings.service_name,
             )
@@ -532,11 +534,6 @@ class AppManager:
             # security: limit number of alias in a same query to avoid malicious batch requests
             MaxAliasesLimiter(self.settings.query_alias_limit)
         ]
-
-        # Add AI context extension only if AI plugin is configured
-        ai_plugin_configured = bool(self.settings.get_plugin_config("ai"))
-        if ai_plugin_configured:
-            extensions.insert(1, AIContextExtension())
 
         # secure graphql schema on non-dev environment
         if not self.settings.env == EnvironmentEnum.DEV:

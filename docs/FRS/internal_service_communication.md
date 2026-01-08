@@ -16,7 +16,7 @@
 ```python
 # Business microservice settings
 settings.service_name = "billing-service"  # Identifies this microservice
-settings.auth_server_url = "http://auth-server:8000"  # Auth Server URL
+settings.gateway_server_url = "http://gateway:4000"  # Apollo Gateway URL
 settings.secret_key = "shared-secret"  # Must match Auth Server
 
 # Auth Server middlewares
@@ -201,7 +201,7 @@ Called automatically at startup in `AppManager._register_webservices_to_auth_ser
 ### Skip Conditions
 
 Registration is skipped if:
-- `auth_server_url` is not configured
+- `gateway_server_url` is not configured
 - `service_name` is not configured
 - This is the Auth Server itself (has `webservice` entity in registry)
 
@@ -270,7 +270,7 @@ class WebserviceMutation(Mutation):
 
 ```python
 settings.service_name = "my-service"           # Required
-settings.auth_server_url = "http://auth:8000"  # Required
+settings.gateway_server_url = "http://gateway:4000"  # Required
 settings.secret_key = "shared-secret"          # Must match Auth Server
 ```
 
@@ -300,9 +300,9 @@ permissions = [
 - Verify `secret_key` matches between services
 - Check `ServiceAuthMiddleware` is in Auth Server middlewares
 
-### "Registration skipped: auth_server_url not configured"
+### "Registration skipped: gateway_server_url not configured"
 
-- Set `settings.auth_server_url` in business microservice
+- Set `settings.gateway_server_url` in business microservice
 
 ### "Webservice not found in registry"
 

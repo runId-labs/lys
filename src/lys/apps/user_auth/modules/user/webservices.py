@@ -55,7 +55,8 @@ class UserQuery(Query):
         ensure_type=UserNode,
         is_public=True,
         is_licenced=False,
-        description="Return the currently connected user, or null if not authenticated.",
+        description="Get the currently authenticated user's profile, email, and roles. Returns null if not logged in. No parameters needed.",
+        options={"generate_tool": True}
     )
     async def connected_user(self, info: Info) -> Optional[UserNode]:
         """
@@ -96,7 +97,7 @@ class UserQuery(Query):
         access_levels=[OWNER_ACCESS_LEVEL],
         is_licenced=False,
         description="Get a specific user by ID. Returns user profile with email, status, and private data.",
-        options={"generate_tool": True}
+        options={"generate_tool": False}
     )
     async def user(self, obj: User, info: Info):
         if obj.is_super_user:
@@ -106,7 +107,7 @@ class UserQuery(Query):
         UserNode,
         is_public=False,
         is_licenced=False,
-        description="Get a specific super user by ID. Only accessible to super users.",
+        description="Get super user details by ID. Returns profile, email, status. Super users only.",
         options={"generate_tool": True}
     )
     async def super_user(self, obj: User, info: Info):
@@ -444,7 +445,7 @@ class UserMutation(Mutation):
         ensure_type=UserNode,
         is_public=False,
         is_licenced=False,
-        description="Create a new super user. Only accessible to super users.",
+        description="Create a new super user. Required: email, password, language_code. Optional: first_name, last_name, gender_code. Super users only.",
         options={"generate_tool": True}
     )
     async def create_super_user(
@@ -498,7 +499,7 @@ class UserMutation(Mutation):
         ensure_type=UserNode,
         is_public=False,
         is_licenced=False,
-        description="Create a new regular user. Only accessible to super users.",
+        description="Create a new regular user (not super user). Required: email, password, language_code. Optional: first_name, last_name, gender_code. Super users only.",
         options={"generate_tool": True}
     )
     async def create_user(
@@ -805,7 +806,7 @@ class UserMutation(Mutation):
         ensure_type=UserNode,
         is_public=False,
         is_licenced=False,
-        description="Update user status with audit trail. Only accessible to super users.",
+        description="Update user status (ACTIVE, INACTIVE, SUSPENDED). Required: id, inputs.status_code, inputs.reason. Creates audit log. Cannot set DELETED (use anonymize_user).",
         options={"generate_tool": True}
     )
     async def update_user_status(

@@ -276,7 +276,7 @@ class AppSettings(BaseSettings):
 
         # Inter-service communication
         self.service_name: Optional[str] = None  # Name of this microservice
-        self.auth_server_url: Optional[str] = None  # URL of Auth Server for webservice registration
+        self.gateway_server_url: Optional[str] = None  # URL of Apollo Gateway for inter-service communication
 
     @property
     def debug(self) -> bool:

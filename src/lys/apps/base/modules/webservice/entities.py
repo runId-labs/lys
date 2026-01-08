@@ -35,6 +35,11 @@ class Webservice(AbstractWebservice):
         nullable=True,
         comment="GraphQL operation type (query or mutation)"
     )
+    ai_tool: Mapped[Optional[dict]] = mapped_column(
+        JSONB,
+        nullable=True,
+        comment="AI tool definition for LLM function calling"
+    )
 
     @property
     def is_public(self):

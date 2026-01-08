@@ -232,6 +232,7 @@ class MistralProvider(AIProvider):
             try:
                 return schema.model_validate_json(ai_response.content)
             except Exception as e:
+                logger.warning(f"Mistral response validation failed for {schema.__name__}: {e}")
                 raise AIValidationError(
                     f"Failed to validate response against schema {schema.__name__}: {e}"
                 )

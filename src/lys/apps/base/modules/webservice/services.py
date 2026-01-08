@@ -98,7 +98,9 @@ class WebserviceService(EntityService[Webservice]):
                     is_licenced=ws_config.attributes.is_licenced,
                     enabled=ws_config.attributes.enabled,
                     access_levels=access_levels,
-                    app_name=app_name
+                    app_name=app_name,
+                    operation_type=ws_config.attributes.operation_type,
+                    ai_tool=ws_config.attributes.ai_tool,
                 )
                 session.add(webservice)
             else:
@@ -108,6 +110,8 @@ class WebserviceService(EntityService[Webservice]):
                 webservice.enabled = ws_config.attributes.enabled
                 webservice.access_levels = access_levels
                 webservice.app_name = app_name
+                webservice.operation_type = ws_config.attributes.operation_type
+                webservice.ai_tool = ws_config.attributes.ai_tool
 
         await session.flush()
         return len(webservices)

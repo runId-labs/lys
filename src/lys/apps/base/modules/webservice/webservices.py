@@ -35,6 +35,7 @@ class WebserviceQuery(Query):
 
     @lys_connection(
         ensure_type=WebserviceNode,
+        access_levels=[INTERNAL_SERVICE_ACCESS_LEVEL],
         is_licenced=False,
         description="Get all webservices with optional filters.",
         options={"generate_tool": False},
@@ -43,12 +44,18 @@ class WebserviceQuery(Query):
     async def all_webservices(
         self,
         info: Info,
+        is_ai_tool: Optional[bool] = None,
         enabled: Optional[bool] = None,
         app_name: Optional[str] = None,
     ) -> Select:
         webservice_service = info.context.app_manager.get_service("webservice")
         entity_type = webservice_service.entity_class
         stmt = select(entity_type).order_by(entity_type.id.asc())
+
+        if is_ai_tool is True:
+            stmt = stmt.where(entity_type.ai_tool.isnot(None))
+        elif is_ai_tool is False:
+            stmt = stmt.where(entity_type.ai_tool.is_(None))
 
         if enabled is not None:
             stmt = stmt.where(entity_type.enabled == enabled)

@@ -66,6 +66,11 @@ class Context(BaseContext):
     def service_caller(self, value: Union[Dict[str, Any], None]):
         self.set_to_request_state("service_caller", value)
 
+    @property
+    def access_token(self) -> Union[str, None]:
+        """Original JWT access token from authenticated user."""
+        return self.get_from_request_state("access_token", None)
+
 
 Info : TypeAlias = StrawberryInfo[Context, RootValueType]
 

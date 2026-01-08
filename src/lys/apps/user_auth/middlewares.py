@@ -31,12 +31,21 @@ class UserAuthMiddleware(MiddlewareInterface, BaseHTTPMiddleware):
         # Initialize default user context
         connected_user: Union[Dict[str, Any], None] = None
 
-        # Extract ONLY the access token from cookies
+        # Extract access token from cookies (browser) or Authorization header (API calls)
+        # Priority: cookie first, then header fallback
         # Security note: The refresh token cookie is deliberately NOT extracted here
         # even though it is sent with every request (path="/")
         # Refresh token is only used in specific auth operations (login, logout, refresh)
         # This provides defense-in-depth security
         access_token = request.cookies.get(ACCESS_COOKIE_KEY)
+        token_from_header = False
+
+        # Fallback to Authorization header for API/service calls
+        if not access_token:
+            auth_header = request.headers.get("Authorization", "")
+            if auth_header.startswith("Bearer "):
+                access_token = auth_header[7:]
+                token_from_header = True
 
         if access_token:
             try:
@@ -60,9 +69,11 @@ class UserAuthMiddleware(MiddlewareInterface, BaseHTTPMiddleware):
                 jwt_claims = None
 
             # Validate JWT and XSRF token if present
+            # Skip XSRF validation for Bearer header auth (API/service calls)
+            # XSRF protection is only needed for cookie-based auth (browser requests)
             if jwt_claims:
                 try:
-                    if self.auth_utils.config.get(AUTH_PLUGIN_CHECK_XSRF_TOKEN_KEY):
+                    if not token_from_header and self.auth_utils.config.get(AUTH_PLUGIN_CHECK_XSRF_TOKEN_KEY):
                         xsrf_token = request.headers.get(REQUEST_HEADER_XSRF_TOKEN_KEY)
                         if not xsrf_token:
                             logging.error("XSRF token missing in request headers")
@@ -89,12 +100,12 @@ class UserAuthMiddleware(MiddlewareInterface, BaseHTTPMiddleware):
 
                 # Create an authenticated user context with all JWT claims at root level
                 connected_user = jwt_claims
-                logging.debug(f"User {connected_user['sub']} authenticated via JWT")
-            else:
-                logging.debug("No valid JWT token - user remains anonymous")
+                auth_source = "header" if token_from_header else "cookie"
+                logging.info(f"User {connected_user['sub']} authenticated via {auth_source}")
 
-        # Inject user context into request state
+        # Inject user context and original token into request state
         request.state.connected_user = connected_user
+        request.state.access_token = access_token if connected_user else None
 
         # Process request with error handling
         try:

@@ -12,6 +12,7 @@ from typing import Optional, List, Dict, Any
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from lys.apps.ai.modules.conversation.consts import (
     AIFeedbackRating,
@@ -24,9 +25,12 @@ from lys.apps.ai.modules.conversation.entities import (
     AIMessageFeedback,
 )
 from lys.apps.ai.modules.core.executors import GraphQLToolExecutor, LocalToolExecutor
+from lys.apps.ai.modules.core.services import AIToolService
+from lys.apps.ai.utils.guardrails import CONFIRM_ACTION_TOOL
 from lys.apps.ai.utils.providers.config import parse_plugin_config
 from lys.core.registries import register_service
 from lys.core.services import EntityService
+from lys.core.utils.routes import filter_routes_by_permissions, build_navigate_tool, load_routes_manifest
 
 logger = logging.getLogger(__name__)
 
@@ -34,6 +38,32 @@ logger = logging.getLogger(__name__)
 @register_service()
 class AIConversationService(EntityService[AIConversation]):
     """Service for managing AI conversations."""
+
+    _routes_manifest_cache: Optional[Dict[str, Any]] = None
+
+    @classmethod
+    def _get_routes_manifest(cls) -> Optional[Dict[str, Any]]:
+        """
+        Get cached routes manifest, loading once if needed.
+
+        Returns:
+            Routes manifest dict or None if not configured
+        """
+        if cls._routes_manifest_cache is not None:
+            return cls._routes_manifest_cache
+
+        ai_plugin_config = cls.app_manager.settings.get_plugin_config("ai") or {}
+        chatbot_config = ai_plugin_config.get("chatbot", {})
+        routes_manifest_path = None
+        if isinstance(chatbot_config, dict):
+            routes_manifest_path = chatbot_config.get("options", {}).get("routes_manifest_path")
+
+        if routes_manifest_path:
+            cls._routes_manifest_cache = load_routes_manifest(routes_manifest_path)
+        else:
+            cls._routes_manifest_cache = {}
+
+        return cls._routes_manifest_cache
 
     @classmethod
     async def get_or_create(
@@ -168,13 +198,157 @@ class AIConversationService(EntityService[AIConversation]):
         return result is not None
 
     @classmethod
-    async def _get_tool_executor(cls, tools: List[Dict[str, Any]], info: Any):
+    async def _build_system_prompt(
+        cls,
+        session: AsyncSession,
+        connected_user: Optional[Dict[str, Any]],
+        chatbot_config: Dict[str, Any],
+        tools_count: int,
+    ) -> str:
+        """
+        Build system prompt with user context.
+
+        Args:
+            session: Database session
+            connected_user: Connected user from JWT
+            chatbot_config: Chatbot configuration from plugin
+            tools_count: Number of available tools
+
+        Returns:
+            System prompt string
+        """
+        system_prompt_parts = []
+
+        # Add custom application system prompt if configured
+        custom_system_prompt = chatbot_config.get("system_prompt") if isinstance(chatbot_config, dict) else None
+        if custom_system_prompt:
+            system_prompt_parts.append(custom_system_prompt)
+            system_prompt_parts.append("")
+
+        if connected_user:
+            user_id = connected_user.get("sub", "unknown")
+            is_super_user = connected_user.get("is_super_user", False)
+
+            # Load user details from database
+            user_details = await cls._get_user_details(session, user_id)
+
+            system_prompt_parts.append("## User Context")
+            if user_details:
+                if user_details.get("email"):
+                    system_prompt_parts.append(f"- Email: {user_details['email']}")
+                if user_details.get("first_name") or user_details.get("last_name"):
+                    name = f"{user_details.get('first_name', '')} {user_details.get('last_name', '')}".strip()
+                    system_prompt_parts.append(f"- Name: {name}")
+                if user_details.get("status"):
+                    system_prompt_parts.append(f"- Status: {user_details['status']}")
+                if user_details.get("language_code"):
+                    system_prompt_parts.append(f"- Language: {user_details['language_code']}")
+            system_prompt_parts.append(f"- Super User: {'Yes' if is_super_user else 'No'}")
+            system_prompt_parts.append(f"- User ID: {user_id}")
+
+            # Add language instruction
+            if user_details and user_details.get("language_code"):
+                system_prompt_parts.append(
+                    f"\n**Important: Always respond in the user's language ({user_details['language_code']}).**"
+                )
+
+            # Get user roles if not super user
+            if not is_super_user:
+                roles_info = await cls._get_user_roles_info(session, user_id)
+                if roles_info:
+                    system_prompt_parts.append("\n## User Roles")
+                    for role in roles_info:
+                        role_line = f"- {role['code']}"
+                        if role.get("description"):
+                            role_line += f": {role['description']}"
+                        system_prompt_parts.append(role_line)
+
+            system_prompt_parts.append(f"\n## Available Tools: {tools_count}")
+        else:
+            system_prompt_parts.append("## User Context")
+            system_prompt_parts.append("- Anonymous user (not authenticated)")
+            system_prompt_parts.append(f"\n## Available Tools: {tools_count} (public only)")
+
+        return "\n".join(system_prompt_parts)
+
+    @classmethod
+    async def _get_user_details(cls, session: AsyncSession, user_id: str) -> Dict[str, Any]:
+        """Get user details from database."""
+        try:
+            user_entity = cls.app_manager.get_entity("user")
+
+            stmt = (
+                select(user_entity)
+                .where(user_entity.id == user_id)
+                .options(selectinload(user_entity.private_data))
+            )
+
+            result = await session.execute(stmt)
+            user = result.scalar_one_or_none()
+
+            if not user:
+                return {}
+
+            details = {
+                "email": getattr(user, "email", None),
+                "status": getattr(user, "status", None),
+            }
+
+            if hasattr(user, "private_data") and user.private_data:
+                details["first_name"] = getattr(user.private_data, "first_name", None)
+                details["last_name"] = getattr(user.private_data, "last_name", None)
+                details["language_code"] = getattr(user.private_data, "language_code", None)
+
+            if details["status"]:
+                if hasattr(details["status"], "code"):
+                    details["status"] = details["status"].code
+                elif hasattr(details["status"], "value"):
+                    details["status"] = details["status"].value
+
+            return details
+        except Exception:
+            return {}
+
+    @classmethod
+    async def _get_user_roles_info(cls, session: AsyncSession, user_id: str) -> List[Dict[str, Any]]:
+        """Get user roles with descriptions."""
+        try:
+            role_entity = cls.app_manager.get_entity("role")
+            user_entity = cls.app_manager.get_entity("user")
+
+            stmt = (
+                select(role_entity)
+                .where(role_entity.users.any(user_entity.id == user_id))
+                .where(role_entity.enabled == True)
+            )
+
+            result = await session.execute(stmt)
+            roles = result.scalars().all()
+
+            return [
+                {
+                    "code": role.code,
+                    "description": getattr(role, "description", None)
+                }
+                for role in roles
+            ]
+        except Exception:
+            return []
+
+    @classmethod
+    async def _get_tool_executor(
+        cls,
+        tools: List[Dict[str, Any]],
+        info: Any,
+        accessible_routes: List[Dict[str, Any]] = None,
+    ):
         """
         Get the appropriate tool executor based on configuration.
 
         Args:
             tools: Available tool definitions
             info: GraphQL info context
+            accessible_routes: List of routes accessible to the user for navigation
 
         Returns:
             Configured tool executor instance (GraphQLToolExecutor or LocalToolExecutor)
@@ -184,18 +358,29 @@ class AIConversationService(EntityService[AIConversation]):
         ai_config = parse_plugin_config(plugin_config)
 
         if ai_config.executor.mode == "graphql":
-            executor = GraphQLToolExecutor(
-                gateway_url=ai_config.executor.gateway_url,
-                secret_key=app_manager.settings.secret_key,
-                service_name=ai_config.executor.service_name or app_manager.settings.service_name,
-                timeout=ai_config.executor.timeout,
-            )
-            await executor.initialize(tools=tools)
+            # Use Bearer token from user's JWT if available (user-authenticated calls)
+            # Otherwise fall back to Service auth (inter-service calls)
+            bearer_token = info.context.access_token if info.context else None
+
+            if bearer_token:
+                executor = GraphQLToolExecutor(
+                    gateway_url=ai_config.executor.gateway_url,
+                    bearer_token=bearer_token,
+                    timeout=ai_config.executor.timeout,
+                )
+            else:
+                executor = GraphQLToolExecutor(
+                    gateway_url=ai_config.executor.gateway_url,
+                    secret_key=app_manager.settings.secret_key,
+                    service_name=ai_config.executor.service_name or app_manager.settings.service_name,
+                    timeout=ai_config.executor.timeout,
+                )
+            await executor.initialize(tools=tools, accessible_routes=accessible_routes)
             return executor
         else:
             # Local mode
             executor = LocalToolExecutor(app_manager=app_manager)
-            await executor.initialize(tools=tools, info=info)
+            await executor.initialize(tools=tools, info=info, accessible_routes=accessible_routes)
             return executor
 
     @classmethod
@@ -204,8 +389,6 @@ class AIConversationService(EntityService[AIConversation]):
         user_id: str,
         content: str,
         session: AsyncSession,
-        tools: List[Dict[str, Any]],
-        system_prompt: str,
         info: Any,
         conversation_id: Optional[str] = None,
         max_tool_iterations: int = 10,
@@ -213,12 +396,12 @@ class AIConversationService(EntityService[AIConversation]):
         """
         Send a message with tool execution support (agent loop).
 
+        Handles tool loading, system prompt building, and tool execution internally.
+
         Args:
             user_id: User ID
             content: User message content
             session: Database session
-            tools: Available tool definitions
-            system_prompt: System prompt with user context
             info: GraphQL info context
             conversation_id: Optional conversation ID to continue
             max_tool_iterations: Maximum number of tool call iterations
@@ -226,23 +409,76 @@ class AIConversationService(EntityService[AIConversation]):
         Returns:
             Dict with content, conversation_id, tool_calls_count, tool_results, frontend_actions
         """
+        app_manager = cls.app_manager
+        connected_user = info.context.connected_user
+
+        # Get tools via AIToolService filtered by JWT claims
+        # Note: Tools are lazy-loaded once and cached at class level, only filtering is done here
+        # For super_users, all tools are returned (see AIToolService.get_accessible_tools)
+        tools = await AIToolService.get_accessible_tools(connected_user)
+
+        # Add confirm_action special tool
+        tools.append(CONFIRM_ACTION_TOOL)
+
+        # Load navigation routes from cache and filter by user permissions
+        ai_plugin_config = app_manager.settings.get_plugin_config("ai") or {}
+        chatbot_config = ai_plugin_config.get("chatbot", {})
+
+        # Note: Routes manifest is loaded once and cached at class level
+        accessible_routes = []
+        manifest = cls._get_routes_manifest()
+        is_super_user = connected_user.get("is_super_user", False) if connected_user else False
+
+        if manifest and "routes" in manifest:
+            if is_super_user:
+                # Super users get all routes - permission layer handles actual access control
+                accessible_routes = manifest["routes"]
+            else:
+                # Regular users: collect all accessible webservice IDs from JWT claims
+                accessible_webservice_ids = set()
+
+                # Add global webservices (PUBLIC, CONNECTED, OWNER, ROLE access levels)
+                jwt_webservices = connected_user.get("webservices", {}) if connected_user else {}
+                accessible_webservice_ids.update(jwt_webservices.keys())
+
+                # Add organization-scoped webservices (ORGANIZATION_ROLE access level)
+                # This includes client owners and users with client_user_roles
+                organizations = connected_user.get("organizations", {}) if connected_user else {}
+                for org_data in organizations.values():
+                    accessible_webservice_ids.update(org_data.get("webservices", []))
+
+                accessible_routes = filter_routes_by_permissions(
+                    manifest["routes"],
+                    accessible_webservice_ids
+                )
+
+            if accessible_routes:
+                navigate_tool = build_navigate_tool(accessible_routes)
+                tools.append(navigate_tool)
+
+        # Build system prompt
+        # TODO: Optimize - consider caching system prompt per conversation_id to avoid
+        # 2 DB queries (user details + roles) on every message
+        system_prompt = await cls._build_system_prompt(
+            session, connected_user, chatbot_config, len(tools)
+        )
+
         # Get the appropriate executor based on config
-        executor = await cls._get_tool_executor(tools, info)
+        executor = await cls._get_tool_executor(tools, info, accessible_routes)
 
         conversation = await cls.get_or_create(user_id, session, conversation_id)
-        message_service = cls.app_manager.get_service("ai_messages")
-        ai_service = cls.app_manager.get_service("ai")
+        message_service = app_manager.get_service("ai_messages")
+        ai_service = app_manager.get_service("ai")
 
-        # Extract tool definitions for LLM (tools may contain operation_type metadata)
-        llm_tools = []
-        if tools:
-            for tool in tools:
-                if isinstance(tool, dict) and "definition" in tool:
-                    llm_tools.append(tool["definition"])
-                else:
-                    llm_tools.append(tool)
+        # Extract just the definitions for the LLM (tools contain operation_type metadata)
+        llm_tools = [
+            tool.get("definition", tool) if isinstance(tool, dict) and "definition" in tool else tool
+            for tool in tools
+        ]
 
         # Build messages with system prompt and history
+        # TODO: Optimize - consider keeping messages in memory during conversation to avoid
+        # reloading full history from DB on every message
         history = await cls._build_messages(conversation, session)
         messages = [{"role": "system", "content": system_prompt}]
 

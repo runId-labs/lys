@@ -1,7 +1,37 @@
 """
 Auth service for user_role app.
 
-Extends AuthService to add webservices claim to JWT based on user roles.
+Extends AuthService to add role-based webservices to JWT claims.
+
+=============================================================================
+IMPORTANT: JWT CLAIMS GENERATION OVERRIDE CHAIN
+=============================================================================
+
+The generate_access_claims() method follows an inheritance chain where each
+app extends the JWT claims with its own access levels:
+
+    AuthService.generate_access_claims()
+        → Handles: PUBLIC, CONNECTED, OWNER access levels
+        → Returns: {"sub", "is_super_user", "webservices"}
+
+            ↓ super()
+
+    RoleAuthService.generate_access_claims()  [THIS CLASS]
+        → Adds: ROLE access level webservices (from user's global roles)
+        → Merges into: webservices dict
+
+            ↓ super()
+
+    OrganizationAuthService.generate_access_claims()
+        → Adds: ORGANIZATION_ROLE access level
+        → Adds: "organizations" claim (per-org scoped webservices)
+
+Each class MUST call super() first, then extend the claims.
+
+NOTE: For super_users, the permission layer grants access to everything,
+but AI tool filtering uses JWT claims. See AIToolService.get_accessible_tools()
+which bypasses filtering for super_users.
+=============================================================================
 """
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -18,6 +48,8 @@ class RoleAuthService(AuthService):
 
     Extends the base AuthService to add a 'webservices' claim containing
     the names of all webservices the user can access through their roles.
+
+    See module docstring for the full override chain documentation.
     """
 
     @classmethod
@@ -27,6 +59,11 @@ class RoleAuthService(AuthService):
 
         Extends parent claims by adding role-based webservices to the
         existing webservices dict. Role-based webservices always grant "full" access.
+
+        NOTE: For super_users, we don't add role webservices here because:
+        - The permission layer already grants super_users access to everything
+        - AI tool filtering (AIToolService) bypasses JWT filtering for super_users
+        - This keeps the JWT smaller for super_users
 
         Args:
             user: The authenticated user entity
@@ -38,7 +75,7 @@ class RoleAuthService(AuthService):
         # Get base claims from parent (includes base webservices)
         claims = await super().generate_access_claims(user, session)
 
-        # Super users get all webservices - handled by permission layer, not JWT
+        # Super users: permission layer handles access, AI tools bypass JWT filtering
         if user.is_super_user:
             return claims
 

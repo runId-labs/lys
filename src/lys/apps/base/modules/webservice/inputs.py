@@ -1,9 +1,10 @@
 """
 Input types for webservice operations.
 """
-from typing import List
+from typing import Optional
 
 import strawberry
+from strawberry.scalars import JSON
 
 from lys.core.models.webservices import WebserviceFixturesModel
 
@@ -16,6 +17,7 @@ class WebserviceAttributesInput:
     enabled: strawberry.auto
     access_levels: strawberry.auto
     operation_type: strawberry.auto
+    ai_tool: Optional[JSON] = None
 
 
 @strawberry.experimental.pydantic.input(model=WebserviceFixturesModel)

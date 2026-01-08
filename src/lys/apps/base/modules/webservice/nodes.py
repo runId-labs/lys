@@ -4,6 +4,7 @@ from typing import Optional, Dict, Any, List
 import strawberry
 from sqlalchemy.util import classproperty
 from strawberry import relay
+from strawberry.scalars import JSON
 from strawberry.types import Info
 
 from lys.apps.base.modules.access_level.nodes import AccessLevelNode
@@ -30,7 +31,8 @@ class WebserviceNode(EntityNode[WebserviceService], relay.Node):
     updated_at: Optional[datetime]
     is_public: bool
     app_name: Optional[str]
-    operation_type: str
+    operation_type: Optional[str]
+    ai_tool: Optional[JSON]
     _entity: strawberry.Private[Webservice]
 
     @strawberry.field(description="Access levels associated with this webservice")

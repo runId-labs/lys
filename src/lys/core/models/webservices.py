@@ -12,7 +12,6 @@ class WebserviceFixturesModel(ParametricEntityFixturesModel):
         enabled: bool
         access_levels: List[str]
         operation_type: Optional[str] = Field(default=None, description="GraphQL operation type (query or mutation)")
-        # TODO: Move ai_tool to AI app only (currently in core for testing)
         ai_tool: Optional[Dict[str, Any]] = Field(default=None, description="AI tool definition for LLM function calling")
 
     id: str = Field(..., min_length=1)

@@ -35,7 +35,7 @@ class OrganizationUserQuery(Query):
         access_levels=[ROLE_ACCESS_LEVEL],
         is_licenced=False,
         allow_override=True,
-        description="Return all users with optional organization and role filtering. Accessible to user admins.",
+        description="Search and list all regular users (excludes super users). Use 'search' to filter by name or email, 'is_client_user' to filter by organization membership (true=in org, false=not in org), 'role_code' to filter by role.",
         options={"generate_tool": True}
     )
     async def all_users(
@@ -123,7 +123,7 @@ class OrganizationUserQuery(Query):
         is_public=False,
         access_levels=[ROLE_ACCESS_LEVEL, ORGANIZATION_ROLE_ACCESS_LEVEL],
         is_licenced=False,
-        description="Get a specific client-user relationship by ID. Returns user info within organization context.",
+        description="Get user details within an organization by client_user ID. Returns user profile, email, and organization roles.",
         options={"generate_tool": True}
     )
     async def client_user(self, obj: ClientUser, info: Info):
@@ -133,7 +133,7 @@ class OrganizationUserQuery(Query):
         ClientUserNode,
         access_levels=[ROLE_ACCESS_LEVEL, ORGANIZATION_ROLE_ACCESS_LEVEL],
         is_licenced=False,
-        description="Search client users by name/email, filter by client_id or organization role. Lists users within organizations.",
+        description="Search users within organizations. Use 'client_id' to filter by organization, 'search' for name/email, 'role_code' for organization role.",
         options={"generate_tool": True}
     )
     async def all_client_users(
@@ -214,7 +214,7 @@ class OrganizationUserMutation(Mutation):
         is_public=False,
         access_levels=[ROLE_ACCESS_LEVEL, ORGANIZATION_ROLE_ACCESS_LEVEL],
         is_licenced=False,
-        description="Update client user email address. Accessible to users with USER_ADMIN role.",
+        description="Update user email within organization. Required: id (client_user ID), inputs.new_email.",
         options={"generate_tool": True}
     )
     async def update_client_user_email(
@@ -264,7 +264,7 @@ class OrganizationUserMutation(Mutation):
         is_public=False,
         access_levels=[ROLE_ACCESS_LEVEL, ORGANIZATION_ROLE_ACCESS_LEVEL],
         is_licenced=False,
-        description="Update client user profile (first_name, last_name, gender, language) within organization.",
+        description="Update user profile within organization. Required: id. Optional inputs: first_name, last_name, gender_code, language_code.",
         options={"generate_tool": True}
     )
     async def update_client_user_private_data(
@@ -317,7 +317,7 @@ class OrganizationUserMutation(Mutation):
         is_public=False,
         access_levels=[ROLE_ACCESS_LEVEL, ORGANIZATION_ROLE_ACCESS_LEVEL],
         is_licenced=False,
-        description="Update client user role assignments within their organization. Accessible to users with USER_ADMIN role.",
+        description="Update user's organization roles. Required: id (client_user ID), inputs.role_codes (list of role codes). Empty list removes all roles.",
         options={"generate_tool": True}
     )
     async def update_client_user_roles(
@@ -371,7 +371,7 @@ class OrganizationUserMutation(Mutation):
         is_public=False,
         access_levels=[ROLE_ACCESS_LEVEL, ORGANIZATION_ROLE_ACCESS_LEVEL],
         is_licenced=False,
-        description="Create a new user and associate them with a client organization. Accessible to users with USER_ADMIN role.",
+        description="Create a new user in an organization. Required: client_id, email, password, language_code. Optional: first_name, last_name, gender_code, role_codes.",
         options={"generate_tool": True}
     )
     async def create_client_user(

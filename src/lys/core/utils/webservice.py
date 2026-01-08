@@ -1,7 +1,11 @@
 from typing import Any, Dict, Literal, List, Optional, Set, Union
 
-from lys.core.consts.webservices import CONNECTED_ACCESS_LEVEL, NO_LIMITATION_WEBSERVICE_PUBLIC_TYPE, \
-    DISCONNECTED_WEBSERVICE_PUBLIC_TYPE
+from lys.core.consts.webservices import (
+    CONNECTED_ACCESS_LEVEL,
+    NO_LIMITATION_WEBSERVICE_PUBLIC_TYPE,
+    DISCONNECTED_WEBSERVICE_PUBLIC_TYPE,
+    INTERNAL_SERVICE_ACCESS_LEVEL,
+)
 from lys.core.models.webservices import WebserviceFixturesModel
 
 PUBLIC_WEBSERVICE_CONFIG_ERROR_MESSAGE_1 = "a public webservice cannot be configured with any access level"
@@ -32,8 +36,11 @@ def check_webservice_config(
         elif is_licenced:
             error_message = PUBLIC_WEBSERVICE_CONFIG_ERROR_MESSAGE_2
 
-    elif CONNECTED_ACCESS_LEVEL in access_levels and len(access_levels) > 1:
-        error_message = CONNECTED_ACCESS_LEVEL_WEBSERVICE_CONFIG_ERROR_MESSAGE
+    elif CONNECTED_ACCESS_LEVEL in access_levels:
+        # Allow CONNECTED + INTERNAL_SERVICE only, reject any other combination
+        allowed_with_connected = {CONNECTED_ACCESS_LEVEL, INTERNAL_SERVICE_ACCESS_LEVEL}
+        if not access_levels.issubset(allowed_with_connected):
+            error_message = CONNECTED_ACCESS_LEVEL_WEBSERVICE_CONFIG_ERROR_MESSAGE
 
     return error_message
 

@@ -38,7 +38,7 @@ class UserRoleQuery(Query):
         access_levels=[ROLE_ACCESS_LEVEL],
         is_licenced=False,
         allow_override=True,
-        description="Return all users with optional search and role filtering. Accessible to USER_ADMIN role.",
+        description="Search and list all regular users (excludes super users). Use 'search' for name/email, 'role_code' to filter by global role.",
         options={"generate_tool": True}
     )
     async def all_users(
@@ -105,7 +105,7 @@ class UserMutation(Mutation):
         access_levels=[ROLE_ACCESS_LEVEL],
         is_licenced=False,
         allow_override=True,
-        description="Create a new user with role assignments. Accessible to users with ROLE access level.",
+        description="Create a new user with global roles. Required: email, password, language_code. Optional: first_name, last_name, gender_code, role_codes.",
         options={"generate_tool": True}
     )
     async def create_user(
@@ -192,7 +192,7 @@ class UserMutation(Mutation):
         is_public=False,
         access_levels=[ROLE_ACCESS_LEVEL],
         is_licenced=False,
-        description="Update user role assignments. Accessible to users with USER_ADMIN role.",
+        description="Update user's global roles. Required: id (user ID), inputs.role_codes (list of role codes). Empty list removes all roles.",
         options={"generate_tool": True}
     )
     async def update_user_roles(

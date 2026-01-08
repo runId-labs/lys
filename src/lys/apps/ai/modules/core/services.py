@@ -2,7 +2,8 @@
 AI Service with multi-provider support.
 
 This module provides the main AIService class for interacting with
-AI providers using purpose-based configuration.
+AI providers using purpose-based configuration, and AIToolService
+for managing AI tool definitions.
 """
 
 import asyncio
@@ -10,7 +11,9 @@ import logging
 import time
 from typing import List, Dict, Any, Optional, Type, TypeVar
 
+import httpx
 from pydantic import BaseModel
+from strawberry.types.field import StrawberryField
 
 from lys.apps.ai.utils.providers.abstracts import AIProvider, AIResponse
 from lys.apps.ai.utils.providers.config import AIEndpointConfig, parse_plugin_config, AIConfig
@@ -20,8 +23,11 @@ from lys.apps.ai.utils.providers.exceptions import (
     AIProviderError,
 )
 from lys.apps.ai.utils.providers.mistral import MistralProvider
+from lys.core.consts.ai import ToolRiskLevel
+from lys.core.graphql.client import GraphQLClient
 from lys.core.registries import register_service
 from lys.core.services import Service
+from lys.core.utils.tool_generator import extract_tool_from_field
 
 logger = logging.getLogger(__name__)
 
@@ -448,3 +454,266 @@ class AIService(Service):
             current_endpoint = current_endpoint.fallback
 
         raise AIError("All providers failed")
+
+
+@register_service()
+class AIToolService(Service):
+    """
+    Service for managing AI tool definitions.
+
+    This service provides:
+    - Local mode: generates tools from registry.webservices StrawberryFields
+    - GraphQL mode: fetches tools from Apollo Gateway
+    - JWT-based filtering for accessible tools
+    - Lazy loading with caching
+
+    Configuration via executor config in AI plugin:
+        settings.configure_plugin("ai",
+            executor={
+                "mode": "local",        # or "graphql"
+                "gateway_url": "...",   # for graphql mode
+                "service_name": "...",  # for graphql mode
+            },
+        )
+
+    Usage:
+        ai_tool_service = app_manager.get_service("ai_tool")
+        tools = await ai_tool_service.get_accessible_tools(connected_user)
+    """
+
+    service_name = "ai_tool"
+
+    # Cached tools with resolvers and metadata
+    _tools: Dict[str, Dict[str, Any]] = {}
+    _initialized: bool = False
+
+    @classmethod
+    async def get_accessible_tools(cls, connected_user: Dict[str, Any]) -> List[Dict]:
+        """
+        Get tool definitions filtered by JWT claims.
+
+        For super_users, all tools are returned without filtering because:
+        - The permission layer grants super_users access to everything
+        - JWT claims don't contain all webservices for super_users (by design)
+        - See AuthService.generate_access_claims() for the JWT override chain
+
+        For regular users, tools are filtered based on:
+        - "webservices" claim: global webservices (PUBLIC, CONNECTED, OWNER, ROLE)
+        - "organizations" claim: per-organization webservices (ORGANIZATION_ROLE)
+
+        Args:
+            connected_user: Connected user dict from context, containing:
+                            - "webservices": dict of accessible webservice names
+                            - "organizations": dict of per-org webservices (client owners, client_user roles)
+                            - "is_super_user": boolean
+
+        Returns:
+            List of tool definitions for LLM function calling
+        """
+        if not cls._initialized:
+            await cls._load_tools()
+
+        # Super users get all tools - permission layer handles actual access control
+        is_super_user = connected_user.get("is_super_user", False) if connected_user else False
+        if is_super_user:
+            return [
+                {
+                    "definition": tool_data["definition"],
+                    "operation_type": tool_data.get("operation_type"),
+                }
+                for tool_data in cls._tools.values()
+            ]
+
+        # Regular users: collect all accessible webservices from JWT claims
+        accessible_ids = set()
+
+        # Add global webservices (PUBLIC, CONNECTED, OWNER, ROLE access levels)
+        jwt_webservices = connected_user.get("webservices", {}) if connected_user else {}
+        accessible_ids.update(jwt_webservices.keys())
+
+        # Add organization-scoped webservices (ORGANIZATION_ROLE access level)
+        # This includes client owners and users with client_user_roles
+        organizations = connected_user.get("organizations", {}) if connected_user else {}
+        for org_data in organizations.values():
+            org_webservices = org_data.get("webservices", [])
+            accessible_ids.update(org_webservices)
+
+        return [
+            {
+                "definition": tool_data["definition"],
+                "operation_type": tool_data.get("operation_type"),
+            }
+            for name, tool_data in cls._tools.items()
+            if name in accessible_ids
+        ]
+
+    @classmethod
+    async def get_tool(cls, name: str) -> Optional[Dict[str, Any]]:
+        """
+        Get a specific tool by name.
+
+        Args:
+            name: Tool name to lookup
+
+        Returns:
+            Tool data dict with definition, resolver, node_type, etc.
+            None if tool not found.
+        """
+        if not cls._initialized:
+            await cls._load_tools()
+
+        return cls._tools.get(name)
+
+    @classmethod
+    async def _load_tools(cls):
+        """Load tools based on executor mode configuration."""
+        config = cls.app_manager.settings.get_plugin_config(AI_PLUGIN_NAME)
+        if not config:
+            logger.warning("AI plugin not configured, no tools loaded")
+            cls._initialized = True
+            return
+
+        executor_config = config.get("executor", {})
+        mode = executor_config.get("mode", "local")
+
+        if mode == "graphql":
+            await cls._load_tools_remote(executor_config)
+        else:
+            cls._load_tools_local()
+
+        cls._initialized = True
+        logger.info(f"AIToolService loaded {len(cls._tools)} tools in {mode} mode")
+
+    @classmethod
+    def _load_tools_local(cls):
+        """Generate tools from registry.webservices StrawberryFields."""
+        for name, ws_config in cls.app_manager.registry.webservices.items():
+            field = ws_config.get("_field")
+            options = ws_config.get("_options") or {}
+
+            if not field or not options.get("generate_tool"):
+                continue
+
+            if not isinstance(field, StrawberryField):
+                continue
+
+            try:
+                # Get operation_type from attributes
+                attributes = ws_config.get("attributes", {})
+                operation_type = attributes.get("operation_type")
+
+                # Skip if no operation_type (can't generate proper tool)
+                if not operation_type:
+                    continue
+
+                # Calculate node_type from field.type
+                node_type = cls._extract_node_type(field)
+
+                # Get description from attributes
+                description = attributes.get("description")
+
+                # Generate tool definition
+                tool_definition = extract_tool_from_field(field, description, node_type)
+
+                # Get resolver for local execution
+                resolver = field.base_resolver
+
+                # Store with all metadata needed for execution
+                cls._tools[name] = {
+                    "definition": tool_definition,
+                    "resolver": resolver,
+                    "node_type": node_type,
+                    "operation_type": operation_type,
+                    "risk_level": options.get("risk_level", ToolRiskLevel.READ),
+                    "confirmation_fields": options.get("confirmation_fields", []),
+                }
+
+                logger.debug(f"Loaded local tool: {name}")
+
+            except Exception as e:
+                logger.warning(f"Could not generate tool for '{name}': {e}")
+
+    @classmethod
+    def _extract_node_type(cls, field: StrawberryField) -> Optional[type]:
+        """Extract node type from StrawberryField.type."""
+        field_type = field.type
+
+        # Handle Connection types (for @lys_connection)
+        if hasattr(field_type, "__origin__"):
+            # Generic type like Connection[UserNode]
+            args = getattr(field_type, "__args__", ())
+            if args:
+                return args[0]
+        elif hasattr(field_type, "node_type"):
+            # Connection class with node_type attribute
+            return field_type.node_type
+        elif isinstance(field_type, type) and hasattr(field_type, "__strawberry_definition__"):
+            # Direct node type
+            return field_type
+
+        return None
+
+    @classmethod
+    async def _load_tools_remote(cls, executor_config: Dict[str, Any]):
+        """Fetch tools from Apollo Gateway via GraphQL."""
+        gateway_url = executor_config.get("gateway_url")
+        service_name = executor_config.get("service_name")
+        secret_key = cls.app_manager.settings.secret_key
+        timeout = executor_config.get("timeout", 30)
+
+        if not gateway_url:
+            logger.error("gateway_url not configured for graphql mode")
+            return
+
+        client = GraphQLClient(
+            url=gateway_url,
+            secret_key=secret_key,
+            service_name=service_name or "ai-service",
+            timeout=timeout,
+        )
+
+        query = """
+        query GetAITools {
+            allWebservices(isAiTool: true) {
+                edges {
+                    node {
+                        id
+                        code
+                        operationType
+                        aiTool
+                    }
+                }
+            }
+        }
+        """
+
+        try:
+            data = await client.execute(query)
+
+            if "errors" in data:
+                logger.error(f"GraphQL errors fetching tools: {data['errors']}")
+                return
+
+            edges = data.get("data", {}).get("allWebservices", {}).get("edges", [])
+            for edge in edges:
+                node = edge.get("node", {})
+                ai_tool = node.get("aiTool")
+                if ai_tool:
+                    name = ai_tool.get("function", {}).get("name") or node.get("code")
+                    cls._tools[name] = {
+                        "definition": ai_tool,
+                        "resolver": None,  # No resolver in graphql mode
+                        "node_type": None,
+                        "operation_type": node.get("operationType") or "mutation",
+                        "risk_level": ToolRiskLevel.READ,  # Default, could be fetched
+                        "confirmation_fields": [],
+                    }
+
+        except httpx.HTTPError as e:
+            logger.error(f"Failed to fetch tools from gateway: {e}")
+
+    @classmethod
+    def reset(cls):
+        """Reset the service state. Useful for testing."""
+        cls._tools = {}
+        cls._initialized = False

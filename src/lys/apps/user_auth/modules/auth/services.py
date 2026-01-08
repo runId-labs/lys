@@ -14,6 +14,11 @@ logger = logging.getLogger(__name__)
 
 from lys.apps.user_auth.consts import REFRESH_COOKIE_KEY, ACCESS_COOKIE_KEY
 from lys.apps.user_auth.errors import BLOCKED_USER_ERROR, WRONG_CREDENTIALS_ERROR, RATE_LIMIT_ERROR
+from lys.core.consts.webservices import (
+    NO_LIMITATION_WEBSERVICE_PUBLIC_TYPE,
+    CONNECTED_ACCESS_LEVEL,
+    OWNER_ACCESS_LEVEL,
+)
 from lys.apps.user_auth.modules.auth.consts import FAILED_LOGIN_ATTEMPT_STATUS, SUCCEED_LOGIN_ATTEMPT_STATUS
 from lys.apps.user_auth.modules.auth.entities import UserLoginAttempt, LoginAttemptStatus
 from lys.apps.user_auth.modules.auth.models import LoginInputModel
@@ -276,12 +281,41 @@ class AuthService(Service):
         Generate JWT claims for access token.
 
         This method builds the claims dictionary for the access token.
-        It can be overridden by subclasses to add additional claims.
+        It is designed to be overridden by subclasses to add additional claims.
+
+        =======================================================================
+        OVERRIDE CHAIN - DO NOT MODIFY WITHOUT UNDERSTANDING THE FULL CHAIN
+        =======================================================================
+
+        This method is part of an inheritance chain:
+
+            AuthService.generate_access_claims()  [THIS METHOD]
+                → Handles: PUBLIC, CONNECTED, OWNER access levels
+                → Returns: {"sub", "is_super_user", "webservices"}
+
+                    ↓ super()
+
+            RoleAuthService.generate_access_claims()  [lys.apps.user_role]
+                → Adds: ROLE access level webservices
+                → Merges into: webservices dict
+
+                    ↓ super()
+
+            OrganizationAuthService.generate_access_claims()  [lys.apps.organization]
+                → Adds: ORGANIZATION_ROLE access level
+                → Adds: "organizations" claim
+
+        Each subclass MUST call super() first, then extend the claims.
+
+        NOTE: For super_users, subclasses skip adding webservices because:
+        - The permission layer grants super_users access to everything
+        - AI tool filtering (AIToolService) bypasses JWT filtering for super_users
+        =======================================================================
 
         Base claims include:
         - sub: user ID (standard JWT claim for subject)
         - is_super_user: boolean indicating super user status
-        - webservices: list of webservice names the user can access
+        - webservices: dict mapping webservice names to access type ("full" or "owner")
 
         The webservices claim includes:
         - Public webservices with NO_LIMITATION type (accessible when connected)
@@ -320,12 +354,6 @@ class AuthService(Service):
         Returns:
             Dict mapping webservice name to access type ("full" or "owner")
         """
-        from lys.core.consts.webservices import (
-            NO_LIMITATION_WEBSERVICE_PUBLIC_TYPE,
-            CONNECTED_ACCESS_LEVEL,
-            OWNER_ACCESS_LEVEL
-        )
-
         webservice_entity = cls.app_manager.get_entity("webservice")
         access_level_entity = cls.app_manager.get_entity("access_level")
 

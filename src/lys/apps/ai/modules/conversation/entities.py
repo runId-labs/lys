@@ -28,17 +28,13 @@ class AIConversation(Entity):
     __tablename__ = "ai_conversations"
 
     user_id: Mapped[str] = mapped_column(
-        ForeignKey("user.id", ondelete="CASCADE"),
         nullable=False,
         index=True,
+        comment="Reference to user (soft FK - no constraint for microservices)",
     )
     purpose: Mapped[str] = mapped_column(String(50), nullable=False, index=True)
     title: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     archived_at: Mapped[Optional[datetime]] = mapped_column(nullable=True)
-
-    @declared_attr
-    def user(cls):
-        return relationship("user", lazy="selectin")
 
     @declared_attr
     def messages(cls):
@@ -128,9 +124,9 @@ class AIMessageFeedback(Entity):
         index=True,
     )
     user_id: Mapped[str] = mapped_column(
-        ForeignKey("user.id", ondelete="CASCADE"),
         nullable=False,
         index=True,
+        comment="Reference to user (soft FK - no constraint for microservices)",
     )
     rating: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)
     comment: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
@@ -138,10 +134,6 @@ class AIMessageFeedback(Entity):
     @declared_attr
     def message(cls):
         return relationship("ai_messages", back_populates="feedback")
-
-    @declared_attr
-    def user(cls):
-        return relationship("user", lazy="selectin")
 
     def accessing_users(self) -> list[str]:
         return [self.user_id] if self.user_id else []

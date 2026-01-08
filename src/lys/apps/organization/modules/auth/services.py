@@ -3,6 +3,36 @@ Auth service for organization app.
 
 Extends RoleAuthService to add organizations claim to JWT based on client ownership
 and client user roles.
+
+=============================================================================
+IMPORTANT: JWT CLAIMS GENERATION OVERRIDE CHAIN
+=============================================================================
+
+The generate_access_claims() method follows an inheritance chain where each
+app extends the JWT claims with its own access levels:
+
+    AuthService.generate_access_claims()
+        → Handles: PUBLIC, CONNECTED, OWNER access levels
+        → Returns: {"sub", "is_super_user", "webservices"}
+
+            ↓ super()
+
+    RoleAuthService.generate_access_claims()
+        → Adds: ROLE access level webservices (from user's global roles)
+        → Merges into: webservices dict
+
+            ↓ super()
+
+    OrganizationAuthService.generate_access_claims()  [THIS CLASS]
+        → Adds: ORGANIZATION_ROLE access level
+        → Adds: "organizations" claim (per-org scoped webservices)
+
+Each class MUST call super() first, then extend the claims.
+
+NOTE: For super_users, the permission layer grants access to everything,
+but AI tool filtering uses JWT claims. See AIToolService.get_accessible_tools()
+which bypasses filtering for super_users.
+=============================================================================
 """
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -20,6 +50,8 @@ class OrganizationAuthService(RoleAuthService):
 
     Extends RoleAuthService to add an 'organizations' claim containing
     the webservices each user can access within each organization.
+
+    See module docstring for the full override chain documentation.
 
     JWT Structure:
     {

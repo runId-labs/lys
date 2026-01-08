@@ -1,16 +1,12 @@
-import json
 import logging
 from collections import defaultdict, deque
-from typing import Type, Dict, List, Callable, Set
+from typing import Callable, Type, Dict, List, Set
 
 import strawberry
 from strawberry.types.field import StrawberryField
 from strawberry.annotation import StrawberryAnnotation
 
-from lys.core.configs import LysAppSettings
-from lys.core.consts.ai import ToolRiskLevel
 from lys.core.consts.component_types import AppComponentTypeEnum
-from lys.core.consts.webservices import INTERNAL_SERVICE_ACCESS_LEVEL
 from lys.core.graphql.interfaces import NodeInterface
 from lys.core.interfaces.entities import EntityInterface
 from lys.core.interfaces.fixtures import EntityFixtureInterface
@@ -70,7 +66,6 @@ class AppRegistry:
         self.fixtures: List[Type[EntityFixtureInterface]] = []
         self._fixture_dependencies: Dict[str, List[str]] = {}  # fixture_name -> [dependencies]
         self.webservices: dict[str, dict] = {}
-        self.tools: Dict[str, dict] = {}  # LLM tool definitions
         self.nodes: Dict[str, Type[NodeInterface]] = {}
         self.routers: List = []  # REST APIRouter instances
 
@@ -322,99 +317,6 @@ class AppRegistry:
 
         return result
 
-    def register_tool(
-        self,
-        name: str,
-        tool_definition: dict,
-        resolver: Callable = None,
-        node_type: type = None,
-        options: dict = None
-    ):
-        """
-        Register an LLM tool definition with its resolver and risk metadata.
-
-        Args:
-            name: Tool name (typically the webservice function name)
-            tool_definition: Tool definition dict in LLM function calling format
-            resolver: The resolver function to call when the tool is invoked
-            node_type: The Strawberry node type for result serialization
-            options: Tool options including risk_level and confirmation_fields
-        """
-        if not self.is_locked(AppComponentTypeEnum.WEBSERVICES):
-            # Extract risk metadata from options
-            risk_level = ToolRiskLevel.READ
-            confirmation_fields = []
-
-            if options:
-                if "risk_level" in options:
-                    risk_level = options["risk_level"]
-                if "confirmation_fields" in options:
-                    confirmation_fields = options["confirmation_fields"]
-
-            self.tools[name] = {
-                "definition": tool_definition,
-                "resolver": resolver,
-                "node_type": node_type,
-                "risk_level": risk_level,
-                "confirmation_fields": confirmation_fields
-            }
-
-    def get_tools(self) -> List[dict]:
-        """
-        Get all registered tool definitions as a list.
-
-        Returns:
-            List of tool definitions for LLM function calling
-        """
-        return [tool["definition"] for tool in self.tools.values()]
-
-    def get_tool(self, name: str) -> dict:
-        """
-        Get a specific tool by name (definition + resolver).
-
-        Args:
-            name: Tool name to lookup
-
-        Returns:
-            Dict with 'definition' and 'resolver' keys
-
-        Raises:
-            KeyError: If tool is not found
-        """
-        if name not in self.tools:
-            raise KeyError(f"Tool '{name}' not found. Available: {list(self.tools.keys())}")
-        return self.tools[name]
-
-    def get_tool_definition(self, name: str) -> dict:
-        """
-        Get only the tool definition (without resolver).
-
-        Args:
-            name: Tool name to lookup
-
-        Returns:
-            Tool definition dict
-
-        Raises:
-            KeyError: If tool is not found
-        """
-        return self.get_tool(name)["definition"]
-
-    def get_tool_resolver(self, name: str) -> Callable:
-        """
-        Get the resolver function for a tool.
-
-        Args:
-            name: Tool name to lookup
-
-        Returns:
-            Resolver function
-
-        Raises:
-            KeyError: If tool is not found
-        """
-        return self.get_tool(name)["resolver"]
-
     def register_webservice(
             self,
             field_or_fct: StrawberryField | Callable,
@@ -428,7 +330,6 @@ class AppRegistry:
     ):
         if not self.is_locked(AppComponentTypeEnum.WEBSERVICES):
             operation_type = None
-            # TODO: Move ai_tool to AI app only (currently in core for testing)
             ai_tool = None
 
             if type(field_or_fct) is StrawberryField:
@@ -445,27 +346,18 @@ class AppRegistry:
             else:
                 webservice_name = field_or_fct.__name__
 
-            # Generate and register tool definition if field is provided
-            # Only generate tools if:
-            # - generate_tool option is True
-            # - AI is configured in settings
-            # - operation_type is known (not None)
-            # - field is a StrawberryField
-            generate_tool = False
-            if options and "generate_tool" in options:
-                generate_tool = options["generate_tool"]
+            # Check if tool generation is requested
+            generate_tool = options.get("generate_tool", False) if options else False
 
-            settings = LysAppSettings()
-            ai_plugin_configured = bool(settings.get_plugin_config("ai"))
-
+            # Generate ai_tool for Auth Server DB registration (needed for graphql mode)
+            # AIToolService will generate tools from _field for local execution
             if (
                 generate_tool
-                and ai_plugin_configured
                 and operation_type is not None
                 and type(field_or_fct) is StrawberryField
             ):
                 try:
-                    # Extract node type from field first (needed for tool description)
+                    # Extract node type from field (needed for tool description)
                     node_type = None
                     field_type = field_or_fct.type
                     # Handle Connection types (for @lys_connection)
@@ -481,32 +373,16 @@ class AppRegistry:
                         # Direct node type (avoid issubclass check which triggers relay.Node introspection)
                         node_type = field_type
 
-                    tool_definition = extract_tool_from_field(field_or_fct, description, node_type)
-                    # Use the wrapped resolver (inner_resolver) that includes session management
-                    # This is the resolver after lys_field wrapping
-                    resolver = field_or_fct.base_resolver
-
-                    self.register_tool(webservice_name, tool_definition, resolver, node_type, options)
-
-                    # Store ai_tool in fixture for Auth Server registration
-                    ai_tool = tool_definition
+                    # Generate tool definition for Auth Server fixture only
+                    ai_tool = extract_tool_from_field(field_or_fct, description, node_type)
                 except Exception as e:
                     logging.warning(f"⚠ Could not generate tool for '{webservice_name}': {e}")
-
-            # If AI tool was generated, ensure INTERNAL_SERVICE_ACCESS_LEVEL is in access_levels
-            # This allows internal services (like AI executor) to call tools via GraphQL
-            # BUT only for non-public webservices (public webservices cannot have access_levels)
-            effective_access_levels = access_levels
-            if ai_tool is not None and not is_public:
-                effective_access_levels = list(access_levels) if access_levels else []
-                if INTERNAL_SERVICE_ACCESS_LEVEL not in effective_access_levels:
-                    effective_access_levels.append(INTERNAL_SERVICE_ACCESS_LEVEL)
 
             webservice_fixture = generate_webservice_fixture(
                 webservice_name,
                 enabled,
                 is_public,
-                effective_access_levels,
+                access_levels,
                 is_licenced,
                 operation_type=operation_type,
                 ai_tool=ai_tool,
@@ -520,6 +396,10 @@ class AppRegistry:
                         f"Set allow_override=True to explicitly override it."
                     )
                 logging.warning(f"⚠ Overwriting webservice '{webservice_name}' with new configuration")
+
+            # Store webservice fixture with metadata for AIToolService
+            webservice_fixture["_field"] = field_or_fct if type(field_or_fct) is StrawberryField else None
+            webservice_fixture["_options"] = options
 
             self.webservices[webservice_name] = webservice_fixture
 
@@ -557,15 +437,18 @@ class AppRegistry:
 
     def finalize_webservices(self):
         """
-        Finalize webservices registration and log all registered tools.
+        Finalize webservices registration.
 
         This method is automatically called after all webservices have been registered.
-        It logs the final tool configurations after all overrides have been applied.
+        AI tools are loaded lazily by AIToolService when needed.
         """
-        if self.tools:
-            logging.info(f"Registered {len(self.tools)} AI tools:")
-            for tool_name, tool_data in self.tools.items():
-                logging.info(f"✓ Tool: {tool_name}\n{json.dumps(tool_data['definition'], indent=2)}")
+        # Count webservices with AI tools for logging
+        ai_tool_count = sum(
+            1 for ws in self.webservices.values()
+            if ws and (ws.get("_options") or {}).get("generate_tool")
+        )
+        if ai_tool_count:
+            logging.info(f"✓ {ai_tool_count} webservices configured as AI tools (loaded lazily by AIToolService)")
 
     def register_node(self, name: str, node_class: Type[NodeInterface]):
         if not self.is_locked(AppComponentTypeEnum.NODES):
@@ -781,10 +664,6 @@ def override_webservice(
 
     # Update only provided parameters
     if access_levels is not None:
-        # Preserve INTERNAL_SERVICE_ACCESS_LEVEL if webservice has an ai_tool
-        has_ai_tool = attributes.get("ai_tool") is not None
-        if has_ai_tool and INTERNAL_SERVICE_ACCESS_LEVEL not in access_levels:
-            access_levels = list(access_levels) + [INTERNAL_SERVICE_ACCESS_LEVEL]
         attributes["access_levels"] = access_levels
         modified = True
 

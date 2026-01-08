@@ -25,36 +25,47 @@ class GraphQLToolExecutor(ToolExecutor):
     - Tools are defined on child services (Orders, Inventory, etc.)
     - Tool definitions are fetched via gateway GraphQL query
     - Execution happens via GraphQL calls through the gateway
+
+    Supports two authentication modes:
+    - Service JWT: For inter-service calls (requires secret_key and service_name)
+    - Bearer JWT: For user-authenticated calls (requires bearer_token)
     """
 
     def __init__(
         self,
         gateway_url: str,
-        secret_key: str,
-        service_name: str,
+        secret_key: str = None,
+        service_name: str = None,
+        bearer_token: str = None,
         timeout: int = 30,
     ):
         """
         Initialize the GraphQL tool executor.
 
+        Either provide (secret_key + service_name) for Service auth,
+        or bearer_token for Bearer auth.
+
         Args:
             gateway_url: URL of the Apollo Gateway
-            secret_key: Secret key for service JWT generation
-            service_name: Name of the calling service
+            secret_key: Secret key for service JWT generation (Service auth)
+            service_name: Name of the calling service (Service auth)
+            bearer_token: User JWT token (Bearer auth)
             timeout: HTTP request timeout in seconds
         """
         self.gateway_url = gateway_url
         self.timeout = timeout
         self._tools: Dict[str, Dict[str, Any]] = {}
         self._initialized = False
+        self._accessible_routes = []
         self._client = GraphQLClient(
             url=gateway_url,
             secret_key=secret_key,
             service_name=service_name,
+            bearer_token=bearer_token,
             timeout=timeout,
         )
 
-    async def initialize(self, tools: Optional[List[Dict[str, Any]]] = None):
+    async def initialize(self, tools: Optional[List[Dict[str, Any]]] = None, **kwargs):
         """
         Initialize the executor with tools.
 
@@ -63,7 +74,11 @@ class GraphQLToolExecutor(ToolExecutor):
 
         Args:
             tools: Optional list of tool definitions to use directly
+            **kwargs: Additional initialization parameters
+                - accessible_routes: List of routes accessible to the user for navigation
         """
+        self._accessible_routes = kwargs.get("accessible_routes") or []
+
         if tools is not None:
             # Use provided tools
             for tool in tools:
@@ -73,7 +88,7 @@ class GraphQLToolExecutor(ToolExecutor):
                     if name:
                         self._tools[name] = {
                             "definition": tool_def,
-                            "operation_type": tool.get("operation_type", "mutation"),
+                            "operation_type": tool.get("operation_type") or "mutation",
                         }
             self._initialized = True
             return
@@ -114,7 +129,7 @@ class GraphQLToolExecutor(ToolExecutor):
                     name = ai_tool.get("function", {}).get("name") or node.get("code")
                     self._tools[name] = {
                         "definition": ai_tool,
-                        "operation_type": node.get("operationType", "mutation"),
+                        "operation_type": node.get("operationType") or "mutation",
                     }
 
             logger.info(f"Loaded {len(self._tools)} AI tools from gateway")
@@ -428,8 +443,7 @@ class GraphQLToolExecutor(ToolExecutor):
             }
 
         # Validate path against accessible routes
-        accessible_routes = getattr(info.context, "ai_accessible_routes", [])
-        valid_paths = [route["path"] for route in accessible_routes]
+        valid_paths = [route["path"] for route in self._accessible_routes]
 
         if path not in valid_paths:
             return {

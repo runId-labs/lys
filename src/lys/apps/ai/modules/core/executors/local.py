@@ -13,6 +13,7 @@ from sqlalchemy.sql import Select as SQLSelect
 from strawberry import relay
 
 from lys.apps.ai.modules.core.executors.abstracts import ToolExecutor
+from lys.apps.ai.modules.core.services import AIToolService
 from lys.apps.ai.utils.guardrails import AIGuardrailService
 from lys.core.utils.tool_generator import entity_to_dict, node_to_dict
 
@@ -40,6 +41,7 @@ class LocalToolExecutor(ToolExecutor):
         self._app_manager = app_manager
         self._tools = []
         self._info = None
+        self._accessible_routes = []
 
     async def initialize(self, tools: List[Dict[str, Any]] = None, **kwargs) -> None:
         """
@@ -47,11 +49,14 @@ class LocalToolExecutor(ToolExecutor):
 
         Args:
             tools: List of tool definitions
-            **kwargs: Additional initialization parameters (info for GraphQL context)
+            **kwargs: Additional initialization parameters
+                - info: GraphQL context
+                - accessible_routes: List of routes accessible to the user for navigation
         """
         if tools:
             self._tools = tools
         self._info = kwargs.get("info")
+        self._accessible_routes = kwargs.get("accessible_routes") or []
 
     async def execute(
         self,
@@ -86,11 +91,10 @@ class LocalToolExecutor(ToolExecutor):
         if tool_name == "navigate":
             return self._handle_navigate(arguments, info)
 
-        # Get the tool from registry
-        try:
-            tool_data = app_manager.registry.get_tool(tool_name)
-        except KeyError:
-            raise ValueError(f"Tool '{tool_name}' not found in registry")
+        # Get the tool from AIToolService
+        tool_data = await AIToolService.get_tool(tool_name)
+        if not tool_data:
+            raise ValueError(f"Tool '{tool_name}' not found")
 
         # Get resolver info for argument conversion
         resolver = tool_data["resolver"]
@@ -172,8 +176,7 @@ class LocalToolExecutor(ToolExecutor):
         path = tool_args.get("path", "")
 
         # Validate path against accessible routes
-        accessible_routes = getattr(info.context, "ai_accessible_routes", [])
-        valid_paths = [route["path"] for route in accessible_routes]
+        valid_paths = [route["path"] for route in self._accessible_routes]
 
         if path not in valid_paths:
             return {
