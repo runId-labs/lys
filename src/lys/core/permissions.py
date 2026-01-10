@@ -71,11 +71,14 @@ async def get_access_type(app_manager, webservice_id: str,
                 computed_access_type, computed_message_tuple = \
                     await permission.check_webservice_permission(webservice_id, context)
 
+                # Capture error message from any permission that provides one
+                # This ensures ACCESS_DENIED_ERROR is preserved even when access_type is None
+                if computed_message_tuple is not None:
+                    message_tuple = computed_message_tuple
+
                 # Boolean results are final decisions (grant/deny)
                 if isinstance(computed_access_type, bool):
                     access_type = computed_access_type
-                    if computed_message_tuple is not None:
-                        message_tuple = computed_message_tuple
                     break
 
                 # Dictionary results contain access metadata (roles, levels, etc.)
