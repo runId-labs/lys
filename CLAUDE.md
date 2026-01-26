@@ -40,6 +40,41 @@ src/lys/apps/{app_name}/
 - `LysAppSettings` - Configuration management with environment-based settings
 - Component registries automatically discover and register app components
 
+### Entity Design Rules
+
+**UUID Fields - MANDATORY**
+
+All ID fields in non-parametric entities (`Entity` subclasses) MUST use `Uuid(as_uuid=False)` for proper database-level validation. This includes:
+- The primary `id` field (inherited from `Entity`)
+- All soft foreign key fields (`client_id`, `user_id`, `company_id`, `establishment_id`, etc.)
+- Any field that stores a reference to another entity's ID
+
+```python
+from sqlalchemy import Uuid
+from sqlalchemy.orm import Mapped, mapped_column
+
+class MyEntity(Entity):
+    # Soft FK fields MUST use Uuid(as_uuid=False)
+    client_id: Mapped[str] = mapped_column(
+        Uuid(as_uuid=False),
+        nullable=False,
+        comment="Client reference (soft FK)"
+    )
+    user_id: Mapped[Optional[str]] = mapped_column(
+        Uuid(as_uuid=False),
+        nullable=True,
+        comment="User reference (soft FK)"
+    )
+```
+
+**Why this matters:**
+- Prevents invalid data (e.g., GlobalIDs stored instead of UUIDs)
+- Database validates UUID format at insert/update time
+- Catches bugs early instead of corrupting data
+- `as_uuid=False` keeps the value as a string for JSON serialization
+
+**Exception:** `ParametricEntity` subclasses use string IDs (codes like "HIGH", "LOW") and do NOT use UUID.
+
 ## Development Commands
 
 ### Installation
