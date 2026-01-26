@@ -8,7 +8,7 @@ feedback and metrics, supporting analytics and fine-tuning data export.
 from datetime import datetime
 from typing import Optional, List
 
-from sqlalchemy import String, Text, ForeignKey, Integer
+from sqlalchemy import String, Text, ForeignKey, Integer, Uuid
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship, declared_attr
 
@@ -28,6 +28,7 @@ class AIConversation(Entity):
     __tablename__ = "ai_conversations"
 
     user_id: Mapped[str] = mapped_column(
+        Uuid(as_uuid=False),
         nullable=False,
         index=True,
         comment="Reference to user (soft FK - no constraint for microservices)",
@@ -124,6 +125,7 @@ class AIMessageFeedback(Entity):
         index=True,
     )
     user_id: Mapped[str] = mapped_column(
+        Uuid(as_uuid=False),
         nullable=False,
         index=True,
         comment="Reference to user (soft FK - no constraint for microservices)",

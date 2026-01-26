@@ -104,17 +104,27 @@ def register_subscription(register: GraphqlRegistry = None):
     Register a GraphQL subscription class to the schema.
 
     The schema name is automatically retrieved from settings.graphql_schema_name.
+    The class name must end with 'Subscription' (e.g., SignalSubscription).
 
     Args:
         register: Optional GraphqlRegistry instance. If None, uses LysGraphqlRegistry singleton.
 
     Returns:
         Decorator function that registers the subscription class.
+
+    Raises:
+        ValueError: If class name doesn't end with 'Subscription'.
     """
     if register is None:
         register = LysGraphqlRegistry()
 
     def decorator(cls: type[SubscriptionInterface]):
+        if not cls.__name__.endswith("Subscription"):
+            raise ValueError(
+                f"Subscription class '{cls.__name__}' must end with 'Subscription' "
+                f"(e.g., '{cls.__name__}Subscription'). This convention is required for "
+                f"automatic operation_type detection in webservice registration."
+            )
         register.register_subscription(settings.graphql_schema_name, cls)
         return cls
 

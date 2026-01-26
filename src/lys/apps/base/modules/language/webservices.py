@@ -24,8 +24,7 @@ class LanguageQuery(Query):
         LanguageNode,
         is_public=True,
         is_licenced=False,
-        description="List all supported languages. Filter by 'enabled' status. Use to get valid language codes for user settings.",
-        options={"generate_tool": True}
+        description="List all supported languages. Filter by 'enabled' status. Use to get valid language codes for user settings."
     )
     async def all_languages(self, info: Info, enabled: bool | None = None) -> Select:
         """

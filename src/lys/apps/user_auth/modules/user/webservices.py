@@ -107,8 +107,7 @@ class UserQuery(Query):
         UserNode,
         is_public=False,
         is_licenced=False,
-        description="Get super user details by ID. Returns profile, email, status. Super users only.",
-        options={"generate_tool": True}
+        description="Get super user details by ID. Returns profile, email, status. Super users only."
     )
     async def super_user(self, obj: User, info: Info):
         if not obj.is_super_user:
@@ -118,8 +117,7 @@ class UserQuery(Query):
         UserNode,
         is_public=False,
         is_licenced=False,
-        description="Search and list all users by name or email. Use 'search' parameter to filter. Super users only.",
-        options={"generate_tool": True}
+        description="Search and list all users by name or email. Use 'search' parameter to filter. Super users only."
     )
     async def all_users(
         self,
@@ -168,8 +166,7 @@ class UserQuery(Query):
         UserNode,
         is_public=False,
         is_licenced=False,
-        description="Search and list all super users by name or email. Use 'search' parameter to filter. Super users only.",
-        options={"generate_tool": True}
+        description="Search and list all super users by name or email. Use 'search' parameter to filter. Super users only."
     )
     async def all_super_users(
         self,
@@ -223,8 +220,7 @@ class UserStatusQuery(Query):
         UserStatusNode,
         is_public=True,
         is_licenced=False,
-        description="List all user status types (ACTIVE, INACTIVE, SUSPENDED, DELETED). Use to get valid status codes.",
-        options={"generate_tool": True}
+        description="List all user status types (ACTIVE, INACTIVE, SUSPENDED, DELETED). Use to get valid status codes."
     )
     async def all_user_statuses(
         self,
@@ -245,8 +241,7 @@ class GenderQuery(Query):
         GenderNode,
         is_public=True,
         is_licenced=False,
-        description="List all gender options (MALE, FEMALE, OTHER). Use to get valid gender codes for user creation.",
-        options={"generate_tool": True}
+        description="List all gender options (MALE, FEMALE, OTHER). Use to get valid gender codes for user creation."
     )
     async def all_genders(self, info: Info) -> Select:
         entity_type = info.context.app_manager.get_entity("gender")
@@ -445,8 +440,7 @@ class UserMutation(Mutation):
         ensure_type=UserNode,
         is_public=False,
         is_licenced=False,
-        description="Create a new super user. Required: email, password, language_code. Optional: first_name, last_name, gender_code. Super users only.",
-        options={"generate_tool": True}
+        description="Create a new super user. Required: email, password, language_code. Optional: first_name, last_name, gender_code. Super users only."
     )
     async def create_super_user(
         self,
@@ -499,8 +493,7 @@ class UserMutation(Mutation):
         ensure_type=UserNode,
         is_public=False,
         is_licenced=False,
-        description="Create a new regular user (not super user). Required: email, password, language_code. Optional: first_name, last_name, gender_code. Super users only.",
-        options={"generate_tool": True}
+        description="Create a new regular user (not super user). Required: email, password, language_code. Optional: first_name, last_name, gender_code. Super users only."
     )
     async def create_user(
         self,
@@ -554,8 +547,7 @@ class UserMutation(Mutation):
         is_public=False,
         access_levels=[OWNER_ACCESS_LEVEL],
         is_licenced=False,
-        description="Update user email address. Only the owner can update their own email.",
-        options={"generate_tool": True}
+        description="Update user email address. Only the owner can update their own email."
     )
     async def update_user_email(
         self,
@@ -650,8 +642,7 @@ class UserMutation(Mutation):
         is_public=False,
         access_levels=[OWNER_ACCESS_LEVEL],
         is_licenced=False,
-        description="Update user profile (first_name, last_name, gender, language). Owner access only.",
-        options={"generate_tool": True}
+        description="Update user profile (first_name, last_name, gender, language). Owner access only."
     )
     async def update_user_private_data(
         self,
@@ -701,8 +692,7 @@ class UserMutation(Mutation):
         ensure_type=UserNode,
         is_public=False,
         is_licenced=False,
-        description="Update super user email address. Only accessible to super users.",
-        options={"generate_tool": True}
+        description="Update super user email address. Only accessible to super users."
     )
     async def update_super_user_email(
         self,
@@ -751,8 +741,7 @@ class UserMutation(Mutation):
         ensure_type=UserNode,
         is_public=False,
         is_licenced=False,
-        description="Update super user profile (first_name, last_name, gender, language). Only accessible to super users.",
-        options={"generate_tool": True}
+        description="Update super user profile (first_name, last_name, gender, language). Only accessible to super users."
     )
     async def update_super_user_private_data(
         self,
@@ -806,8 +795,7 @@ class UserMutation(Mutation):
         ensure_type=UserNode,
         is_public=False,
         is_licenced=False,
-        description="Update user status (ACTIVE, INACTIVE, SUSPENDED). Required: id, inputs.status_code, inputs.reason. Creates audit log. Cannot set DELETED (use anonymize_user).",
-        options={"generate_tool": True}
+        description="Update user status (ACTIVE, INACTIVE, SUSPENDED). Required: id, inputs.status_code, inputs.reason. Creates audit log. Cannot set DELETED (use anonymize_user)."
     )
     async def update_user_status(
         self,
@@ -853,8 +841,7 @@ class UserMutation(Mutation):
         ensure_type=AnonymizeUserNode,
         is_public=False,
         is_licenced=False,
-        description="Anonymize user data (GDPR). Only accessible to super users. IRREVERSIBLE.",
-        options={"generate_tool": True}
+        description="Anonymize user data (GDPR). Only accessible to super users. IRREVERSIBLE."
     )
     async def anonymize_user(self, user_id: relay.GlobalID, inputs: AnonymizeUserInput, info: Info) -> AnonymizeUserNode:
         """
@@ -907,8 +894,7 @@ class UserAuditLogQuery(Query):
         ensure_type=UserAuditLogNode,
         is_public=False,
         is_licenced=False,
-        description="Search audit logs by type (STATUS_CHANGE, ANONYMIZATION, OBSERVATION), email, or user. Filter by author or target user.",
-        options={"generate_tool": True}
+        description="Search audit logs by type (STATUS_CHANGE, ANONYMIZATION, OBSERVATION), email, or user. Filter by author or target user."
     )
     async def list_user_audit_logs(
         self,
@@ -959,8 +945,7 @@ class UserAuditLogMutation(Mutation):
         ensure_type=UserAuditLogNode,
         is_public=False,
         is_licenced=False,
-        description="Create user observation (manual audit log). Only accessible to super users and USER_ADMIN role.",
-        options={"generate_tool": True}
+        description="Create user observation (manual audit log). Only accessible to super users and USER_ADMIN role."
     )
     async def create_user_observation(
         self,
@@ -1006,8 +991,7 @@ class UserAuditLogMutation(Mutation):
         is_public=False,
         access_levels=[OWNER_ACCESS_LEVEL],
         is_licenced=False,
-        description="Update user audit log (OBSERVATION only). Only owner and super users can update.",
-        options={"generate_tool": True}
+        description="Update user audit log (OBSERVATION only). Only owner and super users can update."
     )
     async def update_user_audit_log(
         self,
@@ -1053,8 +1037,7 @@ class UserAuditLogMutation(Mutation):
         is_public=False,
         access_levels=[OWNER_ACCESS_LEVEL],
         is_licenced=False,
-        description="Delete user observation (soft delete). Only owner and super users can delete.",
-        options={"generate_tool": True}
+        description="Delete user observation (soft delete). Only owner and super users can delete."
     )
     async def delete_user_observation(
         self,

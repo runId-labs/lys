@@ -19,8 +19,7 @@ class RoleQuery(Query):
         is_public=False,
         access_levels=[CONNECTED_ACCESS_LEVEL],
         is_licenced=False,
-        description="List all available roles for user assignment. Filter by 'enabled' status. Use to get valid role codes.",
-        options={"generate_tool": True}
+        description="List all available roles for user assignment. Filter by 'enabled' status. Use to get valid role codes."
     )
     async def all_roles(
         self,

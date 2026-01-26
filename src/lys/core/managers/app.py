@@ -2,7 +2,7 @@ import importlib
 import logging
 import traceback
 from contextlib import asynccontextmanager
-from typing import List
+from typing import List, Optional, Callable, Awaitable
 
 import strawberry
 from fastapi import FastAPI
@@ -20,6 +20,8 @@ from lys.core.graphql.registries import GraphqlRegistry, LysGraphqlRegistry
 from lys.core.graphql.types import DefaultQuery
 from lys.core.interfaces.permissions import PermissionInterface
 from lys.core.managers.database import DatabaseManager
+from lys.core.managers.pubsub import PubSubManager
+from lys.core.models import PubSubConfig
 from lys.core.registries import AppRegistry, LysAppRegistry, CustomRegistry
 from lys.core.graphql.client import GraphQLClient
 from lys.core.utils.decorators import singleton
@@ -53,11 +55,17 @@ class AppManager:
 
         self.permissions: List[PermissionInterface] = []
 
+        self.pubsub: Optional[PubSubManager] = None
+
+        # Lifecycle callbacks (set via initialize_app)
+        self._on_startup: Optional[Callable[[], Awaitable[None]]] = None
+        self._on_shutdown: Optional[Callable[[], Awaitable[None]]] = None
+
     ####################################################################################################################
     #                                                    PUBLIC
     ####################################################################################################################
 
-    def get_entity(self, name: str):
+    def get_entity(self, name: str, nullable: bool = False):
         """
         Retrieve a registered entity by name.
 
@@ -65,19 +73,21 @@ class AppManager:
 
         Args:
             name: Entity name to lookup (typically __tablename__)
+            nullable: If True, return None instead of raising KeyError when not found
 
         Returns:
-            Entity class
+            Entity class, or None if nullable=True and entity not found
 
         Raises:
-            KeyError: If entity is not found
+            KeyError: If entity is not found and nullable=False
 
         Example:
             user_entity = app_manager.get_entity("users")
+            optional_entity = app_manager.get_entity("optional_table", nullable=True)
         """
-        return self.registry.get_entity(name)
+        return self.registry.get_entity(name, nullable=nullable)
 
-    def get_service(self, name: str):
+    def get_service(self, name: str, nullable: bool = False):
         """
         Retrieve a registered service by name.
 
@@ -85,17 +95,19 @@ class AppManager:
 
         Args:
             name: Service name to lookup (typically entity's __tablename__)
+            nullable: If True, return None instead of raising KeyError when not found
 
         Returns:
-            Service class
+            Service class or None if nullable=True and not found
 
         Raises:
-            KeyError: If service is not found
+            KeyError: If service is not found and nullable=False
 
         Example:
             user_service = app_manager.get_service("users")
+            optional_service = app_manager.get_service("optional_thing", nullable=True)
         """
-        return self.registry.get_service(name)
+        return self.registry.get_service(name, nullable=nullable)
 
     ####################################################################################################################
     #                                                    PROTECTED
@@ -575,15 +587,42 @@ class AppManager:
         if self.database.has_database_configured():
             await self.database.initialize_database()
 
-        # Phase 2: Load fixtures in dependency order (after database is ready)
+        # Phase 2: Initialize PubSub if configured
+        pubsub_config = self.settings.get_plugin_config("pubsub")
+        if pubsub_config:
+            validated_config = PubSubConfig(**pubsub_config)
+            self.pubsub = PubSubManager(
+                redis_url=validated_config.redis_url,
+                channel_prefix=validated_config.channel_prefix
+            )
+            await self.pubsub.initialize()
+
+        # Phase 3: Load fixtures in dependency order (after database is ready)
         if AppComponentTypeEnum.FIXTURES in self.component_types:
             await self._load_fixtures_in_order()
 
-        # Phase 3: Register webservices with Auth Server (for business microservices)
+        # Phase 4: Register webservices with Auth Server (for business microservices)
         await self._register_webservices_to_auth_server()
 
+        # Phase 5: Initialize services (async lifecycle hooks)
+        await self.registry.initialize_services()
+
+        # Phase 6: Call custom startup callback if provided
+        if self._on_startup:
+            await self._on_startup()
+
         yield
-        # shutdown
+
+        # Shutdown: call custom shutdown callback first
+        if self._on_shutdown:
+            await self._on_shutdown()
+
+        # Shutdown: call shutdown methods for component types that support it
+        await self.registry.shutdown_services()
+
+        # Shutdown PubSub if initialized
+        if self.pubsub:
+            await self.pubsub.shutdown()
 
     ####################################################################################################################
     #                                                    PUBLIC
@@ -629,7 +668,18 @@ class AppManager:
 
         return success
 
-    def initialize_app(self, title: str, description: str, version:str ):
+    def initialize_app(
+        self,
+        title: str,
+        description: str,
+        version: str,
+        on_startup: Optional[Callable[[], Awaitable[None]]] = None,
+        on_shutdown: Optional[Callable[[], Awaitable[None]]] = None,
+    ):
+        # Store lifecycle callbacks
+        self._on_startup = on_startup
+        self._on_shutdown = on_shutdown
+
         # Phase 1: Load all components (services, entities, fixtures)
         self.load_all_components()
 

@@ -1,7 +1,7 @@
 from datetime import datetime
 from typing import Any, Optional
 
-from sqlalchemy import BigInteger, ForeignKey, JSON, DateTime
+from sqlalchemy import BigInteger, ForeignKey, JSON, DateTime, Uuid
 from sqlalchemy.orm import Mapped, mapped_column, declared_attr, relationship
 
 from lys.apps.file_management.modules.file_import.consts import FILE_IMPORT_STATUS_PENDING
@@ -27,7 +27,7 @@ class FileImport(Entity):
     __tablename__ = "file_import"
 
     # Client ID (soft reference, no FK - microservices pattern)
-    client_id: Mapped[str] = mapped_column(nullable=False)
+    client_id: Mapped[str] = mapped_column(Uuid(as_uuid=False), nullable=False)
 
     stored_file_id: Mapped[Optional[str]] = mapped_column(
         ForeignKey("stored_file.id", ondelete="SET NULL"),

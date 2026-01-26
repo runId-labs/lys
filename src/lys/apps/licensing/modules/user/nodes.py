@@ -3,7 +3,7 @@ GraphQL nodes for licensing user module.
 """
 
 from datetime import datetime
-from typing import Optional, List
+from typing import Any, Dict, Optional, List
 
 import strawberry
 from strawberry import relay
@@ -16,6 +16,7 @@ from lys.apps.user_auth.modules.user.nodes import UserNode
 from lys.apps.user_role.modules.role.nodes import RoleNode
 from lys.core.graphql.nodes import EntityNode
 from lys.core.registries import register_node
+from lys.core.utils.manager import classproperty
 
 
 @register_node()
@@ -74,3 +75,25 @@ class ClientUserNode(EntityNode[ClientUserService], relay.Node):
         subscription_service = info.context.app_manager.get_service("subscription")
         session = info.context.session
         return await subscription_service.is_client_user_licensed(self._entity.id, session)
+
+    @classproperty
+    def order_by_attribute_map(self) -> Dict[str, Any]:
+        """
+        Define allowed order by keys for ClientUser queries.
+
+        Allowed sorting fields:
+        - created_at: ClientUser creation date
+        - email: User email address (requires join with user_email_address)
+        - last_name: User last name (requires join with user_private_data)
+
+        Note: The query using these order_by fields MUST include the necessary joins.
+        """
+        entity_class = self.service_class.entity_class
+        email_entity = self.service_class.app_manager.get_entity("user_email_address")
+        private_data_entity = self.service_class.app_manager.get_entity("user_private_data")
+
+        return {
+            "created_at": entity_class.created_at,
+            "email": email_entity.id,
+            "last_name": private_data_entity.last_name,
+        }

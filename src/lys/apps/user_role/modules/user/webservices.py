@@ -38,8 +38,7 @@ class UserRoleQuery(Query):
         access_levels=[ROLE_ACCESS_LEVEL],
         is_licenced=False,
         allow_override=True,
-        description="Search and list all regular users (excludes super users). Use 'search' for name/email, 'role_code' to filter by global role.",
-        options={"generate_tool": True}
+        description="Search and list all regular users (excludes super users). Use 'search' for name/email, 'role_code' to filter by global role."
     )
     async def all_users(
         self,
@@ -105,8 +104,7 @@ class UserMutation(Mutation):
         access_levels=[ROLE_ACCESS_LEVEL],
         is_licenced=False,
         allow_override=True,
-        description="Create a new user with global roles. Required: email, password, language_code. Optional: first_name, last_name, gender_code, role_codes.",
-        options={"generate_tool": True}
+        description="Create a new user with global roles. Required: email, password, language_code. Optional: first_name, last_name, gender_code, role_codes."
     )
     async def create_user(
         self,
@@ -192,8 +190,7 @@ class UserMutation(Mutation):
         is_public=False,
         access_levels=[ROLE_ACCESS_LEVEL],
         is_licenced=False,
-        description="Update user's global roles. Required: id (user ID), inputs.role_codes (list of role codes). Empty list removes all roles.",
-        options={"generate_tool": True}
+        description="Update user's global roles. Required: id (user ID), inputs.role_codes (list of role codes). Empty list removes all roles."
     )
     async def update_user_roles(
         self,

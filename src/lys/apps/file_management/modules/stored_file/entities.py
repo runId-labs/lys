@@ -1,6 +1,6 @@
 from typing import Any, Optional
 
-from sqlalchemy import BigInteger, ForeignKey, JSON
+from sqlalchemy import BigInteger, ForeignKey, JSON, Uuid
 from sqlalchemy.orm import Mapped, mapped_column, declared_attr, relationship
 
 from lys.core.entities import Entity, ParametricEntity
@@ -19,7 +19,7 @@ class StoredFile(Entity):
     __tablename__ = "stored_file"
 
     # Client ID (soft reference, no FK - microservices pattern)
-    client_id: Mapped[str] = mapped_column(nullable=False)
+    client_id: Mapped[str] = mapped_column(Uuid(as_uuid=False), nullable=False)
 
     original_name: Mapped[str] = mapped_column(nullable=False)
     size: Mapped[int] = mapped_column(BigInteger, nullable=False)

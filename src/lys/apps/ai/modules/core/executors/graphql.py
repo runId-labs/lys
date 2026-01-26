@@ -12,7 +12,7 @@ import httpx
 
 from lys.apps.ai.modules.core.executors.abstracts import ToolExecutor
 from lys.core.graphql.client import GraphQLClient
-from lys.core.utils.strings import to_camel_case
+from lys.core.utils.strings import to_camel_case, to_snake_case
 
 logger = logging.getLogger(__name__)
 
@@ -76,7 +76,9 @@ class GraphQLToolExecutor(ToolExecutor):
             tools: Optional list of tool definitions to use directly
             **kwargs: Additional initialization parameters
                 - accessible_routes: List of routes accessible to the user for navigation
+                - page_context: Page context for param injection
         """
+        await super().initialize(tools, **kwargs)
         self._accessible_routes = kwargs.get("accessible_routes") or []
 
         if tools is not None:
@@ -183,6 +185,39 @@ class GraphQLToolExecutor(ToolExecutor):
         # Get parameter types from definition
         parameters = definition.get("function", {}).get("parameters", {})
         properties = parameters.get("properties", {})
+
+        # Inject page context params into arguments
+        arguments = self._inject_page_params(arguments)
+
+        # Filter arguments by those the tool accepts (ignore unknown params like dStack)
+        filtered_out = {k: v for k, v in arguments.items() if k not in properties}
+        if filtered_out:
+            logger.debug(
+                f"[ParamFiltering] Tool '{tool_name}' - filtered out unknown params: {filtered_out}"
+            )
+        arguments = {k: v for k, v in arguments.items() if k in properties}
+
+        # Filter orderBy fields to only include valid fields from the schema
+        if "order_by" in arguments and isinstance(arguments["order_by"], dict):
+            order_by_schema = properties.get("order_by", {})
+            valid_fields = set(order_by_schema.get("properties", {}).keys())
+            # Also accept snake_case versions of camelCase fields
+            valid_fields_snake = {to_snake_case(f) for f in valid_fields}
+            all_valid = valid_fields | valid_fields_snake
+
+            original_order_by = arguments["order_by"]
+            filtered_order_by = {k: v for k, v in original_order_by.items() if k in all_valid}
+            if filtered_order_by != original_order_by:
+                invalid_fields = set(original_order_by.keys()) - set(filtered_order_by.keys())
+                logger.debug(
+                    f"[ParamFiltering] Tool '{tool_name}' - filtered out invalid orderBy fields: {invalid_fields}"
+                )
+            arguments["order_by"] = filtered_order_by if filtered_order_by else None
+            # Remove orderBy entirely if empty
+            if not arguments["order_by"]:
+                del arguments["order_by"]
+
+        logger.debug(f"[ParamFiltering] Tool '{tool_name}' - final arguments: {arguments}")
 
         # Build GraphQL operation
         node_type = gql_meta.get("node_type")
@@ -312,7 +347,9 @@ class GraphQLToolExecutor(ToolExecutor):
         # Add non-wrapped arguments
         for key in non_wrapped_args:
             camel_key = to_camel_case(key)
-            graphql_type = self._json_type_to_graphql(properties.get(key, {}))
+            prop_schema = properties.get(key, {})
+            logger.debug(f"[QueryBuild] key={key}, prop_schema keys={list(prop_schema.keys())}, _graphql_type={prop_schema.get('_graphql_type', 'NOT FOUND')}")
+            graphql_type = self._json_type_to_graphql(prop_schema)
             vars_parts.append(f"${camel_key}: {graphql_type}")
             args_parts.append(f"{camel_key}: ${camel_key}")
 
@@ -433,7 +470,11 @@ class GraphQLToolExecutor(ToolExecutor):
 
     def _handle_navigate(self, arguments: Dict[str, Any], context: Dict[str, Any]) -> Dict[str, Any]:
         """Handle navigate frontend passthrough tool."""
+        import uuid
+        from datetime import datetime, timedelta
+
         path = arguments.get("path", "")
+        continue_action = arguments.get("continue_action", False)
         info = context.get("info")
 
         if not info:
@@ -451,13 +492,46 @@ class GraphQLToolExecutor(ToolExecutor):
                 "message": f"Path '{path}' is not accessible. Available paths: {', '.join(valid_paths)}",
             }
 
-        # Store frontend action in context for later collection
+        # If continue_action is True, require confirmation via guardrail
+        if continue_action:
+            from lys.apps.ai.utils.guardrails import _pending_actions
+
+            # Find route name for better UX
+            route_name = path
+            for route in self._accessible_routes:
+                if route["path"] == path:
+                    route_name = route.get("name", path)
+                    break
+
+            # Store pending navigation action
+            action_id = str(uuid.uuid4())
+            user_id = str(info.context.connected_user.get("sub", ""))
+
+            _pending_actions[action_id] = {
+                "tool_name": "navigate",
+                "tool_data": {"is_navigate": True},
+                "tool_args": {"path": path, "continue_action": True},
+                "user_id": user_id,
+                "created_at": datetime.utcnow(),
+                "expires_at": datetime.utcnow() + timedelta(minutes=5),
+                "preview": {"path": path, "page_name": route_name}
+            }
+
+            return {
+                "status": "confirmation_required",
+                "action_id": action_id,
+                "preview": {"path": path, "page_name": route_name},
+                "message": f"Voulez-vous naviguer vers {route_name} pour effectuer cette action ?"
+            }
+
+        # Direct navigation (explicit request) - no confirmation needed
         if not hasattr(info.context, "frontend_actions"):
             info.context.frontend_actions = []
 
         info.context.frontend_actions.append({
             "type": "navigate",
             "path": path,
+            "continueAction": False,
         })
 
         return {
@@ -482,10 +556,30 @@ class GraphQLToolExecutor(ToolExecutor):
 
         result = await AIGuardrailService.confirm_action(action_id, confirmed, info)
 
-        # If confirmed and status is "execute", execute the actual tool via GraphQL
+        # If confirmed and status is "execute", execute the actual tool
         if result.get("status") == "execute":
             tool_name = result["tool_name"]
             tool_args = result["tool_args"]
+            tool_data = result.get("tool_data", {})
+
+            # Special handling for navigate tool
+            if tool_name == "navigate" and tool_data.get("is_navigate"):
+                path = tool_args.get("path", "")
+
+                # Store frontend action
+                if not hasattr(info.context, "frontend_actions"):
+                    info.context.frontend_actions = []
+
+                info.context.frontend_actions.append({
+                    "type": "navigate",
+                    "path": path,
+                    "continueAction": True,  # Trigger "Continue" on frontend after navigation
+                })
+
+                return {
+                    "status": "navigation_scheduled",
+                    "message": f"Navigation to '{path}' confirmed. You will be redirected.",
+                }
 
             # Execute the tool via GraphQL
             executed_result = await self.execute(

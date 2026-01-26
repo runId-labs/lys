@@ -31,8 +31,7 @@ class LicensingUserQuery(Query):
         access_levels=[ROLE_ACCESS_LEVEL, ORGANIZATION_ROLE_ACCESS_LEVEL],
         is_licenced=False,
         allow_override=True,
-        description="Search client users with license filtering. Filter by client_id, role, or license status.",
-        options={"generate_tool": True}
+        description="Search client users with license filtering. Filter by client_id, role, or license status."
     )
     async def all_client_users(
         self,
@@ -127,8 +126,7 @@ class LicensingUserMutation(Mutation):
         is_public=False,
         access_levels=[ROLE_ACCESS_LEVEL, ORGANIZATION_ROLE_ACCESS_LEVEL],
         is_licenced=False,
-        description="Add a client user to their organization's subscription (grant license). Accessible to license administrators.",
-        options={"generate_tool": True}
+        description="Add a client user to their organization's subscription (grant license). Accessible to license administrators."
     )
     async def add_client_user_to_subscription(
         self,
@@ -165,8 +163,7 @@ class LicensingUserMutation(Mutation):
         is_public=False,
         access_levels=[ROLE_ACCESS_LEVEL, ORGANIZATION_ROLE_ACCESS_LEVEL],
         is_licenced=False,
-        description="Remove a client user from their organization's subscription (revoke license). Accessible to license administrators.",
-        options={"generate_tool": True}
+        description="Remove a client user from their organization's subscription (revoke license). Accessible to license administrators."
     )
     async def remove_client_user_from_subscription(
         self,

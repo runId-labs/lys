@@ -22,8 +22,7 @@ class SubscriptionQuery(Query):
         is_public=False,
         access_levels=[ROLE_ACCESS_LEVEL, ORGANIZATION_ROLE_ACCESS_LEVEL],
         is_licenced=False,
-        description="Get a specific subscription by ID. Accessible to license administrators.",
-        options={"generate_tool": True}
+        description="Get a specific subscription by ID. Accessible to license administrators."
     )
     async def subscription(self, obj: Subscription, info: Info):
         pass

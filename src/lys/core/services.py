@@ -15,6 +15,30 @@ T = TypeVar('T', bound=Entity)
 
 class Service(AppManagerCallerMixin, ServiceInterface):
     @classmethod
+    async def on_initialize(cls):
+        """
+        Called when the application starts, after all components are registered.
+
+        Override this method to perform initialization tasks like establishing
+        connections, loading configuration, etc.
+
+        This is called by AppRegistry.finalize_services() during app startup.
+        """
+        pass
+
+    @classmethod
+    async def on_shutdown(cls):
+        """
+        Called when the application shuts down.
+
+        Override this method to perform cleanup tasks like closing connections,
+        releasing resources, etc.
+
+        This is called by AppRegistry.shutdown_services() during app shutdown.
+        """
+        pass
+
+    @classmethod
     async def execute_parallel(cls, *query_functions: Callable[[AsyncSession], Any]):
         """
         Execute multiple queries in parallel using separate database sessions.

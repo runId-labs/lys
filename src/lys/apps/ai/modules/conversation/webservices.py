@@ -67,6 +67,7 @@ class AIMutation(Mutation):
             session=info.context.session,
             info=info,
             conversation_id=input_data.conversation_id,
+            page_context=input_data.context,
         )
 
         # Convert tool results to Strawberry types

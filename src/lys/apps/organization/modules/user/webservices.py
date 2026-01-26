@@ -35,8 +35,7 @@ class OrganizationUserQuery(Query):
         access_levels=[ROLE_ACCESS_LEVEL],
         is_licenced=False,
         allow_override=True,
-        description="Search and list all regular users (excludes super users). Use 'search' to filter by name or email, 'is_client_user' to filter by organization membership (true=in org, false=not in org), 'role_code' to filter by role.",
-        options={"generate_tool": True}
+        description="Search and list all regular users (excludes super users). Use 'search' to filter by name or email, 'is_client_user' to filter by organization membership (true=in org, false=not in org), 'role_code' to filter by role."
     )
     async def all_users(
         self,
@@ -123,8 +122,7 @@ class OrganizationUserQuery(Query):
         is_public=False,
         access_levels=[ROLE_ACCESS_LEVEL, ORGANIZATION_ROLE_ACCESS_LEVEL],
         is_licenced=False,
-        description="Get user details within an organization by client_user ID. Returns user profile, email, and organization roles.",
-        options={"generate_tool": True}
+        description="Get user details within an organization by client_user ID. Returns user profile, email, and organization roles."
     )
     async def client_user(self, obj: ClientUser, info: Info):
         pass
@@ -133,8 +131,7 @@ class OrganizationUserQuery(Query):
         ClientUserNode,
         access_levels=[ROLE_ACCESS_LEVEL, ORGANIZATION_ROLE_ACCESS_LEVEL],
         is_licenced=False,
-        description="Search users within organizations. Use 'client_id' to filter by organization, 'search' for name/email, 'role_code' for organization role.",
-        options={"generate_tool": True}
+        description="Search users within organizations. Use 'client_id' to filter by organization, 'search' for name/email, 'role_code' for organization role."
     )
     async def all_client_users(
         self,
@@ -163,18 +160,16 @@ class OrganizationUserQuery(Query):
         email_entity = info.context.app_manager.get_entity("user_email_address")
         private_data_entity = info.context.app_manager.get_entity("user_private_data")
 
-        # Base query with joins for search functionality
-        stmt = select(client_user_entity)
+        # Base query with joins for search and order_by functionality
+        stmt = (
+            select(client_user_entity)
+            .join(user_entity, client_user_entity.user)
+            .join(email_entity)
+            .join(private_data_entity)
+        )
 
-        # Join with user, email, and private_data if search is provided
+        # Apply search filter if provided
         if search:
-            stmt = (
-                stmt
-                .join(user_entity, client_user_entity.user)
-                .join(email_entity)
-                .join(private_data_entity)
-            )
-
             search_pattern = f"%{search.lower()}%"
             stmt = stmt.where(
                 or_(
@@ -214,8 +209,7 @@ class OrganizationUserMutation(Mutation):
         is_public=False,
         access_levels=[ROLE_ACCESS_LEVEL, ORGANIZATION_ROLE_ACCESS_LEVEL],
         is_licenced=False,
-        description="Update user email within organization. Required: id (client_user ID), inputs.new_email.",
-        options={"generate_tool": True}
+        description="Update user email within organization. Required: id (client_user ID), inputs.new_email."
     )
     async def update_client_user_email(
         self,
@@ -264,8 +258,7 @@ class OrganizationUserMutation(Mutation):
         is_public=False,
         access_levels=[ROLE_ACCESS_LEVEL, ORGANIZATION_ROLE_ACCESS_LEVEL],
         is_licenced=False,
-        description="Update user profile within organization. Required: id. Optional inputs: first_name, last_name, gender_code, language_code.",
-        options={"generate_tool": True}
+        description="Update user profile within organization. Required: id. Optional inputs: first_name, last_name, gender_code, language_code."
     )
     async def update_client_user_private_data(
         self,
@@ -317,8 +310,7 @@ class OrganizationUserMutation(Mutation):
         is_public=False,
         access_levels=[ROLE_ACCESS_LEVEL, ORGANIZATION_ROLE_ACCESS_LEVEL],
         is_licenced=False,
-        description="Update user's organization roles. Required: id (client_user ID), inputs.role_codes (list of role codes). Empty list removes all roles.",
-        options={"generate_tool": True}
+        description="Update user's organization roles. Required: id (client_user ID), inputs.role_codes (list of role codes). Empty list removes all roles."
     )
     async def update_client_user_roles(
         self,
@@ -371,8 +363,7 @@ class OrganizationUserMutation(Mutation):
         is_public=False,
         access_levels=[ROLE_ACCESS_LEVEL, ORGANIZATION_ROLE_ACCESS_LEVEL],
         is_licenced=False,
-        description="Create a new user in an organization. Required: client_id, email, password, language_code. Optional: first_name, last_name, gender_code, role_codes.",
-        options={"generate_tool": True}
+        description="Create a new user in an organization. Required: client_id, email, password, language_code. Optional: first_name, last_name, gender_code, role_codes."
     )
     async def create_client_user(
         self,

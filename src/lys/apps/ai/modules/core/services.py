@@ -13,7 +13,6 @@ from typing import List, Dict, Any, Optional, Type, TypeVar
 
 import httpx
 from pydantic import BaseModel
-from strawberry.types.field import StrawberryField
 
 from lys.apps.ai.utils.providers.abstracts import AIProvider, AIResponse
 from lys.apps.ai.utils.providers.config import AIEndpointConfig, parse_plugin_config, AIConfig
@@ -27,7 +26,6 @@ from lys.core.consts.ai import ToolRiskLevel
 from lys.core.graphql.client import GraphQLClient
 from lys.core.registries import register_service
 from lys.core.services import Service
-from lys.core.utils.tool_generator import extract_tool_from_field
 
 logger = logging.getLogger(__name__)
 
@@ -302,6 +300,7 @@ class AIService(Service):
     ) -> AIResponse:
         """Execute chat with retry and fallback logic."""
         current_endpoint = endpoint
+        last_error: Optional[Exception] = None
 
         while current_endpoint is not None:
             provider = cls.get_provider(current_endpoint.provider)
@@ -310,15 +309,17 @@ class AIService(Service):
                 try:
                     return await provider.chat(messages, current_endpoint, tools)
 
-                except AIRateLimitError:
+                except AIRateLimitError as e:
                     # Rate limit → try fallback immediately
                     logger.warning(
                         f"Rate limit on {current_endpoint.provider}, trying fallback"
                     )
+                    last_error = e
                     break
 
                 except AIProviderError as e:
                     # Server error → retry
+                    last_error = e
                     if retry < cls.MAX_RETRIES - 1:
                         logger.warning(
                             f"Provider error (attempt {retry + 1}): {e}, retrying..."
@@ -330,8 +331,9 @@ class AIService(Service):
                         )
                         break
 
-                except AIError:
+                except AIError as e:
                     # Other AI errors → don't retry, try fallback
+                    last_error = e
                     break
 
             # Try fallback if configured
@@ -341,6 +343,8 @@ class AIService(Service):
                     f"Falling back to {current_endpoint.provider}/{current_endpoint.model}"
                 )
 
+        if last_error:
+            logger.error(f"All providers failed: {last_error}")
         raise AIError("All providers failed")
 
     @classmethod
@@ -352,6 +356,7 @@ class AIService(Service):
     ) -> AIResponse:
         """Synchronous fallback logic."""
         current_endpoint = endpoint
+        last_error: Optional[Exception] = None
 
         while current_endpoint is not None:
             provider = cls.get_provider(current_endpoint.provider)
@@ -360,20 +365,25 @@ class AIService(Service):
                 try:
                     return provider.chat_sync(messages, current_endpoint, tools)
 
-                except AIRateLimitError:
+                except AIRateLimitError as e:
+                    last_error = e
                     break
 
                 except AIProviderError as e:
+                    last_error = e
                     if retry < cls.MAX_RETRIES - 1:
                         time.sleep(cls.RETRY_DELAY * (retry + 1))
                     else:
                         break
 
-                except AIError:
+                except AIError as e:
+                    last_error = e
                     break
 
             current_endpoint = current_endpoint.fallback
 
+        if last_error:
+            logger.error(f"All providers failed: {last_error}")
         raise AIError("All providers failed")
 
     @classmethod
@@ -385,6 +395,7 @@ class AIService(Service):
     ) -> T:
         """Execute chat_json with retry and fallback logic."""
         current_endpoint = endpoint
+        last_error: Optional[Exception] = None
 
         while current_endpoint is not None:
             provider = cls.get_provider(current_endpoint.provider)
@@ -393,13 +404,15 @@ class AIService(Service):
                 try:
                     return await provider.chat_json(messages, current_endpoint, schema)
 
-                except AIRateLimitError:
+                except AIRateLimitError as e:
                     logger.warning(
                         f"Rate limit on {current_endpoint.provider}, trying fallback"
                     )
+                    last_error = e
                     break
 
                 except AIProviderError as e:
+                    last_error = e
                     if retry < cls.MAX_RETRIES - 1:
                         logger.warning(
                             f"Provider error (attempt {retry + 1}): {e}, retrying..."
@@ -411,7 +424,8 @@ class AIService(Service):
                         )
                         break
 
-                except AIError:
+                except AIError as e:
+                    last_error = e
                     break
 
             current_endpoint = current_endpoint.fallback
@@ -420,6 +434,8 @@ class AIService(Service):
                     f"Falling back to {current_endpoint.provider}/{current_endpoint.model}"
                 )
 
+        if last_error:
+            logger.error(f"All providers failed: {last_error}")
         raise AIError("All providers failed")
 
     @classmethod
@@ -431,6 +447,7 @@ class AIService(Service):
     ) -> T:
         """Synchronous fallback logic for chat_json."""
         current_endpoint = endpoint
+        last_error: Optional[Exception] = None
 
         while current_endpoint is not None:
             provider = cls.get_provider(current_endpoint.provider)
@@ -439,20 +456,25 @@ class AIService(Service):
                 try:
                     return provider.chat_json_sync(messages, current_endpoint, schema)
 
-                except AIRateLimitError:
+                except AIRateLimitError as e:
+                    last_error = e
                     break
 
                 except AIProviderError as e:
+                    last_error = e
                     if retry < cls.MAX_RETRIES - 1:
                         time.sleep(cls.RETRY_DELAY * (retry + 1))
                     else:
                         break
 
-                except AIError:
+                except AIError as e:
+                    last_error = e
                     break
 
             current_endpoint = current_endpoint.fallback
 
+        if last_error:
+            logger.error(f"All providers failed: {last_error}")
         raise AIError("All providers failed")
 
 
@@ -462,17 +484,15 @@ class AIToolService(Service):
     Service for managing AI tool definitions.
 
     This service provides:
-    - Local mode: generates tools from registry.webservices StrawberryFields
-    - GraphQL mode: fetches tools from Apollo Gateway
+    - Fetches tools from Apollo Gateway via GraphQL
     - JWT-based filtering for accessible tools
     - Lazy loading with caching
 
     Configuration via executor config in AI plugin:
         settings.configure_plugin("ai",
             executor={
-                "mode": "local",        # or "graphql"
-                "gateway_url": "...",   # for graphql mode
-                "service_name": "...",  # for graphql mode
+                "gateway_url": "http://localhost:8000/graphql",
+                "service_name": "mimir-api",
             },
         )
 
@@ -518,10 +538,11 @@ class AIToolService(Service):
         if is_super_user:
             return [
                 {
+                    "webservice": name,
                     "definition": tool_data["definition"],
                     "operation_type": tool_data.get("operation_type"),
                 }
-                for tool_data in cls._tools.values()
+                for name, tool_data in cls._tools.items()
             ]
 
         # Regular users: collect all accessible webservices from JWT claims
@@ -540,6 +561,7 @@ class AIToolService(Service):
 
         return [
             {
+                "webservice": name,
                 "definition": tool_data["definition"],
                 "operation_type": tool_data.get("operation_type"),
             }
@@ -566,7 +588,7 @@ class AIToolService(Service):
 
     @classmethod
     async def _load_tools(cls):
-        """Load tools based on executor mode configuration."""
+        """Load tools from Apollo Gateway via GraphQL."""
         config = cls.app_manager.settings.get_plugin_config(AI_PLUGIN_NAME)
         if not config:
             logger.warning("AI plugin not configured, no tools loaded")
@@ -574,84 +596,10 @@ class AIToolService(Service):
             return
 
         executor_config = config.get("executor", {})
-        mode = executor_config.get("mode", "local")
-
-        if mode == "graphql":
-            await cls._load_tools_remote(executor_config)
-        else:
-            cls._load_tools_local()
+        await cls._load_tools_remote(executor_config)
 
         cls._initialized = True
-        logger.info(f"AIToolService loaded {len(cls._tools)} tools in {mode} mode")
-
-    @classmethod
-    def _load_tools_local(cls):
-        """Generate tools from registry.webservices StrawberryFields."""
-        for name, ws_config in cls.app_manager.registry.webservices.items():
-            field = ws_config.get("_field")
-            options = ws_config.get("_options") or {}
-
-            if not field or not options.get("generate_tool"):
-                continue
-
-            if not isinstance(field, StrawberryField):
-                continue
-
-            try:
-                # Get operation_type from attributes
-                attributes = ws_config.get("attributes", {})
-                operation_type = attributes.get("operation_type")
-
-                # Skip if no operation_type (can't generate proper tool)
-                if not operation_type:
-                    continue
-
-                # Calculate node_type from field.type
-                node_type = cls._extract_node_type(field)
-
-                # Get description from attributes
-                description = attributes.get("description")
-
-                # Generate tool definition
-                tool_definition = extract_tool_from_field(field, description, node_type)
-
-                # Get resolver for local execution
-                resolver = field.base_resolver
-
-                # Store with all metadata needed for execution
-                cls._tools[name] = {
-                    "definition": tool_definition,
-                    "resolver": resolver,
-                    "node_type": node_type,
-                    "operation_type": operation_type,
-                    "risk_level": options.get("risk_level", ToolRiskLevel.READ),
-                    "confirmation_fields": options.get("confirmation_fields", []),
-                }
-
-                logger.debug(f"Loaded local tool: {name}")
-
-            except Exception as e:
-                logger.warning(f"Could not generate tool for '{name}': {e}")
-
-    @classmethod
-    def _extract_node_type(cls, field: StrawberryField) -> Optional[type]:
-        """Extract node type from StrawberryField.type."""
-        field_type = field.type
-
-        # Handle Connection types (for @lys_connection)
-        if hasattr(field_type, "__origin__"):
-            # Generic type like Connection[UserNode]
-            args = getattr(field_type, "__args__", ())
-            if args:
-                return args[0]
-        elif hasattr(field_type, "node_type"):
-            # Connection class with node_type attribute
-            return field_type.node_type
-        elif isinstance(field_type, type) and hasattr(field_type, "__strawberry_definition__"):
-            # Direct node type
-            return field_type
-
-        return None
+        logger.info(f"AIToolService loaded {len(cls._tools)} tools from gateway")
 
     @classmethod
     async def _load_tools_remote(cls, executor_config: Dict[str, Any]):
@@ -717,3 +665,131 @@ class AIToolService(Service):
         """Reset the service state. Useful for testing."""
         cls._tools = {}
         cls._initialized = False
+
+
+@register_service()
+class ContextToolService(Service):
+    """
+    Service for managing context tools used by chatbot page behaviours.
+
+    This service provides a registry for context tools that can be called
+    dynamically based on the page's `context_tools` configuration in the
+    routes manifest.
+
+    Services register their context tool functions during initialization:
+
+        class ContextualQuestionService(EntityService):
+            @classmethod
+            async def on_initialize(cls):
+                context_tool_service = cls.app_manager.get_service("context_tool")
+                context_tool_service.register(
+                    "get_contextual_questions",
+                    cls.get_for_prompt
+                )
+
+    Then AIConversationService can execute tools dynamically:
+
+        results = await context_tool_service.execute_all(
+            context_tools={"questions": "get_contextual_questions"},
+            company_id=company_id,
+            year=year,
+            session=session,
+        )
+
+    Usage:
+        context_tool_service = app_manager.get_service("context_tool")
+        context_tool_service.register("get_contextual_questions", my_func)
+        result = await context_tool_service.execute("get_contextual_questions", ...)
+    """
+
+    service_name = "context_tool"
+
+    # Registry mapping function names to callables
+    _registry: Dict[str, Any] = {}
+
+    @classmethod
+    def register(cls, name: str, func: Any) -> None:
+        """
+        Register a context tool function.
+
+        Args:
+            name: Function name as referenced in routes manifest context_tools
+            func: Async callable that accepts (company_id, year, session) and returns str
+        """
+        cls._registry[name] = func
+        logger.info(f"ContextToolService: registered '{name}'")
+
+    @classmethod
+    def get(cls, name: str) -> Optional[Any]:
+        """
+        Get a registered context tool function.
+
+        Args:
+            name: Function name to lookup
+
+        Returns:
+            The registered callable or None if not found
+        """
+        return cls._registry.get(name)
+
+    @classmethod
+    async def execute(
+        cls,
+        name: str,
+        session: Any,
+        **params,
+    ) -> Optional[str]:
+        """
+        Execute a registered context tool.
+
+        Args:
+            name: Function name to execute
+            session: Database session
+            **params: Parameters to pass to the function
+
+        Returns:
+            Result string from the function, or None if function not found
+        """
+        func = cls._registry.get(name)
+        if not func:
+            logger.warning(f"ContextToolService: unknown function '{name}'")
+            return None
+
+        try:
+            return await func(session=session, **params)
+        except Exception as e:
+            logger.error(f"ContextToolService: error executing '{name}': {e}")
+            return None
+
+    @classmethod
+    async def execute_all(
+        cls,
+        context_tools: Dict[str, str],
+        session: Any,
+        **params,
+    ) -> Dict[str, str]:
+        """
+        Execute all context tools and return results.
+
+        Args:
+            context_tools: Dict mapping labels to function names
+                e.g., {"contextual_questions": "get_contextual_questions"}
+            session: Database session
+            **params: Parameters to pass to functions
+
+        Returns:
+            Dict mapping labels to result strings (only for successful calls)
+        """
+        results = {}
+
+        for label, function_name in context_tools.items():
+            result = await cls.execute(function_name, session, **params)
+            if result:
+                results[label] = result
+
+        return results
+
+    @classmethod
+    def reset(cls):
+        """Reset the registry. Useful for testing."""
+        cls._registry = {}

@@ -27,10 +27,9 @@ class AIEndpointConfig:
 
 @dataclass
 class ExecutorConfig:
-    """Configuration for tool executor."""
+    """Configuration for GraphQL tool executor."""
 
-    mode: str = "local"  # "local" or "graphql"
-    gateway_url: Optional[str] = None  # Required for graphql mode
+    gateway_url: Optional[str] = None  # Required - Apollo Gateway URL
     service_name: Optional[str] = None  # Service name for JWT auth
     timeout: int = 30
 
@@ -101,7 +100,6 @@ def parse_plugin_config(plugin_config: Dict[str, Any]) -> AIConfig:
         {
             "_keys": {"mistral": "sk-...", "openai": "sk-..."},
             "executor": {
-                "mode": "graphql",  # or "local"
                 "gateway_url": "https://gateway:8000/graphql",
                 "service_name": "mimir-api",
                 "timeout": 30
@@ -132,7 +130,6 @@ def parse_plugin_config(plugin_config: Dict[str, Any]) -> AIConfig:
     # Parse executor config
     executor_cfg = plugin_config.get("executor", {})
     executor = ExecutorConfig(
-        mode=executor_cfg.get("mode", "local"),
         gateway_url=executor_cfg.get("gateway_url"),
         service_name=executor_cfg.get("service_name"),
         timeout=executor_cfg.get("timeout", 30),

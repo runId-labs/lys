@@ -151,7 +151,8 @@ class DatabaseSessionExtension(SchemaExtension):
 
         # If no app_manager in context yet, we'll let individual resolvers handle sessions
         # This can happen for introspection queries or before resolvers set app_manager
-        if app_manager is None:
+        # Also skip if database is not configured (e.g., stateless services like signal-api)
+        if app_manager is None or not app_manager.database.has_database_configured():
             yield
 
         else:

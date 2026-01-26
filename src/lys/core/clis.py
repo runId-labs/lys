@@ -15,6 +15,7 @@ def run_fast_app(
         app_path: Path,
         ssl_certfile: str | None,
         ssl_keyfile: str | None,
+        timeout_graceful_shutdown: int | None = None,
 ):
     """
     Launch the FastAPI application with configured settings.
@@ -27,6 +28,7 @@ def run_fast_app(
         app_path: Path to FastAPI application file
         ssl_certfile: Path to the SSL certificate file
         ssl_keyfile: Path to the SSL key file
+        timeout_graceful_shutdown: Seconds to wait for connections to close on shutdown (None = wait forever)
 
     Raises:
         typer.Exit: If the settings file, the app file is not found, or FastAPI app discovery fails
@@ -49,6 +51,7 @@ def run_fast_app(
         workers=workers,
         ssl_certfile=ssl_certfile,
         ssl_keyfile=ssl_keyfile,
+        timeout_graceful_shutdown=timeout_graceful_shutdown,
     )
 
 

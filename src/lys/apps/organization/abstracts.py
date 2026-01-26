@@ -42,10 +42,42 @@ class AbstractOrganizationEntity(Entity):
 
 
 class AbstractUserOrganizationRoleEntity(Entity):
+    """
+    Abstract base class for user-organization role assignments.
+
+    Supports hierarchical organization structures where roles can be assigned
+    at different levels (e.g., client, company, establishment).
+
+    The `level` property indicates which organization level this role assignment applies to:
+    - "client": Role applies to the entire client (base level, no additional scoping columns)
+    - "company": Role applies to a specific company (requires company_id column in subclass)
+    - "establishment": Role applies to a specific establishment (requires establishment_id column)
+
+    Subclasses can extend the base table by adding optional organization columns:
+    - Base: (client_user_id, role_id) with level="client"
+    - Extended: (client_user_id, role_id, company_id[opt], establishment_id[opt])
+      where level is determined by which columns are populated
+
+    Permission inheritance:
+    - A role at "client" level grants access to all companies/establishments under that client
+    - A role at "company" level grants access to all establishments under that company
+    - A role at "establishment" level grants access only to that specific establishment
+    """
     __abstract__ = True
 
     client_user_id: Mapped[str] = mapped_column(ForeignKey("client_user.id", ondelete='CASCADE'), nullable=False)
     role_id: Mapped[str] = mapped_column(ForeignKey("role.id", ondelete='CASCADE'), nullable=False)
+
+    @property
+    @abc.abstractmethod
+    def level(self) -> str:
+        """
+        Return the organization level this role assignment applies to.
+
+        Returns:
+            str: Organization level identifier (e.g., "client", "company", "establishment")
+        """
+        raise NotImplementedError
 
     @property
     @abc.abstractmethod

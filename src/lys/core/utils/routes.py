@@ -127,6 +127,11 @@ def build_navigate_tool(accessible_routes: List[Dict[str, Any]]) -> Dict[str, An
                         "type": "string",
                         "enum": path_enum,
                         "description": "The URL path to navigate to"
+                    },
+                    "continue_action": {
+                        "type": "boolean",
+                        "description": "Set to true if navigating to execute a pending action (implicit navigation). Set to false for explicit navigation requests.",
+                        "default": False
                     }
                 },
                 "required": ["path"]

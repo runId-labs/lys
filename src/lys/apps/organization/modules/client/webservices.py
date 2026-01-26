@@ -27,8 +27,7 @@ class ClientQuery(Query):
         ClientNode,
         access_levels=[ROLE_ACCESS_LEVEL, ORGANIZATION_ROLE_ACCESS_LEVEL],
         is_licenced=False,
-        description="Search and list all organizations/clients. Use 'search' to filter by name.",
-        options={"generate_tool": True}
+        description="Search and list all organizations/clients. Use 'search' to filter by name."
     )
     async def all_clients(
         self,
@@ -63,8 +62,7 @@ class ClientQuery(Query):
         is_public=False,
         access_levels=[ROLE_ACCESS_LEVEL, ORGANIZATION_ROLE_ACCESS_LEVEL],
         is_licenced=False,
-        description="Get organization/client details by ID. Returns name, owner, and creation date.",
-        options={"generate_tool": True}
+        description="Get organization/client details by ID. Returns name, owner, and creation date."
     )
     async def client(self, obj: Client, info: Info):
         pass
@@ -77,8 +75,7 @@ class ClientMutation(Mutation):
         ensure_type=ClientNode,
         is_public=True,
         is_licenced=False,
-        description="Create a new organization with owner account. Required: client_name, email, password, language_code. Optional: first_name, last_name, gender_code.",
-        options={"generate_tool": True}
+        description="Create a new organization with owner account. Required: client_name, email, password, language_code. Optional: first_name, last_name, gender_code."
     )
     async def create_client(
         self,
@@ -139,8 +136,7 @@ class ClientMutation(Mutation):
         is_public=False,
         access_levels=[ROLE_ACCESS_LEVEL, ORGANIZATION_ROLE_ACCESS_LEVEL],
         is_licenced=False,
-        description="Update organization name. Required: id (organization ID), inputs.name (new name).",
-        options={"generate_tool": True}
+        description="Update organization name. Required: id (organization ID), inputs.name (new name)."
     )
     async def update_client(
         self,

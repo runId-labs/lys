@@ -258,7 +258,7 @@ class DatabaseManager:
         self._sync_session_factory = None
 
     def has_database_configured(self):
-        return self.settings.configured() is not None
+        return self.settings.configured()
 
     @property
     def engine(self) -> AsyncEngine:

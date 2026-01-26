@@ -24,13 +24,15 @@ from lys.apps.ai.modules.conversation.entities import (
     AIMessage,
     AIMessageFeedback,
 )
-from lys.apps.ai.modules.core.executors import GraphQLToolExecutor, LocalToolExecutor
+from lys.apps.ai.modules.conversation.models import PageContextModel
+from lys.apps.ai.modules.core.executors import GraphQLToolExecutor
 from lys.apps.ai.modules.core.services import AIToolService
 from lys.apps.ai.utils.guardrails import CONFIRM_ACTION_TOOL
 from lys.apps.ai.utils.providers.config import parse_plugin_config
 from lys.core.registries import register_service
 from lys.core.services import EntityService
 from lys.core.utils.routes import filter_routes_by_permissions, build_navigate_tool, load_routes_manifest
+from lys.core.utils.strings import to_snake_case
 
 logger = logging.getLogger(__name__)
 
@@ -64,6 +66,72 @@ class AIConversationService(EntityService[AIConversation]):
             cls._routes_manifest_cache = {}
 
         return cls._routes_manifest_cache
+
+    @classmethod
+    def _get_page_webservices(cls, page_name: str) -> set[str]:
+        """
+        Get webservices available on a specific page.
+
+        Args:
+            page_name: Name of the page (e.g., "FinancialDashboardPage")
+
+        Returns:
+            Set of webservice names available on the page (in snake_case)
+        """
+        manifest = cls._get_routes_manifest()
+        if not manifest:
+            return set()
+
+        # Include global webservices (always available)
+        # Convert from camelCase (manifest) to snake_case (backend)
+        global_webservices = {
+            to_snake_case(ws) for ws in manifest.get("globalWebservices", [])
+        }
+
+        # Find page-specific webservices
+        for route in manifest.get("routes", []):
+            if route.get("name") == page_name:
+                page_webservices = {
+                    to_snake_case(ws) for ws in route.get("webservices", [])
+                }
+                return global_webservices | page_webservices
+
+        # Page not found, return only global webservices
+        return global_webservices
+
+    @classmethod
+    def _get_page_chatbot_behaviour(cls, page_name: str) -> Optional[Dict[str, Any]]:
+        """
+        Get chatbot behaviour configuration for a specific page.
+
+        Args:
+            page_name: Name of the page (e.g., "FinancialDashboardPage")
+
+        Returns:
+            Chatbot behaviour dict with 'prompt' and 'context_tools', or None
+        """
+        manifest = cls._get_routes_manifest()
+        if not manifest:
+            return None
+
+        for route in manifest.get("routes", []):
+            if route.get("name") == page_name:
+                return route.get("chatbot_behaviour")
+
+        return None
+
+    @classmethod
+    def _process_response(cls, result: dict) -> None:
+        """
+        Process the final response before returning.
+
+        Override in subclass to modify result in-place (e.g., parsing special tags).
+
+        Args:
+            result: Dict with content, conversation_id, tool_calls_count,
+                    tool_results, frontend_actions
+        """
+        pass
 
     @classmethod
     async def get_or_create(
@@ -204,6 +272,8 @@ class AIConversationService(EntityService[AIConversation]):
         connected_user: Optional[Dict[str, Any]],
         chatbot_config: Dict[str, Any],
         tools_count: int,
+        page_behaviour: Optional[Dict[str, Any]] = None,
+        context_data: Optional[Dict[str, str]] = None,
     ) -> str:
         """
         Build system prompt with user context.
@@ -213,6 +283,8 @@ class AIConversationService(EntityService[AIConversation]):
             connected_user: Connected user from JWT
             chatbot_config: Chatbot configuration from plugin
             tools_count: Number of available tools
+            page_behaviour: Optional page-specific chatbot behaviour from manifest
+            context_data: Optional context data from executing context_tools
 
         Returns:
             System prompt string
@@ -225,49 +297,17 @@ class AIConversationService(EntityService[AIConversation]):
             system_prompt_parts.append(custom_system_prompt)
             system_prompt_parts.append("")
 
-        if connected_user:
-            user_id = connected_user.get("sub", "unknown")
-            is_super_user = connected_user.get("is_super_user", False)
+        # Add page-specific prompt if available
+        if page_behaviour and page_behaviour.get("prompt"):
+            system_prompt_parts.append(page_behaviour["prompt"])
+            system_prompt_parts.append("")
 
-            # Load user details from database
-            user_details = await cls._get_user_details(session, user_id)
-
-            system_prompt_parts.append("## User Context")
-            if user_details:
-                if user_details.get("email"):
-                    system_prompt_parts.append(f"- Email: {user_details['email']}")
-                if user_details.get("first_name") or user_details.get("last_name"):
-                    name = f"{user_details.get('first_name', '')} {user_details.get('last_name', '')}".strip()
-                    system_prompt_parts.append(f"- Name: {name}")
-                if user_details.get("status"):
-                    system_prompt_parts.append(f"- Status: {user_details['status']}")
-                if user_details.get("language_code"):
-                    system_prompt_parts.append(f"- Language: {user_details['language_code']}")
-            system_prompt_parts.append(f"- Super User: {'Yes' if is_super_user else 'No'}")
-            system_prompt_parts.append(f"- User ID: {user_id}")
-
-            # Add language instruction
-            if user_details and user_details.get("language_code"):
-                system_prompt_parts.append(
-                    f"\n**Important: Always respond in the user's language ({user_details['language_code']}).**"
-                )
-
-            # Get user roles if not super user
-            if not is_super_user:
-                roles_info = await cls._get_user_roles_info(session, user_id)
-                if roles_info:
-                    system_prompt_parts.append("\n## User Roles")
-                    for role in roles_info:
-                        role_line = f"- {role['code']}"
-                        if role.get("description"):
-                            role_line += f": {role['description']}"
-                        system_prompt_parts.append(role_line)
-
-            system_prompt_parts.append(f"\n## Available Tools: {tools_count}")
-        else:
-            system_prompt_parts.append("## User Context")
-            system_prompt_parts.append("- Anonymous user (not authenticated)")
-            system_prompt_parts.append(f"\n## Available Tools: {tools_count} (public only)")
+        # Add context data from context_tools if available
+        if context_data:
+            system_prompt_parts.append("## Contexte dynamique")
+            for label, data in context_data.items():
+                system_prompt_parts.append(f"\n### {label}")
+                system_prompt_parts.append(data)
 
         return "\n".join(system_prompt_parts)
 
@@ -341,47 +381,48 @@ class AIConversationService(EntityService[AIConversation]):
         tools: List[Dict[str, Any]],
         info: Any,
         accessible_routes: List[Dict[str, Any]] = None,
+        page_context: Optional[PageContextModel] = None,
     ):
         """
-        Get the appropriate tool executor based on configuration.
+        Get the GraphQL tool executor.
 
         Args:
             tools: Available tool definitions
             info: GraphQL info context
             accessible_routes: List of routes accessible to the user for navigation
+            page_context: Page context for param injection
 
         Returns:
-            Configured tool executor instance (GraphQLToolExecutor or LocalToolExecutor)
+            Configured GraphQLToolExecutor instance
         """
         app_manager = cls.app_manager
         plugin_config = app_manager.settings.get_plugin_config("ai")
         ai_config = parse_plugin_config(plugin_config)
 
-        if ai_config.executor.mode == "graphql":
-            # Use Bearer token from user's JWT if available (user-authenticated calls)
-            # Otherwise fall back to Service auth (inter-service calls)
-            bearer_token = info.context.access_token if info.context else None
+        # Use Bearer token from user's JWT if available (user-authenticated calls)
+        # Otherwise fall back to Service auth (inter-service calls)
+        bearer_token = info.context.access_token if info.context else None
 
-            if bearer_token:
-                executor = GraphQLToolExecutor(
-                    gateway_url=ai_config.executor.gateway_url,
-                    bearer_token=bearer_token,
-                    timeout=ai_config.executor.timeout,
-                )
-            else:
-                executor = GraphQLToolExecutor(
-                    gateway_url=ai_config.executor.gateway_url,
-                    secret_key=app_manager.settings.secret_key,
-                    service_name=ai_config.executor.service_name or app_manager.settings.service_name,
-                    timeout=ai_config.executor.timeout,
-                )
-            await executor.initialize(tools=tools, accessible_routes=accessible_routes)
-            return executor
+        if bearer_token:
+            executor = GraphQLToolExecutor(
+                gateway_url=ai_config.executor.gateway_url,
+                bearer_token=bearer_token,
+                timeout=ai_config.executor.timeout,
+            )
         else:
-            # Local mode
-            executor = LocalToolExecutor(app_manager=app_manager)
-            await executor.initialize(tools=tools, info=info, accessible_routes=accessible_routes)
-            return executor
+            executor = GraphQLToolExecutor(
+                gateway_url=ai_config.executor.gateway_url,
+                secret_key=app_manager.settings.secret_key,
+                service_name=ai_config.executor.service_name or app_manager.settings.service_name,
+                timeout=ai_config.executor.timeout,
+            )
+
+        await executor.initialize(
+            tools=tools,
+            accessible_routes=accessible_routes,
+            page_context=page_context,
+        )
+        return executor
 
     @classmethod
     async def chat_with_tools(
@@ -391,6 +432,7 @@ class AIConversationService(EntityService[AIConversation]):
         session: AsyncSession,
         info: Any,
         conversation_id: Optional[str] = None,
+        page_context: Optional[PageContextModel] = None,
         max_tool_iterations: int = 10,
     ) -> Dict[str, Any]:
         """
@@ -404,6 +446,7 @@ class AIConversationService(EntityService[AIConversation]):
             session: Database session
             info: GraphQL info context
             conversation_id: Optional conversation ID to continue
+            page_context: Optional page context for tool filtering and param injection
             max_tool_iterations: Maximum number of tool call iterations
 
         Returns:
@@ -416,6 +459,33 @@ class AIConversationService(EntityService[AIConversation]):
         # Note: Tools are lazy-loaded once and cached at class level, only filtering is done here
         # For super_users, all tools are returned (see AIToolService.get_accessible_tools)
         tools = await AIToolService.get_accessible_tools(connected_user)
+        initial_tools_count = len(tools)
+
+        # Filter tools by page context if provided
+        if page_context and page_context.page_name:
+            logger.debug(
+                f"[PageContext] Received context: page_name='{page_context.page_name}', "
+                f"params={page_context.params}"
+            )
+            page_webservices = cls._get_page_webservices(page_context.page_name)
+            logger.debug(
+                f"[PageContext] Page webservices for '{page_context.page_name}': {page_webservices}"
+            )
+            if page_webservices:
+                # Keep only tools whose webservice is available on the current page
+                tools = [
+                    tool for tool in tools
+                    if tool.get("webservice") in page_webservices
+                ]
+                tool_names = [tool.get("webservice", "unknown") for tool in tools]
+                logger.debug(
+                    f"[PageContext] Tool filtering: {initial_tools_count} -> {len(tools)} tools "
+                    f"(filtered by page '{page_context.page_name}'): {tool_names}"
+                )
+        else:
+            logger.debug(
+                f"[PageContext] No page context provided, all {initial_tools_count} tools available"
+            )
 
         # Add confirm_action special tool
         tools.append(CONFIRM_ACTION_TOOL)
@@ -456,15 +526,40 @@ class AIConversationService(EntityService[AIConversation]):
                 navigate_tool = build_navigate_tool(accessible_routes)
                 tools.append(navigate_tool)
 
+        # Get page-specific chatbot behaviour if available
+        page_behaviour = None
+        context_data = {}
+        if page_context and page_context.page_name:
+            page_behaviour = cls._get_page_chatbot_behaviour(page_context.page_name)
+            if page_behaviour:
+                logger.debug(
+                    f"[ChatbotBehaviour] Found behaviour for page '{page_context.page_name}'"
+                )
+                # Execute context_tools to fetch dynamic data
+                context_tools = page_behaviour.get("context_tools", {})
+                if context_tools:
+                    context_tool_service = app_manager.get_service("context_tool")
+                    context_data = await context_tool_service.execute_all(
+                        context_tools,
+                        session,
+                        **(page_context.params or {}),
+                    )
+                    logger.debug(
+                        f"[ContextTools] Fetched data for {len(context_data)} labels"
+                    )
+
         # Build system prompt
         # TODO: Optimize - consider caching system prompt per conversation_id to avoid
         # 2 DB queries (user details + roles) on every message
         system_prompt = await cls._build_system_prompt(
-            session, connected_user, chatbot_config, len(tools)
+            session, connected_user, chatbot_config, len(tools),
+            page_behaviour=page_behaviour,
+            context_data=context_data,
         )
+        logger.debug(f"[SystemPrompt] Built prompt:\n{system_prompt}")
 
         # Get the appropriate executor based on config
-        executor = await cls._get_tool_executor(tools, info, accessible_routes)
+        executor = await cls._get_tool_executor(tools, info, accessible_routes, page_context)
 
         conversation = await cls.get_or_create(user_id, session, conversation_id)
         message_service = app_manager.get_service("ai_messages")
@@ -528,15 +623,17 @@ class AIConversationService(EntityService[AIConversation]):
                     latency_ms=latency_ms,
                 )
 
-                frontend_actions = getattr(info.context, "frontend_actions", [])
+                frontend_actions = list(getattr(info.context, "frontend_actions", []))
 
-                return {
+                result = {
                     "content": response.content,
                     "conversation_id": conversation.id,
                     "tool_calls_count": tool_calls_count,
                     "tool_results": tool_results,
                     "frontend_actions": frontend_actions if frontend_actions else None,
                 }
+                cls._process_response(result)
+                return result
 
             # Execute tool calls
             tool_calls_count += len(tool_calls)

@@ -195,7 +195,12 @@ def python_type_to_json_schema(python_type: Any, is_optional: bool = False) -> D
 
     # Handle Strawberry input types
     if hasattr(python_type, "__strawberry_definition__"):
-        return extract_strawberry_input_schema(python_type)
+        schema = extract_strawberry_input_schema(python_type)
+        # Add the GraphQL type name for proper query building
+        type_name = getattr(python_type, "__name__", "")
+        if type_name:
+            schema["_graphql_type"] = type_name if is_optional else f"{type_name}!"
+        return schema
 
     # Default to string for unknown types
     return {"type": "string", "_graphql_type": "String" if is_optional else "String!"}
@@ -298,7 +303,7 @@ def _is_scalar_type(field_type) -> bool:
 
 
 def _get_subfields(field_type) -> List[str]:
-    """Get minimal subfields for a complex type (id, code, name, email)."""
+    """Get all scalar subfields for a complex type (one level deep)."""
     # Unwrap StrawberryOptional/StrawberryList
     while hasattr(field_type, "of_type"):
         field_type = field_type.of_type
@@ -307,8 +312,6 @@ def _get_subfields(field_type) -> List[str]:
     if not strawberry_def or not hasattr(strawberry_def, "fields"):
         return ["id"]
 
-    # Priority fields for nested objects
-    priority_fields = ["id", "code", "name", "email", "value"]
     subfields = []
 
     for field in strawberry_def.fields:
@@ -316,7 +319,7 @@ def _get_subfields(field_type) -> List[str]:
             continue
         if field.name in EXCLUDED_FIELDS:
             continue
-        if field.name in priority_fields and _is_scalar_type(field.type):
+        if _is_scalar_type(field.type):
             subfields.append(field.name)
 
     return subfields if subfields else ["id"]
@@ -324,6 +327,20 @@ def _get_subfields(field_type) -> List[str]:
 
 def _get_node_type_from_connection(connection_type) -> type:
     """Extract the node type from a Relay Connection type."""
+    # First, try to get node type from generic type arguments (for LysListConnection)
+    # LysListConnection inherits from relay.ListConnection[NodeType]
+    orig_bases = getattr(connection_type, "__orig_bases__", ())
+    for base in orig_bases:
+        base_origin = get_origin(base)
+        if base_origin is not None:
+            base_name = getattr(base_origin, "__name__", "")
+            # Check if this is a ListConnection or Connection base
+            if "Connection" in base_name:
+                args = get_args(base)
+                if args and hasattr(args[0], "__strawberry_definition__"):
+                    return args[0]
+
+    # Fallback: try to extract from edges.node field (works for non-generic Connections)
     strawberry_def = getattr(connection_type, "__strawberry_definition__", None)
     if not strawberry_def or not hasattr(strawberry_def, "fields"):
         return None
@@ -344,7 +361,9 @@ def _get_node_type_from_connection(connection_type) -> type:
                         node_type = edge_field.type
                         while hasattr(node_type, "of_type"):
                             node_type = node_type.of_type
-                        return node_type
+                        # Skip if it's a TypeVar (unresolved generic)
+                        if hasattr(node_type, "__strawberry_definition__"):
+                            return node_type
     return None
 
 

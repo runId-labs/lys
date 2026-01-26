@@ -1,7 +1,11 @@
-from celery import Celery, signals
+from celery import Celery, current_app, signals
+
+from lys.core.consts.component_types import AppComponentTypeEnum
+from lys.core.managers.pubsub import PubSubManager
+from lys.core.models import PubSubConfig
 
 
-def create_celery_app(settings, app_manager=None) -> Celery:
+def create_celery_app(settings, app_manager=None, component_types=None) -> Celery:
     """
     Create and configure Celery application.
 
@@ -9,6 +13,8 @@ def create_celery_app(settings, app_manager=None) -> Celery:
         settings: Application settings with Celery configuration
         app_manager: Optional AppManager instance for testing.
                      If None, uses LysAppManager singleton (production)
+        component_types: Optional list of component types to load.
+                         If None, defaults to [ENTITIES, SERVICES]
 
     Returns:
         Configured Celery app with app_manager attached
@@ -64,6 +70,16 @@ def create_celery_app(settings, app_manager=None) -> Celery:
         from lys.core.managers.app import LysAppManager
         celery_app.app_manager = LysAppManager()
 
+    # Load components for workers
+    # Default: ENTITIES and SERVICES only (FIXTURES not needed in workers)
+    if component_types is None:
+        component_types = [
+            AppComponentTypeEnum.ENTITIES,
+            AppComponentTypeEnum.SERVICES,
+        ]
+    celery_app.app_manager.configure_component_types(component_types)
+    celery_app.app_manager.load_all_components()
+
     return celery_app
 
 
@@ -73,11 +89,32 @@ def init_worker_process(**kwargs):
     Initialize worker process.
 
     This signal is called when a new worker process is spawned.
-    Each worker process gets its own database connection.
+    Each worker process gets its own database connection and pubsub client.
     """
-    # Local import to ensure current_app is available in worker process context
-    # Avoids import at module level where current_app may not be initialized yet
-    from celery import current_app
-
     if hasattr(current_app, 'app_manager'):
+        # Reset database connection for this worker process
         current_app.app_manager.database.reset_database_connection()
+
+        # Initialize pubsub if configured (Celery doesn't run _app_lifespan)
+        pubsub_config = current_app.app_manager.settings.get_plugin_config("pubsub")
+        if pubsub_config:
+            validated_config = PubSubConfig(**pubsub_config)
+            current_app.app_manager.pubsub = PubSubManager(
+                redis_url=validated_config.redis_url,
+                channel_prefix=validated_config.channel_prefix
+            )
+            current_app.app_manager.pubsub.initialize_sync()
+
+
+@signals.worker_process_shutdown.connect
+def shutdown_worker_process(**kwargs):
+    """
+    Shutdown worker process.
+
+    This signal is called when a worker process is shutting down.
+    Cleanly closes pubsub connections.
+    """
+    if hasattr(current_app, 'app_manager'):
+        # Shutdown pubsub sync client if initialized
+        if current_app.app_manager.pubsub:
+            current_app.app_manager.pubsub.shutdown_sync()

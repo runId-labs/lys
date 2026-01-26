@@ -20,8 +20,7 @@ class LicensePlanQuery(Query):
         LicensePlanNode,
         access_levels=[CONNECTED_ACCESS_LEVEL],
         is_licenced=False,
-        description="List all active license plans with their current version and pricing.",
-        options={"generate_tool": True}
+        description="List all active license plans with their current version and pricing."
     )
     async def all_active_license_plans(self, info: Info) -> Select:
         """

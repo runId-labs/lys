@@ -133,20 +133,23 @@ class AppRegistry:
 
             logging.info(f"✓ Registered entity: {name} -> {entity_class.__name__}")
 
-    def get_entity(self, name: str) -> Type[EntityInterface]:
+    def get_entity(self, name: str, nullable: bool = False) -> Type[EntityInterface] | None:
         """
         Retrieve a registered entity by name.
 
         Args:
             name: Entity name to lookup
+            nullable: If True, return None instead of raising KeyError when not found
 
         Returns:
-            Entity class
+            Entity class, or None if nullable=True and entity not found
 
         Raises:
-            KeyError: If entity is not found
+            KeyError: If entity is not found and nullable=False
         """
         if name not in self.entities:
+            if nullable:
+                return None
             raise KeyError(f"Entity '{name}' not found. Available: {list(self.entities.keys())}")
         return self.entities[name]
 
@@ -196,22 +199,56 @@ class AppRegistry:
 
             logging.info(f"✓ Registered service: {name} -> {service_class.__name__}")
 
-    def get_service(self, name: str) -> Type[ServiceInterface]:
+    def get_service(self, name: str, nullable: bool = False) -> Type[ServiceInterface]:
         """
         Retrieve a registered service by name.
 
         Args:
             name: Service name to lookup
+            nullable: If True, return None instead of raising KeyError when not found
 
         Returns:
-            Service class
+            Service class or None if nullable=True and not found
 
         Raises:
-            KeyError: If service is not found
+            KeyError: If service is not found and nullable=False
         """
         if name not in self.services:
+            if nullable:
+                return None
             raise KeyError(f"Service '{name}' not found. Available: {list(self.services.keys())}")
         return self.services[name]
+
+    async def initialize_services(self):
+        """
+        Initialize services by calling on_initialize() on each registered service.
+
+        This method is called during app startup in the lifespan context (async).
+        Services can override on_initialize() to perform async initialization tasks
+        like establishing connections, loading configuration, etc.
+        """
+        for service_name, service_class in self.services.items():
+            try:
+                await service_class.on_initialize()
+            except Exception as e:
+                logging.error(f"✗ Failed to initialize service '{service_name}': {e}")
+                raise
+        logging.info(f"✓ Initialized {len(self.services)} services")
+
+    async def shutdown_services(self):
+        """
+        Shutdown services by calling on_shutdown() on each registered service.
+
+        This method is called during app shutdown.
+        Services can override on_shutdown() to perform cleanup tasks.
+        """
+        for service_name, service_class in self.services.items():
+            try:
+                await service_class.on_shutdown()
+            except Exception as e:
+                logging.error(f"✗ Failed to shutdown service '{service_name}': {e}")
+                # Continue shutdown even if one service fails
+        logging.info(f"✓ Shutdown {len(self.services)} services")
 
     def register_fixture(self, fixture_class: Type[EntityFixtureInterface], depends_on: List[str] = None):
         """
@@ -335,7 +372,7 @@ class AppRegistry:
             if type(field_or_fct) is StrawberryField:
                 wrapped_func = field_or_fct.base_resolver.wrapped_func
                 webservice_name = wrapped_func.__name__
-                # Detect operation_type from class name convention (*Query -> query, *Mutation -> mutation)
+                # Detect operation_type from class name convention (*Query, *Mutation, *Subscription)
                 qualname = wrapped_func.__qualname__
                 class_name = qualname.rsplit(".", 1)[0] if "." in qualname else None
                 if class_name:
@@ -343,6 +380,8 @@ class AppRegistry:
                         operation_type = "query"
                     elif class_name.endswith("Mutation"):
                         operation_type = "mutation"
+                    elif class_name.endswith("Subscription"):
+                        operation_type = "subscription"
             else:
                 webservice_name = field_or_fct.__name__
 
@@ -360,6 +399,7 @@ class AppRegistry:
                     # Extract node type from field (needed for tool description)
                     node_type = None
                     field_type = field_or_fct.type
+
                     # Handle Connection types (for @lys_connection)
                     if hasattr(field_type, '__origin__'):
                         # Generic type like Connection[UserNode]
