@@ -1,0 +1,1 @@
+# Notification module for user_role app - extends base notification with roles
