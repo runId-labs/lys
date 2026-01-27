@@ -264,15 +264,17 @@ class TestLocalToolExecutorNavigate:
 
     @pytest.fixture
     def executor(self):
-        return LocalToolExecutor()
+        executor = LocalToolExecutor()
+        # Set accessible routes on the executor (not on info.context)
+        executor._accessible_routes = [
+            {"path": "/users"},
+            {"path": "/settings"},
+        ]
+        return executor
 
     def test_handle_navigate_success(self, executor):
         """Test successful navigation."""
         mock_info = MagicMock()
-        mock_info.context.ai_accessible_routes = [
-            {"path": "/users"},
-            {"path": "/settings"},
-        ]
         mock_info.context.frontend_actions = []
 
         result = executor._handle_navigate({"path": "/users"}, mock_info)
@@ -285,9 +287,6 @@ class TestLocalToolExecutorNavigate:
     def test_handle_navigate_invalid_path(self, executor):
         """Test navigation to invalid path."""
         mock_info = MagicMock()
-        mock_info.context.ai_accessible_routes = [
-            {"path": "/users"},
-        ]
 
         result = executor._handle_navigate({"path": "/admin"}, mock_info)
 
@@ -298,10 +297,10 @@ class TestLocalToolExecutorNavigate:
         """Test that frontend_actions list is created if not exists."""
         mock_info = MagicMock(spec=[])
         mock_info.context = MagicMock(spec=[])
-        mock_info.context.ai_accessible_routes = [{"path": "/users"}]
 
         # Remove frontend_actions attribute
-        del mock_info.context.frontend_actions
+        if hasattr(mock_info.context, "frontend_actions"):
+            del mock_info.context.frontend_actions
 
         result = executor._handle_navigate({"path": "/users"}, mock_info)
 
@@ -332,8 +331,10 @@ class TestLocalToolExecutorExecute:
     @pytest.mark.asyncio
     async def test_execute_navigate_tool(self, executor):
         """Test that navigate tool is handled specially."""
+        # Set accessible routes on the executor
+        executor._accessible_routes = [{"path": "/users"}]
+
         mock_info = MagicMock()
-        mock_info.context.ai_accessible_routes = [{"path": "/users"}]
         mock_info.context.frontend_actions = []
 
         result = await executor.execute(
@@ -349,14 +350,17 @@ class TestLocalToolExecutorExecute:
         """Test that unknown tool raises ValueError."""
         mock_info = MagicMock()
         mock_info.context.app_manager = executor._app_manager
-        executor._app_manager.registry.get_tool.side_effect = KeyError("unknown")
 
-        with pytest.raises(ValueError) as exc_info:
-            await executor.execute(
-                tool_name="unknown_tool",
-                arguments={},
-                context={"session": MagicMock(), "info": mock_info},
-            )
+        # Mock AIToolService.get_tool to return None (tool not found)
+        with patch("lys.apps.ai.modules.core.executors.local.AIToolService") as MockService:
+            MockService.get_tool = AsyncMock(return_value=None)
+
+            with pytest.raises(ValueError) as exc_info:
+                await executor.execute(
+                    tool_name="unknown_tool",
+                    arguments={},
+                    context={"session": MagicMock(), "info": mock_info},
+                )
 
         assert "not found" in str(exc_info.value)
 
@@ -369,19 +373,21 @@ class TestLocalToolExecutorExecute:
         async def mock_resolver(info, name: str):
             return {"status": "ok", "name": name}
 
-        executor._app_manager.registry.get_tool.return_value = {
-            "resolver": mock_resolver,
-            "node_type": None,
-        }
+        # Mock AIToolService.get_tool to return the tool data
+        with patch("lys.apps.ai.modules.core.executors.local.AIToolService") as MockService:
+            MockService.get_tool = AsyncMock(return_value={
+                "resolver": mock_resolver,
+                "node_type": None,
+            })
 
-        with patch.object(executor, "_process_guardrail", new_callable=AsyncMock) as mock_guardrail:
-            mock_guardrail.return_value = None
+            with patch.object(executor, "_process_guardrail", new_callable=AsyncMock) as mock_guardrail:
+                mock_guardrail.return_value = None
 
-            result = await executor.execute(
-                tool_name="test_tool",
-                arguments={"name": "test"},
-                context={"session": MagicMock(), "info": mock_info},
-            )
+                result = await executor.execute(
+                    tool_name="test_tool",
+                    arguments={"name": "test"},
+                    context={"session": MagicMock(), "info": mock_info},
+                )
 
         assert result["status"] == "ok"
         assert result["name"] == "test"

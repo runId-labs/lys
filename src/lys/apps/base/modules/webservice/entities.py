@@ -1,7 +1,6 @@
 from typing import Optional
 
-from sqlalchemy import Table, Column, ForeignKey, DateTime, String, func
-from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy import Table, Column, ForeignKey, DateTime, String, func, JSON
 from sqlalchemy.orm import declared_attr, relationship, Mapped, mapped_column
 
 from lys.core.abstracts.webservices import AbstractWebservice
@@ -36,7 +35,7 @@ class Webservice(AbstractWebservice):
         comment="GraphQL operation type (query or mutation)"
     )
     ai_tool: Mapped[Optional[dict]] = mapped_column(
-        JSONB,
+        JSON,
         nullable=True,
         comment="AI tool definition for LLM function calling"
     )
