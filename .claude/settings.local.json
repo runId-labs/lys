@@ -2,7 +2,10 @@
   "permissions": {
     "allow": [
       "Bash(python -m pytest:*)",
-      "Bash(pytest:*)"
+      "Bash(pytest:*)",
+      "Bash(for f in tests/integration/apps/user_auth/test_auth_service.py tests/integration/apps/user_auth/test_user_service.py tests/integration/core/test_entity_service_extended.py)",
+      "Bash(do echo \"=== $f ===\")",
+      "Bash(done)"
     ],
     "deny": [],
     "ask": []
