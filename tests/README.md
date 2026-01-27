@@ -420,9 +420,11 @@ pytest -n auto
 ## Test Results
 
 Current test status:
-- **32 tests passing** (20 unit + 12 integration)
-- **2 tests skipped** (documented as requiring integration tests)
+- **1881 tests passing** (1778 unit + 103 integration)
+- **50% global coverage**
 - **Zero conflicts** - perfect test isolation
+
+See `docs/todos/testing/STATUS.md` for detailed coverage by app.
 
 ## Troubleshooting
 
