@@ -46,10 +46,9 @@ def isolate_sqlalchemy_registry():
     - LysAppRegister to maintain state within a test file (needed for AppManager)
     - Different test files to not conflict with each other
 
-    Why this works:
-    - SQLAlchemy Base.registry._class_registry is the actual source of conflicts
-    - LysAppRegister can accumulate state within a module without issues
-    - Each test gets a clean SQLAlchemy slate but shares LysAppRegister within module
+    Note: Some integration tests may still have isolation issues when run together.
+    Run integration test files individually for best results:
+        pytest tests/integration/test_language_service.py -v
     """
     yield
 

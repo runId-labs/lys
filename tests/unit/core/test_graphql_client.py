@@ -117,9 +117,10 @@ class TestGraphQLClient:
     def test_init_stores_config(self, client):
         """Test that initialization stores configuration."""
         assert client.url == "http://gateway/graphql"
-        assert client.secret_key == "secret"
-        assert client.service_name == "test-service"
         assert client.timeout == 30
+        # Internal attributes (not public API)
+        assert client._service_name == "test-service"
+        assert client._auth_utils is not None
 
     def test_get_headers_includes_token(self, client):
         """Test that headers include service JWT token."""

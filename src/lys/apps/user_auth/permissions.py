@@ -155,7 +155,7 @@ class JWTPermission(PermissionInterface):
 
         # Only apply owner filtering if access_type is a dict with OWNER_ACCESS_KEY
         if isinstance(access_type, dict) and access_type.get(OWNER_ACCESS_KEY, False):
-            if len(stmt.froms) and entity_class is not None and connected_user_id:
+            if len(stmt.get_final_froms()) and entity_class is not None and connected_user_id:
                 stmt, conditions = entity_class.user_accessing_filters(stmt, connected_user_id)
                 if conditions:
                     or_where |= or_(*conditions)

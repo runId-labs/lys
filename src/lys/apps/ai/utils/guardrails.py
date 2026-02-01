@@ -8,7 +8,7 @@ before executing modifications.
 
 import logging
 import uuid
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, UTC
 from typing import Any, Dict, Optional
 
 from strawberry import relay
@@ -66,8 +66,8 @@ class AIGuardrailService:
             "tool_data": tool_data,
             "tool_args": tool_args,
             "user_id": user_id,
-            "created_at": datetime.utcnow(),
-            "expires_at": datetime.utcnow() + timedelta(minutes=5),
+            "created_at": datetime.now(UTC),
+            "expires_at": datetime.now(UTC) + timedelta(minutes=5),
             "preview": preview
         }
 
@@ -115,7 +115,7 @@ class AIGuardrailService:
             }
 
         # Check expiration
-        if datetime.utcnow() > action["expires_at"]:
+        if datetime.now(UTC) > action["expires_at"]:
             del _pending_actions[action_id]
             return {
                 "status": "error",

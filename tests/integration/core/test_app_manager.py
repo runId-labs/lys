@@ -28,9 +28,9 @@ class TestAppManagerBasics:
 
         assert app_manager is not None
         assert app_manager.settings is not None
-        assert app_manager.register is not None
+        assert app_manager.registry is not None
         assert app_manager.database is not None
-        assert app_manager.graphql_register is not None
+        assert app_manager.graphql_registry is not None
         assert app_manager.component_types == []
         assert app_manager._loaded_modules == []
         assert app_manager.permissions == []
@@ -313,7 +313,7 @@ class TestAppManagerInitialization:
 
         # If nodes were registered, GraphQL route should be present
         # base app might not have many nodes, so this is optional
-        has_nodes = len(app_manager.graphql_register.queries.get(settings.graphql_schema_name, [])) > 0
+        has_nodes = len(app_manager.graphql_registry.queries.get(settings.graphql_schema_name, [])) > 0
         has_graphql_route = any("graphql" in route for route in routes)
 
         # If nodes exist, route must exist. If no nodes, no route is expected.

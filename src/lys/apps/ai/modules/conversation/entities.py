@@ -8,8 +8,7 @@ feedback and metrics, supporting analytics and fine-tuning data export.
 from datetime import datetime
 from typing import Optional, List
 
-from sqlalchemy import String, Text, ForeignKey, Integer, Uuid
-from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy import String, Text, ForeignKey, Integer, Uuid, JSON
 from sqlalchemy.orm import Mapped, mapped_column, relationship, declared_attr
 
 from lys.core.entities import Entity
@@ -74,11 +73,11 @@ class AIMessage(Entity):
     content: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
 
     # For tool calls (role=assistant)
-    tool_calls: Mapped[Optional[List[dict]]] = mapped_column(JSONB, nullable=True)
+    tool_calls: Mapped[Optional[List[dict]]] = mapped_column(JSON, nullable=True)
 
     # For tool results (role=tool)
     tool_call_id: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
-    tool_result: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
+    tool_result: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
 
     # Metrics (role=assistant only)
     provider: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
