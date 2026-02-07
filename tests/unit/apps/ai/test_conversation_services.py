@@ -302,8 +302,8 @@ class TestAIConversationServiceBuildSystemPrompt:
         return AsyncMock()
 
     @pytest.mark.asyncio
-    async def test_build_system_prompt_with_authenticated_user(self, mock_session):
-        """Test building system prompt for authenticated user."""
+    async def test_build_system_prompt_returns_empty_without_config(self, mock_session):
+        """Test building system prompt returns empty without configuration."""
         from lys.apps.ai.modules.conversation.services import AIConversationService
 
         connected_user = {
@@ -312,49 +312,11 @@ class TestAIConversationServiceBuildSystemPrompt:
         }
         chatbot_config = {}
 
-        with patch.object(
-            AIConversationService,
-            "_get_user_details",
-            new_callable=AsyncMock
-        ) as mock_details:
-            mock_details.return_value = {
-                "email": "test@example.com",
-                "first_name": "John",
-                "last_name": "Doe",
-                "language_code": "en",
-            }
-
-            with patch.object(
-                AIConversationService,
-                "_get_user_roles_info",
-                new_callable=AsyncMock
-            ) as mock_roles:
-                mock_roles.return_value = []
-
-                result = await AIConversationService._build_system_prompt(
-                    mock_session, connected_user, chatbot_config, tools_count=5
-                )
-
-        assert "User Context" in result
-        assert "test@example.com" in result
-        assert "John Doe" in result
-        assert "Available Tools: 5" in result
-
-    @pytest.mark.asyncio
-    async def test_build_system_prompt_anonymous_user(self, mock_session):
-        """Test building system prompt for anonymous user."""
-        from lys.apps.ai.modules.conversation.services import AIConversationService
-
-        connected_user = None
-        chatbot_config = {}
-
         result = await AIConversationService._build_system_prompt(
-            mock_session, connected_user, chatbot_config, tools_count=3
+            mock_session, connected_user, chatbot_config, tools_count=5
         )
 
-        assert "Anonymous user" in result
-        assert "not authenticated" in result
-        assert "public only" in result
+        assert result == ""
 
     @pytest.mark.asyncio
     async def test_build_system_prompt_with_custom_prompt(self, mock_session):
@@ -373,27 +335,39 @@ class TestAIConversationServiceBuildSystemPrompt:
         assert "ACME Corp" in result
 
     @pytest.mark.asyncio
-    async def test_build_system_prompt_super_user(self, mock_session):
-        """Test building system prompt for super user."""
+    async def test_build_system_prompt_with_page_behaviour(self, mock_session):
+        """Test that page-specific prompt is included."""
         from lys.apps.ai.modules.conversation.services import AIConversationService
 
-        connected_user = {
-            "sub": "admin-123",
-            "is_super_user": True,
-        }
+        connected_user = None
         chatbot_config = {}
+        page_behaviour = {
+            "prompt": "Focus on helping with customer support tasks."
+        }
 
-        with patch.object(
-            AIConversationService,
-            "_get_user_details",
-            new_callable=AsyncMock
-        ) as mock_details:
-            mock_details.return_value = {}
+        result = await AIConversationService._build_system_prompt(
+            mock_session, connected_user, chatbot_config, tools_count=0,
+            page_behaviour=page_behaviour
+        )
 
-            result = await AIConversationService._build_system_prompt(
-                mock_session, connected_user, chatbot_config, tools_count=10
-            )
+        assert "customer support" in result
 
-        assert "Super User: Yes" in result
-        # Super users should not have roles fetched
-        assert "User Roles" not in result or True  # roles not shown for super users
+    @pytest.mark.asyncio
+    async def test_build_system_prompt_with_context_data(self, mock_session):
+        """Test that context data is included."""
+        from lys.apps.ai.modules.conversation.services import AIConversationService
+
+        connected_user = None
+        chatbot_config = {}
+        context_data = {
+            "Current Order": "Order #12345 - Status: Pending"
+        }
+
+        result = await AIConversationService._build_system_prompt(
+            mock_session, connected_user, chatbot_config, tools_count=0,
+            context_data=context_data
+        )
+
+        assert "Contexte dynamique" in result
+        assert "Current Order" in result
+        assert "Order #12345" in result

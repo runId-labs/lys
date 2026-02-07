@@ -214,3 +214,98 @@ class TestUserFixturesModel:
         """Test AttributesModel has password field."""
         from lys.apps.user_auth.modules.user.models import UserFixturesModel
         assert "password" in UserFixturesModel.AttributesModel.model_fields
+
+
+class TestResetPasswordInputModel:
+    """Tests for ResetPasswordInputModel."""
+
+    def test_model_exists(self):
+        from lys.apps.user_auth.modules.user.models import ResetPasswordInputModel
+        assert ResetPasswordInputModel is not None
+
+    def test_has_token_field(self):
+        from lys.apps.user_auth.modules.user.models import ResetPasswordInputModel
+        assert "token" in ResetPasswordInputModel.model_fields
+
+    def test_has_new_password_field(self):
+        from lys.apps.user_auth.modules.user.models import ResetPasswordInputModel
+        assert "new_password" in ResetPasswordInputModel.model_fields
+
+    def test_valid_input(self):
+        import uuid
+        from lys.apps.user_auth.modules.user.models import ResetPasswordInputModel
+        token = str(uuid.uuid4())
+        model = ResetPasswordInputModel(token=token, new_password="newSecurePass1!")
+        assert model.token == token
+
+
+class TestVerifyEmailInputModel:
+    """Tests for VerifyEmailInputModel."""
+
+    def test_model_exists(self):
+        from lys.apps.user_auth.modules.user.models import VerifyEmailInputModel
+        assert VerifyEmailInputModel is not None
+
+    def test_has_token_field(self):
+        from lys.apps.user_auth.modules.user.models import VerifyEmailInputModel
+        assert "token" in VerifyEmailInputModel.model_fields
+
+
+class TestActivateUserInputModel:
+    """Tests for ActivateUserInputModel."""
+
+    def test_model_exists(self):
+        from lys.apps.user_auth.modules.user.models import ActivateUserInputModel
+        assert ActivateUserInputModel is not None
+
+    def test_has_token_field(self):
+        from lys.apps.user_auth.modules.user.models import ActivateUserInputModel
+        assert "token" in ActivateUserInputModel.model_fields
+
+    def test_has_new_password_field(self):
+        from lys.apps.user_auth.modules.user.models import ActivateUserInputModel
+        assert "new_password" in ActivateUserInputModel.model_fields
+
+
+class TestAnonymizeUserInputModel:
+    """Tests for AnonymizeUserInputModel."""
+
+    def test_model_exists(self):
+        from lys.apps.user_auth.modules.user.models import AnonymizeUserInputModel
+        assert AnonymizeUserInputModel is not None
+
+
+class TestListUserAuditLogsInputModel:
+    """Tests for ListUserAuditLogsInputModel."""
+
+    def test_model_exists(self):
+        from lys.apps.user_auth.modules.user.models import ListUserAuditLogsInputModel
+        assert ListUserAuditLogsInputModel is not None
+
+
+class TestChangePasswordInputModel:
+    """Tests for ChangePasswordInputModel."""
+
+    def test_model_exists(self):
+        from lys.apps.user_auth.modules.user.models import ChangePasswordInputModel
+        assert ChangePasswordInputModel is not None
+
+    def test_has_new_password_field(self):
+        from lys.apps.user_auth.modules.user.models import ChangePasswordInputModel
+        assert "new_password" in ChangePasswordInputModel.model_fields
+
+
+class TestCreateSuperUserInputModel:
+    """Tests for CreateSuperUserInputModel."""
+
+    def test_model_exists(self):
+        from lys.apps.user_auth.modules.user.models import CreateSuperUserInputModel
+        assert CreateSuperUserInputModel is not None
+
+    def test_has_email_field(self):
+        from lys.apps.user_auth.modules.user.models import CreateSuperUserInputModel
+        assert "email" in CreateSuperUserInputModel.model_fields
+
+    def test_has_password_field(self):
+        from lys.apps.user_auth.modules.user.models import CreateSuperUserInputModel
+        assert "password" in CreateSuperUserInputModel.model_fields

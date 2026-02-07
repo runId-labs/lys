@@ -85,28 +85,22 @@ class TestOrganizationRoleFixtures:
         assert USER_ADMIN_ROLE in role_ids
 
 
-class TestUserAdminRoleOrganizationWebservices:
-    """Tests for USER_ADMIN_ROLE_ORGANIZATION_WEBSERVICES constant."""
+class TestUserAdminRoleWebservices:
+    """Tests for USER_ADMIN_ROLE_WEBSERVICES constant."""
 
     def test_webservices_list_exists(self):
-        """Test that USER_ADMIN_ROLE_ORGANIZATION_WEBSERVICES exists."""
-        from lys.apps.organization.modules.role.fixtures import USER_ADMIN_ROLE_ORGANIZATION_WEBSERVICES
+        """Test that USER_ADMIN_ROLE_WEBSERVICES exists."""
+        from lys.apps.organization.modules.role.fixtures import USER_ADMIN_ROLE_WEBSERVICES
 
-        assert isinstance(USER_ADMIN_ROLE_ORGANIZATION_WEBSERVICES, list)
+        assert isinstance(USER_ADMIN_ROLE_WEBSERVICES, list)
 
-    def test_webservices_includes_base_webservices(self):
-        """Test that list includes base USER_ADMIN_ROLE_WEBSERVICES."""
-        from lys.apps.organization.modules.role.fixtures import USER_ADMIN_ROLE_ORGANIZATION_WEBSERVICES
-        from lys.apps.user_role.modules.role.fixtures import USER_ADMIN_ROLE_WEBSERVICES
+    def test_webservices_includes_user_management(self):
+        """Test that list includes user management webservices."""
+        from lys.apps.organization.modules.role.fixtures import USER_ADMIN_ROLE_WEBSERVICES
 
-        for ws in USER_ADMIN_ROLE_WEBSERVICES:
-            assert ws in USER_ADMIN_ROLE_ORGANIZATION_WEBSERVICES
-
-    def test_webservices_includes_organization_specific(self):
-        """Test that list includes organization-specific webservices."""
-        from lys.apps.organization.modules.role.fixtures import USER_ADMIN_ROLE_ORGANIZATION_WEBSERVICES
-
-        assert "all_clients" in USER_ADMIN_ROLE_ORGANIZATION_WEBSERVICES
-        assert "all_client_users" in USER_ADMIN_ROLE_ORGANIZATION_WEBSERVICES
-        assert "client_user" in USER_ADMIN_ROLE_ORGANIZATION_WEBSERVICES
-        assert "create_client_user" in USER_ADMIN_ROLE_ORGANIZATION_WEBSERVICES
+        assert "all_client_users" in USER_ADMIN_ROLE_WEBSERVICES
+        assert "client_user" in USER_ADMIN_ROLE_WEBSERVICES
+        assert "create_client_user" in USER_ADMIN_ROLE_WEBSERVICES
+        assert "update_client_user_email" in USER_ADMIN_ROLE_WEBSERVICES
+        assert "update_client_user_private_data" in USER_ADMIN_ROLE_WEBSERVICES
+        assert "update_client_user_roles" in USER_ADMIN_ROLE_WEBSERVICES

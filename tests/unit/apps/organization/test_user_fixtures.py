@@ -5,6 +5,7 @@ Tests ClientRelatedUserDevFixtures and ClientUserDevFixtures structure and confi
 """
 
 import pytest
+import inspect
 from unittest.mock import MagicMock, AsyncMock
 
 
@@ -132,72 +133,38 @@ class TestClientUserDevFixturesDataList:
 
         for entry in ClientUserDevFixtures.data_list:
             attributes = entry["attributes"]
-            assert "client_id" in attributes
-            assert "user_id" in attributes
-            assert "client_user_roles" in attributes
+            assert "client_name" in attributes
+            assert "user_email" in attributes
+            assert "role_codes" in attributes
 
 
-class TestClientUserDevFixturesFormatMethods:
-    """Tests for ClientUserDevFixtures format methods."""
+class TestClientUserDevFixturesCreateFromService:
+    """Tests for ClientUserDevFixtures create_from_service method."""
 
-    def test_format_client_id_exists(self):
-        """Test format_client_id method exists."""
+    def test_create_from_service_exists(self):
+        """Test create_from_service method exists."""
         from lys.apps.organization.modules.user.fixtures import ClientUserDevFixtures
-        assert hasattr(ClientUserDevFixtures, "format_client_id")
+        assert hasattr(ClientUserDevFixtures, "create_from_service")
 
-    def test_format_client_id_is_async(self):
-        """Test format_client_id is async."""
-        import inspect
+    def test_create_from_service_is_async(self):
+        """Test create_from_service is async."""
         from lys.apps.organization.modules.user.fixtures import ClientUserDevFixtures
-        assert inspect.iscoroutinefunction(ClientUserDevFixtures.format_client_id)
+        assert inspect.iscoroutinefunction(ClientUserDevFixtures.create_from_service)
 
-    def test_format_client_id_signature(self):
-        """Test format_client_id method signature."""
-        import inspect
+    def test_create_from_service_is_classmethod(self):
+        """Test create_from_service is a classmethod."""
         from lys.apps.organization.modules.user.fixtures import ClientUserDevFixtures
+        assert isinstance(
+            inspect.getattr_static(ClientUserDevFixtures, "create_from_service"),
+            classmethod
+        )
 
-        sig = inspect.signature(ClientUserDevFixtures.format_client_id)
-        assert "client_id" in sig.parameters
-        assert "session" in sig.parameters
-
-    def test_format_user_id_exists(self):
-        """Test format_user_id method exists."""
-        from lys.apps.organization.modules.user.fixtures import ClientUserDevFixtures
-        assert hasattr(ClientUserDevFixtures, "format_user_id")
-
-    def test_format_user_id_is_async(self):
-        """Test format_user_id is async."""
-        import inspect
-        from lys.apps.organization.modules.user.fixtures import ClientUserDevFixtures
-        assert inspect.iscoroutinefunction(ClientUserDevFixtures.format_user_id)
-
-    def test_format_user_id_signature(self):
-        """Test format_user_id method signature."""
-        import inspect
+    def test_create_from_service_signature(self):
+        """Test create_from_service method signature."""
         from lys.apps.organization.modules.user.fixtures import ClientUserDevFixtures
 
-        sig = inspect.signature(ClientUserDevFixtures.format_user_id)
-        assert "user_id" in sig.parameters
-        assert "session" in sig.parameters
-
-    def test_format_client_user_roles_exists(self):
-        """Test format_client_user_roles method exists."""
-        from lys.apps.organization.modules.user.fixtures import ClientUserDevFixtures
-        assert hasattr(ClientUserDevFixtures, "format_client_user_roles")
-
-    def test_format_client_user_roles_is_async(self):
-        """Test format_client_user_roles is async."""
-        import inspect
-        from lys.apps.organization.modules.user.fixtures import ClientUserDevFixtures
-        assert inspect.iscoroutinefunction(ClientUserDevFixtures.format_client_user_roles)
-
-    def test_format_client_user_roles_signature(self):
-        """Test format_client_user_roles method signature."""
-        import inspect
-        from lys.apps.organization.modules.user.fixtures import ClientUserDevFixtures
-
-        sig = inspect.signature(ClientUserDevFixtures.format_client_user_roles)
-        assert "client_user_roles" in sig.parameters
+        sig = inspect.signature(ClientUserDevFixtures.create_from_service)
+        assert "attributes" in sig.parameters
         assert "session" in sig.parameters
 
 

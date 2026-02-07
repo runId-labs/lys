@@ -30,13 +30,13 @@ class TestRoleFixtures:
         assert hasattr(RoleFixtures, "data_list")
         assert isinstance(RoleFixtures.data_list, list)
 
-    def test_role_fixtures_data_contains_user_admin_role(self):
-        """Test that data_list contains USER_ADMIN_ROLE."""
+    def test_role_fixtures_data_contains_user_supervisor_role(self):
+        """Test that data_list contains USER_SUPERVISOR_ROLE."""
         from lys.apps.user_role.modules.role.fixtures import RoleFixtures
-        from lys.apps.user_role.consts import USER_ADMIN_ROLE
+        from lys.apps.user_role.consts import USER_SUPERVISOR_ROLE
 
         role_ids = [item["id"] for item in RoleFixtures.data_list]
-        assert USER_ADMIN_ROLE in role_ids
+        assert USER_SUPERVISOR_ROLE in role_ids
 
     def test_role_fixtures_has_format_role_webservices(self):
         """Test that RoleFixtures has format_role_webservices method."""
@@ -46,14 +46,14 @@ class TestRoleFixtures:
         assert hasattr(RoleFixtures, "format_role_webservices")
         assert inspect.iscoroutinefunction(RoleFixtures.format_role_webservices)
 
-    def test_user_admin_role_webservices_list(self):
-        """Test USER_ADMIN_ROLE_WEBSERVICES contains expected webservices."""
-        from lys.apps.user_role.modules.role.fixtures import USER_ADMIN_ROLE_WEBSERVICES
+    def test_user_supervisor_role_webservices_list(self):
+        """Test USER_SUPERVISOR_ROLE_WEBSERVICES contains expected webservices."""
+        from lys.apps.user_role.modules.role.fixtures import USER_SUPERVISOR_ROLE_WEBSERVICES
 
-        assert isinstance(USER_ADMIN_ROLE_WEBSERVICES, list)
-        assert "create_user" in USER_ADMIN_ROLE_WEBSERVICES
-        assert "user" in USER_ADMIN_ROLE_WEBSERVICES
-        assert "update_user_roles" in USER_ADMIN_ROLE_WEBSERVICES
+        assert isinstance(USER_SUPERVISOR_ROLE_WEBSERVICES, list)
+        assert "create_user" in USER_SUPERVISOR_ROLE_WEBSERVICES
+        assert "user" in USER_SUPERVISOR_ROLE_WEBSERVICES
+        assert "update_user_roles" in USER_SUPERVISOR_ROLE_WEBSERVICES
 
 
 class TestAccessLevelFixtures:

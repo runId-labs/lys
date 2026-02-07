@@ -6,6 +6,7 @@ Note: Methods using SQLAlchemy select() are tested at integration level.
 """
 
 import pytest
+import inspect
 from unittest.mock import MagicMock, AsyncMock, patch
 
 
@@ -14,14 +15,12 @@ class TestClientServiceUserIsClientOwnerSignature:
 
     def test_method_is_async(self):
         """Test that user_is_client_owner is async."""
-        import inspect
         from lys.apps.organization.modules.client.services import ClientService
 
         assert inspect.iscoroutinefunction(ClientService.user_is_client_owner)
 
     def test_method_signature(self):
         """Test user_is_client_owner method signature."""
-        import inspect
         from lys.apps.organization.modules.client.services import ClientService
 
         sig = inspect.signature(ClientService.user_is_client_owner)
@@ -42,8 +41,8 @@ class TestClientServiceCreateClientWithOwner:
         return session
 
     @pytest.mark.asyncio
-    async def test_creates_user_client_and_client_user(self, mock_session):
-        """Test that method creates user, client, and client_user."""
+    async def test_creates_user_and_client(self, mock_session):
+        """Test that method creates user and client."""
         from lys.apps.organization.modules.client.services import ClientService
 
         # Mock user service
@@ -58,13 +57,8 @@ class TestClientServiceCreateClientWithOwner:
         mock_client.id = "client-456"
         mock_client_class = MagicMock(return_value=mock_client)
 
-        # Mock client_user entity class
-        mock_client_user = MagicMock()
-        mock_client_user_class = MagicMock(return_value=mock_client_user)
-
         with patch.object(ClientService, 'app_manager') as mock_app_manager:
             mock_app_manager.get_service.return_value = mock_user_service
-            mock_app_manager.get_entity.return_value = mock_client_user_class
 
             with patch.object(ClientService, 'entity_class', mock_client_class):
                 result = await ClientService.create_client_with_owner(
@@ -84,8 +78,11 @@ class TestClientServiceCreateClientWithOwner:
             owner_id="user-123"
         )
 
-        # Verify session.add was called (for client and client_user)
-        assert mock_session.add.call_count >= 2
+        # Verify session.add was called for client
+        mock_session.add.assert_called_once_with(mock_client)
+
+        # Verify owner user's client_id is set
+        assert mock_user.client_id == "client-456"
 
     @pytest.mark.asyncio
     async def test_passes_optional_parameters(self, mock_session):
@@ -102,11 +99,8 @@ class TestClientServiceCreateClientWithOwner:
         mock_client.id = "client-456"
         mock_client_class = MagicMock(return_value=mock_client)
 
-        mock_client_user_class = MagicMock()
-
         with patch.object(ClientService, 'app_manager') as mock_app_manager:
             mock_app_manager.get_service.return_value = mock_user_service
-            mock_app_manager.get_entity.return_value = mock_client_user_class
 
             with patch.object(ClientService, 'entity_class', mock_client_class):
                 await ClientService.create_client_with_owner(
@@ -127,3 +121,29 @@ class TestClientServiceCreateClientWithOwner:
         assert call_kwargs["last_name"] == "Doe"
         assert call_kwargs["gender_id"] == "MALE"
         assert call_kwargs["send_verification_email"] is False
+
+
+class TestClientServiceCreateClientWithOwnerSignature:
+    """Tests for create_client_with_owner method signature."""
+
+    def test_method_is_async(self):
+        """Test that create_client_with_owner is async."""
+        from lys.apps.organization.modules.client.services import ClientService
+
+        assert inspect.iscoroutinefunction(ClientService.create_client_with_owner)
+
+    def test_method_signature(self):
+        """Test create_client_with_owner method signature."""
+        from lys.apps.organization.modules.client.services import ClientService
+
+        sig = inspect.signature(ClientService.create_client_with_owner)
+        assert "session" in sig.parameters
+        assert "client_name" in sig.parameters
+        assert "email" in sig.parameters
+        assert "password" in sig.parameters
+        assert "language_id" in sig.parameters
+        assert "send_verification_email" in sig.parameters
+        assert "background_tasks" in sig.parameters
+        assert "first_name" in sig.parameters
+        assert "last_name" in sig.parameters
+        assert "gender_id" in sig.parameters

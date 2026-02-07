@@ -3,6 +3,10 @@ Test that test isolation works correctly.
 
 This validates that the auto_cleanup_app_managers fixture
 prevents tests from interfering with each other.
+
+Note: The tests verify that MockAppManager configuration is properly cleaned up
+between tests, not that _app_manager is None (since lazy initialization from
+EntityService inheritance can set it to LysAppManager during import).
 """
 
 import pytest
@@ -48,11 +52,11 @@ class TestIsolation:
         """
         Second test should start with clean state.
 
-        If isolation works, IsolationTestService._app_manager should be None,
-        not the mock from test_first_configures_service.
+        If isolation works, IsolationTestService._app_manager should NOT be
+        the mock from test_first_configures_service.
         """
-        # This is the critical assertion - _app_manager should be None
-        assert IsolationTestService._app_manager is None
+        # Verify it's not the mock from previous test (could be None or LysAppManager)
+        assert not isinstance(IsolationTestService._app_manager, MockAppManager)
 
         # We can configure it independently
         different_mock = MockAppManager()
@@ -69,8 +73,8 @@ class TestIsolation:
 
         This confirms cleanup works consistently across multiple tests.
         """
-        # Should be clean after test_second_starts_clean
-        assert IsolationTestService._app_manager is None
+        # Should not have mock from test_second_starts_clean
+        assert not isinstance(IsolationTestService._app_manager, MockAppManager)
 
     def test_explicit_manual_config_without_tracking(self):
         """

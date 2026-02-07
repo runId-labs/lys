@@ -1,111 +1,106 @@
 """
 Unit tests for organization user entities.
 
-Tests ClientUser and ClientUserRole entities.
+Tests User and ClientUserRole entities.
 """
 
 import pytest
 from unittest.mock import MagicMock
 
 
-class TestClientUserEntity:
-    """Tests for ClientUser entity structure."""
+class TestUserEntity:
+    """Tests for User entity structure."""
 
-    def test_client_user_has_tablename(self):
-        """Test that ClientUser has correct tablename."""
-        from lys.apps.organization.modules.user.entities import ClientUser
+    def test_user_inherits_from_base_user(self):
+        """Test that User inherits from BaseUser."""
+        from lys.apps.organization.modules.user.entities import User
+        from lys.apps.user_role.modules.user.entities import User as BaseUser
 
-        assert ClientUser.__tablename__ == "client_user"
+        assert issubclass(User, BaseUser)
 
-    def test_client_user_inherits_from_entity(self):
-        """Test that ClientUser inherits from Entity."""
-        from lys.apps.organization.modules.user.entities import ClientUser
-        from lys.core.entities import Entity
+    def test_user_has_client_id_column(self):
+        """Test that User has client_id column."""
+        from lys.apps.organization.modules.user.entities import User
 
-        assert issubclass(ClientUser, Entity)
+        assert "client_id" in User.__annotations__
 
-    def test_client_user_has_user_id_column(self):
-        """Test that ClientUser has user_id column."""
-        from lys.apps.organization.modules.user.entities import ClientUser
+    def test_user_has_client_relationship(self):
+        """Test that User has client relationship."""
+        from lys.apps.organization.modules.user.entities import User
 
-        assert "user_id" in ClientUser.__annotations__
+        assert hasattr(User, "client")
 
-    def test_client_user_has_client_id_column(self):
-        """Test that ClientUser has client_id column."""
-        from lys.apps.organization.modules.user.entities import ClientUser
+    def test_is_supervisor_returns_true_when_no_client(self):
+        """Test that is_supervisor returns True when client_id is None."""
+        from lys.apps.organization.modules.user.entities import User
 
-        assert "client_id" in ClientUser.__annotations__
+        user = MagicMock(spec=User)
+        user.client_id = None
 
-    def test_client_user_has_user_relationship(self):
-        """Test that ClientUser has user relationship."""
-        from lys.apps.organization.modules.user.entities import ClientUser
+        result = User.is_supervisor.fget(user)
 
-        assert hasattr(ClientUser, "user")
+        assert result is True
 
-    def test_client_user_has_client_relationship(self):
-        """Test that ClientUser has client relationship."""
-        from lys.apps.organization.modules.user.entities import ClientUser
+    def test_is_supervisor_returns_false_when_has_client(self):
+        """Test that is_supervisor returns False when client_id is set."""
+        from lys.apps.organization.modules.user.entities import User
 
-        assert hasattr(ClientUser, "client")
+        user = MagicMock(spec=User)
+        user.client_id = "client-123"
 
-    def test_accessing_users_returns_user_id(self):
-        """Test that accessing_users returns user_id."""
-        from lys.apps.organization.modules.user.entities import ClientUser
+        result = User.is_supervisor.fget(user)
 
-        client_user = MagicMock(spec=ClientUser)
-        client_user.user_id = "user-123"
+        assert result is False
 
-        result = ClientUser.accessing_users(client_user)
+    def test_is_client_user_returns_true_when_has_client(self):
+        """Test that is_client_user returns True when client_id is set."""
+        from lys.apps.organization.modules.user.entities import User
 
-        assert result == ["user-123"]
+        user = MagicMock(spec=User)
+        user.client_id = "client-123"
 
-    def test_accessing_users_returns_empty_when_no_user_id(self):
-        """Test that accessing_users returns empty when no user_id."""
-        from lys.apps.organization.modules.user.entities import ClientUser
+        result = User.is_client_user.fget(user)
 
-        client_user = MagicMock(spec=ClientUser)
-        client_user.user_id = None
+        assert result is True
 
-        result = ClientUser.accessing_users(client_user)
+    def test_is_client_user_returns_false_when_no_client(self):
+        """Test that is_client_user returns False when client_id is None."""
+        from lys.apps.organization.modules.user.entities import User
 
-        assert result == []
+        user = MagicMock(spec=User)
+        user.client_id = None
 
-    def test_accessing_organizations_delegates_to_client(self):
-        """Test that accessing_organizations delegates to client."""
-        from lys.apps.organization.modules.user.entities import ClientUser
+        result = User.is_client_user.fget(user)
 
-        mock_client = MagicMock()
-        mock_client.accessing_organizations.return_value = {"client": ["client-1"]}
+        assert result is False
 
-        client_user = MagicMock(spec=ClientUser)
-        client_user.client = mock_client
+    def test_accessing_organizations_returns_client_id(self):
+        """Test that accessing_organizations returns client_id in dict."""
+        from lys.apps.organization.modules.user.entities import User
 
-        result = ClientUser.accessing_organizations(client_user)
+        user = MagicMock(spec=User)
+        user.client_id = "client-123"
 
-        assert result == {"client": ["client-1"]}
+        result = User.accessing_organizations(user)
+
+        assert result == {"client": ["client-123"]}
 
     def test_accessing_organizations_returns_empty_when_no_client(self):
-        """Test that accessing_organizations returns empty when no client."""
-        from lys.apps.organization.modules.user.entities import ClientUser
+        """Test that accessing_organizations returns empty when no client_id."""
+        from lys.apps.organization.modules.user.entities import User
 
-        client_user = MagicMock(spec=ClientUser)
-        client_user.client = None
+        user = MagicMock(spec=User)
+        user.client_id = None
 
-        result = ClientUser.accessing_organizations(client_user)
+        result = User.accessing_organizations(user)
 
         assert result == {}
 
-    def test_user_accessing_filters_exists(self):
-        """Test that user_accessing_filters classmethod exists."""
-        from lys.apps.organization.modules.user.entities import ClientUser
-
-        assert hasattr(ClientUser, "user_accessing_filters")
-
     def test_organization_accessing_filters_exists(self):
         """Test that organization_accessing_filters classmethod exists."""
-        from lys.apps.organization.modules.user.entities import ClientUser
+        from lys.apps.organization.modules.user.entities import User
 
-        assert hasattr(ClientUser, "organization_accessing_filters")
+        assert hasattr(User, "organization_accessing_filters")
 
 
 class TestClientUserRoleEntity:
@@ -124,11 +119,11 @@ class TestClientUserRoleEntity:
 
         assert issubclass(ClientUserRole, AbstractUserOrganizationRoleEntity)
 
-    def test_client_user_role_has_client_user_relationship(self):
-        """Test that ClientUserRole has client_user relationship."""
+    def test_client_user_role_has_user_relationship(self):
+        """Test that ClientUserRole has user relationship."""
         from lys.apps.organization.modules.user.entities import ClientUserRole
 
-        assert hasattr(ClientUserRole, "client_user")
+        assert hasattr(ClientUserRole, "user")
 
     def test_client_user_role_has_role_relationship(self):
         """Test that ClientUserRole has role relationship."""
@@ -136,11 +131,44 @@ class TestClientUserRoleEntity:
 
         assert hasattr(ClientUserRole, "role")
 
-    def test_organization_property_exists(self):
-        """Test that organization property exists."""
+    def test_level_property_returns_client(self):
+        """Test that level property returns 'client' for base implementation."""
         from lys.apps.organization.modules.user.entities import ClientUserRole
 
-        assert hasattr(ClientUserRole, "organization")
+        role = MagicMock(spec=ClientUserRole)
+
+        result = ClientUserRole.level.fget(role)
+
+        assert result == "client"
+
+    def test_client_id_property_returns_user_client_id(self):
+        """Test that client_id property returns user.client_id."""
+        from lys.apps.organization.modules.user.entities import ClientUserRole
+
+        mock_user = MagicMock()
+        mock_user.client_id = "client-456"
+
+        role = MagicMock(spec=ClientUserRole)
+        role.user = mock_user
+
+        result = ClientUserRole.client_id.fget(role)
+
+        assert result == "client-456"
+
+    def test_organization_property_returns_user_client(self):
+        """Test that organization property returns user.client."""
+        from lys.apps.organization.modules.user.entities import ClientUserRole
+
+        mock_client = MagicMock()
+        mock_user = MagicMock()
+        mock_user.client = mock_client
+
+        role = MagicMock(spec=ClientUserRole)
+        role.user = mock_user
+
+        result = ClientUserRole.organization.fget(role)
+
+        assert result == mock_client
 
     def test_organization_accessing_filters_exists(self):
         """Test that organization_accessing_filters classmethod exists."""

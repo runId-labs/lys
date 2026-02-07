@@ -26,7 +26,6 @@ class TestAbstractOrganizationEntity:
     def test_parent_organization_is_abstract_property(self):
         """Test that parent_organization is an abstract property."""
         from lys.apps.organization.abstracts import AbstractOrganizationEntity
-        import abc
 
         assert hasattr(AbstractOrganizationEntity, "parent_organization")
 
@@ -105,11 +104,11 @@ class TestAbstractUserOrganizationRoleEntity:
 
         assert AbstractUserOrganizationRoleEntity.__abstract__ is True
 
-    def test_has_client_user_id_column(self):
-        """Test that class has client_user_id column."""
+    def test_has_user_id_column(self):
+        """Test that class has user_id column."""
         from lys.apps.organization.abstracts import AbstractUserOrganizationRoleEntity
 
-        assert "client_user_id" in AbstractUserOrganizationRoleEntity.__annotations__
+        assert "user_id" in AbstractUserOrganizationRoleEntity.__annotations__
 
     def test_has_role_id_column(self):
         """Test that class has role_id column."""
@@ -123,11 +122,17 @@ class TestAbstractUserOrganizationRoleEntity:
 
         assert hasattr(AbstractUserOrganizationRoleEntity, "organization")
 
-    def test_client_user_is_abstract_property(self):
-        """Test that client_user is an abstract property."""
+    def test_user_is_abstract_property(self):
+        """Test that user is an abstract property."""
         from lys.apps.organization.abstracts import AbstractUserOrganizationRoleEntity
 
-        assert hasattr(AbstractUserOrganizationRoleEntity, "client_user")
+        assert hasattr(AbstractUserOrganizationRoleEntity, "user")
+
+    def test_level_is_abstract_property(self):
+        """Test that level is an abstract property."""
+        from lys.apps.organization.abstracts import AbstractUserOrganizationRoleEntity
+
+        assert hasattr(AbstractUserOrganizationRoleEntity, "level")
 
     def test_accessing_users_returns_empty_list(self):
         """Test accessing_users returns empty list."""

@@ -22,6 +22,12 @@ class TestTokenTypeConstants:
 
         assert EMAIL_VERIFICATION_TOKEN_TYPE == "email_verification"
 
+    def test_activation_token_type(self):
+        """Test ACTIVATION_TOKEN_TYPE is defined."""
+        from lys.apps.base.modules.one_time_token.consts import ACTIVATION_TOKEN_TYPE
+
+        assert ACTIVATION_TOKEN_TYPE == "activation"
+
 
 class TestTokenStatusConstants:
     """Tests for token status constants."""
@@ -53,10 +59,12 @@ class TestTokenConstantsConsistency:
         from lys.apps.base.modules.one_time_token.consts import (
             PASSWORD_RESET_TOKEN_TYPE,
             EMAIL_VERIFICATION_TOKEN_TYPE,
+            ACTIVATION_TOKEN_TYPE,
         )
 
         assert isinstance(PASSWORD_RESET_TOKEN_TYPE, str)
         assert isinstance(EMAIL_VERIFICATION_TOKEN_TYPE, str)
+        assert isinstance(ACTIVATION_TOKEN_TYPE, str)
 
     def test_all_token_statuses_are_strings(self):
         """Test that all token statuses are strings."""
@@ -75,9 +83,10 @@ class TestTokenConstantsConsistency:
         from lys.apps.base.modules.one_time_token.consts import (
             PASSWORD_RESET_TOKEN_TYPE,
             EMAIL_VERIFICATION_TOKEN_TYPE,
+            ACTIVATION_TOKEN_TYPE,
         )
 
-        token_types = [PASSWORD_RESET_TOKEN_TYPE, EMAIL_VERIFICATION_TOKEN_TYPE]
+        token_types = [PASSWORD_RESET_TOKEN_TYPE, EMAIL_VERIFICATION_TOKEN_TYPE, ACTIVATION_TOKEN_TYPE]
         assert len(token_types) == len(set(token_types))
 
     def test_token_statuses_are_unique(self):

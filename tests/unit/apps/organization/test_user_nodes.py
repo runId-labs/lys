@@ -1,7 +1,7 @@
 """
 Unit tests for organization user nodes.
 
-Tests ClientUserNode GraphQL node structure and methods.
+Tests UserNode GraphQL node structure and methods.
 """
 
 import pytest
@@ -9,99 +9,128 @@ from unittest.mock import MagicMock, AsyncMock, patch
 from datetime import datetime
 
 
-class TestClientUserNodeStructure:
-    """Tests for ClientUserNode class structure."""
+class TestUserNodeStructure:
+    """Tests for UserNode class structure."""
 
-    def test_client_user_node_exists(self):
-        """Test ClientUserNode class exists."""
-        from lys.apps.organization.modules.user.nodes import ClientUserNode
-        assert ClientUserNode is not None
+    def test_user_node_exists(self):
+        """Test UserNode class exists."""
+        from lys.apps.organization.modules.user.nodes import UserNode
+        assert UserNode is not None
 
-    def test_client_user_node_has_id_field(self):
-        """Test ClientUserNode has id field."""
-        from lys.apps.organization.modules.user.nodes import ClientUserNode
-        assert "id" in ClientUserNode.__annotations__
+    def test_user_node_has_id_field(self):
+        """Test UserNode has id field."""
+        from lys.apps.organization.modules.user.nodes import UserNode
+        assert "id" in UserNode.__annotations__
 
-    def test_client_user_node_has_created_at_field(self):
-        """Test ClientUserNode has created_at field."""
-        from lys.apps.organization.modules.user.nodes import ClientUserNode
-        assert "created_at" in ClientUserNode.__annotations__
+    def test_user_node_has_created_at_field(self):
+        """Test UserNode has created_at field."""
+        from lys.apps.organization.modules.user.nodes import UserNode
+        assert "created_at" in UserNode.__annotations__
 
-    def test_client_user_node_has_updated_at_field(self):
-        """Test ClientUserNode has updated_at field."""
-        from lys.apps.organization.modules.user.nodes import ClientUserNode
-        assert "updated_at" in ClientUserNode.__annotations__
+    def test_user_node_has_updated_at_field(self):
+        """Test UserNode has updated_at field."""
+        from lys.apps.organization.modules.user.nodes import UserNode
+        assert "updated_at" in UserNode.__annotations__
 
-    def test_client_user_node_has_entity_private_field(self):
-        """Test ClientUserNode has _entity private field."""
-        from lys.apps.organization.modules.user.nodes import ClientUserNode
-        assert "_entity" in ClientUserNode.__annotations__
+    def test_user_node_has_client_id_field(self):
+        """Test UserNode has client_id as a strawberry field method."""
+        from lys.apps.organization.modules.user.nodes import UserNode
+        from strawberry.types.field import StrawberryField
+        assert hasattr(UserNode, "client_id")
+        assert isinstance(UserNode.client_id, StrawberryField)
 
-    def test_client_user_node_inherits_from_entity_node(self):
-        """Test ClientUserNode inherits from EntityNode."""
-        from lys.apps.organization.modules.user.nodes import ClientUserNode
+    def test_user_node_has_entity_private_field(self):
+        """Test UserNode has _entity private field."""
+        from lys.apps.organization.modules.user.nodes import UserNode
+        assert "_entity" in UserNode.__annotations__
+
+    def test_user_node_inherits_from_entity_node(self):
+        """Test UserNode inherits from EntityNode."""
+        from lys.apps.organization.modules.user.nodes import UserNode
         from lys.core.graphql.nodes import EntityNode
-        assert issubclass(ClientUserNode, EntityNode)
+        assert issubclass(UserNode, EntityNode)
 
 
-class TestClientUserNodeUserMethod:
-    """Tests for ClientUserNode.user method."""
+class TestUserNodeEmailAddressMethod:
+    """Tests for UserNode.email_address method."""
 
-    def test_user_method_exists(self):
-        """Test user method exists on ClientUserNode."""
-        from lys.apps.organization.modules.user.nodes import ClientUserNode
-        assert hasattr(ClientUserNode, "user")
+    def test_email_address_method_exists(self):
+        """Test email_address method exists on UserNode."""
+        from lys.apps.organization.modules.user.nodes import UserNode
+        assert hasattr(UserNode, "email_address")
 
-    def test_user_is_strawberry_field(self):
-        """Test user is a strawberry field."""
-        from lys.apps.organization.modules.user.nodes import ClientUserNode
+    def test_email_address_is_strawberry_field(self):
+        """Test email_address is a strawberry field."""
+        from lys.apps.organization.modules.user.nodes import UserNode
         from strawberry.types.field import StrawberryField
 
-        assert isinstance(ClientUserNode.user, StrawberryField)
+        assert isinstance(UserNode.email_address, StrawberryField)
 
 
-class TestClientUserNodeClientMethod:
-    """Tests for ClientUserNode.client method."""
+class TestUserNodeStatusMethod:
+    """Tests for UserNode.status method."""
 
-    def test_client_method_exists(self):
-        """Test client method exists on ClientUserNode."""
-        from lys.apps.organization.modules.user.nodes import ClientUserNode
-        assert hasattr(ClientUserNode, "client")
+    def test_status_method_exists(self):
+        """Test status method exists on UserNode."""
+        from lys.apps.organization.modules.user.nodes import UserNode
+        assert hasattr(UserNode, "status")
 
-    def test_client_is_strawberry_field(self):
-        """Test client is a strawberry field."""
-        from lys.apps.organization.modules.user.nodes import ClientUserNode
+    def test_status_is_strawberry_field(self):
+        """Test status is a strawberry field."""
+        from lys.apps.organization.modules.user.nodes import UserNode
         from strawberry.types.field import StrawberryField
 
-        assert isinstance(ClientUserNode.client, StrawberryField)
+        assert isinstance(UserNode.status, StrawberryField)
 
 
-class TestClientUserNodeRolesMethod:
-    """Tests for ClientUserNode.roles method."""
+class TestUserNodeRolesMethod:
+    """Tests for UserNode.roles method."""
 
     def test_roles_method_exists(self):
-        """Test roles method exists on ClientUserNode."""
-        from lys.apps.organization.modules.user.nodes import ClientUserNode
-        assert hasattr(ClientUserNode, "roles")
+        """Test roles method exists on UserNode."""
+        from lys.apps.organization.modules.user.nodes import UserNode
+        assert hasattr(UserNode, "roles")
 
     def test_roles_is_strawberry_field(self):
         """Test roles is a strawberry field."""
-        from lys.apps.organization.modules.user.nodes import ClientUserNode
+        from lys.apps.organization.modules.user.nodes import UserNode
         from strawberry.types.field import StrawberryField
 
-        assert isinstance(ClientUserNode.roles, StrawberryField)
+        assert isinstance(UserNode.roles, StrawberryField)
 
     def test_roles_field_has_description(self):
         """Test roles field has description."""
-        from lys.apps.organization.modules.user.nodes import ClientUserNode
+        from lys.apps.organization.modules.user.nodes import UserNode
 
-        assert ClientUserNode.roles.description is not None
+        assert UserNode.roles.description is not None
 
 
-class TestClientUserNodeRegistration:
-    """Tests for ClientUserNode registration."""
+class TestUserNodeOrganizationRolesMethod:
+    """Tests for UserNode.organization_roles method."""
 
-    def test_client_user_node_is_registered(self):
-        """Test ClientUserNode is registered via decorator."""
-        from lys.apps.organization.modules.user.nodes import ClientUserNode
-        assert ClientUserNode is not None
+    def test_organization_roles_method_exists(self):
+        """Test organization_roles method exists on UserNode."""
+        from lys.apps.organization.modules.user.nodes import UserNode
+        assert hasattr(UserNode, "organization_roles")
+
+    def test_organization_roles_is_strawberry_field(self):
+        """Test organization_roles is a strawberry field."""
+        from lys.apps.organization.modules.user.nodes import UserNode
+        from strawberry.types.field import StrawberryField
+
+        assert isinstance(UserNode.organization_roles, StrawberryField)
+
+    def test_organization_roles_field_has_description(self):
+        """Test organization_roles field has description."""
+        from lys.apps.organization.modules.user.nodes import UserNode
+
+        assert UserNode.organization_roles.description is not None
+
+
+class TestUserNodeRegistration:
+    """Tests for UserNode registration."""
+
+    def test_user_node_is_registered(self):
+        """Test UserNode is registered via decorator."""
+        from lys.apps.organization.modules.user.nodes import UserNode
+        assert UserNode is not None

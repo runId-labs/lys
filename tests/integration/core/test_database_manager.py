@@ -342,12 +342,11 @@ class TestDatabaseManagerInitialization:
         # Don't configure database (type is None)
         db_manager = DatabaseManager(settings)
 
-        # Current implementation: has_database_configured returns settings.configured() is not None
-        # settings.configured() returns False when type is None
-        # So: False is not None = True (always returns True)
-        # This seems like a logic bug, but we test actual behavior
+        # has_database_configured returns settings.configured()
+        # settings.configured() returns (self.type is not None)
+        # When type is None, returns False
         result = db_manager.has_database_configured()
-        assert result is True  # Actual behavior (bool is not None always True)
+        assert result is False
 
 
 class TestDatabaseManagerProperties:

@@ -16,6 +16,12 @@ class TestOrganizationConstants:
 
         assert ORGANIZATION_ROLE_ACCESS_LEVEL == "ORGANIZATION_ROLE"
 
+    def test_client_supervisor_role(self):
+        """Test CLIENT_SUPERVISOR_ROLE constant."""
+        from lys.apps.organization.consts import CLIENT_SUPERVISOR_ROLE
+
+        assert CLIENT_SUPERVISOR_ROLE == "CLIENT_SUPERVISOR_ROLE"
+
     def test_client_admin_role(self):
         """Test CLIENT_ADMIN_ROLE constant."""
         from lys.apps.organization.consts import CLIENT_ADMIN_ROLE
