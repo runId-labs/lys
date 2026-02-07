@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Payment Failed</title>
+</head>
+<body style="font-family: Arial, sans-serif; line-height: 1.6; color: #333; max-width: 600px; margin: 0 auto; padding: 20px;">
+    <div style="background-color: #f8f9fa; padding: 20px; border-radius: 8px;">
+        <h1 style="color: #dc3545; margin-top: 0;">Payment Failed</h1>
+
+        <p>Hello,</p>
+
+        <p>We were unable to process your subscription payment.</p>
+
+        <div style="background-color: #ffffff; padding: 15px; border-left: 4px solid #dc3545; margin: 20px 0;">
+            <p style="margin: 0;"><strong>Plan:</strong> {{ plan_name }}</p>
+            {% if amount and currency %}
+            <p style="margin: 10px 0 0 0;"><strong>Amount:</strong> {{ amount }} {{ currency }}</p>
+            {% endif %}
+            {% if error_reason %}
+            <p style="margin: 10px 0 0 0;"><strong>Reason:</strong> {{ error_reason }}</p>
+            {% endif %}
+        </div>
+
+        <p>Please check your payment method and try again. Your subscription may be suspended if payment is not received.</p>
+
+        {% if retry_url %}
+        <p style="text-align: center; margin: 30px 0;">
+            <a href="{{ retry_url }}"
+               style="background-color: #dc3545; color: white; padding: 12px 24px; text-decoration: none; border-radius: 5px; display: inline-block;">
+                Retry payment
+            </a>
+        </p>
+        {% endif %}
+
+        <p style="color: #666; font-size: 14px; margin-top: 30px;">
+            If you need assistance, please contact support.
+        </p>
+    </div>
+</body>
+</html>

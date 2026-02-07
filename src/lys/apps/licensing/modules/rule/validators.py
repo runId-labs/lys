@@ -8,6 +8,7 @@ Validator signature:
     async def validate_xxx(
         session: AsyncSession,
         client_id: str,
+        app_id: str,
         limit_value: int | None
     ) -> tuple[bool, int, int]:
         # Returns: (is_valid, current_count, limit)
@@ -16,6 +17,10 @@ Return values:
     - is_valid: True if current usage is within the limit
     - current_count: Current usage count
     - limit: The limit value (-1 means unlimited)
+
+Note:
+    The app_id parameter supports multi-app subscriptions where a client
+    can have separate subscriptions for different applications.
 """
 
 from sqlalchemy import func, select
@@ -31,6 +36,7 @@ from lys.core.managers.app import LysAppManager
 async def validate_max_users(
     session: AsyncSession,
     client_id: str,
+    app_id: str,
     limit_value: int | None
 ) -> tuple[bool, int, int]:
     """
@@ -42,6 +48,7 @@ async def validate_max_users(
     Args:
         session: Database session
         client_id: Client ID
+        app_id: Application ID (for multi-app support)
         limit_value: Maximum allowed licensed users (None = unlimited)
 
     Returns:
@@ -80,6 +87,7 @@ async def validate_max_users(
 async def validate_max_projects_per_month(
     session: AsyncSession,
     client_id: str,
+    app_id: str,
     limit_value: int | None
 ) -> tuple[bool, int, int]:
     """
@@ -94,6 +102,7 @@ async def validate_max_projects_per_month(
     Args:
         session: Database session
         client_id: Client ID
+        app_id: Application ID (for multi-app support)
         limit_value: Maximum allowed projects per month (None = unlimited)
 
     Returns:
@@ -102,7 +111,8 @@ async def validate_max_projects_per_month(
     """
     # Placeholder: return valid with 0 count
     # Applications should implement their own validator
+    _ = (session, client_id, app_id)  # Unused in placeholder
     if limit_value is None:
-        return (True, 0, -1)
+        return True, 0, -1
 
-    return (True, 0, limit_value)
+    return True, 0, limit_value

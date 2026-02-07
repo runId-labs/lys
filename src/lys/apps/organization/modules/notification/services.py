@@ -5,7 +5,7 @@ Extends NotificationBatchService with organization-scoped recipient resolution.
 Inherits role-based resolution from user_role app.
 """
 import logging
-from typing import List, Optional
+from typing import List, Optional, Callable
 
 from pydantic import BaseModel
 from sqlalchemy import select
@@ -75,6 +75,7 @@ class NotificationBatchService(BaseNotificationBatchService):
         triggered_by_user_id: str | None = None,
         additional_user_ids: List[str] | None = None,
         organization_data: dict | None = None,
+        should_send_fn: Callable[[str], bool] | None = None,
     ) -> NotificationBatch:
         """
         Create a notification batch and dispatch to all recipients.
@@ -88,6 +89,9 @@ class NotificationBatchService(BaseNotificationBatchService):
             triggered_by_user_id: User who triggered the notification
             additional_user_ids: Extra users to notify
             organization_data: Organization scoping (e.g., {"client_ids": ["uuid1", "uuid2"]})
+            should_send_fn: Optional callback to filter recipients by user preference.
+                            Signature: (user_id: str) -> bool
+                            If None, all recipients receive the notification.
 
         Returns:
             Created NotificationBatch with associated Notifications
@@ -130,6 +134,7 @@ class NotificationBatchService(BaseNotificationBatchService):
             session=session,
             batch=batch,
             recipient_user_ids=recipient_user_ids,
+            should_send_fn=should_send_fn,
         )
 
         return batch
@@ -204,7 +209,7 @@ class NotificationBatchService(BaseNotificationBatchService):
         Dynamically builds query filters based on organization_data keys.
         For each key in organization_data (e.g., client_ids, company_ids):
         - Converts to attribute name (client_ids -> client_id)
-        - Checks if attribute exists on client_user_role entity
+        - Checks if attribute exists on client_user_role or user entity
         - Adds filter if attribute exists, logs warning if not
 
         Args:
@@ -218,8 +223,10 @@ class NotificationBatchService(BaseNotificationBatchService):
         logger = logging.getLogger(__name__)
         recipient_ids = set()
 
-        # Get client_user_role entity
+        # Get entities
         client_user_role_entity = cls.app_manager.get_entity("client_user_role", nullable=True)
+        user_entity = cls.app_manager.get_entity("user", nullable=True)
+
         if not client_user_role_entity:
             logger.warning("client_user_role entity not found, skipping organization-scoped recipients")
             return recipient_ids
@@ -242,39 +249,32 @@ class NotificationBatchService(BaseNotificationBatchService):
                 )
                 continue
 
-            # Check if attribute exists on client_user_role entity
-            if not hasattr(client_user_role_entity, attr_name):
+            # Check if attribute exists on client_user_role or user entity
+            # client_id is on user entity, other org levels (company_id, etc.) are on client_user_role
+            if attr_name == "client_id" and user_entity and hasattr(user_entity, attr_name):
+                attr = getattr(user_entity, attr_name)
+            elif hasattr(client_user_role_entity, attr_name):
+                attr = getattr(client_user_role_entity, attr_name)
+            else:
                 logger.warning(
-                    f"Attribute '{attr_name}' not found on client_user_role entity. "
-                    f"Skipping filter for organization_data key '{key}'. "
-                    f"To support this organization level, add a '{attr_name}' property to your "
-                    f"ClientUserRole entity."
+                    f"Attribute '{attr_name}' not found on client_user_role or user entity. "
+                    f"Skipping filter for organization_data key '{key}'."
                 )
                 continue
 
-            # Add filter for this organization level
-            # Special case: client_id is a property on ClientUserRole, use client_user.client_id
-            if attr_name == "client_id":
-                client_user_entity = cls.app_manager.get_entity("client_user")
-                attr = getattr(client_user_entity, attr_name)
-            else:
-                attr = getattr(client_user_role_entity, attr_name)
             org_filters.append(attr.in_(ids))
 
         # Execute query if we have valid filters
-        if org_filters:
-            # Get client_user entity to join for user_id
-            client_user_entity = cls.app_manager.get_entity("client_user", nullable=True)
-            if client_user_entity:
-                stmt = (
-                    select(client_user_entity.user_id)
-                    .select_from(client_user_role_entity)
-                    .join(client_user_entity, client_user_role_entity.client_user_id == client_user_entity.id)
-                    .where(client_user_role_entity.role_id.in_(role_ids), *org_filters)
-                )
-                result = await session.execute(stmt)
-                for row in result:
-                    recipient_ids.add(row[0])
+        if org_filters and user_entity:
+            stmt = (
+                select(client_user_role_entity.user_id)
+                .select_from(client_user_role_entity)
+                .join(user_entity, client_user_role_entity.user_id == user_entity.id)
+                .where(client_user_role_entity.role_id.in_(role_ids), *org_filters)
+            )
+            result = await session.execute(stmt)
+            for row in result:
+                recipient_ids.add(row[0])
 
         return recipient_ids
 
@@ -287,11 +287,23 @@ class NotificationBatchService(BaseNotificationBatchService):
         triggered_by_user_id: str | None = None,
         additional_user_ids: List[str] | None = None,
         organization_data: dict | None = None,
+        should_send_fn: Callable[[str], bool] | None = None,
     ) -> NotificationBatch:
         """
         Synchronous version of dispatch for use in Celery tasks.
 
         Extended implementation adds organization_data for multi-tenant scoping.
+
+        Args:
+            session: Sync database session
+            type_id: NotificationType ID (e.g., "FINANCIAL_IMPORT_COMPLETED")
+            data: Event data for frontend formatting
+            triggered_by_user_id: User who triggered the notification
+            additional_user_ids: Extra users to notify
+            organization_data: Organization scoping (e.g., {"client_ids": ["uuid1", "uuid2"]})
+            should_send_fn: Optional callback to filter recipients by user preference.
+                            Signature: (user_id: str) -> bool
+                            If None, all recipients receive the notification.
         """
         # Validate organization_data
         validated_org_data = cls.validate_organization_data(organization_data)
@@ -328,6 +340,7 @@ class NotificationBatchService(BaseNotificationBatchService):
             session=session,
             batch=batch,
             recipient_user_ids=recipient_user_ids,
+            should_send_fn=should_send_fn,
         )
 
         return batch
@@ -389,8 +402,10 @@ class NotificationBatchService(BaseNotificationBatchService):
         logger = logging.getLogger(__name__)
         recipient_ids = set()
 
-        # Get client_user_role entity
+        # Get entities
         client_user_role_entity = cls.app_manager.get_entity("client_user_role", nullable=True)
+        user_entity = cls.app_manager.get_entity("user", nullable=True)
+
         if not client_user_role_entity:
             logger.warning("client_user_role entity not found, skipping organization-scoped recipients")
             return recipient_ids
@@ -413,35 +428,31 @@ class NotificationBatchService(BaseNotificationBatchService):
                 )
                 continue
 
-            # Check if attribute exists on client_user_role entity
-            if not hasattr(client_user_role_entity, attr_name):
+            # Check if attribute exists on client_user_role or user entity
+            # client_id is on user entity, other org levels (company_id, etc.) are on client_user_role
+            if attr_name == "client_id" and user_entity and hasattr(user_entity, attr_name):
+                attr = getattr(user_entity, attr_name)
+            elif hasattr(client_user_role_entity, attr_name):
+                attr = getattr(client_user_role_entity, attr_name)
+            else:
                 logger.warning(
-                    f"Attribute '{attr_name}' not found on client_user_role entity. "
+                    f"Attribute '{attr_name}' not found on client_user_role or user entity. "
                     f"Skipping filter for organization_data key '{key}'."
                 )
                 continue
 
-            # Add filter for this organization level
-            # Special case: client_id is a property on ClientUserRole, use client_user.client_id
-            if attr_name == "client_id":
-                client_user_entity = cls.app_manager.get_entity("client_user")
-                attr = getattr(client_user_entity, attr_name)
-            else:
-                attr = getattr(client_user_role_entity, attr_name)
             org_filters.append(attr.in_(ids))
 
         # Execute query if we have valid filters
-        if org_filters:
-            client_user_entity = cls.app_manager.get_entity("client_user", nullable=True)
-            if client_user_entity:
-                stmt = (
-                    select(client_user_entity.user_id)
-                    .select_from(client_user_role_entity)
-                    .join(client_user_entity, client_user_role_entity.client_user_id == client_user_entity.id)
-                    .where(client_user_role_entity.role_id.in_(role_ids), *org_filters)
-                )
-                result = session.execute(stmt)
-                for row in result:
-                    recipient_ids.add(row[0])
+        if org_filters and user_entity:
+            stmt = (
+                select(client_user_role_entity.user_id)
+                .select_from(client_user_role_entity)
+                .join(user_entity, client_user_role_entity.user_id == user_entity.id)
+                .where(client_user_role_entity.role_id.in_(role_ids), *org_filters)
+            )
+            result = session.execute(stmt)
+            for row in result:
+                recipient_ids.add(row[0])
 
         return recipient_ids

@@ -15,11 +15,11 @@ from lys.core.registries import CustomRegistry, LysAppRegistry
 
 # Type aliases for validator and downgrader functions
 ValidatorFunc = Callable[
-    [AsyncSession, str, int | None],
+    [AsyncSession, str, str, int | None],  # session, client_id, app_id, limit_value
     Awaitable[tuple[bool, int, int]]
 ]
 DowngraderFunc = Callable[
-    [AsyncSession, str, int],
+    [AsyncSession, str, str, int],  # session, client_id, app_id, new_limit
     Awaitable[bool]
 ]
 
@@ -35,6 +35,7 @@ class ValidatorRegistry(CustomRegistry):
         async def validate_xxx(
             session: AsyncSession,
             client_id: str,
+            app_id: str,
             limit_value: int | None
         ) -> tuple[bool, int, int]:
             # Returns: (is_valid, current_count, limit)
@@ -54,6 +55,7 @@ class DowngraderRegistry(CustomRegistry):
         async def downgrade_xxx(
             session: AsyncSession,
             client_id: str,
+            app_id: str,
             new_limit: int
         ) -> bool:
             # Returns: True if downgrade was successful
@@ -67,7 +69,7 @@ def register_validator(rule_id: str):
 
     Usage:
         @register_validator("MAX_USERS")
-        async def validate_max_users(session, client_id, limit_value):
+        async def validate_max_users(session, client_id, app_id, limit_value):
             ...
 
     Args:
@@ -88,7 +90,7 @@ def register_downgrader(rule_id: str):
 
     Usage:
         @register_downgrader("MAX_USERS")
-        async def downgrade_max_users(session, client_id, new_limit):
+        async def downgrade_max_users(session, client_id, app_id, new_limit):
             ...
 
     Args:

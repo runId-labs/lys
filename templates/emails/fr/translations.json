@@ -1,0 +1,17 @@
+{
+  "user_password_reset": {
+    "subject": "Réinitialisation de votre mot de passe"
+  },
+  "user_email_verification": {
+    "subject": "Vérifiez votre adresse email"
+  },
+  "user_invitation": {
+    "subject": "Vous avez été invité à rejoindre la plateforme"
+  },
+  "license_granted": {
+    "subject": "Nouvelle licence accordée"
+  },
+  "license_revoked": {
+    "subject": "Licence révoquée"
+  }
+}

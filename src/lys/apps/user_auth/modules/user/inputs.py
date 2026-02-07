@@ -10,6 +10,7 @@ from lys.apps.user_auth.modules.user.models import (
     ChangePasswordInputModel,
     ResetPasswordInputModel,
     VerifyEmailInputModel,
+    ActivateUserInputModel,
     UpdateUserStatusInputModel,
     AnonymizeUserInputModel,
     CreateUserObservationInputModel,
@@ -125,6 +126,16 @@ class ResetPasswordInput:
 class VerifyEmailInput:
     token: strawberry.auto = strawberry.field(
         description="One-time verification token from email"
+    )
+
+
+@strawberry.experimental.pydantic.input(model=ActivateUserInputModel)
+class ActivateUserInput:
+    token: strawberry.auto = strawberry.field(
+        description="One-time activation token from invitation email"
+    )
+    new_password: strawberry.auto = strawberry.field(
+        description="New password (min 8 chars, must contain at least one letter and one digit)"
     )
 
 

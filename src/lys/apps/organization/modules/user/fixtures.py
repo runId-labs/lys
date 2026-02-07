@@ -1,7 +1,8 @@
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from lys.apps.organization.modules.user.entities import ClientUser
-from lys.apps.organization.modules.user.services import ClientUserService
+from lys.apps.organization.modules.user.entities import User
+from lys.apps.organization.modules.user.services import UserService
 from lys.apps.user_auth.modules.user.consts import MALE_GENDER, FEMALE_GENDER
 from lys.apps.user_auth.modules.user.fixtures import UserDevFixtures
 from lys.core.consts.environments import EnvironmentEnum
@@ -75,118 +76,102 @@ class ClientRelatedUserDevFixtures(UserDevFixtures):
 
 
 @register_fixture(depends_on=["ClientRelatedUserDevFixtures", "ClientDevFixtures"])
-class ClientUserDevFixtures(EntityFixtures[ClientUserService]):
+class ClientUserDevFixtures(EntityFixtures[UserService]):
     """
-    Development fixtures for ClientUser relationships.
+    Development fixtures for assigning users to client organizations.
 
-    Creates relationships between clients and users, assigning users to organizations.
+    Updates User.client_id to associate users with organizations
+    and creates ClientUserRole entries for organization roles.
     """
     model = EntityFixturesModel
-    _allowed_envs = [EnvironmentEnum.DEV,]
+    _allowed_envs = [EnvironmentEnum.DEV]
     delete_previous_data = False
 
     data_list = [
         # ACME Corporation users
         {
             "attributes": {
-                "client_id": "ACME Corporation",  # Will be converted to actual client ID
-                "user_id": "user-acme-john@lys-test.fr",  # Will be converted to actual user ID
-                "client_user_roles": ["USER_ADMIN_ROLE"]
+                "client_name": "ACME Corporation",
+                "user_email": "user-acme-john@lys-test.fr",
+                "role_codes": ["USER_ADMIN_ROLE"]
             }
         },
         {
             "attributes": {
-                "client_id": "ACME Corporation",
-                "user_id": "user-acme-jane@lys-test.fr",
-                "client_user_roles": []
+                "client_name": "ACME Corporation",
+                "user_email": "user-acme-jane@lys-test.fr",
+                "role_codes": []
             }
         },
         # Tech Solutions Inc users
         {
             "attributes": {
-                "client_id": "Tech Solutions Inc",
-                "user_id": "user-tech-bob@lys-test.fr",
-                "client_user_roles": ["USER_ADMIN_ROLE"]
+                "client_name": "Tech Solutions Inc",
+                "user_email": "user-tech-bob@lys-test.fr",
+                "role_codes": ["USER_ADMIN_ROLE"]
             }
         },
         # Global Services Ltd users
         {
             "attributes": {
-                "client_id": "Global Services Ltd",
-                "user_id": "user-global-alice@lys-test.fr",
-                "client_user_roles": []
+                "client_name": "Global Services Ltd",
+                "user_email": "user-global-alice@lys-test.fr",
+                "role_codes": []
             }
         }
     ]
 
     @classmethod
-    async def format_client_id(cls, client_id: str, session: AsyncSession) -> str:
+    async def create_from_service(
+        cls,
+        attributes: dict,
+        session: AsyncSession
+    ) -> User:
         """
-        Get existing client by name and return its ID.
+        Assign a user to a client organization.
+
+        This updates the user's client_id and creates ClientUserRole entries.
 
         Args:
-            client_id: Name of the client organization (temporary value)
-            session: Database session
+            attributes: Dict containing:
+                - client_name: Name of the client organization
+                - user_email: Email of the user to assign
+                - role_codes: List of role codes to assign
 
         Returns:
-            str: The client's ID
-
-        Raises:
-            ValueError: If the client is not found
+            User: The updated user entity
         """
-        # Query client by name (client_id contains the name temporarily)
-        from sqlalchemy import select
+        # Get client by name
         client_entity = cls.app_manager.get_entity("client")
-        stmt = select(client_entity).where(client_entity.name == client_id)
+        stmt = select(client_entity).where(client_entity.name == attributes["client_name"])
         result = await session.execute(stmt)
         client = result.scalar_one_or_none()
 
         if client is None:
-            raise ValueError(f"Client with name '{client_id}' not found. "
+            raise ValueError(f"Client with name '{attributes['client_name']}' not found. "
                            f"Make sure ClientDevFixtures has been loaded first.")
 
-        return client.id
-
-    @classmethod
-    async def format_user_id(cls, user_id: str, session: AsyncSession) -> str:
-        """
-        Get existing user by email and return their ID.
-
-        Args:
-            user_id: Email address of the user (temporary value)
-            session: Database session
-
-        Returns:
-            str: The user's ID
-
-        Raises:
-            ValueError: If the user is not found
-        """
+        # Get user by email
         user_service = cls.app_manager.get_service("user")
-        user = await user_service.get_by_email(email=user_id, session=session)
+        user = await user_service.get_by_email(email=attributes["user_email"], session=session)
 
         if user is None:
-            raise ValueError(f"User with email '{user_id}' not found. "
+            raise ValueError(f"User with email '{attributes['user_email']}' not found. "
                            f"Make sure ClientRelatedUserDevFixtures has been loaded first.")
 
-        return user.id
+        # Set client_id on user
+        user.client_id = client.id
+        await session.flush()
 
-    @classmethod
-    async def format_client_user_roles(cls, client_user_roles: list[str], session: AsyncSession) -> list:
-        """
-        Create ClientUserRole entities from role IDs.
+        # Create ClientUserRole entries
+        role_codes = attributes.get("role_codes", [])
+        if role_codes:
+            client_user_role_entity = cls.app_manager.get_entity("client_user_role")
+            for role_code in role_codes:
+                client_user_role = client_user_role_entity(
+                    user_id=user.id,
+                    role_id=role_code
+                )
+                session.add(client_user_role)
 
-        Args:
-            client_user_roles: List of role IDs
-            session: Database session
-
-        Returns:
-            list: List of ClientUserRole entities
-        """
-        client_user_role_class = cls.app_manager.get_entity("client_user_role")
-        role_entities = []
-
-        for role_id in client_user_roles:
-            role_entities.append(client_user_role_class(role_id=role_id))
-
-        return role_entities
+        return user

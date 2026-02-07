@@ -23,6 +23,7 @@ class LicensePlan(ParametricEntity):
 
     Attributes:
         id: Plan identifier (e.g., "FREE", "STARTER", "PRO", "ENTERPRISE")
+        app_id: Application this plan belongs to (for multi-app support)
         client_id: If set, this is a custom plan for a specific client
         description: Human-readable description
         enabled: If False, plan cannot be selected for new subscriptions
@@ -30,11 +31,22 @@ class LicensePlan(ParametricEntity):
     """
     __tablename__ = "license_plan"
 
+    app_id: Mapped[str] = mapped_column(
+        ForeignKey("license_application.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True
+    )
+
     client_id: Mapped[str | None] = mapped_column(
         ForeignKey("client.id", ondelete="CASCADE"),
         nullable=True,
         index=True
     )
+
+    @declared_attr
+    def application(self):
+        """Application this plan belongs to."""
+        return relationship("license_application", lazy="selectin")
 
     @declared_attr
     def client(self):
@@ -75,7 +87,7 @@ class LicensePlanVersion(Entity):
     Attributes:
         plan_id: Reference to the parent plan
         version: Version number (1, 2, 3...)
-        stripe_product_id: Stripe Product ID (auto-filled by StripeSyncService)
+        provider_product_id: Payment provider product ID (optional, not used by Mollie)
         price_monthly: Monthly price in cents (e.g., 4900 = 49€). NULL = free
         price_yearly: Yearly price in cents (e.g., 49000 = 490€). NULL = free
         currency: Currency code (default: "eur")
@@ -91,10 +103,10 @@ class LicensePlanVersion(Entity):
     version: Mapped[int] = mapped_column(default=1)
     enabled: Mapped[bool] = mapped_column(default=True)
 
-    # Stripe sync - stripe_product_id is auto-filled by StripeSyncService
-    stripe_product_id: Mapped[str | None] = mapped_column(nullable=True)
+    # Payment provider product ID (optional - not used by Mollie)
+    provider_product_id: Mapped[str | None] = mapped_column(nullable=True)
 
-    # Pricing (in cents) - used to create Stripe Prices
+    # Pricing (in cents)
     price_monthly: Mapped[int | None] = mapped_column(nullable=True)
     price_yearly: Mapped[int | None] = mapped_column(nullable=True)
     currency: Mapped[str] = mapped_column(default="eur")

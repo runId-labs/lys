@@ -56,6 +56,6 @@ class SubscriptionNode(EntityNode[SubscriptionService], relay.Node):
     def has_pending_downgrade(self) -> bool:
         return self._entity.has_pending_downgrade
 
-    @strawberry.field(description="Whether this is a free subscription (no Stripe)")
+    @strawberry.field(description="Whether this is a free subscription (no payment provider)")
     def is_free(self) -> bool:
-        return self._entity.stripe_subscription_id is None
+        return self._entity.provider_subscription_id is None

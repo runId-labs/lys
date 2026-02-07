@@ -155,38 +155,6 @@ class EmailSettings(BaseSettings):
             )
 
 
-class StripeSettings(BaseSettings):
-    """Configuration for Stripe payment integration."""
-
-    def __init__(self):
-        # Master switch for Stripe features
-        self.enabled: bool = False
-
-        # API keys
-        self.api_key: Optional[str] = None  # Secret key (sk_...)
-        self.publishable_key: Optional[str] = None  # Publishable key (pk_...)
-
-        # Webhook configuration
-        self.webhook_secret: Optional[str] = None  # Webhook signing secret (whsec_...)
-
-    def configured(self) -> bool:
-        """Check if Stripe is properly configured."""
-        return self.enabled and self.api_key is not None
-
-    def validate(self):
-        """
-        Validate that required Stripe settings are configured.
-
-        Raises:
-            ValueError: If enabled but api_key is missing
-        """
-        if self.enabled and not self.api_key:
-            raise ValueError(
-                "Stripe is enabled but api_key is not configured. "
-                "Use settings.stripe.configure(enabled=True, api_key='sk_...')"
-            )
-
-
 class AISettings(BaseSettings):
     """Configuration for AI/LLM integration and tool generation."""
 
@@ -266,8 +234,7 @@ class AppSettings(BaseSettings):
         self.celery: Optional[CelerySettings] = None  # Celery task queue (optional)
         self.email: EmailSettings = EmailSettings()  # Email configuration
         self.ai: AISettings = AISettings()  # AI/LLM configuration for tool generation
-        self.stripe: StripeSettings = StripeSettings()  # Stripe payment integration
-        self.log_format:str = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+        self.log_format: str = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 
         # graphql configurations
         self.graphql_schema_name: str = "graphql"

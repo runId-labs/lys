@@ -189,31 +189,33 @@ class OrganizationAuthService(RoleAuthService):
         Returns:
             Dictionary: {client_id: {"level": "client", "webservices": [...]}}
         """
-        client_user_entity = cls.app_manager.get_entity("client_user")
+        user_entity = cls.app_manager.get_entity("user")
 
-        # Get client_user entries for this user
-        stmt = select(client_user_entity).where(client_user_entity.user_id == user_id)
+        # Get user with client_user_roles
+        stmt = select(user_entity).where(user_entity.id == user_id)
         result = await session.execute(stmt)
-        client_users = list(result.scalars().all())
+        user = result.scalar_one_or_none()
 
-        organizations = {}
+        if not user or not user.client_id:
+            return {}
 
-        for client_user in client_users:
-            await session.refresh(client_user, ["client_user_roles"])
+        await session.refresh(user, ["client_user_roles"])
 
-            # Collect webservices from all roles
-            webservice_ids = set()
-            for client_user_role in client_user.client_user_roles:
-                await session.refresh(client_user_role, ["role"])
-                role = client_user_role.role
+        # Collect webservices from all roles
+        webservice_ids = set()
+        for client_user_role in user.client_user_roles:
+            await session.refresh(client_user_role, ["role"])
+            role = client_user_role.role
 
-                if role and role.enabled:
-                    webservice_ids.update(role.get_webservice_ids())
+            if role and role.enabled:
+                webservice_ids.update(role.get_webservice_ids())
 
-            if webservice_ids:
-                organizations[str(client_user.client_id)] = {
-                    "level": "client",
-                    "webservices": list(webservice_ids)
-                }
+        if not webservice_ids:
+            return {}
 
-        return organizations
+        return {
+            str(user.client_id): {
+                "level": "client",
+                "webservices": list(webservice_ids)
+            }
+        }

@@ -233,3 +233,89 @@ class PubSubManager:
 
         full_channel = self._build_channel(channel)
         return self._sync_redis.publish(full_channel, self._build_message(signal, params))
+
+    # ==================== Idempotency and Locking ====================
+
+    async def set_if_not_exists(self, key: str, value: str, ttl_seconds: int) -> bool:
+        """
+        Set key only if it doesn't exist (SETNX with TTL).
+
+        Used for webhook idempotency to ensure each event is processed once.
+
+        Args:
+            key: Redis key
+            value: Value to set
+            ttl_seconds: Time-to-live in seconds
+
+        Returns:
+            True if key was set (first time), False if already existed
+        """
+        if not self._async_redis:
+            # Graceful degradation: allow processing if Redis unavailable
+            logging.warning("PubSubManager not initialized, allowing operation")
+            return True
+
+        result = await self._async_redis.set(key, value, nx=True, ex=ttl_seconds)
+        return bool(result)
+
+    async def exists(self, key: str) -> bool:
+        """
+        Check if key exists in Redis.
+
+        Args:
+            key: Redis key
+
+        Returns:
+            True if key exists
+        """
+        if not self._async_redis:
+            return False
+
+        return await self._async_redis.exists(key) > 0
+
+    async def distributed_lock(self, lock_name: str, timeout_seconds: int = 30):
+        """
+        Acquire a distributed lock using Redis.
+
+        Used for preventing race conditions in sync operations.
+
+        Args:
+            lock_name: Unique lock identifier
+            timeout_seconds: Lock auto-release timeout
+
+        Returns:
+            Async context manager yielding True if lock acquired, False otherwise
+
+        Usage:
+            async with pubsub.distributed_lock("mollie_sync:all") as acquired:
+                if acquired:
+                    # Do exclusive work
+        """
+        import os
+        import time
+        from contextlib import asynccontextmanager
+
+        @asynccontextmanager
+        async def _lock():
+            if not self._async_redis:
+                # Graceful degradation: proceed without lock
+                yield True
+                return
+
+            lock_key = f"lock:{lock_name}"
+            lock_value = f"{os.getpid()}:{time.time()}"
+
+            acquired = await self._async_redis.set(
+                lock_key, lock_value, nx=True, ex=timeout_seconds
+            )
+
+            try:
+                yield bool(acquired)
+            finally:
+                if acquired:
+                    # Only release if we still own the lock
+                    current_value = await self._async_redis.get(lock_key)
+                    if current_value and current_value.decode() == lock_value:
+                        await self._async_redis.delete(lock_key)
+
+        return _lock()

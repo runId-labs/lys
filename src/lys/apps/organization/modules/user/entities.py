@@ -1,51 +1,74 @@
-from typing import Any
+from typing import Optional
 
-from sqlalchemy import ForeignKey
+from sqlalchemy import ForeignKey, Uuid
 from sqlalchemy.orm import Mapped, mapped_column, relationship, declared_attr, backref
 
 from lys.apps.organization.abstracts import AbstractOrganizationEntity, AbstractUserOrganizationRoleEntity
-from lys.core.entities import Entity
+from lys.apps.user_role.modules.user.entities import User as BaseUser
 from lys.core.registries import register_entity
 
 
 @register_entity()
-class ClientUser(Entity):
-    __tablename__ = "client_user"
+class User(BaseUser):
+    """
+    Extended User entity with client organization support.
 
-    user_id: Mapped[str] = mapped_column(ForeignKey("user.id", ondelete='CASCADE'), nullable=False)
-    client_id: Mapped[str] = mapped_column(ForeignKey("client.id", ondelete='CASCADE'), nullable=False)
+    Adds client_id to associate a user with a client organization.
+    - client_id = None: User is a supervisor (internal team)
+    - client_id = <uuid>: User is a client user (belongs to that organization)
+    """
+
+    client_id: Mapped[Optional[str]] = mapped_column(
+        Uuid(as_uuid=False),
+        ForeignKey("client.id", ondelete='SET NULL', use_alter=True),
+        nullable=True,
+        comment="Client organization (null for supervisors)"
+    )
 
     @declared_attr
-    def user(self):
-        return relationship(
-            "user",
-            backref="client_users",
-            lazy='selectin'
-        )
-
-    @declared_attr
-    def client(self):
+    def client(cls):
         return relationship(
             "client",
-            backref="client_users",
+            backref="users",
+            foreign_keys=[cls.client_id],
             lazy='selectin'
         )
 
-    def accessing_users(self) -> list[str]:
-        return [self.user_id] if self.user_id else []
+    @property
+    def is_supervisor(self) -> bool:
+        """Returns True if user is a supervisor (not associated with any client)."""
+        return self.client_id is None
+
+    @property
+    def is_client_user(self) -> bool:
+        """Returns True if user is associated with a client organization."""
+        return self.client_id is not None
 
     def accessing_organizations(self) -> dict[str, list[str]]:
-        if self.client:
-            return self.client.accessing_organizations()
+        """Returns the client organization this user belongs to."""
+        if self.client_id:
+            return {"client": [self.client_id]}
         return {}
 
     @classmethod
-    def user_accessing_filters(cls, stmt, user_id):
-        return stmt, [cls.user_id == user_id]
-
-    @classmethod
     def organization_accessing_filters(cls, stmt, organization_id_dict):
-        return stmt, [cls.client_id.in_(organization_id_dict.get("client", []))]
+        """
+        Filter users by their client_id to only show users from the same organization.
+
+        A user can see other users if:
+        - The user's client_id is in the list of client IDs the connected user has access to
+
+        Args:
+            stmt: SQLAlchemy SELECT statement
+            organization_id_dict: Dict with "client" key containing list of accessible client IDs
+
+        Returns:
+            Tuple of (stmt, conditions) where conditions filter by client_id
+        """
+        client_ids = organization_id_dict.get("client", [])
+        if client_ids:
+            return stmt, [cls.client_id.in_(client_ids)]
+        return stmt, []
 
 
 @register_entity()
@@ -74,9 +97,9 @@ class ClientUserRole(AbstractUserOrganizationRoleEntity):
     __tablename__ = "client_user_role"
 
     @declared_attr
-    def client_user(self):
+    def user(self):
         return relationship(
-            "client_user",
+            "user",
             backref=backref("client_user_roles", lazy='selectin'),
             lazy='selectin'
         )
@@ -109,20 +132,20 @@ class ClientUserRole(AbstractUserOrganizationRoleEntity):
         Return the client_id for this role assignment.
 
         This property provides unified access to client_id for notification
-        recipient resolution. Since client_id is accessed via client_user.client_id,
+        recipient resolution. Since client_id is accessed via user.client_id,
         this property allows consistent attribute access pattern across all
         organization levels (client_id, company_id, establishment_id).
 
         Returns:
-            str: The client ID from the associated client_user
+            str: The client ID from the associated user
         """
-        return self.client_user.client_id
+        return self.user.client_id
 
     @property
     def organization(self) -> AbstractOrganizationEntity:
-        return self.client_user.client
+        return self.user.client
 
     @classmethod
     def organization_accessing_filters(cls, stmt, organization_id_dict):
-        return stmt, [cls.client_user_id.in_(organization_id_dict.get("client", []))]
+        return stmt, [cls.user_id.in_(organization_id_dict.get("client", []))]
 

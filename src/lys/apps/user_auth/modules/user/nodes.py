@@ -167,6 +167,12 @@ class VerifyEmailNode(ServiceNode[UserService]):
 
 
 @register_node()
+class ActivateUserNode(ServiceNode[UserService]):
+    success: bool
+    message: str = "User activated successfully"
+
+
+@register_node()
 class AnonymizeUserNode(ServiceNode[UserService]):
     success: bool
     message: str = "User data anonymized successfully"

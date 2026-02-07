@@ -198,8 +198,18 @@ class AppManager:
 
                 logging.info(f"Successfully loaded {component_type} from {submodule.__name__}")
                 loaded = True
-            except ModuleNotFoundError:
-                logging.debug(f"No {component_type} module in {submodule.__name__}")
+            except ModuleNotFoundError as e:
+                # Distinguish between:
+                # 1. Module file doesn't exist (e.g., services.py not found) → skip silently
+                # 2. Import error inside the module (e.g., import mollie fails) → FATAL
+                if e.name == component_module_name or component_module_name.endswith(f".{e.name}"):
+                    # Case 1: The module file itself doesn't exist - this is normal
+                    logging.debug(f"No {component_type} module in {submodule.__name__}")
+                else:
+                    # Case 2: An import inside the module failed - this is a configuration error
+                    logging.error(f"❌ FATAL: Import error in {component_module_name}: {e}")
+                    traceback.print_exc()
+                    raise
             except (ValueError, TypeError, ImportError) as e:
                 # ValueError/TypeError/ImportError indicate configuration errors (duplicate webservices, invalid imports, etc)
                 # These should be fatal as they indicate programmer errors

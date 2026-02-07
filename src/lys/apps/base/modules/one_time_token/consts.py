@@ -5,6 +5,7 @@ Constants for one-time token module.
 # Token Types
 PASSWORD_RESET_TOKEN_TYPE = "password_reset"
 EMAIL_VERIFICATION_TOKEN_TYPE = "email_verification"
+ACTIVATION_TOKEN_TYPE = "activation"
 
 # Token Statuses
 PENDING_TOKEN_STATUS = "pending"

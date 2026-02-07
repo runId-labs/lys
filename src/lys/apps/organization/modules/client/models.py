@@ -11,8 +11,6 @@ class CreateClientInputModel(CreateUserInputModel):
     This model extends CreateUserInputModel to include client information.
     The user will be automatically set as the client owner and will have
     full administrative access to the client without requiring explicit roles.
-
-    Additionally, a ClientUser relationship is created to link the owner to the client.
     """
     client_name: str = Field(..., min_length=1, max_length=255, description="Name of the client organization")
 

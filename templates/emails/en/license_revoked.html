@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>License Revoked</title>
+</head>
+<body style="font-family: Arial, sans-serif; line-height: 1.6; color: #333; max-width: 600px; margin: 0 auto; padding: 20px;">
+    <div style="background-color: #f8f9fa; padding: 20px; border-radius: 8px;">
+        <h1 style="color: #dc3545; margin-top: 0;">License Revoked</h1>
+
+        <p>Hello {{ private_data.first_name }},</p>
+
+        <p>We inform you that a license has been revoked:</p>
+
+        <div style="background-color: #ffffff; padding: 15px; border-left: 4px solid #dc3545; margin: 20px 0;">
+            <p style="margin: 0;"><strong>License:</strong> {{ license_name }}</p>
+            {% if client_name %}
+            <p style="margin: 10px 0 0 0;"><strong>Organization:</strong> {{ client_name }}</p>
+            {% endif %}
+        </div>
+
+        <p>You no longer have access to the features included in this license.</p>
+
+        {% if reason %}
+        <p><strong>Reason:</strong> {{ reason }}</p>
+        {% endif %}
+
+        <p style="text-align: center; margin: 30px 0;">
+            <a href="{{ front_url }}"
+               style="background-color: #6c757d; color: white; padding: 12px 24px; text-decoration: none; border-radius: 5px; display: inline-block;">
+                Access the platform
+            </a>
+        </p>
+
+        <p style="color: #666; font-size: 14px; margin-top: 30px;">
+            If you believe this is an error or have questions, please contact your administrator.
+        </p>
+    </div>
+</body>
+</html>

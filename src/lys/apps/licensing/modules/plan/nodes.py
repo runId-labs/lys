@@ -67,7 +67,7 @@ class LicensePlanVersionNode(EntityNode[LicensePlanVersionService], relay.Node):
     price_monthly: Optional[int]
     price_yearly: Optional[int]
     currency: str
-    stripe_product_id: Optional[str]
+    provider_product_id: Optional[str]
     created_at: datetime
     updated_at: Optional[datetime]
     _entity: strawberry.Private[LicensePlanVersion]

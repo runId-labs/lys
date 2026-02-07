@@ -9,7 +9,7 @@ Extensions:
 - user_role app extends with role-based recipient resolution
 - organization app extends with organization-scoped recipient resolution
 """
-from typing import List
+from typing import List, Callable
 
 # Signal name for real-time notification delivery
 NEW_NOTIFICATION_SIGNAL = "NEW_NOTIFICATION"
@@ -51,6 +51,7 @@ class NotificationBatchService(EntityService[NotificationBatch]):
         data: dict | None = None,
         triggered_by_user_id: str | None = None,
         additional_user_ids: List[str] | None = None,
+        should_send_fn: Callable[[str], bool] | None = None,
     ) -> NotificationBatch:
         """
         Create a notification batch and dispatch to all recipients.
@@ -65,6 +66,9 @@ class NotificationBatchService(EntityService[NotificationBatch]):
             data: Event data for frontend formatting
             triggered_by_user_id: User who triggered the notification
             additional_user_ids: Extra users to notify
+            should_send_fn: Optional callback to filter recipients by user preference.
+                            Signature: (user_id: str) -> bool
+                            If None, all recipients receive the notification.
 
         Returns:
             Created NotificationBatch with associated Notifications
@@ -101,6 +105,7 @@ class NotificationBatchService(EntityService[NotificationBatch]):
             session=session,
             batch=batch,
             recipient_user_ids=recipient_user_ids,
+            should_send_fn=should_send_fn,
         )
 
         return batch
@@ -149,6 +154,7 @@ class NotificationBatchService(EntityService[NotificationBatch]):
         session: AsyncSession,
         batch: NotificationBatch,
         recipient_user_ids: List[str],
+        should_send_fn: Callable[[str], bool] | None = None,
     ) -> None:
         """
         Create individual notifications and publish real-time signals.
@@ -157,10 +163,16 @@ class NotificationBatchService(EntityService[NotificationBatch]):
             session: Database session
             batch: The NotificationBatch entity
             recipient_user_ids: List of user IDs to notify
+            should_send_fn: Optional callback to filter recipients.
+                            If provided, only creates notification if returns True.
         """
         notification_service = cls.app_manager.get_service("notification")
 
         for user_id in recipient_user_ids:
+            # Check user preference if callback provided
+            if should_send_fn is not None and not should_send_fn(user_id):
+                continue
+
             # Create notification
             await notification_service.create(
                 session,
@@ -187,6 +199,7 @@ class NotificationBatchService(EntityService[NotificationBatch]):
         data: dict | None = None,
         triggered_by_user_id: str | None = None,
         additional_user_ids: List[str] | None = None,
+        should_send_fn: Callable[[str], bool] | None = None,
     ) -> NotificationBatch:
         """
         Synchronous version of dispatch for use in Celery tasks.
@@ -197,6 +210,9 @@ class NotificationBatchService(EntityService[NotificationBatch]):
             data: Event data for frontend formatting
             triggered_by_user_id: User who triggered the notification
             additional_user_ids: Extra users to notify
+            should_send_fn: Optional callback to filter recipients by user preference.
+                            Signature: (user_id: str) -> bool
+                            If None, all recipients receive the notification.
 
         Returns:
             Created NotificationBatch with associated Notifications
@@ -234,6 +250,7 @@ class NotificationBatchService(EntityService[NotificationBatch]):
             session=session,
             batch=batch,
             recipient_user_ids=recipient_user_ids,
+            should_send_fn=should_send_fn,
         )
 
         return batch
@@ -268,13 +285,25 @@ class NotificationBatchService(EntityService[NotificationBatch]):
         session: Session,
         batch: NotificationBatch,
         recipient_user_ids: List[str],
+        should_send_fn: Callable[[str], bool] | None = None,
     ) -> None:
         """
         Synchronous version of notification creation and signal publishing.
+
+        Args:
+            session: Sync database session
+            batch: The NotificationBatch entity
+            recipient_user_ids: List of user IDs to notify
+            should_send_fn: Optional callback to filter recipients.
+                            If provided, only creates notification if returns True.
         """
         notification_entity = cls.app_manager.get_entity("notification")
 
         for user_id in recipient_user_ids:
+            # Check user preference if callback provided
+            if should_send_fn is not None and not should_send_fn(user_id):
+                continue
+
             # Create notification
             notification = notification_entity(
                 batch_id=str(batch.id),

@@ -1,6 +1,7 @@
 from lys.apps.user_auth.modules.emailing.consts import (
     USER_PASSWORD_RESET_EMAILING_TYPE,
-    USER_EMAIL_VERIFICATION_EMAILING_TYPE
+    USER_EMAIL_VERIFICATION_EMAILING_TYPE,
+    USER_INVITATION_EMAILING_TYPE
 )
 from lys.apps.base.modules.emailing.services import EmailingTypeService
 from lys.core.fixtures import EntityFixtures
@@ -37,6 +38,20 @@ class EmailingTypeFixtures(EntityFixtures[EmailingTypeService]):
                 "context_description": {
                     "front_url": None,
                     "token": None,
+                    "user": [{"private_data": ["first_name", "last_name", "gender_id"]}]
+                }
+            }
+        },
+        {
+            "id": USER_INVITATION_EMAILING_TYPE,
+            "attributes": {
+                "enabled": True,
+                "subject": "invitation",
+                "template": "user_invitation",
+                "context_description": {
+                    "front_url": None,
+                    "token": None,
+                    "inviter_name": None,
                     "user": [{"private_data": ["first_name", "last_name", "gender_id"]}]
                 }
             }

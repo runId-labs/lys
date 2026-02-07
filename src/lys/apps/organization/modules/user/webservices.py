@@ -6,15 +6,14 @@ from sqlalchemy import Select, select, or_, exists
 from strawberry import relay
 
 from lys.apps.organization.consts import ORGANIZATION_ROLE_ACCESS_LEVEL
-from lys.apps.organization.modules.user.entities import ClientUser
+from lys.apps.organization.modules.user.entities import User
 from lys.apps.organization.modules.user.inputs import (
     CreateClientUserInput,
     UpdateClientUserEmailInput,
     UpdateClientUserPrivateDataInput,
     UpdateClientUserRolesInput
 )
-from lys.apps.organization.modules.user.nodes import ClientUserNode
-from lys.apps.user_auth.modules.user.nodes import UserNode
+from lys.apps.organization.modules.user.nodes import UserNode
 from lys.apps.user_role.consts import ROLE_ACCESS_LEVEL
 from lys.core.contexts import Info
 from lys.core.graphql.connection import lys_connection
@@ -56,8 +55,8 @@ class OrganizationUserQuery(Query):
             info: GraphQL context
             search: Optional search string to filter by email, first_name, or last_name
             is_client_user: Optional filter for organization membership:
-                - True: users with at least one client_user relationship
-                - False: users with no client_user relationships AND not a client owner
+                - True: users with client_id set (belong to an organization)
+                - False: users with no client_id AND not a client owner
                 - None: no filtering on organization membership
             role_code: Optional role code to filter users by.
                        Returns users who have this specific role.
@@ -68,7 +67,6 @@ class OrganizationUserQuery(Query):
         entity_type = info.context.app_manager.get_entity("user")
         email_entity = info.context.app_manager.get_entity("user_email_address")
         private_data_entity = info.context.app_manager.get_entity("user_private_data")
-        client_user_entity = info.context.app_manager.get_entity("client_user")
 
         # Base query with joins - exclude super users
         stmt = (
@@ -92,22 +90,20 @@ class OrganizationUserQuery(Query):
 
         # Apply organization membership filter if provided
         if is_client_user is not None:
-            # Create subquery to check if user has any client_user relationships
-            client_user_exists = exists().where(
-                client_user_entity.user_id == entity_type.id
-            )
-
             if is_client_user:
-                # Filter users who have at least one client_user relationship
-                stmt = stmt.where(client_user_exists)
+                # Filter users who have client_id set (belong to an organization)
+                stmt = stmt.where(entity_type.client_id.isnot(None))
             else:
-                # Filter users who have no client_user relationships
+                # Filter users who have no client_id
                 # Also exclude users who are client owners
                 client_entity = info.context.app_manager.get_entity("client")
                 client_owner_exists = exists().where(
                     client_entity.owner_id == entity_type.id
                 )
-                stmt = stmt.where(~client_user_exists & ~client_owner_exists)
+                stmt = stmt.where(
+                    entity_type.client_id.is_(None),
+                    ~client_owner_exists
+                )
 
         # Apply role filter if provided
         if role_code:
@@ -118,17 +114,25 @@ class OrganizationUserQuery(Query):
         return stmt
 
     @lys_getter(
-        ClientUserNode,
+        UserNode,
         is_public=False,
         access_levels=[ROLE_ACCESS_LEVEL, ORGANIZATION_ROLE_ACCESS_LEVEL],
         is_licenced=False,
-        description="Get user details within an organization by client_user ID. Returns user profile, email, and organization roles."
+        description="Get user details within an organization by user ID. Returns user profile, email, and organization roles."
     )
-    async def client_user(self, obj: ClientUser, info: Info):
+    async def client_user(self, obj: User, info: Info):
+        """
+        Get a client user by ID.
+
+        Only returns users that have client_id set (belong to an organization).
+        """
+        # Verify the user is a client user (has client_id set)
+        if obj.client_id is None:
+            return None
         pass
 
     @lys_connection(
-        ClientUserNode,
+        UserNode,
         access_levels=[ROLE_ACCESS_LEVEL, ORGANIZATION_ROLE_ACCESS_LEVEL],
         is_licenced=False,
         description="Search users within organizations. Use 'client_id' to filter by organization, 'search' for name/email, 'role_code' for organization role."
@@ -141,10 +145,10 @@ class OrganizationUserQuery(Query):
         role_code: Annotated[Optional[str], strawberry.argument(description="Filter by organization role code")] = None
     ) -> Select:
         """
-        Get all client-user relationships with optional filtering.
+        Get all client users (users with client_id set) with optional filtering.
 
         This query is accessible to users with ROLE or ORGANIZATION_ROLE access level.
-        Returns the many-to-many relationships between clients and users.
+        Returns users that belong to client organizations.
 
         Args:
             info: GraphQL context
@@ -153,19 +157,18 @@ class OrganizationUserQuery(Query):
             role_code: Optional role code to filter client users by organization role
 
         Returns:
-            Select: SQLAlchemy select statement for client_user relationships ordered by creation date
+            Select: SQLAlchemy select statement for users ordered by creation date
         """
-        client_user_entity = info.context.app_manager.get_entity("client_user")
         user_entity = info.context.app_manager.get_entity("user")
         email_entity = info.context.app_manager.get_entity("user_email_address")
         private_data_entity = info.context.app_manager.get_entity("user_private_data")
 
-        # Base query with joins for search and order_by functionality
+        # Base query with joins - only users with client_id set
         stmt = (
-            select(client_user_entity)
-            .join(user_entity, client_user_entity.user)
+            select(user_entity)
             .join(email_entity)
             .join(private_data_entity)
+            .where(user_entity.client_id.isnot(None))
         )
 
         # Apply search filter if provided
@@ -181,7 +184,7 @@ class OrganizationUserQuery(Query):
 
         # Apply client filter if provided
         if client_id:
-            stmt = stmt.where(client_user_entity.client_id == client_id.node_id)
+            stmt = stmt.where(user_entity.client_id == client_id.node_id)
 
         # Apply role filter if provided
         if role_code:
@@ -191,12 +194,12 @@ class OrganizationUserQuery(Query):
             # Join with client_user_roles to filter by role_code
             stmt = (
                 stmt
-                .join(client_user_role_entity, client_user_entity.client_user_roles)
+                .join(client_user_role_entity, user_entity.client_user_roles)
                 .join(role_entity, client_user_role_entity.role)
                 .where(role_entity.id == role_code)
             )
 
-        stmt = stmt.order_by(client_user_entity.created_at.desc())
+        stmt = stmt.order_by(user_entity.created_at.desc())
 
         return stmt
 
@@ -205,15 +208,15 @@ class OrganizationUserQuery(Query):
 @strawberry.type
 class OrganizationUserMutation(Mutation):
     @lys_edition(
-        ensure_type=ClientUserNode,
+        ensure_type=UserNode,
         is_public=False,
         access_levels=[ROLE_ACCESS_LEVEL, ORGANIZATION_ROLE_ACCESS_LEVEL],
         is_licenced=False,
-        description="Update user email within organization. Required: id (client_user ID), inputs.new_email."
+        description="Update user email within organization. Required: id (user ID), inputs.new_email."
     )
     async def update_client_user_email(
         self,
-        obj: ClientUser,
+        obj: User,
         inputs: UpdateClientUserEmailInput,
         info: Info
     ):
@@ -225,22 +228,22 @@ class OrganizationUserMutation(Mutation):
         will be sent to the new address.
 
         Args:
-            obj: ClientUser entity (fetched and validated by lys_edition)
+            obj: User entity (fetched and validated by lys_edition)
             inputs: Input containing:
                 - new_email: New email address
             info: GraphQL context
 
         Returns:
-            ClientUser: The updated client user with new unverified email address
+            User: The updated user with new unverified email address
         """
         input_data = inputs.to_pydantic()
 
         session = info.context.session
         user_service = info.context.app_manager.get_service("user")
 
-        # Update the underlying user's email
+        # Update the user's email
         await user_service.update_email(
-            user=obj.user,
+            user=obj,
             new_email=input_data.new_email,
             session=session,
             background_tasks=info.context.background_tasks
@@ -254,7 +257,7 @@ class OrganizationUserMutation(Mutation):
         return obj
 
     @lys_edition(
-        ensure_type=ClientUserNode,
+        ensure_type=UserNode,
         is_public=False,
         access_levels=[ROLE_ACCESS_LEVEL, ORGANIZATION_ROLE_ACCESS_LEVEL],
         is_licenced=False,
@@ -262,7 +265,7 @@ class OrganizationUserMutation(Mutation):
     )
     async def update_client_user_private_data(
         self,
-        obj: ClientUser,
+        obj: User,
         inputs: UpdateClientUserPrivateDataInput,
         info: Info
     ):
@@ -270,10 +273,10 @@ class OrganizationUserMutation(Mutation):
         Update client user private data (GDPR-protected fields) and language preference.
 
         This webservice is accessible to users with ROLE or ORGANIZATION_ROLE access level.
-        Updates first_name, last_name, gender_id, and language_id of the underlying user.
+        Updates first_name, last_name, gender_id, and language_id of the user.
 
         Args:
-            obj: ClientUser entity (fetched and validated by lys_edition)
+            obj: User entity (fetched and validated by lys_edition)
             inputs: Input containing:
                 - first_name: Optional first name to update
                 - last_name: Optional last name to update
@@ -282,16 +285,16 @@ class OrganizationUserMutation(Mutation):
             info: GraphQL context
 
         Returns:
-            ClientUser: The client user with updated private data
+            User: The user with updated private data
         """
         input_data = inputs.to_pydantic()
 
         session = info.context.session
         user_service = info.context.app_manager.get_service("user")
 
-        # Update the underlying user's private data
+        # Update the user's private data
         await user_service.update_user(
-            user=obj.user,
+            user=obj,
             first_name=input_data.first_name,
             last_name=input_data.last_name,
             gender_id=input_data.gender_code,
@@ -306,15 +309,15 @@ class OrganizationUserMutation(Mutation):
         return obj
 
     @lys_edition(
-        ensure_type=ClientUserNode,
+        ensure_type=UserNode,
         is_public=False,
         access_levels=[ROLE_ACCESS_LEVEL, ORGANIZATION_ROLE_ACCESS_LEVEL],
         is_licenced=False,
-        description="Update user's organization roles. Required: id (client_user ID), inputs.role_codes (list of role codes). Empty list removes all roles."
+        description="Update user's organization roles. Required: id (user ID), inputs.role_codes (list of role codes). Empty list removes all roles."
     )
     async def update_client_user_roles(
         self,
-        obj: ClientUser,
+        obj: User,
         inputs: UpdateClientUserRolesInput,
         info: Info
     ):
@@ -323,18 +326,18 @@ class OrganizationUserMutation(Mutation):
 
         This webservice is accessible to users with ROLE or ORGANIZATION_ROLE access level.
         The operation synchronizes organization-specific roles (ClientUserRole):
-        - Adds roles that are in the list but not assigned to the client user
-        - Removes roles that are assigned to the client user but not in the list
-        - Empty list removes all organization roles from the client user
+        - Adds roles that are in the list but not assigned to the user
+        - Removes roles that are assigned to the user but not in the list
+        - Empty list removes all organization roles from the user
 
         Args:
-            obj: ClientUser entity (fetched and validated by lys_edition)
+            obj: User entity (fetched and validated by lys_edition)
             inputs: Input containing:
-                - role_codes: List of role codes to assign to the client user in their organization
+                - role_codes: List of role codes to assign to the user in their organization
             info: GraphQL context
 
         Returns:
-            ClientUser: The client user with updated organization roles
+            User: The user with updated organization roles
 
         Note:
             This updates organization-specific roles (ClientUserRole), not global user roles.
@@ -342,11 +345,11 @@ class OrganizationUserMutation(Mutation):
         input_data = inputs.to_pydantic()
 
         session = info.context.session
-        client_user_service = info.context.app_manager.get_service("client_user")
+        user_service = info.context.app_manager.get_service("user")
 
-        # Update client user's organization roles
-        await client_user_service.update_client_user_roles(
-            client_user=obj,
+        # Update user's organization roles
+        await user_service.update_client_user_roles(
+            user=obj,
             role_codes=input_data.role_codes,
             session=session
         )
@@ -359,7 +362,7 @@ class OrganizationUserMutation(Mutation):
         return obj
 
     @lys_creation(
-        ensure_type=ClientUserNode,
+        ensure_type=UserNode,
         is_public=False,
         access_levels=[ROLE_ACCESS_LEVEL, ORGANIZATION_ROLE_ACCESS_LEVEL],
         is_licenced=False,
@@ -374,7 +377,7 @@ class OrganizationUserMutation(Mutation):
         Create a new user and associate them with a client organization.
 
         This webservice is accessible to users with ROLE or ORGANIZATION_ROLE access level.
-        It creates a new user and a ClientUser relationship linking them to the specified client.
+        It creates a new user with client_id set, linking them to the specified client.
         Organization roles can optionally be assigned during creation.
 
         Args:
@@ -390,20 +393,24 @@ class OrganizationUserMutation(Mutation):
             info: GraphQL context
 
         Returns:
-            ClientUser: The created client user with organization roles
+            User: The created user with client_id set and organization roles
         """
         input_data = inputs.to_pydantic()
 
         session = info.context.session
-        client_user_service = info.context.app_manager.get_service("client_user")
+        user_service = info.context.app_manager.get_service("user")
 
-        client_user = await client_user_service.create_client_user(
+        # Get inviter (connected user) for invitation email
+        inviter_id = info.context.connected_user['sub']
+        inviter = await user_service.get_by_id(inviter_id, session)
+
+        user = await user_service.create_client_user(
             session=session,
             client_id=input_data.client_id,
             email=input_data.email,
             password=input_data.password,
             language_id=input_data.language_code,
-            send_verification_email=True,
+            inviter=inviter,
             background_tasks=info.context.background_tasks,
             first_name=input_data.first_name,
             last_name=input_data.last_name,
@@ -413,7 +420,7 @@ class OrganizationUserMutation(Mutation):
 
         logger.info(
             f"Client user created for client {input_data.client_id} with email {input_data.email} "
-            f"by {info.context.connected_user['sub']}"
+            f"by {inviter_id}"
         )
 
-        return client_user
+        return user

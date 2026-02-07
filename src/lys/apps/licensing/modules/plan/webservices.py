@@ -32,7 +32,7 @@ class LicensePlanQuery(Query):
         """
         plan_entity = info.context.app_manager.get_entity("license_plan")
         client_entity = info.context.app_manager.get_entity("client")
-        client_user_entity = info.context.app_manager.get_entity("client_user")
+        user_entity = info.context.app_manager.get_entity("user")
 
         connected_user = info.context.connected_user
         user_id = connected_user["sub"]
@@ -49,8 +49,8 @@ class LicensePlanQuery(Query):
         if client_id:
             user_client_id = client_id
         else:
-            # Check if user is member of a client
-            stmt = select(client_user_entity.client_id).where(client_user_entity.user_id == user_id)
+            # Check if user is member of a client (via user.client_id)
+            stmt = select(user_entity.client_id).where(user_entity.id == user_id)
             result = await session.execute(stmt)
             client_id = result.scalar_one_or_none()
             if client_id:

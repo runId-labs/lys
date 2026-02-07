@@ -35,8 +35,8 @@ class LicensingWebserviceService(OrganizationWebserviceService):
 
         Access is granted when ALL conditions are met:
         1. Webservice has ORGANIZATION_ROLE access level enabled
-        2. User has a client_user_role that grants access to this webservice
-        3. User's client_user has an active license (exists in subscription_user table)
+        2. User has an organization role (via client_user_role) that grants access to this webservice
+        3. User has an active license (exists in subscription_user table)
 
         Args:
             stmt: SQLAlchemy select statement
@@ -58,7 +58,6 @@ class LicensingWebserviceService(OrganizationWebserviceService):
                 role_entity = cls.app_manager.get_entity("role")
                 role_webservice_entity = cls.app_manager.get_entity("role_webservice")
                 client_user_role_entity = cls.app_manager.get_entity("client_user_role")
-                client_user_entity = cls.app_manager.get_entity("client_user")
                 client_entity = cls.app_manager.get_entity("client")
                 subscription_entity = cls.app_manager.get_entity("subscription")
 
@@ -68,19 +67,21 @@ class LicensingWebserviceService(OrganizationWebserviceService):
                     enabled=True
                 )
 
-                # Condition: user has org role via client_user_role
-                # Path: webservice -> role_webservice -> role -> client_user_roles -> client_user
+                # Condition: user has org role via client_user_role that grants access to this webservice
+                # Uses explicit subquery joins instead of .any() for clarity
                 user_has_org_role_condition = exists(
                     select(role_webservice_entity.id)
                     .join(role_entity, role_webservice_entity.role_id == role_entity.id)
+                    .join(client_user_role_entity, client_user_role_entity.role_id == role_entity.id)
                     .where(
                         role_webservice_entity.webservice_id == cls.entity_class.id,
-                        role_entity.client_user_roles.any(
-                            client_user_role_entity.client_user.has(
-                                client_user_entity.user_id == user_id
-                            )
-                        )
+                        client_user_role_entity.user_id == user_id
                     )
+                )
+
+                # Condition: user is owner of a client (has access to all org role webservices)
+                user_is_owner_condition = exists(
+                    select(client_entity.id).where(client_entity.owner_id == user_id)
                 )
 
                 # === NON-LICENSED WEBSERVICES ===
@@ -89,47 +90,39 @@ class LicensingWebserviceService(OrganizationWebserviceService):
                     cls.entity_class.is_licenced.is_(False),
                     org_role_access_level_condition,
                     or_(
-                        # Owner has access
-                        cls.entity_class.access_levels.any(
-                            and_(
-                                access_level_entity.id == ORGANIZATION_ROLE_ACCESS_LEVEL,
-                                client_entity.owner_id == user_id
-                            )
-                        ),
-                        # User with org role has access
+                        # Owner has access to all ORGANIZATION_ROLE webservices
+                        user_is_owner_condition,
+                        # User with org role has access via role_webservice
                         user_has_org_role_condition
                     )
                 )
 
                 # === LICENSED WEBSERVICES ===
                 # For licensed webservices: requires license verification
-                # Owner: needs client to have a subscription
+                # Owner: needs their client to have a subscription
                 owner_licensed_condition = and_(
                     org_role_access_level_condition,
-                    client_entity.owner_id == user_id,
-                    client_entity.id.in_(
-                        select(subscription_entity.client_id)
+                    exists(
+                        select(client_entity.id).where(
+                            client_entity.owner_id == user_id,
+                            client_entity.id.in_(select(subscription_entity.client_id))
+                        )
                     )
                 )
 
-                # Client user: needs to be in subscription_user table
+                # Client user: needs org role + license (exists in subscription_user table)
                 client_user_licensed_condition = and_(
                     org_role_access_level_condition,
                     exists(
                         select(role_webservice_entity.id)
                         .join(role_entity, role_webservice_entity.role_id == role_entity.id)
+                        .join(client_user_role_entity, client_user_role_entity.role_id == role_entity.id)
                         .where(
                             role_webservice_entity.webservice_id == cls.entity_class.id,
-                            role_entity.client_user_roles.any(
-                                and_(
-                                    client_user_role_entity.client_user.has(
-                                        client_user_entity.user_id == user_id
-                                    ),
-                                    # License verification: client_user exists in subscription_user
-                                    client_user_role_entity.client_user_id.in_(
-                                        select(subscription_user.c.client_user_id)
-                                    )
-                                )
+                            client_user_role_entity.user_id == user_id,
+                            # License verification: user exists in subscription_user
+                            client_user_role_entity.user_id.in_(
+                                select(subscription_user.c.user_id)
                             )
                         )
                     )
@@ -175,30 +168,24 @@ class LicensingWebserviceService(OrganizationWebserviceService):
         role_entity = cls.app_manager.get_entity("role")
         role_webservice_entity = cls.app_manager.get_entity("role_webservice")
         client_user_role_entity = cls.app_manager.get_entity("client_user_role")
-        client_user_entity = cls.app_manager.get_entity("client_user")
 
         # Query to find a role that:
         # 1. Grants access to this webservice (via role_webservice join)
-        # 2. Is assigned to a client_user belonging to this user
-        # 3. The client_user has an active license (exists in subscription_user table)
+        # 2. Is assigned to this user via client_user_role
+        # 3. The user has an active license (exists in subscription_user table)
+        # Uses explicit joins instead of .any() on relationships
         stmt = (
             select(role_entity)
             .join(role_webservice_entity, role_entity.id == role_webservice_entity.role_id)
+            .join(client_user_role_entity, client_user_role_entity.role_id == role_entity.id)
             .where(
                 # Condition 1: Role grants access to this webservice
                 role_webservice_entity.webservice_id == webservice_id,
-                # Condition 2 & 3: User has this role via client_user_role AND has license
-                role_entity.client_user_roles.any(
-                    and_(
-                        # User has this role via their client_user
-                        client_user_role_entity.client_user.has(
-                            client_user_entity.user_id == user_id
-                        ),
-                        # License verification: client_user exists in subscription_user
-                        client_user_role_entity.client_user_id.in_(
-                            select(subscription_user.c.client_user_id)
-                        )
-                    )
+                # Condition 2: User has this role
+                client_user_role_entity.user_id == user_id,
+                # Condition 3: License verification - user exists in subscription_user
+                client_user_role_entity.user_id.in_(
+                    select(subscription_user.c.user_id)
                 )
             )
             .limit(1)

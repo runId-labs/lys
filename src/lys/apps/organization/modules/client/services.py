@@ -34,7 +34,7 @@ class ClientService(EntityService[Client]):
         This method performs the following operations in a transaction:
         1. Creates a new user who will be the client owner
         2. Creates the client with the user as owner
-        3. Creates a ClientUser relationship linking the owner to the client
+        3. Associates the owner user with the client via user.client_id
 
         The owner will have automatic full administrative access to the client
         without requiring explicit role assignments (via client.owner_id check).
@@ -59,9 +59,7 @@ class ClientService(EntityService[Client]):
         Raises:
             LysError: If email already exists, language doesn't exist, or gender doesn't exist
         """
-        # Get required services
         user_service = cls.app_manager.get_service("user")
-        client_user_entity = cls.app_manager.get_entity("client_user")
 
         # Step 1: Create the owner user
         owner_user = await user_service.create_user(
@@ -86,13 +84,8 @@ class ClientService(EntityService[Client]):
         await session.flush()
         await session.refresh(client)
 
-        # Step 3: Create ClientUser relationship to link owner to client
-        client_user = client_user_entity(
-            user_id=owner_user.id,
-            client_id=client.id
-        )
-
-        session.add(client_user)
+        # Step 3: Associate the owner user with the client
+        owner_user.client_id = client.id
         await session.flush()
 
         return client

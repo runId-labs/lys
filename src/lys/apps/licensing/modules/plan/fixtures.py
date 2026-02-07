@@ -5,7 +5,7 @@ This module provides:
 - LicensePlanDevFixtures: Default plans (FREE, STARTER, PRO)
 - LicensePlanVersionDevFixtures: Plan versions with pricing and rule associations
 
-After loading plan versions, automatically syncs paid plans to Stripe if configured.
+After loading plan versions, automatically syncs paid plans to payment provider if configured.
 """
 import logging
 
@@ -15,17 +15,18 @@ from sqlalchemy import and_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from lys.apps.licensing.consts import (
+    DEFAULT_APPLICATION,
     FREE_PLAN,
     STARTER_PLAN,
     PRO_PLAN,
     MAX_USERS,
     MAX_PROJECTS_PER_MONTH,
 )
+from lys.apps.licensing.modules.mollie.services import is_payment_configured
 from lys.apps.licensing.modules.plan.services import (
     LicensePlanService,
     LicensePlanVersionService,
 )
-from lys.core.configs import settings
 from lys.core.consts.environments import EnvironmentEnum
 from lys.core.fixtures import EntityFixtures
 from lys.core.models.fixtures import EntityFixturesModel, ParametricEntityFixturesModel
@@ -34,7 +35,7 @@ from lys.core.registries import register_fixture
 logger = logging.getLogger(__name__)
 
 
-@register_fixture(depends_on=["LicenseRuleFixtures"])
+@register_fixture(depends_on=["LicenseApplicationDevFixtures", "LicenseRuleFixtures"])
 class LicensePlanDevFixtures(EntityFixtures[LicensePlanService]):
     """
     Fixtures for license plan types.
@@ -48,6 +49,7 @@ class LicensePlanDevFixtures(EntityFixtures[LicensePlanService]):
         {
             "id": FREE_PLAN,
             "attributes": {
+                "app_id": DEFAULT_APPLICATION,
                 "enabled": True,
                 "description": "Free plan with basic features and limited quotas"
             }
@@ -55,6 +57,7 @@ class LicensePlanDevFixtures(EntityFixtures[LicensePlanService]):
         {
             "id": STARTER_PLAN,
             "attributes": {
+                "app_id": DEFAULT_APPLICATION,
                 "enabled": True,
                 "description": "Starter plan for small teams"
             }
@@ -62,6 +65,7 @@ class LicensePlanDevFixtures(EntityFixtures[LicensePlanService]):
         {
             "id": PRO_PLAN,
             "attributes": {
+                "app_id": DEFAULT_APPLICATION,
                 "enabled": True,
                 "description": "Professional plan for growing businesses"
             }
@@ -93,8 +97,8 @@ class LicensePlanVersionDevFixtures(EntityFixtures[LicensePlanVersionService]):
     - Pricing (monthly/yearly in cents, None = free)
     - Rules with limit values (quotas and feature toggles)
 
-    Note: stripe_product_id is NOT set here - it will be auto-filled
-    by StripeSyncService if Stripe integration is enabled.
+    Note: provider_product_id is NOT set here - it will be auto-filled
+    by the payment provider sync service if configured.
     """
     model = LicensePlanVersionFixturesModel
     _allowed_envs = [EnvironmentEnum.DEV, ]
@@ -208,33 +212,33 @@ class LicensePlanVersionDevFixtures(EntityFixtures[LicensePlanVersionService]):
     @classmethod
     async def load(cls):
         """
-        Load fixtures and sync to Stripe.
+        Load fixtures and sync to payment provider.
 
-        Overrides parent to add Stripe synchronization after fixture loading.
+        Overrides parent to add payment provider synchronization after fixture loading.
         """
         await super().load()
-        await cls._sync_to_stripe()
+        await cls._sync_to_payment_provider()
 
     @classmethod
-    async def _sync_to_stripe(cls) -> None:
+    async def _sync_to_payment_provider(cls) -> None:
         """
-        Synchronize paid plan versions to Stripe.
+        Synchronize paid plan versions to payment provider.
 
-        Only runs if Stripe is configured. Creates Stripe Products and Prices
-        for each paid plan version that doesn't have a stripe_product_id.
+        Only runs if payment provider is configured. Validates plan versions
+        for the configured payment provider (Mollie, etc.).
         """
-        if not settings.stripe.configured():
-            logger.debug("Stripe not configured, skipping sync")
+        if not is_payment_configured():
+            logger.debug("Payment provider not configured, skipping sync")
             return
 
         try:
-            stripe_sync_service = cls.app_manager.get_service("stripe_sync")
+            mollie_sync_service = cls.app_manager.get_service("mollie_sync")
         except KeyError:
-            logger.debug("StripeSyncService not registered, skipping sync")
+            logger.debug("MollieSyncService not registered, skipping sync")
             return
 
         db_manager = cls.app_manager.database
         async with db_manager.get_session() as session:
-            synced = await stripe_sync_service.sync_all_enabled_versions(session)
-            if synced:
-                logger.info(f"Synced {len(synced)} plan versions to Stripe")
+            validated = await mollie_sync_service.sync_all_enabled_versions(session)
+            if validated:
+                logger.info(f"Validated {len(validated)} plan versions for payment provider")

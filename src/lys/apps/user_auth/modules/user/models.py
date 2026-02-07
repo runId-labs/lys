@@ -287,6 +287,35 @@ class VerifyEmailInputModel(BaseModel):
         return token
 
 
+class ActivateUserInputModel(BaseModel):
+    """
+    Input model for activating an invited user.
+
+    Used when invited user clicks activation link in email and sets their password.
+    This both sets the password and validates the email address.
+    """
+    token: str = Field(
+        min_length=1,
+        description="One-time activation token from invitation email"
+    )
+    new_password: str = Field(
+        min_length=8,
+        max_length=128,
+        description="New password (min 8 chars, must contain at least one letter and one digit)"
+    )
+
+    @field_validator('token')
+    @classmethod
+    def validate_token(cls, token: str | None, info: ValidationInfo) -> str | None:
+        validate_uuid(token, INVALID_RESET_TOKEN_ERROR)
+        return token
+
+    @field_validator('new_password')
+    @classmethod
+    def validate_new_password(cls, password: str | None, info: ValidationInfo) -> str | None:
+        return validate_password_for_creation(password)
+
+
 class GetUserRefreshTokenInputModel(BaseModel):
     refresh_token_id: str | None
 

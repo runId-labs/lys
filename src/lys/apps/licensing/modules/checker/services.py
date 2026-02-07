@@ -3,9 +3,13 @@ Core licensing services.
 
 This module provides:
 - LicenseCheckerService: Rule validation and enforcement
+
+Supports two modes:
+1. Database-based checks: Query subscription from DB (for backend operations)
+2. JWT-based checks: Use claims from token (fast, no DB query, for request validation)
 """
 import logging
-from typing import Dict, Any, List, Tuple
+from typing import Dict, Any, List, Optional, Tuple
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -14,7 +18,8 @@ from lys.apps.licensing.errors import (
     QUOTA_EXCEEDED,
     FEATURE_NOT_AVAILABLE,
     UNKNOWN_RULE,
-    DOWNGRADE_RULE_NOT_FOUND
+    DOWNGRADE_RULE_NOT_FOUND,
+    SUBSCRIPTION_INACTIVE
 )
 from lys.core.errors import LysError
 from lys.core.services import Service
@@ -84,6 +89,12 @@ class LicenseCheckerService(Service):
 
         limit_value = rule_config.limit_value
 
+        # Get app_id from subscription's plan version
+        await session.refresh(subscription, ["plan_version"])
+        plan_version = subscription.plan_version
+        await session.refresh(plan_version, ["plan"])
+        app_id = plan_version.plan.app_id
+
         # Get validator from registry
         validators_registry = cls.app_manager.registry.get_registry("validators")
         if not validators_registry:
@@ -97,7 +108,7 @@ class LicenseCheckerService(Service):
             return (True, 0, limit_value or -1)
 
         # Execute validator
-        return await validator(session, client_id, limit_value)
+        return await validator(session, client_id, app_id, limit_value)
 
     @classmethod
     async def enforce_quota(
@@ -291,11 +302,17 @@ class LicenseCheckerService(Service):
         if not subscription:
             return violations
 
-        # Get new plan version rules
+        # Get new plan version and its rules
         version_rule_service = cls.app_manager.get_service("license_plan_version_rule")
         new_rules = await version_rule_service.get_rules_for_version(
             new_plan_version_id, session
         )
+
+        # Get app_id from the new plan version
+        plan_version_entity = cls.app_manager.get_entity("license_plan_version")
+        new_plan_version = await session.get(plan_version_entity, new_plan_version_id)
+        await session.refresh(new_plan_version, ["plan"])
+        app_id = new_plan_version.plan.app_id
 
         # Get validators registry
         validators_registry = cls.app_manager.registry.get_registry("validators")
@@ -309,7 +326,7 @@ class LicenseCheckerService(Service):
                 validator = validators_registry.get(new_rule.rule_id)
                 if validator:
                     is_valid, current, _ = await validator(
-                        session, client_id, new_rule.limit_value
+                        session, client_id, app_id, new_rule.limit_value
                     )
                     if not is_valid:
                         violations.append({
@@ -345,6 +362,12 @@ class LicenseCheckerService(Service):
         # Get violations
         violations = await cls.validate_downgrade(client_id, new_plan_version_id, session)
 
+        # Get app_id from the new plan version
+        plan_version_entity = cls.app_manager.get_entity("license_plan_version")
+        new_plan_version = await session.get(plan_version_entity, new_plan_version_id)
+        await session.refresh(new_plan_version, ["plan"])
+        app_id = new_plan_version.plan.app_id
+
         # Get downgraders registry
         downgraders_registry = cls.app_manager.registry.get_registry("downgraders")
 
@@ -355,7 +378,7 @@ class LicenseCheckerService(Service):
             if downgraders_registry:
                 downgrader = downgraders_registry.get(rule_id)
                 if downgrader:
-                    success = await downgrader(session, client_id, new_limit)
+                    success = await downgrader(session, client_id, app_id, new_limit)
                     results.append({
                         "rule_id": rule_id,
                         "success": success,
@@ -370,3 +393,219 @@ class LicenseCheckerService(Service):
                     })
 
         return results
+
+    # =========================================================================
+    # JWT-Based Checking (Fast, no DB query)
+    # =========================================================================
+
+    @classmethod
+    def check_subscription_from_claims(
+        cls,
+        claims: Dict[str, Any],
+        client_id: str
+    ) -> Dict[str, Any]:
+        """
+        Get subscription info from JWT claims.
+
+        Args:
+            claims: JWT claims dict (from info.context.claims)
+            client_id: Client ID to check
+
+        Returns:
+            Subscription dict with plan_id, status, rules or empty dict
+
+        Note:
+            Does NOT raise errors - returns empty dict if not found.
+            Use enforce_* methods for error handling.
+        """
+        subscriptions = claims.get("subscriptions", {})
+        return subscriptions.get(client_id, {})
+
+    @classmethod
+    def check_quota_from_claims(
+        cls,
+        claims: Dict[str, Any],
+        client_id: str,
+        rule_id: str,
+        current_count: int
+    ) -> Tuple[bool, int, int]:
+        """
+        Check quota from JWT claims (no DB query).
+
+        Args:
+            claims: JWT claims dict
+            client_id: Client ID
+            rule_id: Rule ID (e.g., "MAX_USERS")
+            current_count: Current usage count (caller must provide)
+
+        Returns:
+            Tuple of (is_valid, current_count, limit)
+            limit = -1 means unlimited
+        """
+        subscription = cls.check_subscription_from_claims(claims, client_id)
+
+        if not subscription:
+            return (False, current_count, 0)
+
+        rules = subscription.get("rules", {})
+        limit = rules.get(rule_id)
+
+        if limit is None:
+            # Rule not in plan = unlimited
+            return (True, current_count, -1)
+
+        if isinstance(limit, bool):
+            # This is a feature toggle, not a quota
+            return (True, current_count, -1)
+
+        # Quota check
+        is_valid = current_count < limit
+        return (is_valid, current_count, limit)
+
+    @classmethod
+    def enforce_quota_from_claims(
+        cls,
+        claims: Dict[str, Any],
+        client_id: str,
+        rule_id: str,
+        current_count: int,
+        error: Tuple[int, str] | None = None
+    ) -> None:
+        """
+        Enforce quota from JWT claims - raises error if exceeded.
+
+        Args:
+            claims: JWT claims dict
+            client_id: Client ID
+            rule_id: Rule ID
+            current_count: Current usage count
+            error: Optional custom error tuple
+
+        Raises:
+            LysError: If quota exceeded or no subscription
+        """
+        subscription = cls.check_subscription_from_claims(claims, client_id)
+
+        if not subscription:
+            raise LysError(
+                NO_ACTIVE_SUBSCRIPTION,
+                f"Client {client_id} has no active subscription"
+            )
+
+        # Check subscription status
+        status = subscription.get("status", "active")
+        if status not in ("active", "pending"):
+            raise LysError(
+                SUBSCRIPTION_INACTIVE,
+                f"Subscription is {status}"
+            )
+
+        is_valid, current, limit = cls.check_quota_from_claims(
+            claims, client_id, rule_id, current_count
+        )
+
+        if not is_valid:
+            raise LysError(
+                error or QUOTA_EXCEEDED,
+                f"Quota exceeded for {rule_id}: {current}/{limit}"
+            )
+
+    @classmethod
+    def check_feature_from_claims(
+        cls,
+        claims: Dict[str, Any],
+        client_id: str,
+        rule_id: str
+    ) -> bool:
+        """
+        Check feature availability from JWT claims (no DB query).
+
+        Args:
+            claims: JWT claims dict
+            client_id: Client ID
+            rule_id: Feature rule ID
+
+        Returns:
+            True if feature is available
+        """
+        subscription = cls.check_subscription_from_claims(claims, client_id)
+
+        if not subscription:
+            return False
+
+        rules = subscription.get("rules", {})
+        return rule_id in rules
+
+    @classmethod
+    def enforce_feature_from_claims(
+        cls,
+        claims: Dict[str, Any],
+        client_id: str,
+        rule_id: str
+    ) -> None:
+        """
+        Enforce feature from JWT claims - raises error if not available.
+
+        Args:
+            claims: JWT claims dict
+            client_id: Client ID
+            rule_id: Feature rule ID
+
+        Raises:
+            LysError: If feature not available or no subscription
+        """
+        subscription = cls.check_subscription_from_claims(claims, client_id)
+
+        if not subscription:
+            raise LysError(
+                NO_ACTIVE_SUBSCRIPTION,
+                f"Client {client_id} has no active subscription"
+            )
+
+        # Check subscription status
+        status = subscription.get("status", "active")
+        if status not in ("active", "pending"):
+            raise LysError(
+                SUBSCRIPTION_INACTIVE,
+                f"Subscription is {status}"
+            )
+
+        has_feature = cls.check_feature_from_claims(claims, client_id, rule_id)
+
+        if not has_feature:
+            raise LysError(
+                FEATURE_NOT_AVAILABLE,
+                f"Feature {rule_id} is not available in your plan"
+            )
+
+    @classmethod
+    def get_limits_from_claims(
+        cls,
+        claims: Dict[str, Any],
+        client_id: str
+    ) -> Dict[str, Any]:
+        """
+        Get all rule limits from JWT claims (no DB query).
+
+        Args:
+            claims: JWT claims dict
+            client_id: Client ID
+
+        Returns:
+            Dict mapping rule_id to limit info
+        """
+        subscription = cls.check_subscription_from_claims(claims, client_id)
+
+        if not subscription:
+            return {}
+
+        rules = subscription.get("rules", {})
+        limits = {}
+
+        for rule_id, value in rules.items():
+            if isinstance(value, bool):
+                limits[rule_id] = {"enabled": value, "type": "feature"}
+            else:
+                limits[rule_id] = {"limit": value, "type": "quota"}
+
+        return limits

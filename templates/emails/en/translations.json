@@ -1,0 +1,17 @@
+{
+  "user_password_reset": {
+    "subject": "Reset your password"
+  },
+  "user_email_verification": {
+    "subject": "Verify your email address"
+  },
+  "user_invitation": {
+    "subject": "You have been invited to join the platform"
+  },
+  "license_granted": {
+    "subject": "New license granted"
+  },
+  "license_revoked": {
+    "subject": "License revoked"
+  }
+}

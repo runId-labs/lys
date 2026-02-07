@@ -13,6 +13,7 @@ from lys.apps.user_auth.modules.user.inputs import (
     CreateSuperUserInput,
     ResetPasswordInput,
     VerifyEmailInput,
+    ActivateUserInput,
     UpdateUserEmailInput,
     UpdatePasswordInput,
     UpdateUserPrivateDataInput,
@@ -28,6 +29,7 @@ from lys.apps.user_auth.modules.user.nodes import (
     PasswordResetRequestNode,
     ResetPasswordNode,
     VerifyEmailNode,
+    ActivateUserNode,
     UserOneTimeTokenNode,
     AnonymizeUserNode,
     UserAuditLogNode,
@@ -390,6 +392,45 @@ class UserMutation(Mutation):
         )
 
         logger.info("Email successfully verified using token")
+
+        return node(success=True)
+
+    @lys_field(
+        ensure_type=ActivateUserNode,
+        is_public=True,
+        is_licenced=False,
+        description="Activate an invited user by setting their password and validating their email.",
+        options={"generate_tool": False}
+    )
+    async def activate_user(self, inputs: ActivateUserInput, info: Info) -> ActivateUserNode:
+        """
+        Activate an invited user.
+
+        This mutation sets the user's password and validates their email address
+        in a single operation. Used when a user clicks the activation link
+        from an invitation email.
+
+        Args:
+            inputs: Input containing:
+                - token: One-time activation token from invitation email
+                - new_password: New password to set
+            info: GraphQL context
+
+        Returns:
+            ActivateUserNode with success status
+        """
+        input_data = inputs.to_pydantic()
+        node = ActivateUserNode.get_effective_node()
+        session = info.context.session
+        user_service: type[UserService] = node.service_class
+
+        await user_service.activate_user(
+            token=input_data.token,
+            new_password=input_data.new_password,
+            session=session
+        )
+
+        logger.info("User successfully activated using token")
 
         return node(success=True)
 

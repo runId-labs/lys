@@ -107,11 +107,11 @@ class ClientService(BaseClientService):
             )
             return
 
-        # Create subscription (no Stripe for free plan)
+        # Create subscription (no payment provider for free plan)
         subscription = subscription_entity(
             client_id=client_id,
             plan_version_id=free_version.id,
-            stripe_subscription_id=None
+            provider_subscription_id=None
         )
 
         session.add(subscription)

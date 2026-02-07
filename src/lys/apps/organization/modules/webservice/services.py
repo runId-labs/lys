@@ -46,10 +46,9 @@ class OrganizationWebserviceService(RoleWebserviceService):
                 role_entity = cls.app_manager.get_entity("role")
                 role_webservice_entity = cls.app_manager.get_entity("role_webservice")
                 client_user_role_entity = cls.app_manager.get_entity("client_user_role")
-                client_user_entity = cls.app_manager.get_entity("client_user")
 
                 # Webservices with ORGANIZATION_ROLE access level AND user has an org role that grants access
-                # Path: webservice -> role_webservice -> role -> client_user_roles -> client_user -> user_id
+                # Uses explicit joins: role_webservice -> role -> client_user_role (for user)
                 org_role_access_condition = and_(
                     cls.entity_class.access_levels.any(
                         access_level_entity.id == ORGANIZATION_ROLE_ACCESS_LEVEL,
@@ -58,13 +57,10 @@ class OrganizationWebserviceService(RoleWebserviceService):
                     exists(
                         select(role_webservice_entity.id)
                         .join(role_entity, role_webservice_entity.role_id == role_entity.id)
+                        .join(client_user_role_entity, client_user_role_entity.role_id == role_entity.id)
                         .where(
                             role_webservice_entity.webservice_id == cls.entity_class.id,
-                            role_entity.client_user_roles.any(
-                                client_user_role_entity.client_user.has(
-                                    client_user_entity.user_id == user_id
-                                )
-                            )
+                            client_user_role_entity.user_id == user_id
                         )
                     )
                 )
@@ -88,7 +84,7 @@ class OrganizationWebserviceService(RoleWebserviceService):
 
         A user has access if:
         - They are a client owner (owners have access to all ORGANIZATION_ROLE webservices)
-        - They have a client_user_role that includes this webservice
+        - They have an organization role (via client_user_role) that includes this webservice
 
         Args:
             user_id: The user ID
@@ -107,18 +103,15 @@ class OrganizationWebserviceService(RoleWebserviceService):
         role_entity = cls.app_manager.get_entity("role")
         role_webservice_entity = cls.app_manager.get_entity("role_webservice")
         client_user_role_entity = cls.app_manager.get_entity("client_user_role")
-        client_user_entity = cls.app_manager.get_entity("client_user")
 
+        # Use explicit join instead of .any() on relationship
         stmt = (
             select(role_entity)
             .join(role_webservice_entity, role_entity.id == role_webservice_entity.role_id)
+            .join(client_user_role_entity, client_user_role_entity.role_id == role_entity.id)
             .where(
                 role_webservice_entity.webservice_id == webservice_id,
-                role_entity.client_user_roles.any(
-                    client_user_role_entity.client_user.has(
-                        client_user_entity.user_id == user_id
-                    )
-                )
+                client_user_role_entity.user_id == user_id
             )
             .limit(1)
         )

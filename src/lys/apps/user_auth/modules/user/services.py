@@ -8,11 +8,16 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from lys.apps.user_auth.modules.emailing.consts import (
     USER_PASSWORD_RESET_EMAILING_TYPE,
-    USER_EMAIL_VERIFICATION_EMAILING_TYPE
+    USER_EMAIL_VERIFICATION_EMAILING_TYPE,
+    USER_INVITATION_EMAILING_TYPE
 )
-from lys.apps.base.modules.one_time_token.consts import PASSWORD_RESET_TOKEN_TYPE, EMAIL_VERIFICATION_TOKEN_TYPE
+from lys.apps.user_auth.modules.event.tasks import trigger_event
+from lys.apps.base.modules.one_time_token.consts import (
+    PASSWORD_RESET_TOKEN_TYPE,
+    EMAIL_VERIFICATION_TOKEN_TYPE,
+    ACTIVATION_TOKEN_TYPE
+)
 from lys.apps.base.modules.one_time_token.services import OneTimeTokenService
-from lys.apps.base.tasks import send_pending_email
 from lys.apps.user_auth.errors import (
     INVALID_REFRESH_TOKEN_ERROR,
     INVALID_GENDER,
@@ -413,9 +418,13 @@ class UserService(EntityService[User]):
             user, session
         )
 
-        # Schedule email sending via Celery after commit (if background_tasks provided)
+        # Schedule email sending via event system after commit (if background_tasks provided)
         if background_tasks is not None:
-            user_emailing_service.schedule_send_emailing(user_emailing, background_tasks)
+            user_emailing_service.schedule_send_emailing(
+                user_emailing,
+                USER_EMAIL_VERIFICATION_EMAILING_TYPE,
+                background_tasks
+            )
 
         return True
 
@@ -462,7 +471,11 @@ class UserService(EntityService[User]):
 
         # Schedule email sending via Celery after commit (if background_tasks provided)
         if background_tasks is not None:
-            user_emailing_service.schedule_send_emailing(user_emailing, background_tasks)
+            user_emailing_service.schedule_send_emailing(
+                user_emailing,
+                USER_PASSWORD_RESET_EMAILING_TYPE,
+                background_tasks
+            )
 
         return True
 
@@ -628,6 +641,133 @@ class UserService(EntityService[User]):
         await token_service.mark_as_used(token_entity, session)
 
         return user
+
+    @classmethod
+    async def activate_user(
+        cls,
+        token: str,
+        new_password: str,
+        session: AsyncSession
+    ) -> User:
+        """
+        Activate an invited user by setting their password and validating their email.
+
+        This method:
+        1. Validates the activation token exists and is not expired
+        2. Validates the token has not been used
+        3. Sets the user's password
+        4. Validates the user's email address
+        5. Marks the token as used
+
+        Args:
+            token: The one-time activation token from invitation email
+            new_password: The new password to set
+            session: Database session
+
+        Returns:
+            User: The activated user with password set and email verified
+
+        Raises:
+            LysError: If token is invalid, expired, or already used
+        """
+        # Get token service
+        token_service = cls.app_manager.get_service("user_one_time_token")
+
+        # 1. Find the token
+        token_entity = await token_service.get_by_id(token, session)
+
+        if not token_entity:
+            raise LysError(
+                INVALID_RESET_TOKEN_ERROR,
+                "Invalid activation token"
+            )
+
+        # 2. Check token type
+        if token_entity.type_id != ACTIVATION_TOKEN_TYPE:
+            raise LysError(
+                INVALID_RESET_TOKEN_ERROR,
+                "Token is not an activation token"
+            )
+
+        # 3. Check if token is expired
+        if token_entity.is_expired:
+            raise LysError(
+                EXPIRED_RESET_TOKEN_ERROR,
+                "Activation token has expired"
+            )
+
+        # 4. Check if token has already been used
+        if token_entity.is_used:
+            raise LysError(
+                INVALID_RESET_TOKEN_ERROR,
+                "Activation token has already been used"
+            )
+
+        # 5. Get the user
+        user = await cls.get_by_id(token_entity.user_id, session)
+
+        if not user:
+            raise LysError(
+                INVALID_RESET_TOKEN_ERROR,
+                "User not found for this token"
+            )
+
+        # 6. Hash and set the new password
+        hashed_password = AuthUtils.hash_password(new_password)
+        user.password = hashed_password
+
+        # 7. Validate email address (if not already validated)
+        if user.email_address.validated_at is None:
+            user.email_address.validated_at = now_utc()
+
+        # 8. Mark token as used
+        await token_service.mark_as_used(token_entity, session)
+
+        logger.info(f"User {user.id} activated successfully")
+
+        return user
+
+    @classmethod
+    async def send_invitation_email(
+        cls,
+        user: User,
+        inviter: User,
+        session: AsyncSession,
+        background_tasks=None
+    ) -> bool:
+        """
+        Send invitation email to a newly created user.
+
+        This method:
+        1. Creates an invitation emailing with activation token
+        2. Schedules the email to be sent (if background_tasks provided)
+
+        Args:
+            user: User entity to send invitation email to
+            inviter: User entity who invited the new user
+            session: Database session
+            background_tasks: FastAPI BackgroundTasks for scheduling email (optional)
+
+        Returns:
+            bool: True if email was created
+        """
+        # Get user emailing service
+        user_emailing_service = cls.app_manager.get_service("user_emailing")
+
+        # Create invitation emailing
+        user_emailing = await user_emailing_service.create_invitation_emailing(
+            user, inviter, session
+        )
+
+        # Schedule email sending via Celery after commit (if background_tasks provided)
+        if background_tasks is not None:
+            user_emailing_service.schedule_send_emailing(
+                user_emailing,
+                USER_INVITATION_EMAILING_TYPE,
+                background_tasks
+            )
+
+        return True
 
     @classmethod
     async def update_email(
@@ -1056,7 +1196,7 @@ class UserEmailingService(EntityService[UserEmailing]):
         2. Creates an emailing with the token link
         3. Links the emailing to the user
 
-        The email will be sent via Celery task (call send_pending_email.delay in BackgroundTask)
+        The email will be sent via the event system (trigger_event task)
 
         Args:
             user: User to send the email to
@@ -1113,7 +1253,7 @@ class UserEmailingService(EntityService[UserEmailing]):
         4. Creates an emailing with the token link
         5. Links the emailing to the user
 
-        The email will be sent via Celery task (call send_pending_email.delay in BackgroundTask)
+        The email will be sent via the event system (trigger_event task)
 
         Args:
             user: User to send the email to
@@ -1167,19 +1307,101 @@ class UserEmailingService(EntityService[UserEmailing]):
         return user_emailing
 
     @classmethod
-    def schedule_send_emailing(cls, user_emailing: UserEmailing, background_tasks) -> None:
+    async def create_invitation_emailing(
+        cls,
+        user: User,
+        inviter: User,
+        session: AsyncSession
+    ) -> UserEmailing:
         """
-        Schedule the emailing to be sent via Celery.
+        Create the emailing to invite a new user.
+
+        This method:
+        1. Creates a one-time activation token (valid 7 days)
+        2. Builds the inviter name string
+        3. Creates an emailing with the token link and inviter info
+        4. Links the emailing to the user
+
+        The email will be sent via the event system (trigger_event task)
+
+        Args:
+            user: User to send the invitation to
+            inviter: User who invited the new user
+            session: Database session
+
+        Returns:
+            UserEmailing: The created user emailing entity
+        """
+        # Get services
+        token_service = cls.app_manager.get_service("user_one_time_token")
+        emailing_service = cls.app_manager.get_service("emailing")
+
+        # 1. Create one-time activation token (7 days validity)
+        token = await token_service.create(
+            session,
+            user_id=user.id,
+            type_id=ACTIVATION_TOKEN_TYPE
+        )
+
+        # 2. Build inviter name string: "First Last (email)" or just "email"
+        inviter_email = inviter.email_address.id
+        if inviter.private_data and inviter.private_data.first_name:
+            if inviter.private_data.last_name:
+                inviter_name = f"{inviter.private_data.first_name} {inviter.private_data.last_name} ({inviter_email})"
+            else:
+                inviter_name = f"{inviter.private_data.first_name} ({inviter_email})"
+        else:
+            inviter_name = inviter_email
+
+        # 3. Create emailing with token and inviter info
+        emailing = await emailing_service.generate_emailing(
+            type_id=USER_INVITATION_EMAILING_TYPE,
+            email_address=user.email_address.id,
+            language_id=user.language_id,
+            session=session,
+            user=user,
+            token=str(token.id),
+            front_url=cls.app_manager.settings.front_url,
+            inviter_name=inviter_name
+        )
+
+        # 4. Link emailing to user
+        user_emailing = await cls.create(
+            session,
+            user_id=user.id,
+            emailing_id=emailing.id
+        )
+
+        return user_emailing
+
+    @classmethod
+    def schedule_send_emailing(
+        cls,
+        user_emailing: UserEmailing,
+        emailing_type: str,
+        background_tasks
+    ) -> None:
+        """
+        Schedule the emailing to be sent via the event system.
 
         This method should be called after the database session commits
-        to ensure the emailing entity is persisted.
+        to ensure the emailing entity is persisted. Uses trigger_event
+        which handles the email as a critical pre-created email.
 
         Args:
             user_emailing: The user emailing entity to send
+            emailing_type: The emailing type constant (e.g., USER_PASSWORD_RESET_EMAILING_TYPE)
             background_tasks: FastAPI/Starlette background tasks manager
         """
+        user_id = user_emailing.user_id
+        emailing_id = user_emailing.emailing_id
+
         background_tasks.add_task(
-            lambda: send_pending_email.delay(user_emailing.emailing_id)
+            lambda: trigger_event.delay(
+                event_type=emailing_type,
+                user_id=user_id,
+                emailing_id=emailing_id,
+            )
         )
 
 

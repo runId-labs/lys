@@ -25,9 +25,9 @@ logger = logging.getLogger(__name__)
 class ClientQuery(Query):
     @lys_connection(
         ClientNode,
-        access_levels=[ROLE_ACCESS_LEVEL, ORGANIZATION_ROLE_ACCESS_LEVEL],
+        access_levels=[ROLE_ACCESS_LEVEL],
         is_licenced=False,
-        description="Search and list all organizations/clients. Use 'search' to filter by name."
+        description="Search and list all organizations/clients. Use 'search' to filter by name. Supervisor only."
     )
     async def all_clients(
         self,
@@ -37,7 +37,7 @@ class ClientQuery(Query):
         """
         Get all clients with optional search filtering.
 
-        This query is accessible to users with ROLE or ORGANIZATION_ROLE access level.
+        This query is accessible to supervisors with ROLE access level only.
         Search filters by client name (case-insensitive).
 
         Args:
@@ -87,8 +87,7 @@ class ClientMutation(Mutation):
 
         This webservice creates:
         1. A new user account (the owner)
-        2. A new client organization
-        3. A ClientUser relationship linking the owner to the client
+        2. A new client organization with owner_id set
 
         The owner automatically receives full administrative access to the client
         without requiring explicit role assignments (via client.owner_id check in permissions).

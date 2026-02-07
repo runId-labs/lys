@@ -43,6 +43,11 @@ class Role(ParametricEntity):
         comment="Name of the application/microservice that provides this role"
     )
 
+    supervisor_only: Mapped[bool] = mapped_column(
+        default=False,
+        comment="If True, this role can only be assigned to supervisors, not client users"
+    )
+
     @declared_attr
     def role_webservices(cls) -> Mapped[List["RoleWebservice"]]:
         """Relationship to RoleWebservice junction entities."""

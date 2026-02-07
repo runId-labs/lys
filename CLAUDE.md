@@ -84,12 +84,57 @@ pip install -e .
 
 ### Testing
 ```bash
-# Run tests (pytest is in dev dependencies)
-pytest
+# Run all tests
+pytest tests/
 
-# Run tests with coverage
-pytest --cov=src/lys
+# Run unit tests only (faster, no DB)
+pytest tests/unit/
+
+# Run integration tests only
+pytest tests/integration/
+
+# Run tests with coverage (unit tests only for accurate measurement)
+pytest tests/unit/ --cov --cov-report=term-missing
+
+# Generate HTML coverage report
+pytest tests/unit/ --cov --cov-report=html
+# Then open htmlcov/index.html
 ```
+
+### Test Implementation Workflow
+
+When asked to implement tests, run these commands:
+
+```bash
+# 1. Identify modules needing tests (lowest coverage, largest files)
+pytest tests/unit/ --cov --cov-report=term -q --tb=no 2>&1 | grep -E "^src/lys.*\s+0%"
+
+# 2. Show top 20 largest uncovered modules
+pytest tests/unit/ --cov --cov-report=term -q --tb=no 2>&1 | grep -E "^src/lys" | awk '{if($5+0 < 50 && $2+0 > 20) print $1, $2, $5}' | sort -t' ' -k2 -rn | head -20
+
+# 3. After writing tests, verify they pass
+pytest tests/unit/apps/{app_name}/ -v
+
+# 4. Check coverage improvement
+pytest tests/unit/ --cov=src/lys/apps/{app_name} --cov-report=term-missing
+```
+
+**Test file structure:**
+```
+tests/
+├── unit/                    # Unit tests (mocked dependencies)
+│   └── apps/
+│       └── {app_name}/
+│           ├── test_{module}_entities.py
+│           ├── test_{module}_services.py
+│           └── test_{module}_services_logic.py
+├── integration/             # Integration tests (real DB, forked)
+│   └── apps/
+│       └── {app_name}/
+└── conftest.py              # Shared fixtures
+```
+
+**Test isolation:** Integration tests run in forked subprocesses (pytest-forked) to avoid polluting the LysAppRegistry singleton.
 
 ### Database Operations
 The framework uses SQLAlchemy async with automatic database initialization via `DatabaseManager`.

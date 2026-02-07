@@ -5,10 +5,15 @@ import strawberry
 from strawberry import relay
 from strawberry.types import Info
 
+from lys.apps.base.modules.language.nodes import LanguageNode
 from lys.apps.organization.modules.client.nodes import ClientNode
-from lys.apps.organization.modules.user.entities import ClientUser
-from lys.apps.organization.modules.user.services import ClientUserService
-from lys.apps.user_auth.modules.user.nodes import UserNode
+from lys.apps.organization.modules.user.entities import User
+from lys.apps.organization.modules.user.services import UserService
+from lys.apps.user_auth.modules.user.nodes import (
+    UserEmailAddressNode,
+    UserStatusNode,
+    UserPrivateDataNode
+)
 from lys.apps.user_role.modules.role.nodes import RoleNode
 from lys.core.graphql.nodes import EntityNode
 from lys.core.registries import register_node
@@ -16,51 +21,67 @@ from lys.core.utils.manager import classproperty
 
 
 @register_node()
-class ClientUserNode(EntityNode[ClientUserService], relay.Node):
+class UserNode(EntityNode[UserService], relay.Node):
     """
-    GraphQL node for ClientUser entity.
+    Extended user node with client organization and role information.
 
-    Represents the many-to-many relationship between Client and User.
-    Provides lazy-loaded access to both the user and client information.
+    This node extends the base UserNode from user_role by adding:
+    - client_id: The client organization ID (null for supervisors)
+    - organization_roles: Roles assigned via client_user_role table
+
+    It overrides the user_role UserNode when the organization app is enabled.
     """
     id: relay.NodeID[str]
     created_at: datetime
     updated_at: Optional[datetime]
-    _entity: strawberry.Private[ClientUser]
+    _entity: strawberry.Private[User]
 
-    @strawberry.field(description="The user associated with this client relationship")
-    async def user(self, info: Info) -> UserNode:
-        """
-        Get the user associated with this client relationship.
+    @strawberry.field(description="Client organization ID (null for supervisors)")
+    def client_id(self) -> Optional[relay.GlobalID]:
+        """Return the client ID as a GlobalID for Relay compatibility."""
+        if self._entity.client_id is None:
+            return None
+        return relay.GlobalID("ClientNode", self._entity.client_id)
 
-        Args:
-            info: GraphQL context containing the database session
-
-        Returns:
-            UserNode: The user node
-        """
-        return await self._lazy_load_relation('user', UserNode, info)
-
-    @strawberry.field(description="The client organization")
-    async def client(self, info: Info) -> ClientNode:
-        """
-        Get the client (organization) associated with this user relationship.
-
-        Args:
-            info: GraphQL context containing the database session
-
-        Returns:
-            ClientNode: The client node
-        """
+    @strawberry.field(description="Client organization (null for supervisors)")
+    async def client(self, info: Info) -> Optional[ClientNode]:
+        """Get the client organization for this user."""
+        if self._entity.client_id is None:
+            return None
         return await self._lazy_load_relation('client', ClientNode, info)
 
-    @strawberry.field(description="The roles assigned to this user in the client organization")
-    async def roles(self, info: Info) -> List[RoleNode]:
-        """
-        Get the roles assigned to this user in the client organization.
+    @strawberry.field(description="User email address")
+    async def email_address(self, info: Info) -> UserEmailAddressNode:
+        """Get the user's email address."""
+        return await self._lazy_load_relation('email_address', UserEmailAddressNode, info)
 
-        This resolver handles nested relationships by loading client_user_roles first,
-        then loading the role for each client_user_role.
+    @strawberry.field(description="User status")
+    async def status(self, info: Info) -> UserStatusNode:
+        """Get the user's status."""
+        return await self._lazy_load_relation('status', UserStatusNode, info)
+
+    @strawberry.field(description="User preferred language")
+    async def language(self, info: Info) -> LanguageNode:
+        """Get the user's preferred language."""
+        return await self._lazy_load_relation('language', LanguageNode, info)
+
+    @strawberry.field(description="User private data (GDPR protected)")
+    async def private_data(self, info: Info) -> Optional[UserPrivateDataNode]:
+        """Get the user's private data (nullable)."""
+        return await self._lazy_load_relation('private_data', UserPrivateDataNode, info)
+
+    @strawberry.field(description="Roles assigned to this user (supervisor roles)")
+    async def roles(self, info: Info) -> List[RoleNode]:
+        """Get the list of supervisor roles assigned to this user."""
+        return await self._lazy_load_relation_list('roles', RoleNode, info)
+
+    @strawberry.field(description="Roles assigned to this user in their client organization")
+    async def organization_roles(self, info: Info) -> List[RoleNode]:
+        """
+        Get the roles assigned to this user in their client organization.
+
+        This resolver loads client_user_roles and extracts the role from each.
+        Only applicable for client users (users with client_id set).
 
         Args:
             info: GraphQL context containing the database session
@@ -89,11 +110,12 @@ class ClientUserNode(EntityNode[ClientUserService], relay.Node):
     @classproperty
     def order_by_attribute_map(self) -> Dict[str, Any]:
         """
-        Define allowed order by keys for ClientUser queries.
+        Define allowed order by keys for User queries.
 
         Allowed sorting fields:
-        - created_at: ClientUser creation date
-        - email: User email address (requires join with user_email_address)
+        - created_at: User creation date
+        - email_address: User email address (requires join with user_email_address)
+        - first_name: User first name (requires join with user_private_data)
         - last_name: User last name (requires join with user_private_data)
 
         Note: The query using these order_by fields MUST include the necessary joins.
@@ -104,6 +126,7 @@ class ClientUserNode(EntityNode[ClientUserService], relay.Node):
 
         return {
             "created_at": entity_class.created_at,
-            "email": email_entity.id,
+            "email_address": email_entity.id,
+            "first_name": private_data_entity.first_name,
             "last_name": private_data_entity.last_name,
         }

@@ -26,9 +26,18 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest", "pytest-asyncio", "pytest-cov"]
-stripe = ["stripe>=8.0.0"]
+dev = ["pytest", "pytest-asyncio", "pytest-cov", "pytest-forked", "aiosqlite"]
+mollie = ["mollie-api-python>=3.0.0"]
 storage = ["aioboto3>=12.0.0"]
+test = [
+    "pytest",
+    "pytest-asyncio",
+    "pytest-cov",
+    "pytest-forked",
+    "aiosqlite",
+    "mollie-api-python>=3.0.0",
+    "aioboto3>=12.0.0",
+]
 
 [build-system]
 requires = ["setuptools", "wheel"]
@@ -36,3 +45,28 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.pytest.ini_options]
+# Run unit tests before integration tests to avoid registry pollution.
+# Integration tests load specific apps into the LysAppRegistry singleton,
+# which can cause unit tests to fail if they run afterwards.
+testpaths = ["tests/unit", "tests/integration"]
+asyncio_mode = "strict"
+markers = [
+    "forked: mark test to run in a forked subprocess for isolation"
+]
+
+[tool.coverage.run]
+source = ["src/lys"]
+branch = true
+omit = ["*/tests/*", "*/__pycache__/*"]
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "def __repr__",
+    "raise NotImplementedError",
+    "if TYPE_CHECKING:",
+]
+fail_under = 35
+show_missing = true

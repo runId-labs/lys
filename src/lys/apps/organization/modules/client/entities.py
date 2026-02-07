@@ -14,10 +14,11 @@ class Client(AbstractOrganizationEntity):
     owner_id: Mapped[str] = mapped_column(ForeignKey("user.id", ondelete='CASCADE'), nullable=False)
 
     @declared_attr
-    def owner(self):
+    def owner(cls):
         return relationship(
             "user",
-            backref="client",
+            backref="owned_clients",
+            foreign_keys=[cls.owner_id],
             uselist=False,
             lazy='selectin'
         )

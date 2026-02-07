@@ -1,3 +1,4 @@
+import json
 import pathlib
 import smtplib
 import logging
@@ -29,6 +30,7 @@ class EmailingTypeService(EntityService[EmailingType]):
 @register_service()
 class EmailingService(EntityService[Emailing]):
     _template_env = None
+    _translations_cache: dict[str, dict] = {}
 
     @classmethod
     def get_template_env(cls) -> Environment:
@@ -48,6 +50,52 @@ class EmailingService(EntityService[Emailing]):
                 loader=FileSystemLoader(str(app_template_path))
             )
         return cls._template_env
+
+    @classmethod
+    def get_translations(cls, language_id: str) -> dict:
+        """
+        Load translations for a specific language from translations.json.
+
+        Args:
+            language_id: The language ID (e.g., "fr", "en")
+
+        Returns:
+            Dictionary of translations, or empty dict if file not found
+        """
+        if language_id in cls._translations_cache:
+            return cls._translations_cache[language_id]
+
+        email_settings = cls.app_manager.settings.email
+        app_template_path = pathlib.Path().resolve() / email_settings.template_path.lstrip('/')
+        translations_path = app_template_path / language_id / "translations.json"
+
+        translations = {}
+        if translations_path.exists():
+            try:
+                with open(translations_path, "r", encoding="utf-8") as f:
+                    translations = json.load(f)
+            except (json.JSONDecodeError, IOError) as e:
+                logger.warning(f"Failed to load translations from {translations_path}: {e}")
+
+        cls._translations_cache[language_id] = translations
+        return translations
+
+    @classmethod
+    def get_subject(cls, template_name: str, language_id: str, fallback_subject: str) -> str:
+        """
+        Get the translated subject for an email template.
+
+        Args:
+            template_name: The template name (e.g., "user_password_reset")
+            language_id: The language ID (e.g., "fr", "en")
+            fallback_subject: Fallback subject if translation not found
+
+        Returns:
+            The translated subject or fallback
+        """
+        translations = cls.get_translations(language_id)
+        template_translations = translations.get(template_name, {})
+        return template_translations.get("subject", fallback_subject)
 
     @staticmethod
     def compute_context(context_description: dict, **kwargs):
@@ -142,7 +190,14 @@ class EmailingService(EntityService[Emailing]):
                 message = MIMEMultipart("alternative")
                 message["From"] = email_settings.sender
                 message["To"] = emailing.email_address
-                message["Subject"] = emailing.type.subject
+
+                # Get translated subject (fallback to type.subject if not found)
+                subject = cls.get_subject(
+                    emailing.type.template,
+                    emailing.language_id,
+                    emailing.type.subject
+                )
+                message["Subject"] = subject
 
                 # Render HTML template using the emailing's language
                 template = template_env.get_template(f"{emailing.language_id}/{emailing.type.template}.html")

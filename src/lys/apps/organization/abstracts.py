@@ -54,8 +54,8 @@ class AbstractUserOrganizationRoleEntity(Entity):
     - "establishment": Role applies to a specific establishment (requires establishment_id column)
 
     Subclasses can extend the base table by adding optional organization columns:
-    - Base: (client_user_id, role_id) with level="client"
-    - Extended: (client_user_id, role_id, company_id[opt], establishment_id[opt])
+    - Base: (user_id, role_id) with level="client"
+    - Extended: (user_id, role_id, company_id[opt], establishment_id[opt])
       where level is determined by which columns are populated
 
     Permission inheritance:
@@ -65,7 +65,7 @@ class AbstractUserOrganizationRoleEntity(Entity):
     """
     __abstract__ = True
 
-    client_user_id: Mapped[str] = mapped_column(ForeignKey("client_user.id", ondelete='CASCADE'), nullable=False)
+    user_id: Mapped[str] = mapped_column(ForeignKey("user.id", ondelete='CASCADE'), nullable=False)
     role_id: Mapped[str] = mapped_column(ForeignKey("role.id", ondelete='CASCADE'), nullable=False)
 
     @property
@@ -86,9 +86,8 @@ class AbstractUserOrganizationRoleEntity(Entity):
 
     @property
     @abc.abstractmethod
-    def client_user(self) -> Any:
+    def user(self) -> Any:
         raise NotImplementedError
-
 
     def accessing_users(self) -> list[str]:
         return []

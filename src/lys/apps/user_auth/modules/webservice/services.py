@@ -80,12 +80,19 @@ class AuthWebserviceService(WebserviceService):
         Returns:
             Select: SQLAlchemy select statement for accessible webservices, ordered by id
         """
-        stmt = select(cls.entity_class).distinct()
+        # Build subquery for distinct IDs only (avoids DISTINCT on JSON columns
+        # which PostgreSQL can't compare for equality)
+        id_subquery = select(cls.entity_class.id)
 
-        stmt, where = await cls._accessible_webservices_or_where(stmt, user)
+        id_subquery, where = await cls._accessible_webservices_or_where(id_subquery, user)
 
         if where is not None:
-            stmt = stmt.where(where)
+            id_subquery = id_subquery.where(where)
+
+        id_subquery = id_subquery.distinct()
+
+        # Select full entities where ID is in the filtered distinct IDs
+        stmt = select(cls.entity_class).where(cls.entity_class.id.in_(id_subquery))
 
         return stmt.order_by(cls.entity_class.id.asc())
 

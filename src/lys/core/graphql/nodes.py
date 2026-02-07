@@ -424,6 +424,7 @@ def parametric_node(service_class: Type[ServiceInterface]):
     return wrapper
 
 
+@strawberry.type
 class SuccessNode(NodeInterface):
     succeed: bool
     message: Optional[str] = None

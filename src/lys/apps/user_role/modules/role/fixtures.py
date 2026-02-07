@@ -1,13 +1,13 @@
 from typing import List
 
-from lys.apps.user_role.consts import USER_ADMIN_ROLE
+from lys.apps.user_role.consts import USER_SUPERVISOR_ROLE
 from lys.apps.user_role.models import RoleFixturesModel
 from lys.apps.user_role.modules.role.services import RoleService
 from lys.core.fixtures import EntityFixtures
 from lys.core.registries import register_fixture
 
 
-USER_ADMIN_ROLE_WEBSERVICES = [
+USER_SUPERVISOR_ROLE_WEBSERVICES = [
     "create_user",
     "user",
     "update_user_email",
@@ -28,11 +28,12 @@ class RoleFixtures(EntityFixtures[RoleService]):
 
     data_list = [
         {
-            "id": USER_ADMIN_ROLE,
+            "id": USER_SUPERVISOR_ROLE,
             "attributes": {
                 "enabled": True,
-                "description": "Administrator role with full user management capabilities including creating, updating, and searching users, managing roles, and viewing audit logs.",
-                "role_webservices": USER_ADMIN_ROLE_WEBSERVICES
+                "description": "Supervisor role for managing other supervisors (internal team). Can create, update, and search supervisors, manage their roles, and view audit logs.",
+                "role_webservices": USER_SUPERVISOR_ROLE_WEBSERVICES,
+                "supervisor_only": True
             }
         }
     ]
