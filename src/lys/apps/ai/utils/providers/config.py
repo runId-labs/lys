@@ -29,9 +29,10 @@ class AIEndpointConfig:
 class ExecutorConfig:
     """Configuration for GraphQL tool executor."""
 
-    gateway_url: Optional[str] = None  # Required - Apollo Gateway URL
+    gateway_url: Optional[str] = None  # Required - GraphQL endpoint URL
     service_name: Optional[str] = None  # Service name for JWT auth
     timeout: int = 30
+    verify_ssl: bool = True  # Set False for self-signed certificates
 
 
 @dataclass
@@ -133,6 +134,7 @@ def parse_plugin_config(plugin_config: Dict[str, Any]) -> AIConfig:
         gateway_url=executor_cfg.get("gateway_url"),
         service_name=executor_cfg.get("service_name"),
         timeout=executor_cfg.get("timeout", 30),
+        verify_ssl=executor_cfg.get("verify_ssl", True),
     )
 
     for purpose, cfg in plugin_config.items():

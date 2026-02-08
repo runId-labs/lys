@@ -33,8 +33,9 @@ class TestClientEntity:
     def test_client_has_owner_relationship(self):
         """Test that Client has owner relationship."""
         from lys.apps.organization.modules.client.entities import Client
+        from tests.mocks.utils import has_relationship
 
-        assert hasattr(Client, "owner")
+        assert has_relationship(Client, "owner")
 
     def test_client_has_parent_organization_property(self):
         """Test that Client has parent_organization property."""

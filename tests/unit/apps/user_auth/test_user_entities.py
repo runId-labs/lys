@@ -144,7 +144,8 @@ class TestUserEntity:
     def test_entity_has_email_address_relationship(self):
         """Test User has email_address relationship."""
         from lys.apps.user_auth.modules.user.entities import User
-        assert hasattr(User, "email_address")
+        from tests.mocks.utils import has_relationship
+        assert has_relationship(User, "email_address")
 
 
 class TestUserPrivateDataEntity:

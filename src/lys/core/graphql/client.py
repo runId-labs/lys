@@ -50,6 +50,7 @@ async def fetch_graphql(
     secret_key: str = None,
     service_name: str = None,
     timeout: int = 30,
+    verify_ssl: bool = True,
 ) -> Dict[str, Any]:
     """
     Execute a GraphQL query/mutation with automatic service authentication.
@@ -63,6 +64,7 @@ async def fetch_graphql(
         secret_key: Secret key for JWT generation
         service_name: Name of the calling service
         timeout: Request timeout in seconds
+        verify_ssl: Whether to verify SSL certificates (set False for self-signed certs)
 
     Returns:
         Dict with 'data' and optionally 'errors' keys
@@ -87,7 +89,7 @@ async def fetch_graphql(
     if variables:
         payload["variables"] = variables
 
-    async with httpx.AsyncClient(timeout=timeout) as client:
+    async with httpx.AsyncClient(timeout=timeout, verify=verify_ssl) as client:
         response = await client.post(url, json=payload, headers=headers)
         response.raise_for_status()
         return response.json()
@@ -109,6 +111,7 @@ class GraphQLClient:
         service_name: Optional[str] = None,
         bearer_token: Optional[str] = None,
         timeout: int = 30,
+        verify_ssl: bool = True,
     ):
         """
         Initialize GraphQL client.
@@ -122,12 +125,14 @@ class GraphQLClient:
             service_name: Name of the calling service (Service auth)
             bearer_token: User JWT token (Bearer auth)
             timeout: Request timeout in seconds
+            verify_ssl: Whether to verify SSL certificates (set False for self-signed certs)
 
         Raises:
             ValueError: If neither Service auth params nor bearer_token are provided
         """
         self.url = url
         self.timeout = timeout
+        self.verify_ssl = verify_ssl
         self._bearer_token = bearer_token
 
         # Validate auth configuration
@@ -184,7 +189,7 @@ class GraphQLClient:
 
         headers = self._get_headers()
 
-        async with httpx.AsyncClient(timeout=self.timeout) as client:
+        async with httpx.AsyncClient(timeout=self.timeout, verify=self.verify_ssl) as client:
             response = await client.post(
                 self.url,
                 json=payload,
@@ -265,7 +270,7 @@ class GraphQLClient:
         if variables:
             payload["variables"] = variables
 
-        with httpx.Client(timeout=self.timeout) as client:
+        with httpx.Client(timeout=self.timeout, verify=self.verify_ssl) as client:
             response = client.post(
                 self.url,
                 json=payload,

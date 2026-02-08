@@ -7,6 +7,37 @@ and reduce test boilerplate.
 
 from typing import Type, List
 
+from sqlalchemy.orm import RelationshipProperty
+from sqlalchemy.orm.decl_api import MappedColumn
+
+
+def has_relationship(entity_class: Type, attr_name: str) -> bool:
+    """
+    Check if a SQLAlchemy entity class has a relationship attribute.
+
+    Inspects the class hierarchy __dict__ directly to avoid triggering
+    'Unmanaged access of declarative attribute' warnings
+    that occur with hasattr() on non-mapped classes.
+
+    Args:
+        entity_class: The SQLAlchemy entity class to inspect.
+        attr_name: The relationship attribute name to check.
+
+    Returns:
+        True if a relationship with this name exists on the class.
+    """
+    for cls in entity_class.__mro__:
+        if attr_name in cls.__dict__:
+            descriptor = cls.__dict__[attr_name]
+            if isinstance(descriptor, RelationshipProperty):
+                return True
+            # Also check for MappedColumn-wrapped or descriptor-based relationships
+            if hasattr(descriptor, "property") and isinstance(descriptor.property, RelationshipProperty):
+                return True
+            # Attribute exists in the class dict (relationship descriptors)
+            return True
+    return False
+
 # Global tracking of configured classes for automatic cleanup
 _test_configured_classes = []
 

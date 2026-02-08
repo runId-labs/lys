@@ -38,6 +38,7 @@ class GraphQLToolExecutor(ToolExecutor):
         service_name: str = None,
         bearer_token: str = None,
         timeout: int = 30,
+        verify_ssl: bool = True,
     ):
         """
         Initialize the GraphQL tool executor.
@@ -46,11 +47,12 @@ class GraphQLToolExecutor(ToolExecutor):
         or bearer_token for Bearer auth.
 
         Args:
-            gateway_url: URL of the Apollo Gateway
+            gateway_url: URL of the GraphQL endpoint
             secret_key: Secret key for service JWT generation (Service auth)
             service_name: Name of the calling service (Service auth)
             bearer_token: User JWT token (Bearer auth)
             timeout: HTTP request timeout in seconds
+            verify_ssl: Whether to verify SSL certificates (set False for self-signed certs)
         """
         self.gateway_url = gateway_url
         self.timeout = timeout
@@ -63,6 +65,7 @@ class GraphQLToolExecutor(ToolExecutor):
             service_name=service_name,
             bearer_token=bearer_token,
             timeout=timeout,
+            verify_ssl=verify_ssl,
         )
 
     async def initialize(self, tools: Optional[List[Dict[str, Any]]] = None, **kwargs):

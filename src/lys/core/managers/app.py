@@ -393,11 +393,12 @@ class AppManager:
                 }
             """
 
-            # Call Gateway using GraphQLClient
+            # Call GraphQL endpoint
             client = GraphQLClient(
                 url=f"{self.settings.gateway_server_url}/{self.settings.graphql_schema_name}",
                 secret_key=self.settings.secret_key,
                 service_name=self.settings.service_name,
+                verify_ssl=not self.settings.debug,
             )
             result = await client.execute(mutation, {"webservices": webservices_input})
 

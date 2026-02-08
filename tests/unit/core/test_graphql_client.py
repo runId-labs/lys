@@ -230,3 +230,132 @@ class TestGraphQLClient:
 
             with pytest.raises(httpx.HTTPStatusError):
                 await client.execute("query { users { id } }")
+
+
+class TestVerifySSL:
+    """Tests for verify_ssl parameter across GraphQL client components."""
+
+    def test_graphql_client_default_verify_ssl_true(self):
+        """Test that GraphQLClient defaults verify_ssl to True."""
+        with patch("lys.core.graphql.client.AuthUtils"):
+            client = GraphQLClient(
+                url="http://gateway/graphql",
+                secret_key="secret",
+                service_name="test-service",
+            )
+        assert client.verify_ssl is True
+
+    def test_graphql_client_verify_ssl_false(self):
+        """Test that GraphQLClient stores verify_ssl=False."""
+        with patch("lys.core.graphql.client.AuthUtils"):
+            client = GraphQLClient(
+                url="http://gateway/graphql",
+                secret_key="secret",
+                service_name="test-service",
+                verify_ssl=False,
+            )
+        assert client.verify_ssl is False
+
+    @pytest.mark.asyncio
+    async def test_execute_passes_verify_ssl_to_httpx(self):
+        """Test that execute passes verify_ssl to httpx.AsyncClient."""
+        with patch("lys.core.graphql.client.AuthUtils") as MockAuth:
+            mock_auth = MagicMock()
+            mock_auth.generate_token.return_value = "token"
+            MockAuth.return_value = mock_auth
+
+            client = GraphQLClient(
+                url="http://gateway/graphql",
+                secret_key="secret",
+                service_name="test-service",
+                verify_ssl=False,
+            )
+
+        mock_response = MagicMock(spec=httpx.Response)
+        mock_response.json.return_value = {"data": {}}
+
+        with patch("lys.core.graphql.client.httpx.AsyncClient") as MockClient:
+            mock_http_client = AsyncMock()
+            mock_http_client.post.return_value = mock_response
+            MockClient.return_value.__aenter__.return_value = mock_http_client
+
+            await client.execute("query { test }")
+
+            MockClient.assert_called_once_with(timeout=30, verify=False)
+
+    def test_execute_sync_passes_verify_ssl_to_httpx(self):
+        """Test that execute_sync passes verify_ssl to httpx.Client."""
+        with patch("lys.core.graphql.client.AuthUtils") as MockAuth:
+            mock_auth = MagicMock()
+            mock_auth.generate_token.return_value = "token"
+            MockAuth.return_value = mock_auth
+
+            client = GraphQLClient(
+                url="http://gateway/graphql",
+                secret_key="secret",
+                service_name="test-service",
+                verify_ssl=False,
+            )
+
+        mock_response = MagicMock(spec=httpx.Response)
+        mock_response.json.return_value = {"data": {}}
+
+        with patch("lys.core.graphql.client.httpx.Client") as MockClient:
+            mock_http_client = MagicMock()
+            mock_http_client.post.return_value = mock_response
+            MockClient.return_value.__enter__.return_value = mock_http_client
+
+            client.execute_sync("query { test }")
+
+            MockClient.assert_called_once_with(timeout=30, verify=False)
+
+    @pytest.mark.asyncio
+    async def test_fetch_graphql_passes_verify_ssl(self):
+        """Test that fetch_graphql passes verify_ssl to httpx.AsyncClient."""
+        mock_response = MagicMock(spec=httpx.Response)
+        mock_response.json.return_value = {"data": {}}
+
+        with patch("lys.core.graphql.client.httpx.AsyncClient") as MockClient:
+            mock_client = AsyncMock()
+            mock_client.post.return_value = mock_response
+            MockClient.return_value.__aenter__.return_value = mock_client
+
+            with patch("lys.core.graphql.client.AuthUtils") as MockAuth:
+                mock_auth = MagicMock()
+                mock_auth.generate_token.return_value = "token"
+                MockAuth.return_value = mock_auth
+
+                await fetch_graphql(
+                    url="http://gateway/graphql",
+                    query="query { test }",
+                    secret_key="secret",
+                    service_name="test-service",
+                    verify_ssl=False,
+                )
+
+            MockClient.assert_called_once_with(timeout=30, verify=False)
+
+    @pytest.mark.asyncio
+    async def test_fetch_graphql_default_verify_ssl_true(self):
+        """Test that fetch_graphql defaults verify_ssl to True."""
+        mock_response = MagicMock(spec=httpx.Response)
+        mock_response.json.return_value = {"data": {}}
+
+        with patch("lys.core.graphql.client.httpx.AsyncClient") as MockClient:
+            mock_client = AsyncMock()
+            mock_client.post.return_value = mock_response
+            MockClient.return_value.__aenter__.return_value = mock_client
+
+            with patch("lys.core.graphql.client.AuthUtils") as MockAuth:
+                mock_auth = MagicMock()
+                mock_auth.generate_token.return_value = "token"
+                MockAuth.return_value = mock_auth
+
+                await fetch_graphql(
+                    url="http://gateway/graphql",
+                    query="query { test }",
+                    secret_key="secret",
+                    service_name="test-service",
+                )
+
+            MockClient.assert_called_once_with(timeout=30, verify=True)

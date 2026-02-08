@@ -49,7 +49,8 @@ class TestWebserviceEntity:
     def test_entity_has_access_levels_relationship(self):
         """Test Webservice has access_levels relationship."""
         from lys.apps.base.modules.webservice.entities import Webservice
-        assert hasattr(Webservice, "access_levels")
+        from tests.mocks.utils import has_relationship
+        assert has_relationship(Webservice, "access_levels")
 
 
 class TestWebserviceAccessLevelTable:

@@ -603,11 +603,12 @@ class AIToolService(Service):
 
     @classmethod
     async def _load_tools_remote(cls, executor_config: Dict[str, Any]):
-        """Fetch tools from Apollo Gateway via GraphQL."""
+        """Fetch tools from GraphQL endpoint."""
         gateway_url = executor_config.get("gateway_url")
         service_name = executor_config.get("service_name")
         secret_key = cls.app_manager.settings.secret_key
         timeout = executor_config.get("timeout", 30)
+        verify_ssl = executor_config.get("verify_ssl", True)
 
         if not gateway_url:
             logger.error("gateway_url not configured for graphql mode")
@@ -618,6 +619,7 @@ class AIToolService(Service):
             secret_key=secret_key,
             service_name=service_name or "ai-service",
             timeout=timeout,
+            verify_ssl=verify_ssl,
         )
 
         query = """

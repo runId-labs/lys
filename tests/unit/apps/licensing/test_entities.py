@@ -290,11 +290,13 @@ class TestLicensePlanVersionEntityRelationships:
 
     def test_has_plan_relationship(self):
         from lys.apps.licensing.modules.plan.entities import LicensePlanVersion
-        assert hasattr(LicensePlanVersion, "plan")
+        from tests.mocks.utils import has_relationship
+        assert has_relationship(LicensePlanVersion, "plan")
 
     def test_has_rules_relationship(self):
         from lys.apps.licensing.modules.plan.entities import LicensePlanVersion
-        assert hasattr(LicensePlanVersion, "rules")
+        from tests.mocks.utils import has_relationship
+        assert has_relationship(LicensePlanVersion, "rules")
 
     def test_has_unique_constraint(self):
         from lys.apps.licensing.modules.plan.entities import LicensePlanVersion
@@ -322,11 +324,13 @@ class TestLicensePlanVersionRuleRelationships:
 
     def test_has_plan_version_relationship(self):
         from lys.apps.licensing.modules.plan.entities import LicensePlanVersionRule
-        assert hasattr(LicensePlanVersionRule, "plan_version")
+        from tests.mocks.utils import has_relationship
+        assert has_relationship(LicensePlanVersionRule, "plan_version")
 
     def test_has_rule_relationship(self):
         from lys.apps.licensing.modules.plan.entities import LicensePlanVersionRule
-        assert hasattr(LicensePlanVersionRule, "rule")
+        from tests.mocks.utils import has_relationship
+        assert has_relationship(LicensePlanVersionRule, "rule")
 
     def test_has_unique_constraint(self):
         from lys.apps.licensing.modules.plan.entities import LicensePlanVersionRule
@@ -351,19 +355,23 @@ class TestSubscriptionEntityRelationships:
 
     def test_has_client_relationship(self):
         from lys.apps.licensing.modules.subscription.entities import Subscription
-        assert hasattr(Subscription, "client")
+        from tests.mocks.utils import has_relationship
+        assert has_relationship(Subscription, "client")
 
     def test_has_plan_version_relationship(self):
         from lys.apps.licensing.modules.subscription.entities import Subscription
-        assert hasattr(Subscription, "plan_version")
+        from tests.mocks.utils import has_relationship
+        assert has_relationship(Subscription, "plan_version")
 
     def test_has_pending_plan_version_relationship(self):
         from lys.apps.licensing.modules.subscription.entities import Subscription
-        assert hasattr(Subscription, "pending_plan_version")
+        from tests.mocks.utils import has_relationship
+        assert has_relationship(Subscription, "pending_plan_version")
 
     def test_has_users_relationship(self):
         from lys.apps.licensing.modules.subscription.entities import Subscription
-        assert hasattr(Subscription, "users")
+        from tests.mocks.utils import has_relationship
+        assert has_relationship(Subscription, "users")
 
     def test_has_plan_property(self):
         from lys.apps.licensing.modules.subscription.entities import Subscription
@@ -383,15 +391,18 @@ class TestLicensePlanRelationships:
 
     def test_has_application_relationship(self):
         from lys.apps.licensing.modules.plan.entities import LicensePlan
-        assert hasattr(LicensePlan, "application")
+        from tests.mocks.utils import has_relationship
+        assert has_relationship(LicensePlan, "application")
 
     def test_has_client_relationship(self):
         from lys.apps.licensing.modules.plan.entities import LicensePlan
-        assert hasattr(LicensePlan, "client")
+        from tests.mocks.utils import has_relationship
+        assert has_relationship(LicensePlan, "client")
 
     def test_has_versions_relationship(self):
         from lys.apps.licensing.modules.plan.entities import LicensePlan
-        assert hasattr(LicensePlan, "versions")
+        from tests.mocks.utils import has_relationship
+        assert has_relationship(LicensePlan, "versions")
 
 
 class TestSubscriptionUserTable:

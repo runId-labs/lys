@@ -27,8 +27,9 @@ class TestUserEntity:
     def test_user_has_client_relationship(self):
         """Test that User has client relationship."""
         from lys.apps.organization.modules.user.entities import User
+        from tests.mocks.utils import has_relationship
 
-        assert hasattr(User, "client")
+        assert has_relationship(User, "client")
 
     def test_is_supervisor_returns_true_when_no_client(self):
         """Test that is_supervisor returns True when client_id is None."""
@@ -122,14 +123,16 @@ class TestClientUserRoleEntity:
     def test_client_user_role_has_user_relationship(self):
         """Test that ClientUserRole has user relationship."""
         from lys.apps.organization.modules.user.entities import ClientUserRole
+        from tests.mocks.utils import has_relationship
 
-        assert hasattr(ClientUserRole, "user")
+        assert has_relationship(ClientUserRole, "user")
 
     def test_client_user_role_has_role_relationship(self):
         """Test that ClientUserRole has role relationship."""
         from lys.apps.organization.modules.user.entities import ClientUserRole
+        from tests.mocks.utils import has_relationship
 
-        assert hasattr(ClientUserRole, "role")
+        assert has_relationship(ClientUserRole, "role")
 
     def test_level_property_returns_client(self):
         """Test that level property returns 'client' for base implementation."""

@@ -408,6 +408,7 @@ class AIConversationService(EntityService[AIConversation]):
                 gateway_url=ai_config.executor.gateway_url,
                 bearer_token=bearer_token,
                 timeout=ai_config.executor.timeout,
+                verify_ssl=ai_config.executor.verify_ssl,
             )
         else:
             executor = GraphQLToolExecutor(
@@ -415,6 +416,7 @@ class AIConversationService(EntityService[AIConversation]):
                 secret_key=app_manager.settings.secret_key,
                 service_name=ai_config.executor.service_name or app_manager.settings.service_name,
                 timeout=ai_config.executor.timeout,
+                verify_ssl=ai_config.executor.verify_ssl,
             )
 
         await executor.initialize(

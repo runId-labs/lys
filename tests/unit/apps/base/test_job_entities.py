@@ -54,7 +54,8 @@ class TestJobEntity:
     def test_entity_has_status_relationship(self):
         """Test Job has status relationship."""
         from lys.apps.base.modules.job.entities import Job
-        assert hasattr(Job, "status")
+        from tests.mocks.utils import has_relationship
+        assert has_relationship(Job, "status")
 
 
 class TestJobExecutionEntity:

@@ -84,22 +84,25 @@ pip install -e .
 
 ### Testing
 ```bash
-# Run all tests
-pytest tests/
-
 # Run unit tests only (faster, no DB)
 pytest tests/unit/
 
-# Run integration tests only
-pytest tests/integration/
+# Run integration tests only (forked for isolation)
+pytest tests/integration/ --forked
 
-# Run tests with coverage (unit tests only for accurate measurement)
-pytest tests/unit/ --cov --cov-report=term-missing
+# Combined coverage (unit + integration) - ALWAYS use this method
+# Step 1: Run unit tests and save coverage
+pytest tests/unit/ --cov=src/lys --cov-report=
+# Step 2: Run integration tests and append coverage
+pytest tests/integration/ --forked --cov=src/lys --cov-append --cov-report=term-missing
 
-# Generate HTML coverage report
-pytest tests/unit/ --cov --cov-report=html
+# Generate HTML coverage report (combined)
+pytest tests/unit/ --cov=src/lys --cov-report=
+pytest tests/integration/ --forked --cov=src/lys --cov-append --cov-report=html
 # Then open htmlcov/index.html
 ```
+
+**Combined coverage method**: Unit and integration tests cannot run in the same pytest process due to SQLAlchemy registry singleton isolation. Use `--cov-append` to accumulate coverage across both runs. This is the standard method for reporting coverage and updating the README badge.
 
 ### Test Implementation Workflow
 

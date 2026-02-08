@@ -9,6 +9,7 @@ import pytest
 from lys.apps.ai.utils.providers.config import (
     AIConfig,
     AIEndpointConfig,
+    ExecutorConfig,
     parse_plugin_config,
 )
 from lys.apps.ai.utils.providers.exceptions import AIPurposeNotFoundError
@@ -319,3 +320,83 @@ class TestParsePluginConfig:
         config = parse_plugin_config(plugin_config)
 
         assert config.endpoints["chatbot"].timeout == 30
+
+    def test_parse_executor_config_with_verify_ssl(self):
+        """Test parsing executor config with verify_ssl."""
+        plugin_config = {
+            "_keys": {"mistral": "key"},
+            "executor": {
+                "gateway_url": "https://gateway:8000/graphql",
+                "service_name": "test-api",
+                "timeout": 60,
+                "verify_ssl": False,
+            },
+            "chatbot": {
+                "provider": "mistral",
+                "model": "mistral-large-latest",
+            },
+        }
+
+        config = parse_plugin_config(plugin_config)
+
+        assert config.executor.gateway_url == "https://gateway:8000/graphql"
+        assert config.executor.service_name == "test-api"
+        assert config.executor.timeout == 60
+        assert config.executor.verify_ssl is False
+
+    def test_parse_executor_config_default_verify_ssl(self):
+        """Test that executor verify_ssl defaults to True."""
+        plugin_config = {
+            "_keys": {},
+            "executor": {
+                "gateway_url": "https://gateway:8000/graphql",
+            },
+        }
+
+        config = parse_plugin_config(plugin_config)
+
+        assert config.executor.verify_ssl is True
+
+    def test_parse_executor_config_empty(self):
+        """Test parsing config with no executor section."""
+        plugin_config = {
+            "_keys": {"mistral": "key"},
+            "chatbot": {
+                "provider": "mistral",
+                "model": "mistral-large-latest",
+            },
+        }
+
+        config = parse_plugin_config(plugin_config)
+
+        assert config.executor.gateway_url is None
+        assert config.executor.service_name is None
+        assert config.executor.timeout == 30
+        assert config.executor.verify_ssl is True
+
+
+class TestExecutorConfig:
+    """Tests for ExecutorConfig dataclass."""
+
+    def test_default_values(self):
+        """Test ExecutorConfig default values."""
+        config = ExecutorConfig()
+
+        assert config.gateway_url is None
+        assert config.service_name is None
+        assert config.timeout == 30
+        assert config.verify_ssl is True
+
+    def test_custom_values(self):
+        """Test ExecutorConfig with custom values."""
+        config = ExecutorConfig(
+            gateway_url="https://gateway:8000/graphql",
+            service_name="my-service",
+            timeout=60,
+            verify_ssl=False,
+        )
+
+        assert config.gateway_url == "https://gateway:8000/graphql"
+        assert config.service_name == "my-service"
+        assert config.timeout == 60
+        assert config.verify_ssl is False

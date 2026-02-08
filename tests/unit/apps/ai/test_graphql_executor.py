@@ -316,10 +316,50 @@ class TestGraphQLToolExecutorGlobalID:
         assert "UserNode:role-uuid-456" == role_id_decoded
 
 
+class TestGraphQLToolExecutorVerifySSL:
+    """Tests for verify_ssl parameter in GraphQLToolExecutor."""
+
+    def test_default_verify_ssl_true(self):
+        """Test that verify_ssl defaults to True."""
+        with patch("lys.apps.ai.modules.core.executors.graphql.GraphQLClient") as MockClient:
+            GraphQLToolExecutor(
+                gateway_url="http://test:4000/graphql",
+                secret_key="secret",
+                service_name="test",
+            )
+            MockClient.assert_called_once_with(
+                url="http://test:4000/graphql",
+                secret_key="secret",
+                service_name="test",
+                bearer_token=None,
+                timeout=30,
+                verify_ssl=True,
+            )
+
+    def test_verify_ssl_false_passed_to_client(self):
+        """Test that verify_ssl=False is forwarded to GraphQLClient."""
+        with patch("lys.apps.ai.modules.core.executors.graphql.GraphQLClient") as MockClient:
+            GraphQLToolExecutor(
+                gateway_url="http://test:4000/graphql",
+                secret_key="secret",
+                service_name="test",
+                verify_ssl=False,
+            )
+            MockClient.assert_called_once_with(
+                url="http://test:4000/graphql",
+                secret_key="secret",
+                service_name="test",
+                bearer_token=None,
+                timeout=30,
+                verify_ssl=False,
+            )
+
+
 class TestGraphQLToolExecutorInitialize:
     """Tests for GraphQLToolExecutor initialization."""
 
-    def test_initialize_with_tools_list(self):
+    @pytest.mark.asyncio
+    async def test_initialize_with_tools_list(self):
         """Test initialization with a list of tools."""
         with patch("lys.apps.ai.modules.core.executors.graphql.GraphQLClient"):
             executor = GraphQLToolExecutor(
@@ -345,8 +385,7 @@ class TestGraphQLToolExecutorInitialize:
             },
         ]
 
-        import asyncio
-        asyncio.get_event_loop().run_until_complete(executor.initialize(tools))
+        await executor.initialize(tools)
 
         assert executor._initialized
         assert "get_user" in executor._tools

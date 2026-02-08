@@ -114,17 +114,20 @@ class TestEmailingEntity:
     def test_entity_has_status_relationship(self):
         """Test Emailing has status relationship."""
         from lys.apps.base.modules.emailing.entities import Emailing
-        assert hasattr(Emailing, "status")
+        from tests.mocks.utils import has_relationship
+        assert has_relationship(Emailing, "status")
 
     def test_entity_has_type_relationship(self):
         """Test Emailing has type relationship."""
         from lys.apps.base.modules.emailing.entities import Emailing
-        assert hasattr(Emailing, "type")
+        from tests.mocks.utils import has_relationship
+        assert has_relationship(Emailing, "type")
 
     def test_entity_has_language_relationship(self):
         """Test Emailing has language relationship."""
         from lys.apps.base.modules.emailing.entities import Emailing
-        assert hasattr(Emailing, "language")
+        from tests.mocks.utils import has_relationship
+        assert has_relationship(Emailing, "language")
 
     def test_entity_has_accessing_users_method(self):
         """Test Emailing has accessing_users method."""
