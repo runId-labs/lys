@@ -59,6 +59,7 @@ markers = [
 [tool.coverage.run]
 source = ["src/lys"]
 branch = true
+parallel = true
 omit = ["*/tests/*", "*/__pycache__/*"]
 
 [tool.coverage.report]
