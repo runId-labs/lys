@@ -8,6 +8,10 @@ Tests cover:
 - Status management
 - GDPR anonymization
 - Audit logging
+- User activation (activate_user)
+- Email updates (update_email)
+- Audit log listing (list_audit_logs)
+- Refresh token management (generate, get, revoke)
 
 Test approach: Real SQLite in-memory database with actual UserService operations.
 """
@@ -15,11 +19,29 @@ Test approach: Real SQLite in-memory database with actual UserService operations
 import pytest
 import pytest_asyncio
 from datetime import datetime, timezone
+from unittest.mock import patch, MagicMock
+from uuid import uuid4
+
+from sqlalchemy import select, or_
 
 from lys.core.configs import LysAppSettings
 from lys.core.consts.component_types import AppComponentTypeEnum
 from lys.core.managers.app import AppManager
 from lys.core.errors import LysError
+
+# Default auth config for tests that need token generation
+_TEST_AUTH_CONFIG = {
+    "connection_expire_minutes": 60,
+    "once_refresh_token_expire_minutes": 30,
+    "access_token_expire_minutes": 15,
+    "encryption_algorithm": "HS256",
+    "cookie_secure": False,
+    "cookie_http_only": True,
+    "cookie_same_site": "lax",
+    "cookie_domain": None,
+    "login_rate_limit_enabled": True,
+    "login_lockout_durations": {3: 60, 5: 900},
+}
 
 
 # Note: user_auth_app_manager fixture is defined in conftest.py
@@ -1184,3 +1206,473 @@ class TestUserServiceAuditLogging:
             assert "CANNOT_DELETE_SYSTEM_LOG" in str(exc_info.value)
 
 
+# ==============================================================================
+# Phase 1A: activate_user tests
+# ==============================================================================
+
+
+def _unique_email():
+    """Generate a unique email for each test."""
+    return f"test-{uuid4().hex[:8]}@example.com"
+
+
+class TestActivateUser:
+    """Test UserService.activate_user operations."""
+
+    @pytest.mark.asyncio
+    async def test_activate_user_success(self, user_auth_app_manager):
+        """Test activating a user with a valid activation token."""
+        user_service = user_auth_app_manager.get_service("user")
+        token_service = user_auth_app_manager.get_service("user_one_time_token")
+        token_type_service = user_auth_app_manager.get_service("one_time_token_type")
+        from lys.apps.base.modules.one_time_token.consts import (
+            ACTIVATION_TOKEN_TYPE, PENDING_TOKEN_STATUS
+        )
+
+        # Seed activation token type if not exists
+        async with user_auth_app_manager.database.get_session() as session:
+            existing = await token_type_service.get_by_id(ACTIVATION_TOKEN_TYPE, session)
+            if not existing:
+                await token_type_service.create(
+                    session=session, id=ACTIVATION_TOKEN_TYPE, enabled=True, duration=1440
+                )
+                await session.commit()
+
+        # Create user with temporary password (invited user would get one via invitation)
+        email = _unique_email()
+        async with user_auth_app_manager.database.get_session() as session:
+            user = await user_service._create_user_internal(
+                session=session,
+                email=email,
+                password="TempPassword123!",
+                language_id="en",
+                is_super_user=False,
+                send_verification_email=False
+            )
+            # Clear email validation to simulate invited user
+            user.email_address.validated_at = None
+            await session.commit()
+            user_id = user.id
+
+        # Create an activation token
+        async with user_auth_app_manager.database.get_session() as session:
+            token = await token_service.create(
+                session,
+                user_id=user_id,
+                type_id=ACTIVATION_TOKEN_TYPE,
+                status_id=PENDING_TOKEN_STATUS
+            )
+            await session.commit()
+            token_id = token.id
+
+        # Activate user
+        async with user_auth_app_manager.database.get_session() as session:
+            activated_user = await user_service.activate_user(
+                token=token_id,
+                new_password="NewSecurePassword123!",
+                session=session
+            )
+            await session.commit()
+
+            assert activated_user.id == user_id
+            assert activated_user.password is not None
+            assert activated_user.email_address.validated_at is not None
+
+    @pytest.mark.asyncio
+    async def test_activate_user_invalid_token(self, user_auth_app_manager):
+        """Test activate_user raises error for nonexistent token."""
+        user_service = user_auth_app_manager.get_service("user")
+
+        async with user_auth_app_manager.database.get_session() as session:
+            with pytest.raises(LysError) as exc_info:
+                await user_service.activate_user(
+                    token=str(uuid4()),
+                    new_password="Password123!",
+                    session=session
+                )
+            assert "INVALID_RESET_TOKEN_ERROR" in str(exc_info.value)
+
+    @pytest.mark.asyncio
+    async def test_activate_user_wrong_token_type(self, user_auth_app_manager):
+        """Test activate_user raises error for non-activation token type."""
+        user_service = user_auth_app_manager.get_service("user")
+        token_service = user_auth_app_manager.get_service("user_one_time_token")
+        from lys.apps.base.modules.one_time_token.consts import (
+            PASSWORD_RESET_TOKEN_TYPE, PENDING_TOKEN_STATUS
+        )
+
+        # Create a user
+        email = _unique_email()
+        async with user_auth_app_manager.database.get_session() as session:
+            user = await user_service._create_user_internal(
+                session=session,
+                email=email,
+                password="Password123!",
+                language_id="en",
+                is_super_user=False,
+                send_verification_email=False
+            )
+            await session.commit()
+            user_id = user.id
+
+        # Create a password reset token (wrong type)
+        async with user_auth_app_manager.database.get_session() as session:
+            token = await token_service.create(
+                session,
+                user_id=user_id,
+                type_id=PASSWORD_RESET_TOKEN_TYPE,
+                status_id=PENDING_TOKEN_STATUS
+            )
+            await session.commit()
+            token_id = token.id
+
+        # Try to activate with wrong token type
+        async with user_auth_app_manager.database.get_session() as session:
+            with pytest.raises(LysError) as exc_info:
+                await user_service.activate_user(
+                    token=token_id,
+                    new_password="NewPassword123!",
+                    session=session
+                )
+            assert "INVALID_RESET_TOKEN_ERROR" in str(exc_info.value)
+
+
+# ==============================================================================
+# Phase 1A: update_email tests
+# ==============================================================================
+
+
+class TestUpdateEmail:
+    """Test UserService.update_email operations."""
+
+    @pytest.mark.asyncio
+    async def test_update_email_success(self, user_auth_app_manager):
+        """Test updating a user's email address."""
+        user_service = user_auth_app_manager.get_service("user")
+        email = _unique_email()
+        new_email = _unique_email()
+
+        async with user_auth_app_manager.database.get_session() as session:
+            user = await user_service._create_user_internal(
+                session=session,
+                email=email,
+                password="Password123!",
+                language_id="en",
+                is_super_user=False,
+                send_verification_email=False
+            )
+            await session.commit()
+            user_id = user.id
+
+        async with user_auth_app_manager.database.get_session() as session:
+            user = await user_service.get_by_id(user_id, session)
+            updated_user = await user_service.update_email(
+                user=user,
+                new_email=new_email,
+                session=session
+            )
+            await session.commit()
+
+        # Verify email changed
+        async with user_auth_app_manager.database.get_session() as session:
+            user = await user_service.get_by_email(new_email, session)
+            assert user is not None
+            assert user.id == user_id
+
+            # Old email should not exist
+            old_user = await user_service.get_by_email(email, session)
+            assert old_user is None
+
+    @pytest.mark.asyncio
+    async def test_update_email_duplicate_raises_error(self, user_auth_app_manager):
+        """Test update_email raises error when email is already taken."""
+        user_service = user_auth_app_manager.get_service("user")
+        email1 = _unique_email()
+        email2 = _unique_email()
+
+        # Create two users
+        async with user_auth_app_manager.database.get_session() as session:
+            user1 = await user_service._create_user_internal(
+                session=session,
+                email=email1,
+                password="Password123!",
+                language_id="en",
+                is_super_user=False,
+                send_verification_email=False
+            )
+            user2 = await user_service._create_user_internal(
+                session=session,
+                email=email2,
+                password="Password123!",
+                language_id="en",
+                is_super_user=False,
+                send_verification_email=False
+            )
+            await session.commit()
+            user1_id = user1.id
+
+        # Try to change user1's email to user2's email
+        async with user_auth_app_manager.database.get_session() as session:
+            user1 = await user_service.get_by_id(user1_id, session)
+            with pytest.raises(LysError) as exc_info:
+                await user_service.update_email(
+                    user=user1,
+                    new_email=email2,
+                    session=session
+                )
+            assert "USER_ALREADY_EXISTS" in str(exc_info.value)
+
+
+# ==============================================================================
+# Phase 1A: list_audit_logs tests
+# ==============================================================================
+
+
+class TestListAuditLogs:
+    """Test UserAuditLogService.list_audit_logs operations."""
+
+    @pytest.mark.asyncio
+    async def test_list_audit_logs_basic(self, user_auth_app_manager):
+        """Test listing audit logs returns results ordered by created_at desc."""
+        user_service = user_auth_app_manager.get_service("user")
+        audit_log_service = user_auth_app_manager.get_service("user_audit_log")
+        from lys.apps.user_auth.modules.user.consts import OBSERVATION_LOG_TYPE
+
+        # Create two users
+        email1 = _unique_email()
+        email2 = _unique_email()
+        async with user_auth_app_manager.database.get_session() as session:
+            user1 = await user_service._create_user_internal(
+                session=session, email=email1, password="P1!", language_id="en",
+                is_super_user=False, send_verification_email=False
+            )
+            user2 = await user_service._create_user_internal(
+                session=session, email=email2, password="P2!", language_id="en",
+                is_super_user=False, send_verification_email=False
+            )
+            await session.commit()
+
+            # Create audit logs
+            log1 = await audit_log_service.create_audit_log(
+                target_user_id=user1.id, author_user_id=user2.id,
+                log_type_id=OBSERVATION_LOG_TYPE, message="First log", session=session
+            )
+            log2 = await audit_log_service.create_audit_log(
+                target_user_id=user1.id, author_user_id=user2.id,
+                log_type_id=OBSERVATION_LOG_TYPE, message="Second log", session=session
+            )
+            await session.commit()
+
+            # List all logs
+            stmt = audit_log_service.list_audit_logs()
+            result = await session.execute(stmt)
+            logs = list(result.scalars().all())
+
+            assert len(logs) >= 2
+
+    @pytest.mark.asyncio
+    async def test_list_audit_logs_filter_by_type(self, user_auth_app_manager):
+        """Test filtering audit logs by log type."""
+        user_service = user_auth_app_manager.get_service("user")
+        audit_log_service = user_auth_app_manager.get_service("user_audit_log")
+        from lys.apps.user_auth.modules.user.consts import (
+            OBSERVATION_LOG_TYPE, STATUS_CHANGE_LOG_TYPE, DISABLED_USER_STATUS
+        )
+
+        email1 = _unique_email()
+        email2 = _unique_email()
+        async with user_auth_app_manager.database.get_session() as session:
+            user1 = await user_service._create_user_internal(
+                session=session, email=email1, password="P1!", language_id="en",
+                is_super_user=False, send_verification_email=False
+            )
+            user2 = await user_service._create_user_internal(
+                session=session, email=email2, password="P2!", language_id="en",
+                is_super_user=False, send_verification_email=False
+            )
+            await session.commit()
+
+            # Create an observation log
+            await audit_log_service.create_audit_log(
+                target_user_id=user1.id, author_user_id=user2.id,
+                log_type_id=OBSERVATION_LOG_TYPE, message="Observation", session=session
+            )
+
+            # Create a status change log via update_status
+            user1 = await user_service.get_by_id(user1.id, session)
+            await user_service.update_status(
+                user=user1, status_id=DISABLED_USER_STATUS,
+                reason="Test", author_user_id=user2.id, session=session
+            )
+            await session.commit()
+
+            # Filter by OBSERVATION type only
+            stmt = audit_log_service.list_audit_logs(log_type_id=OBSERVATION_LOG_TYPE)
+            result = await session.execute(stmt)
+            logs = list(result.scalars().all())
+
+            for log in logs:
+                assert log.log_type_id == OBSERVATION_LOG_TYPE
+
+    @pytest.mark.asyncio
+    async def test_list_audit_logs_exclude_deleted(self, user_auth_app_manager):
+        """Test that deleted audit logs are excluded by default."""
+        user_service = user_auth_app_manager.get_service("user")
+        audit_log_service = user_auth_app_manager.get_service("user_audit_log")
+        from lys.apps.user_auth.modules.user.consts import OBSERVATION_LOG_TYPE
+
+        email1 = _unique_email()
+        email2 = _unique_email()
+        async with user_auth_app_manager.database.get_session() as session:
+            user1 = await user_service._create_user_internal(
+                session=session, email=email1, password="P1!", language_id="en",
+                is_super_user=False, send_verification_email=False
+            )
+            user2 = await user_service._create_user_internal(
+                session=session, email=email2, password="P2!", language_id="en",
+                is_super_user=False, send_verification_email=False
+            )
+            await session.commit()
+
+            # Create and soft-delete a log
+            log = await audit_log_service.create_audit_log(
+                target_user_id=user1.id, author_user_id=user2.id,
+                log_type_id=OBSERVATION_LOG_TYPE, message="To be deleted", session=session
+            )
+            await audit_log_service.delete_observation(log=log, session=session)
+            await session.commit()
+
+            # Default query should exclude deleted
+            stmt = audit_log_service.list_audit_logs()
+            result = await session.execute(stmt)
+            logs = list(result.scalars().all())
+            deleted_ids = [l.id for l in logs if l.deleted_at is not None]
+            assert len(deleted_ids) == 0
+
+            # include_deleted should include it
+            stmt2 = audit_log_service.list_audit_logs(include_deleted=True)
+            result2 = await session.execute(stmt2)
+            logs2 = list(result2.scalars().all())
+            assert len(logs2) >= len(logs)
+
+
+# ==============================================================================
+# Phase 1A: UserRefreshTokenService tests
+# ==============================================================================
+
+
+class TestUserRefreshTokenService:
+    """Test UserRefreshTokenService operations."""
+
+    @pytest.mark.asyncio
+    async def test_generate_refresh_token(self, user_auth_app_manager):
+        """Test generating a new refresh token for a user."""
+        user_service = user_auth_app_manager.get_service("user")
+        refresh_token_service = user_auth_app_manager.get_service("user_refresh_token")
+
+        email = _unique_email()
+        async with user_auth_app_manager.database.get_session() as session:
+            user = await user_service._create_user_internal(
+                session=session, email=email, password="Password123!",
+                language_id="en", is_super_user=False, send_verification_email=False
+            )
+            await session.commit()
+
+            with patch("lys.apps.user_auth.modules.user.services.AuthUtils") as mock_auth:
+                mock_auth.return_value.config = _TEST_AUTH_CONFIG
+                token = await refresh_token_service.generate(user, session=session)
+                await session.commit()
+
+            assert token.id is not None
+            assert token.user_id == user.id
+            assert token.connection_expire_at is not None
+
+    @pytest.mark.asyncio
+    async def test_get_refresh_token(self, user_auth_app_manager):
+        """Test getting a valid refresh token."""
+        user_service = user_auth_app_manager.get_service("user")
+        refresh_token_service = user_auth_app_manager.get_service("user_refresh_token")
+        from lys.apps.user_auth.modules.user.models import GetUserRefreshTokenInputModel
+
+        email = _unique_email()
+        async with user_auth_app_manager.database.get_session() as session:
+            user = await user_service._create_user_internal(
+                session=session, email=email, password="Password123!",
+                language_id="en", is_super_user=False, send_verification_email=False
+            )
+            await session.commit()
+
+            with patch("lys.apps.user_auth.modules.user.services.AuthUtils") as mock_auth:
+                mock_auth.return_value.config = _TEST_AUTH_CONFIG
+                token = await refresh_token_service.generate(user, session=session)
+                await session.commit()
+
+            data = GetUserRefreshTokenInputModel(refresh_token_id=token.id)
+            retrieved = await refresh_token_service.get(data, session=session)
+            assert retrieved.id == token.id
+
+    @pytest.mark.asyncio
+    async def test_revoke_refresh_token(self, user_auth_app_manager):
+        """Test revoking a refresh token revokes all user tokens."""
+        user_service = user_auth_app_manager.get_service("user")
+        refresh_token_service = user_auth_app_manager.get_service("user_refresh_token")
+        from lys.apps.user_auth.modules.user.models import GetUserRefreshTokenInputModel
+
+        email = _unique_email()
+        async with user_auth_app_manager.database.get_session() as session:
+            user = await user_service._create_user_internal(
+                session=session, email=email, password="Password123!",
+                language_id="en", is_super_user=False, send_verification_email=False
+            )
+            await session.commit()
+
+            with patch("lys.apps.user_auth.modules.user.services.AuthUtils") as mock_auth:
+                mock_auth.return_value.config = _TEST_AUTH_CONFIG
+                # Generate two tokens
+                token1 = await refresh_token_service.generate(user, session=session)
+                token2 = await refresh_token_service.generate(user, session=session)
+                await session.commit()
+
+            # Revoke via token1
+            data = GetUserRefreshTokenInputModel(refresh_token_id=token1.id)
+            await refresh_token_service.revoke(data, session=session)
+            await session.commit()
+
+        # Both tokens should be revoked
+        async with user_auth_app_manager.database.get_session() as session:
+            t1 = await refresh_token_service.get_by_id(token1.id, session)
+            t2 = await refresh_token_service.get_by_id(token2.id, session)
+            assert t1.revoked_at is not None
+            assert t2.revoked_at is not None
+
+    @pytest.mark.asyncio
+    async def test_get_revoked_token_raises_error(self, user_auth_app_manager):
+        """Test that getting a revoked refresh token raises error."""
+        user_service = user_auth_app_manager.get_service("user")
+        refresh_token_service = user_auth_app_manager.get_service("user_refresh_token")
+        from lys.apps.user_auth.modules.user.models import GetUserRefreshTokenInputModel
+
+        email = _unique_email()
+        async with user_auth_app_manager.database.get_session() as session:
+            user = await user_service._create_user_internal(
+                session=session, email=email, password="Password123!",
+                language_id="en", is_super_user=False, send_verification_email=False
+            )
+            await session.commit()
+
+            with patch("lys.apps.user_auth.modules.user.services.AuthUtils") as mock_auth:
+                mock_auth.return_value.config = _TEST_AUTH_CONFIG
+                token = await refresh_token_service.generate(user, session=session)
+                await session.commit()
+
+            # Revoke
+            data = GetUserRefreshTokenInputModel(refresh_token_id=token.id)
+            await refresh_token_service.revoke(data, session=session)
+            await session.commit()
+
+        # Try to get revoked token
+        async with user_auth_app_manager.database.get_session() as session:
+            data = GetUserRefreshTokenInputModel(refresh_token_id=token.id)
+            with pytest.raises(LysError) as exc_info:
+                await refresh_token_service.get(data, session=session)
+            assert "INVALID_REFRESH_TOKEN_ERROR" in str(exc_info.value)

@@ -60,7 +60,18 @@ markers = [
 source = ["src/lys"]
 branch = true
 parallel = true
-omit = ["*/tests/*", "*/__pycache__/*"]
+omit = [
+    "*/tests/*",
+    "*/__pycache__/*",
+    # External API adapters (require credentials/network, tested via mocks in unit tests)
+    "*/apps/licensing/modules/mollie/*",
+    "*/apps/ai/utils/providers/*",
+    "*/core/utils/storage.py",
+    # Celery worker setup (requires Redis/RabbitMQ broker)
+    "*/core/celery_app.py",
+    # Celery task definitions (thin wrappers, tested via mocks)
+    "*/apps/*/tasks.py",
+]
 
 [tool.coverage.report]
 exclude_lines = [

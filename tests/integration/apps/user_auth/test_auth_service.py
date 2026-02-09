@@ -46,6 +46,23 @@ def unique_email():
     return f"test-{uuid4().hex[:8]}@example.com"
 
 
+# Default auth config for tests that need token generation
+_TEST_AUTH_CONFIG = {
+    "connection_expire_minutes": 60,
+    "once_refresh_token_expire_minutes": 30,
+    "access_token_expire_minutes": 15,
+    "encryption_algorithm": "HS256",
+    "cookie_secure": False,
+    "cookie_http_only": True,
+    "cookie_same_site": "lax",
+    "cookie_domain": None,
+    "login_rate_limit_enabled": True,
+    "login_lockout_durations": {3: 60, 5: 900},
+}
+
+_TEST_SECRET_KEY = "test-secret-key-for-jwt-testing-12345"
+
+
 # ==============================================================================
 # Phase 2.7: User Lookup by Login (3 tests)
 # ==============================================================================
@@ -592,3 +609,183 @@ class TestAuthServiceAuthenticationFlow:
             assert last_attempt is not None
             assert last_attempt.status_id == SUCCEED_LOGIN_ATTEMPT_STATUS
             assert last_attempt.attempt_count == 1
+
+
+# ==============================================================================
+# Phase 1A: generate_access_claims and generate_access_token tests
+# ==============================================================================
+
+
+class TestGenerateAccessClaims:
+    """Test AuthService.generate_access_claims operations."""
+
+    @pytest.mark.asyncio
+    async def test_generate_access_claims_normal_user(self, user_auth_app_manager):
+        """Test generating claims for a normal user includes expected fields."""
+        user_service = user_auth_app_manager.get_service("user")
+        auth_service = user_auth_app_manager.get_service("auth")
+
+        email = unique_email()
+        async with user_auth_app_manager.database.get_session() as session:
+            user = await user_service._create_user_internal(
+                session=session, email=email, password="Password123!",
+                language_id="en", is_super_user=False, send_verification_email=False
+            )
+            await session.commit()
+
+            claims = await auth_service.generate_access_claims(user, session)
+
+            assert "sub" in claims
+            assert claims["sub"] == str(user.id)
+            assert claims["is_super_user"] is False
+            assert "webservices" in claims
+            assert isinstance(claims["webservices"], dict)
+
+    @pytest.mark.asyncio
+    async def test_generate_access_claims_super_user(self, user_auth_app_manager):
+        """Test generating claims for a super user."""
+        user_service = user_auth_app_manager.get_service("user")
+        auth_service = user_auth_app_manager.get_service("auth")
+
+        email = unique_email()
+        async with user_auth_app_manager.database.get_session() as session:
+            user = await user_service._create_user_internal(
+                session=session, email=email, password="Password123!",
+                language_id="en", is_super_user=True, send_verification_email=False
+            )
+            await session.commit()
+
+            claims = await auth_service.generate_access_claims(user, session)
+
+            assert claims["sub"] == str(user.id)
+            assert claims["is_super_user"] is True
+
+
+class TestGenerateAccessToken:
+    """Test AuthService.generate_access_token operations."""
+
+    @pytest.mark.asyncio
+    async def test_generate_access_token_returns_valid_jwt(self, user_auth_app_manager):
+        """Test that generate_access_token returns a valid JWT string and claims."""
+        user_service = user_auth_app_manager.get_service("user")
+        auth_service = user_auth_app_manager.get_service("auth")
+
+        email = unique_email()
+        async with user_auth_app_manager.database.get_session() as session:
+            user = await user_service._create_user_internal(
+                session=session, email=email, password="Password123!",
+                language_id="en", is_super_user=False, send_verification_email=False
+            )
+            await session.commit()
+
+            # Patch auth_utils config for token generation
+            original_config = auth_service.auth_utils.config
+            original_secret = auth_service.auth_utils.secret_key
+            auth_service.auth_utils.config = _TEST_AUTH_CONFIG
+            auth_service.auth_utils.secret_key = _TEST_SECRET_KEY
+            try:
+                token_str, claims = await auth_service.generate_access_token(user, session)
+            finally:
+                auth_service.auth_utils.config = original_config
+                auth_service.auth_utils.secret_key = original_secret
+
+            # Token should be a non-empty string
+            assert isinstance(token_str, str)
+            assert len(token_str) > 0
+
+            # Claims should include standard JWT fields
+            assert "exp" in claims
+            assert "xsrf_token" in claims
+            assert "sub" in claims
+            assert claims["sub"] == str(user.id)
+
+            # Token should be decodable
+            decoded = jwt.decode(token_str, _TEST_SECRET_KEY, algorithms=["HS256"])
+            assert decoded["sub"] == str(user.id)
+
+    @pytest.mark.asyncio
+    async def test_generate_access_token_has_expiry(self, user_auth_app_manager):
+        """Test that generated token has a future expiry timestamp."""
+        user_service = user_auth_app_manager.get_service("user")
+        auth_service = user_auth_app_manager.get_service("auth")
+
+        email = unique_email()
+        async with user_auth_app_manager.database.get_session() as session:
+            user = await user_service._create_user_internal(
+                session=session, email=email, password="Password123!",
+                language_id="en", is_super_user=False, send_verification_email=False
+            )
+            await session.commit()
+
+            original_config = auth_service.auth_utils.config
+            original_secret = auth_service.auth_utils.secret_key
+            auth_service.auth_utils.config = _TEST_AUTH_CONFIG
+            auth_service.auth_utils.secret_key = _TEST_SECRET_KEY
+            try:
+                _, claims = await auth_service.generate_access_token(user, session)
+            finally:
+                auth_service.auth_utils.config = original_config
+                auth_service.auth_utils.secret_key = original_secret
+
+            # Expiry should be in the future
+            assert claims["exp"] > int(now_utc().timestamp())
+
+
+class TestLogout:
+    """Test AuthService.logout operations."""
+
+    @pytest.mark.asyncio
+    async def test_logout_with_refresh_token(self, user_auth_app_manager):
+        """Test logout revokes refresh token and clears cookies."""
+        user_service = user_auth_app_manager.get_service("user")
+        auth_service = user_auth_app_manager.get_service("auth")
+        refresh_token_service = user_auth_app_manager.get_service("user_refresh_token")
+
+        email = unique_email()
+        async with user_auth_app_manager.database.get_session() as session:
+            user = await user_service._create_user_internal(
+                session=session, email=email, password="Password123!",
+                language_id="en", is_super_user=False, send_verification_email=False
+            )
+            await session.commit()
+
+            # Generate a refresh token (needs auth config)
+            with patch("lys.apps.user_auth.modules.user.services.AuthUtils") as mock_auth:
+                mock_auth.return_value.config = _TEST_AUTH_CONFIG
+                token = await refresh_token_service.generate(user, session=session)
+                await session.commit()
+
+            # Create mock request/response
+            request = MagicMock()
+            request.cookies = {REFRESH_COOKIE_KEY: token.id}
+            response = Response()
+
+            original_config = auth_service.auth_utils.config
+            auth_service.auth_utils.config = _TEST_AUTH_CONFIG
+            try:
+                await auth_service.logout(request, response, session)
+            finally:
+                auth_service.auth_utils.config = original_config
+            await session.commit()
+
+        # Verify token was revoked
+        async with user_auth_app_manager.database.get_session() as session:
+            revoked = await refresh_token_service.get_by_id(token.id, session)
+            assert revoked.revoked_at is not None
+
+    @pytest.mark.asyncio
+    async def test_logout_without_refresh_token(self, user_auth_app_manager):
+        """Test logout without refresh token cookie does not crash."""
+        auth_service = user_auth_app_manager.get_service("auth")
+
+        async with user_auth_app_manager.database.get_session() as session:
+            request = MagicMock()
+            request.cookies = {}
+            response = Response()
+
+            original_config = auth_service.auth_utils.config
+            auth_service.auth_utils.config = _TEST_AUTH_CONFIG
+            try:
+                await auth_service.logout(request, response, session)
+            finally:
+                auth_service.auth_utils.config = original_config

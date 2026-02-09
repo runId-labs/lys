@@ -4,6 +4,7 @@ Integration tests for licensing LicenseCheckerService.
 Tests cover:
 - check_feature / enforce_feature (present/absent in plan)
 - get_client_limits
+- check_quota / enforce_quota
 - validate_downgrade
 
 Note: create_client_with_owner automatically creates a FREE plan subscription
@@ -13,7 +14,10 @@ via the licensing ClientService extension.
 import pytest
 from uuid import uuid4
 
-from lys.apps.licensing.consts import FREE_PLAN, STARTER_PLAN, PRO_PLAN, MAX_USERS, MAX_PROJECTS_PER_MONTH
+from lys.apps.licensing.consts import (
+    FREE_PLAN, STARTER_PLAN, PRO_PLAN, MAX_USERS, MAX_PROJECTS_PER_MONTH,
+    DEFAULT_APPLICATION,
+)
 from lys.core.errors import LysError
 
 
@@ -159,3 +163,152 @@ class TestLicenseCheckerServiceLimits:
             with pytest.raises(LysError) as exc_info:
                 await checker_service.get_client_limits(str(uuid4()), session)
             assert "NO_ACTIVE_SUBSCRIPTION" in str(exc_info.value)
+
+
+# ==============================================================================
+# Phase 1A: check_quota and enforce_quota tests
+# ==============================================================================
+
+
+class TestLicenseCheckerServiceQuota:
+    """Test LicenseCheckerService.check_quota and enforce_quota."""
+
+    @pytest.mark.asyncio
+    async def test_check_quota_within_limit(self, licensing_app_manager):
+        """Test check_quota returns valid when under limit."""
+        checker_service = licensing_app_manager.get_service("license_checker")
+        client_service = licensing_app_manager.get_service("client")
+
+        async with licensing_app_manager.database.get_session() as session:
+            client = await client_service.create_client_with_owner(
+                session=session,
+                client_name=f"Quota-Corp-{uuid4().hex[:8]}",
+                email=f"quota-{uuid4().hex[:8]}@example.com",
+                password="Password123!",
+                language_id="en",
+                send_verification_email=False
+            )
+
+        # FREE plan has MAX_USERS=5, no users added yet so should be valid
+        async with licensing_app_manager.database.get_session() as session:
+            is_valid, current, limit = await checker_service.check_quota(
+                client.id, MAX_USERS, session
+            )
+            assert is_valid is True
+            assert current >= 0
+            assert limit == 5
+
+    @pytest.mark.asyncio
+    async def test_check_quota_rule_not_in_plan(self, licensing_app_manager):
+        """Test check_quota returns valid with -1 limit when rule not in plan."""
+        checker_service = licensing_app_manager.get_service("license_checker")
+        client_service = licensing_app_manager.get_service("client")
+        subscription_service = licensing_app_manager.get_service("subscription")
+        version_service = licensing_app_manager.get_service("license_plan_version")
+
+        async with licensing_app_manager.database.get_session() as session:
+            client = await client_service.create_client_with_owner(
+                session=session,
+                client_name=f"NoRule-Corp-{uuid4().hex[:8]}",
+                email=f"norule-{uuid4().hex[:8]}@example.com",
+                password="Password123!",
+                language_id="en",
+                send_verification_email=False
+            )
+
+        # Upgrade to PRO plan (no MAX_PROJECTS_PER_MONTH rule)
+        async with licensing_app_manager.database.get_session() as session:
+            pro_version = await version_service.get_current_version(PRO_PLAN, session)
+            await subscription_service.change_plan(
+                client_id=client.id,
+                new_plan_version_id=pro_version.id,
+                session=session,
+                immediate=True
+            )
+
+        async with licensing_app_manager.database.get_session() as session:
+            is_valid, current, limit = await checker_service.check_quota(
+                client.id, MAX_PROJECTS_PER_MONTH, session
+            )
+            # Rule not configured = unlimited
+            assert is_valid is True
+            assert limit == -1
+
+    @pytest.mark.asyncio
+    async def test_check_quota_no_subscription_raises(self, licensing_app_manager):
+        """Test check_quota raises error when no subscription exists."""
+        checker_service = licensing_app_manager.get_service("license_checker")
+
+        async with licensing_app_manager.database.get_session() as session:
+            with pytest.raises(LysError) as exc_info:
+                await checker_service.check_quota(str(uuid4()), MAX_USERS, session)
+            assert "NO_ACTIVE_SUBSCRIPTION" in str(exc_info.value)
+
+    @pytest.mark.asyncio
+    async def test_enforce_quota_within_limit(self, licensing_app_manager):
+        """Test enforce_quota does not raise when within limit."""
+        checker_service = licensing_app_manager.get_service("license_checker")
+        client_service = licensing_app_manager.get_service("client")
+
+        async with licensing_app_manager.database.get_session() as session:
+            client = await client_service.create_client_with_owner(
+                session=session,
+                client_name=f"EnforceOK-Corp-{uuid4().hex[:8]}",
+                email=f"enforceok-{uuid4().hex[:8]}@example.com",
+                password="Password123!",
+                language_id="en",
+                send_verification_email=False
+            )
+
+        # Should not raise (within limit)
+        async with licensing_app_manager.database.get_session() as session:
+            await checker_service.enforce_quota(client.id, MAX_USERS, session)
+
+
+# ==============================================================================
+# Phase 1A: validate_downgrade tests
+# ==============================================================================
+
+
+class TestLicenseCheckerServiceDowngrade:
+    """Test LicenseCheckerService.validate_downgrade."""
+
+    @pytest.mark.asyncio
+    async def test_validate_downgrade_no_violations(self, licensing_app_manager):
+        """Test validate_downgrade returns empty list when no violations."""
+        checker_service = licensing_app_manager.get_service("license_checker")
+        client_service = licensing_app_manager.get_service("client")
+        version_service = licensing_app_manager.get_service("license_plan_version")
+
+        async with licensing_app_manager.database.get_session() as session:
+            client = await client_service.create_client_with_owner(
+                session=session,
+                client_name=f"Downgrade-Corp-{uuid4().hex[:8]}",
+                email=f"downgrade-{uuid4().hex[:8]}@example.com",
+                password="Password123!",
+                language_id="en",
+                send_verification_email=False
+            )
+
+        # Validate downgrade from FREE to FREE (same version, no violations)
+        async with licensing_app_manager.database.get_session() as session:
+            free_version = await version_service.get_current_version(FREE_PLAN, session)
+            violations = await checker_service.validate_downgrade(
+                client.id, free_version.id, session
+            )
+            assert isinstance(violations, list)
+            assert len(violations) == 0
+
+    @pytest.mark.asyncio
+    async def test_validate_downgrade_no_subscription(self, licensing_app_manager):
+        """Test validate_downgrade returns empty list when no subscription."""
+        checker_service = licensing_app_manager.get_service("license_checker")
+        version_service = licensing_app_manager.get_service("license_plan_version")
+
+        async with licensing_app_manager.database.get_session() as session:
+            free_version = await version_service.get_current_version(FREE_PLAN, session)
+            violations = await checker_service.validate_downgrade(
+                str(uuid4()), free_version.id, session
+            )
+            assert isinstance(violations, list)
+            assert len(violations) == 0
