@@ -245,3 +245,75 @@ class TestParametricEntityDefaults:
         entity = object.__new__(TestParametric)
         result = entity.accessing_organizations()
         assert result == {}
+
+
+class TestCheckPermissionOrganizationRole:
+
+    def _make_entity(self, accessing_organizations_return):
+        from lys.core.entities import Entity
+
+        class OrgTestEntity(Entity):
+            __tablename__ = "org_test"
+            __abstract__ = False
+
+            def accessing_users(self):
+                return []
+
+            def accessing_organizations(self):
+                return accessing_organizations_return
+
+        return object.__new__(OrgTestEntity)
+
+    def test_check_permission_organization_role_granted(self):
+        from lys.core.consts.permissions import ORGANIZATION_ROLE_ACCESS_KEY
+
+        entity = self._make_entity({"company": ["org1", "org2"]})
+        access_type = {ORGANIZATION_ROLE_ACCESS_KEY: {"company": ["org1"]}}
+        result = entity.check_permission("user_123", access_type)
+        assert result is True
+
+    def test_check_permission_organization_role_denied(self):
+        from lys.core.consts.permissions import ORGANIZATION_ROLE_ACCESS_KEY
+
+        entity = self._make_entity({"company": ["org1"]})
+        access_type = {ORGANIZATION_ROLE_ACCESS_KEY: {"company": ["org99"]}}
+        result = entity.check_permission("user_123", access_type)
+        assert result is False
+
+    def test_check_permission_organization_role_no_match_key(self):
+        from lys.core.consts.permissions import ORGANIZATION_ROLE_ACCESS_KEY
+
+        entity = self._make_entity({"company": ["org1"]})
+        access_type = {ORGANIZATION_ROLE_ACCESS_KEY: {"department": ["org1"]}}
+        result = entity.check_permission("user_123", access_type)
+        assert result is False
+
+    def test_check_permission_no_access_type_keys(self):
+        entity = self._make_entity({"company": ["org1"]})
+        access_type = {}
+        result = entity.check_permission("user_123", access_type)
+        assert result is False
+
+
+class TestUserAccessingFilters:
+
+    def test_user_accessing_filters_returns_stmt_and_empty_list(self):
+        from lys.core.entities import Entity
+        from unittest.mock import MagicMock
+
+        stmt = MagicMock()
+        result_stmt, filters = Entity.user_accessing_filters(stmt, "user_id")
+        assert result_stmt is stmt
+        assert filters == []
+
+
+class TestOrganizationAccessingFilters:
+
+    def test_organization_accessing_filters_returns_stmt_and_empty_list(self):
+        from lys.core.entities import Entity
+        from unittest.mock import MagicMock
+
+        stmt = MagicMock()
+        result_stmt, filters = Entity.organization_accessing_filters(stmt, {"company": ["org1"]})
+        assert result_stmt is stmt
+        assert filters == []
