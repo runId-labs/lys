@@ -80,7 +80,7 @@ class TestServiceAuthMiddlewareDispatch:
         mock_auth_utils.decode_token.return_value = {"service_name": "test-service"}
 
         with patch.object(ServiceAuthMiddleware, 'app_manager', mock_app_manager):
-            with patch('lys.apps.base.middlewares.AuthUtils', return_value=mock_auth_utils):
+             with patch('lys.apps.base.middlewares.ServiceAuthUtils', return_value=mock_auth_utils):
                 middleware = ServiceAuthMiddleware(MagicMock())
                 middleware.auth_utils = mock_auth_utils
                 await middleware.dispatch(mock_request, mock_call_next)
@@ -99,7 +99,7 @@ class TestServiceAuthMiddlewareDispatch:
         mock_auth_utils.decode_token.side_effect = ExpiredSignatureError("Token expired")
 
         with patch.object(ServiceAuthMiddleware, 'app_manager', mock_app_manager):
-            with patch('lys.apps.base.middlewares.AuthUtils', return_value=mock_auth_utils):
+            with patch('lys.apps.base.middlewares.ServiceAuthUtils', return_value=mock_auth_utils):
                 middleware = ServiceAuthMiddleware(MagicMock())
                 middleware.auth_utils = mock_auth_utils
                 await middleware.dispatch(mock_request, mock_call_next)
@@ -118,7 +118,7 @@ class TestServiceAuthMiddlewareDispatch:
         mock_auth_utils.decode_token.side_effect = InvalidTokenError("Invalid token")
 
         with patch.object(ServiceAuthMiddleware, 'app_manager', mock_app_manager):
-            with patch('lys.apps.base.middlewares.AuthUtils', return_value=mock_auth_utils):
+            with patch('lys.apps.base.middlewares.ServiceAuthUtils', return_value=mock_auth_utils):
                 middleware = ServiceAuthMiddleware(MagicMock())
                 middleware.auth_utils = mock_auth_utils
                 await middleware.dispatch(mock_request, mock_call_next)
@@ -136,7 +136,7 @@ class TestServiceAuthMiddlewareDispatch:
         mock_auth_utils.decode_token.side_effect = Exception("Unexpected error")
 
         with patch.object(ServiceAuthMiddleware, 'app_manager', mock_app_manager):
-            with patch('lys.apps.base.middlewares.AuthUtils', return_value=mock_auth_utils):
+            with patch('lys.apps.base.middlewares.ServiceAuthUtils', return_value=mock_auth_utils):
                 middleware = ServiceAuthMiddleware(MagicMock())
                 middleware.auth_utils = mock_auth_utils
                 await middleware.dispatch(mock_request, mock_call_next)

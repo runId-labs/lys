@@ -3,7 +3,6 @@ import os
 from datetime import datetime, timedelta
 from typing import Optional, Type
 
-import jwt
 from sqlalchemy import select, ColumnElement, or_, and_
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Relationship, ColumnProperty, InstrumentedAttribute
@@ -427,11 +426,7 @@ class AuthService(Service):
         # Debug: log generated claims
         logger.debug(f"Generated JWT claims: {claims}")
 
-        return jwt.encode(
-            claims,
-            cls.auth_utils.secret_key,
-            algorithm=cls.auth_utils.config.get("encryption_algorithm"),
-        ), claims
+        return await cls.auth_utils.encode(claims), claims
 
     @classmethod
     async def clear_auth_cookies(cls, response: Response) -> None:

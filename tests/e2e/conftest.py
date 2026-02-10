@@ -93,6 +93,8 @@ def make_test_token(user_id, is_super_user=False, webservices=None, expire_minut
         "is_super_user": is_super_user,
         "xsrf_token": "test-xsrf-token-e2e",
         "webservices": webservices or {},
+        "iss": "lys-auth",
+        "aud": "lys-api",
     }
     return jwt.encode(claims, E2E_SECRET_KEY, algorithm=E2E_ALGORITHM)
 

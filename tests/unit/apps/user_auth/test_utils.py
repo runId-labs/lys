@@ -251,10 +251,27 @@ class TestAuthUtilsEncode:
         decoded = jwt.decode(
             token,
             "test_secret_key_for_jwt",
-            algorithms=["HS256"]
+            algorithms=["HS256"],
+            audience="lys-api",
         )
         assert decoded["sub"] == "user-123"
         assert decoded["role"] == "admin"
+
+    @pytest.mark.asyncio
+    async def test_encode_injects_iss_and_aud(self, auth_utils):
+        """Test that encode injects iss and aud claims."""
+        claims = {"sub": "user-123"}
+
+        token = await auth_utils.encode(claims)
+
+        decoded = jwt.decode(
+            token,
+            "test_secret_key_for_jwt",
+            algorithms=["HS256"],
+            audience="lys-api",
+        )
+        assert decoded["iss"] == "lys-auth"
+        assert decoded["aud"] == "lys-api"
 
     @pytest.mark.asyncio
     async def test_encode_with_complex_claims(self, auth_utils):
@@ -275,7 +292,8 @@ class TestAuthUtilsEncode:
         decoded = jwt.decode(
             token,
             "test_secret_key_for_jwt",
-            algorithms=["HS256"]
+            algorithms=["HS256"],
+            audience="lys-api",
         )
 
         assert decoded["webservices"]["get_users"] == "full"
@@ -302,9 +320,9 @@ class TestAuthUtilsDecode:
     @pytest.mark.asyncio
     async def test_decode_returns_claims(self, auth_utils):
         """Test that decode returns the original claims."""
-        # Create a valid token
+        # Create a valid token with required iss/aud
         token = jwt.encode(
-            {"sub": "user-789", "name": "Test"},
+            {"sub": "user-789", "name": "Test", "iss": "lys-auth", "aud": "lys-api"},
             "test_secret_key_for_jwt",
             algorithm="HS256"
         )
@@ -323,9 +341,8 @@ class TestAuthUtilsDecode:
     @pytest.mark.asyncio
     async def test_decode_wrong_secret_raises(self, auth_utils):
         """Test that token signed with wrong secret raises exception."""
-        # Create token with different secret
         token = jwt.encode(
-            {"sub": "user-123"},
+            {"sub": "user-123", "iss": "lys-auth", "aud": "lys-api"},
             "different_secret_key",
             algorithm="HS256"
         )
@@ -338,14 +355,64 @@ class TestAuthUtilsDecode:
         """Test that expired token raises exception."""
         import time
 
-        # Create expired token
         token = jwt.encode(
-            {"sub": "user-123", "exp": int(time.time()) - 3600},  # Expired 1 hour ago
+            {"sub": "user-123", "exp": int(time.time()) - 3600,
+             "iss": "lys-auth", "aud": "lys-api"},
             "test_secret_key_for_jwt",
             algorithm="HS256"
         )
 
         with pytest.raises(jwt.exceptions.ExpiredSignatureError):
+            await auth_utils.decode(token)
+
+    @pytest.mark.asyncio
+    async def test_decode_wrong_audience_raises(self, auth_utils):
+        """Test that token with wrong audience is rejected."""
+        token = jwt.encode(
+            {"sub": "user-123", "iss": "lys-auth", "aud": "lys-internal"},
+            "test_secret_key_for_jwt",
+            algorithm="HS256"
+        )
+
+        with pytest.raises(jwt.exceptions.InvalidAudienceError):
+            await auth_utils.decode(token)
+
+    @pytest.mark.asyncio
+    async def test_decode_wrong_issuer_raises(self, auth_utils):
+        """Test that token with wrong issuer is rejected."""
+        token = jwt.encode(
+            {"sub": "user-123", "iss": "other-service", "aud": "lys-api"},
+            "test_secret_key_for_jwt",
+            algorithm="HS256"
+        )
+
+        with pytest.raises(jwt.exceptions.InvalidIssuerError):
+            await auth_utils.decode(token)
+
+    @pytest.mark.asyncio
+    async def test_decode_missing_audience_raises(self, auth_utils):
+        """Test that token without audience is rejected."""
+        token = jwt.encode(
+            {"sub": "user-123", "iss": "lys-auth"},
+            "test_secret_key_for_jwt",
+            algorithm="HS256"
+        )
+
+        with pytest.raises(jwt.exceptions.MissingRequiredClaimError):
+            await auth_utils.decode(token)
+
+    @pytest.mark.asyncio
+    async def test_decode_service_token_rejected(self, auth_utils):
+        """Test that a service-to-service token cannot be used as user token."""
+        # Service tokens have aud="lys-internal" and iss=service_name
+        token = jwt.encode(
+            {"type": "service", "service_name": "billing", "iss": "billing", "aud": "lys-internal"},
+            "test_secret_key_for_jwt",
+            algorithm="HS256"
+        )
+
+        # Rejected due to wrong iss or aud (PyJWT checks iss first)
+        with pytest.raises((jwt.exceptions.InvalidAudienceError, jwt.exceptions.InvalidIssuerError)):
             await auth_utils.decode(token)
 
     @pytest.mark.asyncio

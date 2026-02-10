@@ -699,9 +699,14 @@ class TestGenerateAccessToken:
             assert "sub" in claims
             assert claims["sub"] == str(user.id)
 
-            # Token should be decodable
-            decoded = jwt.decode(token_str, _TEST_SECRET_KEY, algorithms=["HS256"])
+            # Token should be decodable and contain iss/aud
+            decoded = jwt.decode(
+                token_str, _TEST_SECRET_KEY, algorithms=["HS256"],
+                audience="lys-api",
+            )
             assert decoded["sub"] == str(user.id)
+            assert decoded["iss"] == "lys-auth"
+            assert decoded["aud"] == "lys-api"
 
     @pytest.mark.asyncio
     async def test_generate_access_token_has_expiry(self, user_auth_app_manager):

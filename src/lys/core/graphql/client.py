@@ -8,7 +8,7 @@ from typing import Dict, Any, Optional
 
 import httpx
 
-from lys.core.utils.auth import AuthUtils
+from lys.core.utils.auth import ServiceAuthUtils
 
 logger = logging.getLogger(__name__)
 
@@ -77,7 +77,7 @@ async def fetch_graphql(
         raise ValueError("secret_key and service_name are required for inter-service calls")
 
     # Generate service JWT token
-    auth_utils = AuthUtils(secret_key)
+    auth_utils = ServiceAuthUtils(secret_key)
     token = auth_utils.generate_token(service_name)
 
     headers = {
@@ -147,7 +147,7 @@ class GraphQLClient:
 
         # Store service auth params if provided
         self._service_name = service_name
-        self._auth_utils = AuthUtils(secret_key) if secret_key else None
+        self._auth_utils = ServiceAuthUtils(secret_key) if secret_key else None
 
     def _get_headers(self) -> Dict[str, str]:
         """Generate headers with appropriate authentication."""

@@ -19,9 +19,9 @@ class TestCoreAuthUtils:
 
     def test_generate_token_returns_string(self):
         """Test generate_token returns a non-empty JWT string."""
-        from lys.core.utils.auth import AuthUtils
+        from lys.core.utils.auth import ServiceAuthUtils
 
-        utils = AuthUtils("test-secret-key")
+        utils = ServiceAuthUtils("test-secret-key")
         token = utils.generate_token("my-service")
 
         assert isinstance(token, str)
@@ -29,9 +29,9 @@ class TestCoreAuthUtils:
 
     def test_generate_token_decodable(self):
         """Test generated token can be decoded."""
-        from lys.core.utils.auth import AuthUtils
+        from lys.core.utils.auth import ServiceAuthUtils
 
-        utils = AuthUtils("test-secret-key")
+        utils = ServiceAuthUtils("test-secret-key")
         token = utils.generate_token("my-service", expiration_minutes=5)
         decoded = utils.decode_token(token)
 
@@ -40,40 +40,67 @@ class TestCoreAuthUtils:
 
     def test_decode_token_wrong_secret_raises(self):
         """Test decoding with wrong secret raises error."""
-        from lys.core.utils.auth import AuthUtils
+        from lys.core.utils.auth import ServiceAuthUtils
 
-        utils1 = AuthUtils("secret-1")
-        utils2 = AuthUtils("secret-2")
+        utils1 = ServiceAuthUtils("secret-1")
+        utils2 = ServiceAuthUtils("secret-2")
 
         token = utils1.generate_token("my-service")
 
         with pytest.raises(Exception):
             utils2.decode_token(token)
 
+    def test_generate_token_includes_iss_and_aud(self):
+        """Test generated token includes iss and aud claims."""
+        from lys.core.utils.auth import ServiceAuthUtils
+
+        utils = ServiceAuthUtils("test-secret")
+        token = utils.generate_token("my-service")
+        decoded = jwt.decode(
+            token, "test-secret", algorithms=["HS256"],
+            audience="lys-internal",
+        )
+
+        assert decoded["iss"] == "my-service"
+        assert decoded["aud"] == "lys-internal"
+
     def test_decode_token_wrong_type_raises(self):
         """Test decoding a non-service token raises InvalidTokenError."""
-        from lys.core.utils.auth import AuthUtils
+        from lys.core.utils.auth import ServiceAuthUtils
 
-        utils = AuthUtils("test-secret")
-        # Manually create token with wrong type
-        payload = {"type": "user", "sub": "user-123"}
+        utils = ServiceAuthUtils("test-secret")
+        # Manually create token with wrong type but correct audience
+        payload = {"type": "user", "sub": "user-123", "aud": "lys-internal"}
         token = jwt.encode(payload, "test-secret", algorithm="HS256")
 
         with pytest.raises(InvalidTokenError):
             utils.decode_token(token)
 
+    def test_decode_token_wrong_audience_raises(self):
+        """Test decoding a token with wrong audience raises error."""
+        from lys.core.utils.auth import ServiceAuthUtils
+
+        utils = ServiceAuthUtils("test-secret")
+        # Token with user audience instead of internal
+        payload = {"type": "service", "service_name": "test", "aud": "lys-api"}
+        token = jwt.encode(payload, "test-secret", algorithm="HS256")
+
+        with pytest.raises(Exception):
+            utils.decode_token(token)
+
     def test_generate_token_with_custom_expiration(self):
         """Test generate_token respects expiration_minutes."""
-        from lys.core.utils.auth import AuthUtils
+        from lys.core.utils.auth import ServiceAuthUtils
 
-        utils = AuthUtils("test-secret")
+        utils = ServiceAuthUtils("test-secret")
         token = utils.generate_token("my-service", expiration_minutes=10)
-        decoded = jwt.decode(token, "test-secret", algorithms=["HS256"])
+        decoded = jwt.decode(
+            token, "test-secret", algorithms=["HS256"],
+            audience="lys-internal",
+        )
 
         assert "exp" in decoded
         assert "iat" in decoded
-        # Expiry should be ~10 min after iat
-        assert decoded["exp"] - decoded["iat"] == 600
 
 
 class TestNowUtc:

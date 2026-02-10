@@ -10,11 +10,12 @@ from jwt import ExpiredSignatureError, InvalidTokenError
 from lys.core.utils.datetime import now_utc
 
 
-class AuthUtils:
+class ServiceAuthUtils:
     """Utility class for service-to-service JWT operations."""
 
     ALGORITHM = "HS256"
     TOKEN_TYPE = "service"
+    INTERNAL_AUDIENCE = "lys-internal"
 
     def __init__(self, secret_key: str):
         """
@@ -42,6 +43,8 @@ class AuthUtils:
             "service_name": service_name,
             "iat": now,
             "exp": now + timedelta(minutes=expiration_minutes),
+            "iss": service_name,
+            "aud": self.INTERNAL_AUDIENCE,
         }
 
         return jwt.encode(payload, self.secret_key, algorithm=self.ALGORITHM)
@@ -60,7 +63,13 @@ class AuthUtils:
             ExpiredSignatureError: Token has expired
             InvalidTokenError: Token is invalid or not a service token
         """
-        payload = jwt.decode(token, self.secret_key, algorithms=[self.ALGORITHM])
+        payload = jwt.decode(
+            token,
+            self.secret_key,
+            algorithms=[self.ALGORITHM],
+            audience=self.INTERNAL_AUDIENCE,
+            options={"verify_aud": True},
+        )
 
         if payload.get("type") != self.TOKEN_TYPE:
             raise InvalidTokenError("Not a service token")

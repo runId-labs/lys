@@ -24,7 +24,7 @@ class TestFetchGraphQL:
             mock_client.post.return_value = mock_response
             MockClient.return_value.__aenter__.return_value = mock_client
 
-            with patch("lys.core.graphql.client.AuthUtils") as MockAuth:
+            with patch("lys.core.graphql.client.ServiceAuthUtils") as MockAuth:
                 mock_auth = MagicMock()
                 mock_auth.generate_token.return_value = "test-token"
                 MockAuth.return_value = mock_auth
@@ -50,7 +50,7 @@ class TestFetchGraphQL:
             mock_client.post.return_value = mock_response
             MockClient.return_value.__aenter__.return_value = mock_client
 
-            with patch("lys.core.graphql.client.AuthUtils") as MockAuth:
+            with patch("lys.core.graphql.client.ServiceAuthUtils") as MockAuth:
                 mock_auth = MagicMock()
                 mock_auth.generate_token.return_value = "test-token"
                 MockAuth.return_value = mock_auth
@@ -100,7 +100,7 @@ class TestGraphQLClient:
     @pytest.fixture
     def client(self):
         """Create a GraphQLClient instance for testing."""
-        with patch("lys.core.graphql.client.AuthUtils") as MockAuth:
+        with patch("lys.core.graphql.client.ServiceAuthUtils") as MockAuth:
             mock_auth = MagicMock()
             mock_auth.generate_token.return_value = "test-token"
             MockAuth.return_value = mock_auth
@@ -237,7 +237,7 @@ class TestVerifySSL:
 
     def test_graphql_client_default_verify_ssl_true(self):
         """Test that GraphQLClient defaults verify_ssl to True."""
-        with patch("lys.core.graphql.client.AuthUtils"):
+        with patch("lys.core.graphql.client.ServiceAuthUtils"):
             client = GraphQLClient(
                 url="http://gateway/graphql",
                 secret_key="secret",
@@ -247,7 +247,7 @@ class TestVerifySSL:
 
     def test_graphql_client_verify_ssl_false(self):
         """Test that GraphQLClient stores verify_ssl=False."""
-        with patch("lys.core.graphql.client.AuthUtils"):
+        with patch("lys.core.graphql.client.ServiceAuthUtils"):
             client = GraphQLClient(
                 url="http://gateway/graphql",
                 secret_key="secret",
@@ -259,7 +259,7 @@ class TestVerifySSL:
     @pytest.mark.asyncio
     async def test_execute_passes_verify_ssl_to_httpx(self):
         """Test that execute passes verify_ssl to httpx.AsyncClient."""
-        with patch("lys.core.graphql.client.AuthUtils") as MockAuth:
+        with patch("lys.core.graphql.client.ServiceAuthUtils") as MockAuth:
             mock_auth = MagicMock()
             mock_auth.generate_token.return_value = "token"
             MockAuth.return_value = mock_auth
@@ -285,7 +285,7 @@ class TestVerifySSL:
 
     def test_execute_sync_passes_verify_ssl_to_httpx(self):
         """Test that execute_sync passes verify_ssl to httpx.Client."""
-        with patch("lys.core.graphql.client.AuthUtils") as MockAuth:
+        with patch("lys.core.graphql.client.ServiceAuthUtils") as MockAuth:
             mock_auth = MagicMock()
             mock_auth.generate_token.return_value = "token"
             MockAuth.return_value = mock_auth
@@ -320,7 +320,7 @@ class TestVerifySSL:
             mock_client.post.return_value = mock_response
             MockClient.return_value.__aenter__.return_value = mock_client
 
-            with patch("lys.core.graphql.client.AuthUtils") as MockAuth:
+            with patch("lys.core.graphql.client.ServiceAuthUtils") as MockAuth:
                 mock_auth = MagicMock()
                 mock_auth.generate_token.return_value = "token"
                 MockAuth.return_value = mock_auth
@@ -346,7 +346,7 @@ class TestVerifySSL:
             mock_client.post.return_value = mock_response
             MockClient.return_value.__aenter__.return_value = mock_client
 
-            with patch("lys.core.graphql.client.AuthUtils") as MockAuth:
+            with patch("lys.core.graphql.client.ServiceAuthUtils") as MockAuth:
                 mock_auth = MagicMock()
                 mock_auth.generate_token.return_value = "token"
                 MockAuth.return_value = mock_auth

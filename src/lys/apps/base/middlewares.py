@@ -12,7 +12,7 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 
 from lys.core.interfaces.middlewares import MiddlewareInterface
-from lys.core.utils.auth import AuthUtils
+from lys.core.utils.auth import ServiceAuthUtils
 from lys.core.utils.manager import AppManagerCallerMixin
 
 
@@ -30,7 +30,7 @@ class ServiceAuthMiddleware(MiddlewareInterface, BaseHTTPMiddleware, AppManagerC
 
     def __init__(self, app):
         BaseHTTPMiddleware.__init__(self, app)
-        self.auth_utils = AuthUtils(self.app_manager.settings.secret_key)
+        self.auth_utils = ServiceAuthUtils(self.app_manager.settings.secret_key)
 
     async def dispatch(self, request: Request, call_next):
         service_caller: Optional[Dict[str, Any]] = None

@@ -11,6 +11,8 @@ from lys.core.utils.manager import AppManagerCallerMixin
 
 class AuthUtils(AppManagerCallerMixin):
     ALLOWED_ALGORITHMS = ["HS256", "HS384", "HS512"]
+    JWT_ISSUER = "lys-auth"
+    API_AUDIENCE = "lys-api"
     def __init__(self):
         app_settings = self.app_manager.settings
         self.secret_key = app_settings.secret_key
@@ -45,8 +47,12 @@ class AuthUtils(AppManagerCallerMixin):
 
     async def encode(self, claims: Dict) -> str:
         """
-        Encode user information to token
+        Encode user information to token.
+
+        Injects iss and aud claims for token type separation (C2 security fix).
         """
+        claims["iss"] = self.JWT_ISSUER
+        claims["aud"] = self.API_AUDIENCE
         return jwt.encode(
             claims,
             self.secret_key,
@@ -55,7 +61,9 @@ class AuthUtils(AppManagerCallerMixin):
 
     async def decode(self, access_token: str) -> Dict:
         """
-        Decode JWT token with proper error handling
+        Decode JWT token with proper error handling.
+
+        Validates iss and aud claims to prevent cross-token-type usage (C2 security fix).
 
         Args:
             access_token: JWT token string to decode
@@ -65,7 +73,7 @@ class AuthUtils(AppManagerCallerMixin):
 
         Raises:
             ExpiredSignatureError: Token has expired
-            InvalidTokenError: Token is invalid
+            InvalidTokenError: Token is invalid (includes wrong aud/iss)
             DecodeError: Token cannot be decoded
         """
         algorithm = self.config.get("encryption_algorithm", "HS256")
@@ -73,5 +81,11 @@ class AuthUtils(AppManagerCallerMixin):
         return jwt.decode(
             access_token,
             self.secret_key,
-            algorithms=[algorithm]  # Use list for security (explicit algorithm)
+            algorithms=[algorithm],
+            audience=self.API_AUDIENCE,
+            issuer=self.JWT_ISSUER,
+            options={
+                "verify_aud": True,
+                "verify_iss": True,
+            }
         )
