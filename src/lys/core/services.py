@@ -134,22 +134,25 @@ class EntityService(Generic[T], EntityServiceInterface, Service):
 
     @classmethod
     def _filter_allowed_fields(cls, kwargs: dict) -> dict:
-        """Filter kwargs to only allow fields that are actual columns on the entity.
+        """Filter kwargs to only allow fields that are actual columns or relationships on the entity.
 
-        Introspects the entity's __table__.columns to determine valid fields.
-        Rejects relationships, hybrid properties, and any non-column attributes.
+        Introspects the entity's __table__.columns and mapper relationships to determine
+        valid fields. Rejects hybrid properties and any non-mapped attributes.
 
         Args:
             kwargs: Field name/value pairs to filter
 
         Returns:
-            Filtered dict containing only valid column fields
+            Filtered dict containing only valid column and relationship fields
         """
         allowed = {c.name for c in cls.entity_class.__table__.columns}
+        from sqlalchemy import inspect as sa_inspect
+        mapper = sa_inspect(cls.entity_class)
+        allowed |= set(mapper.relationships.keys())
         unexpected = set(kwargs.keys()) - allowed
         if unexpected:
             logger.warning(
-                "Unexpected fields in %s: %s. Allowed columns: %s",
+                "Unexpected fields in %s: %s. Allowed fields: %s",
                 cls.__name__, unexpected, allowed
             )
             return {k: v for k, v in kwargs.items() if k in allowed}

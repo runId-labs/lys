@@ -91,7 +91,7 @@ class TestRegisterDowngraderDecorator:
     def test_decorator_returns_original_function(self):
         from lys.apps.licensing.registries import register_downgrader
 
-        async def my_downgrader(session, client_id, app_id, new_limit):
+        def my_downgrader(session, client_id, app_id, new_limit):
             return True
 
         with patch("lys.apps.licensing.registries.LysAppRegistry") as mock_registry_cls:
@@ -103,7 +103,7 @@ class TestRegisterDowngraderDecorator:
     def test_decorator_registers_with_registry(self):
         from lys.apps.licensing.registries import register_downgrader
 
-        async def my_downgrader(session, client_id, app_id, new_limit):
+        def my_downgrader(session, client_id, app_id, new_limit):
             return True
 
         mock_registry = MagicMock()

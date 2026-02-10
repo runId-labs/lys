@@ -109,10 +109,10 @@ class TestLicenseCheckerServiceAsyncDatabaseMethods:
         assert "new_plan_version_id" in params
         assert "session" in params
 
-    def test_execute_downgrade_exists_and_is_async(self):
+    def test_execute_downgrade_exists_and_is_sync(self):
         from lys.apps.licensing.modules.checker.services import LicenseCheckerService
         assert hasattr(LicenseCheckerService, "execute_downgrade")
-        assert inspect.iscoroutinefunction(LicenseCheckerService.execute_downgrade)
+        assert not inspect.iscoroutinefunction(LicenseCheckerService.execute_downgrade)
 
     def test_execute_downgrade_signature(self):
         from lys.apps.licensing.modules.checker.services import LicenseCheckerService

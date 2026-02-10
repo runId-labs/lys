@@ -140,6 +140,7 @@ async def e2e_app():
         login_rate_limit_enabled=False,
         refresh_token_used_once=False,
         check_xsrf_token=False,
+        cookie_secure=False,
     )
     settings.configure_plugin(
         "cors",
@@ -179,6 +180,18 @@ async def e2e_app():
     # Manually run startup tasks (bypass ASGI lifespan)
     await app_manager.database.initialize_database()
     await app_manager._load_fixtures_in_order()
+
+    # Reset dev fixture passwords to known values for E2E testing.
+    # H6 security fix makes format_password() generate random passwords,
+    # so we need to set them to DEV_USER_PASSWORD after fixture loading.
+    from lys.apps.user_auth.utils import AuthUtils
+    hashed = AuthUtils.hash_password(DEV_USER_PASSWORD)
+    user_service = app_manager.get_service("user")
+    async with app_manager.database.get_session() as session:
+        for email in [ENABLED_USER_EMAIL, DISABLED_USER_EMAIL, SUPER_USER_EMAIL]:
+            user = await user_service.get_by_email(email, session)
+            if user:
+                user.password = hashed
 
     yield app, app_manager
 

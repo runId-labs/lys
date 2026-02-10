@@ -59,6 +59,17 @@ def apply_pending_plan_changes():
                     subscription.provider_subscription_id = None
                     subscription.canceled_at = None
 
+                # Execute downgrade actions for quota rules
+                checker_service = app_manager.get_service("license_checker")
+                downgrade_results = checker_service.execute_downgrade(
+                    subscription.client_id, new_plan_version_id, session
+                )
+                if downgrade_results:
+                    logger.info(
+                        f"Downgrade results for subscription {subscription.id}: "
+                        f"{downgrade_results}"
+                    )
+
                 logger.info(
                     f"Applied pending plan change for subscription {subscription.id}: "
                     f"{old_plan_version_id} -> {new_plan_version_id}"

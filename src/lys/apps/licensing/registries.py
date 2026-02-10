@@ -9,6 +9,7 @@ This module defines:
 from typing import Callable, Awaitable
 
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import Session
 
 from lys.core.registries import CustomRegistry, LysAppRegistry
 
@@ -19,8 +20,8 @@ ValidatorFunc = Callable[
     Awaitable[tuple[bool, int, int]]
 ]
 DowngraderFunc = Callable[
-    [AsyncSession, str, str, int],  # session, client_id, app_id, new_limit
-    Awaitable[bool]
+    [Session, str, str, int],  # session, client_id, app_id, new_limit
+    bool
 ]
 
 
@@ -47,13 +48,13 @@ class DowngraderRegistry(CustomRegistry):
     """
     Registry for license rule downgraders.
 
-    Downgraders are functions that adjust data when a client downgrades
-    to a plan with lower limits.
+    Downgraders are synchronous functions that adjust data when a client
+    downgrades to a plan with lower limits. They run inside Celery tasks.
     File loaded: downgraders.py in each module.
 
     Downgrader signature:
-        async def downgrade_xxx(
-            session: AsyncSession,
+        def downgrade_xxx(
+            session: Session,
             client_id: str,
             app_id: str,
             new_limit: int
@@ -90,7 +91,7 @@ def register_downgrader(rule_id: str):
 
     Usage:
         @register_downgrader("MAX_USERS")
-        async def downgrade_max_users(session, client_id, app_id, new_limit):
+        def downgrade_max_users(session, client_id, app_id, new_limit):
             ...
 
     Args:

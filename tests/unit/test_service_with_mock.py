@@ -36,39 +36,6 @@ class TestLanguageServiceWithMock:
         entity_class = LanguageService.entity_class
         assert entity_class == Language
 
-    @pytest.mark.skip(reason="SQLAlchemy CRUD methods require real database - use integration tests instead")
-    @pytest.mark.asyncio
-    async def test_service_get_by_id_with_mock_session(self):
-        """
-        Test LanguageService.get_by_id with mocked database session.
-
-        NOTE: This test is skipped because SQLAlchemy CRUD methods (get_by_id, create, etc.)
-        require a properly configured database context. These should be tested as
-        integration tests with a real SQLite in-memory database, not as unit tests.
-
-        The mock strategy works for:
-        - Accessing entity_class property
-        - Testing business logic that doesn't use SQLAlchemy queries
-        - Testing service methods that delegate to other services
-
-        For CRUD testing, see: tests/integration/test_services.py
-        """
-        pass
-
-    @pytest.mark.skip(reason="SQLAlchemy entity instantiation requires real database context - use integration tests")
-    @pytest.mark.asyncio
-    async def test_service_create_with_mock_session(self):
-        """
-        Test LanguageService.create with mocked database session.
-
-        NOTE: This test is skipped because SQLAlchemy entities cannot be instantiated
-        without a proper database session and mapping context.
-
-        For CRUD testing, use integration tests with real SQLite database.
-        See: tests/integration/test_services.py
-        """
-        pass
-
     def test_multiple_services_share_mock(self):
         """
         Test that multiple services can share the same MockAppManager.

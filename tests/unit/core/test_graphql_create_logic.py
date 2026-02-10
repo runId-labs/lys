@@ -42,6 +42,7 @@ class TestCreationResolverGenerator:
 
         mock_info = MagicMock()
         mock_session = AsyncMock()
+        mock_session.add = MagicMock()  # add() is synchronous on AsyncSession
         mock_info.context.session = mock_session
 
         with patch("lys.core.graphql.create.check_access_to_object", new_callable=AsyncMock) as mock_check:
@@ -97,7 +98,9 @@ class TestCreationResolverGenerator:
         inner = _creation_resolver_generator(resolver_func, mock_ensure_type)
 
         mock_info = MagicMock()
-        mock_info.context.session = AsyncMock()
+        mock_session = AsyncMock()
+        mock_session.add = MagicMock()  # add() is synchronous on AsyncSession
+        mock_info.context.session = mock_session
 
         with patch("lys.core.graphql.create.check_access_to_object", new_callable=AsyncMock):
             loop = asyncio.new_event_loop()

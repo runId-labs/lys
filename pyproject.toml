@@ -56,6 +56,10 @@ asyncio_mode = "strict"
 markers = [
     "forked: mark test to run in a forked subprocess for isolation"
 ]
+filterwarnings = [
+    "ignore::ResourceWarning",
+    "ignore:Argument name-based matching of 'info' is deprecated:DeprecationWarning",
+]
 
 [tool.coverage.run]
 source = ["src/lys"]

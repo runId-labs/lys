@@ -460,14 +460,15 @@ class TestAuthServiceAuthenticationFlow:
 
     @pytest.mark.asyncio
     async def test_authenticate_user_with_nonexistent_user(self, user_auth_app_manager):
-        """Test authentication with nonexistent user returns None."""
+        """Test authentication with nonexistent user raises INVALID_CREDENTIALS_ERROR."""
         auth_service = user_auth_app_manager.get_service("auth")
 
         async with user_auth_app_manager.database.get_session() as session:
-            # Try to authenticate nonexistent user
-            result = await auth_service.authenticate_user("nonexistent@example.com", "Password123!", session)
+            # Try to authenticate nonexistent user - should raise (prevents user enumeration)
+            with pytest.raises(LysError) as exc_info:
+                await auth_service.authenticate_user("nonexistent@example.com", "Password123!", session)
 
-            assert result is None
+            assert exc_info.value.status_code == INVALID_CREDENTIALS_ERROR[0]
 
     @pytest.mark.asyncio
     async def test_authenticate_user_with_disabled_user(self, user_auth_app_manager):

@@ -57,7 +57,7 @@ class TestLicenseCheckerServiceStructure:
     def test_has_execute_downgrade_method(self):
         from lys.apps.licensing.modules.checker.services import LicenseCheckerService
         assert hasattr(LicenseCheckerService, "execute_downgrade")
-        assert inspect.iscoroutinefunction(LicenseCheckerService.execute_downgrade)
+        assert not inspect.iscoroutinefunction(LicenseCheckerService.execute_downgrade)
 
     def test_has_check_subscription_from_claims(self):
         from lys.apps.licensing.modules.checker.services import LicenseCheckerService

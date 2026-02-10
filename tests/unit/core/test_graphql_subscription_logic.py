@@ -59,6 +59,7 @@ class TestLysSubscriptionInnerResolver:
                         pass
 
             loop.run_until_complete(consume())
+            loop.run_until_complete(loop.shutdown_asyncgens())
         finally:
             loop.close()
 

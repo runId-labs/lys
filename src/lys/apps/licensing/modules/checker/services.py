@@ -11,7 +11,9 @@ Supports two modes:
 import logging
 from typing import Dict, Any, List, Optional, Tuple
 
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import Session
 
 from lys.apps.licensing.errors import (
     NO_ACTIVE_SUBSCRIPTION,
@@ -338,47 +340,55 @@ class LicenseCheckerService(Service):
         return violations
 
     @classmethod
-    async def execute_downgrade(
+    def execute_downgrade(
         cls,
         client_id: str,
         new_plan_version_id: str,
-        session: AsyncSession
+        session: Session
     ) -> List[Dict[str, Any]]:
         """
         Execute downgrade actions for all violated rules.
 
-        Calls the downgrader for each rule that exceeds the new plan's limits.
+        This is a synchronous method intended to be called from Celery tasks.
+        It fetches the new plan's rules directly via sync queries and calls
+        registered downgraders for each quota rule.
 
         Args:
             client_id: Client ID
             new_plan_version_id: Target plan version ID
-            session: Database session
+            session: Sync database session
 
         Returns:
             List of downgrade results
         """
         results = []
 
-        # Get violations
-        violations = await cls.validate_downgrade(client_id, new_plan_version_id, session)
+        # Get new plan version rules (sync query)
+        version_rule_entity = cls.app_manager.get_entity("license_plan_version_rule")
+        stmt = select(version_rule_entity).where(
+            version_rule_entity.plan_version_id == new_plan_version_id
+        )
+        new_rules = list(session.execute(stmt).scalars().all())
 
         # Get app_id from the new plan version
         plan_version_entity = cls.app_manager.get_entity("license_plan_version")
-        new_plan_version = await session.get(plan_version_entity, new_plan_version_id)
-        await session.refresh(new_plan_version, ["plan"])
+        new_plan_version = session.get(plan_version_entity, new_plan_version_id)
         app_id = new_plan_version.plan.app_id
 
         # Get downgraders registry
         downgraders_registry = cls.app_manager.registry.get_registry("downgraders")
 
-        for violation in violations:
-            rule_id = violation["rule_id"]
-            new_limit = violation["new_limit"]
+        for rule in new_rules:
+            if rule.limit_value is None:
+                continue  # Skip feature toggles
+
+            rule_id = rule.rule_id
+            new_limit = rule.limit_value
 
             if downgraders_registry:
                 downgrader = downgraders_registry.get(rule_id)
                 if downgrader:
-                    success = await downgrader(session, client_id, app_id, new_limit)
+                    success = downgrader(session, client_id, app_id, new_limit)
                     results.append({
                         "rule_id": rule_id,
                         "success": success,

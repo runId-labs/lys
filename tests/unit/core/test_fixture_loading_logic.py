@@ -38,6 +38,7 @@ def _run(coro):
 def _make_session():
     """Create a mock AsyncSession."""
     session = AsyncMock()
+    session.add = MagicMock()  # add() is synchronous on AsyncSession
     session.new = set()
     session.dirty = set()
     session.deleted = set()

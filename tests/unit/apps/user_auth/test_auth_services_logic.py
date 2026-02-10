@@ -232,6 +232,7 @@ class TestAuthenticateUserAntiEnumeration:
         from lys.apps.user_auth.modules.auth.consts import FAILED_LOGIN_ATTEMPT_STATUS
 
         mock_session = AsyncMock()
+        mock_session.add = MagicMock()  # add() is synchronous on AsyncSession
         mock_user = Mock()
         mock_user.id = "user-1"
         mock_user.status_id = "ENABLED"
