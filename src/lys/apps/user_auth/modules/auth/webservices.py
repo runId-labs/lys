@@ -71,7 +71,7 @@ class AuthTokenMutation(Mutation):
             )
 
         try:
-            refresh_token_used_once = auth_utils.config.get("refresh_token_used_once", False)
+            refresh_token_used_once = auth_utils.config.get("refresh_token_used_once", True)
             if refresh_token_used_once:
                 refresh_token = await refresh_token_service.refresh(
                     GetUserRefreshTokenInputModel(refresh_token_id=refresh_token_id),
