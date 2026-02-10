@@ -1,3 +1,4 @@
+import logging
 from typing import Type, Optional
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -7,6 +8,8 @@ from lys.core.contexts import Context
 from lys.core.errors import LysError
 from lys.core.interfaces.entities import EntityInterface
 from lys.core.interfaces.services import EntityServiceInterface
+
+logger = logging.getLogger(__name__)
 
 
 async def check_access_to_object(entity_obj: EntityInterface, context: Context) -> bool:
@@ -18,6 +21,13 @@ async def check_access_to_object(entity_obj: EntityInterface, context: Context) 
         raise LysError(
             PERMISSION_DENIED_ERROR,
             "check_permission return False"
+        )
+
+    if getattr(entity_obj, "_sensitive", False):
+        logger.info(
+            "AUDIT: Access to %s (id=%s) by user=%s via webservice=%s with access_type=%s",
+            entity_obj.__class__.__name__, getattr(entity_obj, "id", "?"),
+            connected_user_id, getattr(context, "webservice_name", None), access_type
         )
 
     return True

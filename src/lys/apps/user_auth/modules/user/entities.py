@@ -60,6 +60,7 @@ class User(Entity):
     User entity
     """
     __tablename__ = "user"
+    _sensitive = True
 
     password: Mapped[str] = mapped_column(nullable=True)
     is_super_user: Mapped[bool] = mapped_column(nullable=False, default=False)
@@ -132,6 +133,7 @@ class UserPrivateData(Entity):
     - Easy to delete/anonymize without affecting user account
     """
     __tablename__ = "user_private_data"
+    _sensitive = True
 
     user_id: Mapped[str] = mapped_column(
         ForeignKey("user.id", ondelete='CASCADE'),

@@ -249,6 +249,7 @@ class TestAddAccessConstraints:
 
         context = MagicMock()
         context.access_type = True
+        context.connected_user = None
 
         app_manager = MagicMock()
         stmt = MagicMock()
@@ -257,6 +258,69 @@ class TestAddAccessConstraints:
 
         # True access → no WHERE clause added
         assert result == stmt
+
+    async def test_sensitive_entity_list_access_is_logged(self, caplog):
+        """Test that list access to a sensitive entity produces an audit log."""
+        from lys.core.permissions import add_access_constraints
+
+        entity_class = MagicMock()
+        entity_class.__name__ = "User"
+        entity_class._sensitive = True
+
+        context = MagicMock()
+        context.access_type = True
+        context.connected_user = {"sub": "user-123"}
+        context.webservice_name = "all_users"
+
+        app_manager = MagicMock()
+        stmt = MagicMock()
+
+        with caplog.at_level("INFO", logger="lys.core.permissions"):
+            await add_access_constraints(stmt, context, entity_class, app_manager)
+
+        assert any("AUDIT: List access to User" in msg for msg in caplog.messages)
+        assert any("user=user-123" in msg for msg in caplog.messages)
+        assert any("webservice=all_users" in msg for msg in caplog.messages)
+
+    async def test_non_sensitive_entity_list_access_not_logged(self, caplog):
+        """Test that list access to a non-sensitive entity does not log."""
+        from lys.core.permissions import add_access_constraints
+
+        entity_class = MagicMock()
+        entity_class.__name__ = "Invoice"
+        entity_class._sensitive = False
+
+        context = MagicMock()
+        context.access_type = True
+        context.connected_user = {"sub": "user-123"}
+
+        app_manager = MagicMock()
+        stmt = MagicMock()
+
+        with caplog.at_level("INFO", logger="lys.core.permissions"):
+            await add_access_constraints(stmt, context, entity_class, app_manager)
+
+        assert not any("AUDIT" in msg for msg in caplog.messages)
+
+    async def test_false_access_sensitive_entity_not_logged(self, caplog):
+        """Test that denied list access to a sensitive entity is not logged."""
+        from lys.core.permissions import add_access_constraints
+
+        entity_class = MagicMock()
+        entity_class.__name__ = "User"
+        entity_class._sensitive = True
+
+        context = MagicMock()
+        context.access_type = False
+        context.connected_user = {"sub": "user-123"}
+
+        app_manager = MagicMock()
+        stmt = MagicMock()
+
+        with caplog.at_level("INFO", logger="lys.core.permissions"):
+            await add_access_constraints(stmt, context, entity_class, app_manager)
+
+        assert not any("AUDIT" in msg for msg in caplog.messages)
 
 
 @pytest.mark.asyncio
@@ -269,6 +333,7 @@ class TestCheckAccessToObject:
 
         entity_obj = MagicMock()
         entity_obj.check_permission.return_value = True
+        entity_obj._sensitive = False
 
         context = MagicMock()
         context.connected_user = {"sub": "user-123"}
@@ -284,6 +349,7 @@ class TestCheckAccessToObject:
 
         entity_obj = MagicMock()
         entity_obj.check_permission.return_value = False
+        entity_obj._sensitive = False
 
         context = MagicMock()
         context.connected_user = {"sub": "user-123"}
@@ -298,6 +364,7 @@ class TestCheckAccessToObject:
 
         entity_obj = MagicMock()
         entity_obj.check_permission.return_value = True
+        entity_obj._sensitive = False
 
         context = MagicMock()
         context.connected_user = None
@@ -306,6 +373,104 @@ class TestCheckAccessToObject:
         result = await check_access_to_object(entity_obj, context)
         assert result is True
         entity_obj.check_permission.assert_called_once_with(None, True)
+
+    async def test_sensitive_entity_access_is_logged(self, caplog):
+        """Test that accessing a sensitive entity produces an audit log after permission check."""
+        from lys.core.utils.access import check_access_to_object
+
+        entity_obj = MagicMock()
+        entity_obj.__class__.__name__ = "UserPrivateData"
+        entity_obj._sensitive = True
+        entity_obj.id = "entity-456"
+        entity_obj.check_permission.return_value = True
+
+        context = MagicMock()
+        context.connected_user = {"sub": "user-123"}
+        context.access_type = True
+
+        with caplog.at_level("INFO", logger="lys.core.utils.access"):
+            await check_access_to_object(entity_obj, context)
+
+        assert any("AUDIT: Access to UserPrivateData" in msg for msg in caplog.messages)
+        assert any("user=user-123" in msg for msg in caplog.messages)
+        assert any("id=entity-456" in msg for msg in caplog.messages)
+
+    async def test_non_sensitive_entity_access_not_logged(self, caplog):
+        """Test that accessing a non-sensitive entity does not produce an audit log."""
+        from lys.core.utils.access import check_access_to_object
+
+        entity_obj = MagicMock()
+        entity_obj._sensitive = False
+        entity_obj.check_permission.return_value = True
+
+        context = MagicMock()
+        context.connected_user = {"sub": "user-123"}
+        context.access_type = True
+
+        with caplog.at_level("INFO", logger="lys.core.utils.access"):
+            await check_access_to_object(entity_obj, context)
+
+        assert not any("AUDIT" in msg for msg in caplog.messages)
+
+    async def test_sensitive_entity_denied_not_logged(self, caplog):
+        """Test that denied access to a sensitive entity is not logged."""
+        from lys.core.utils.access import check_access_to_object
+        from lys.core.errors import LysError
+
+        entity_obj = MagicMock()
+        entity_obj.__class__.__name__ = "User"
+        entity_obj._sensitive = True
+        entity_obj.check_permission.return_value = False
+
+        context = MagicMock()
+        context.connected_user = {"sub": "user-123"}
+        context.access_type = True
+
+        with caplog.at_level("INFO", logger="lys.core.utils.access"):
+            with pytest.raises(LysError):
+                await check_access_to_object(entity_obj, context)
+
+        assert not any("AUDIT" in msg for msg in caplog.messages)
+
+    async def test_sensitive_entity_anonymous_access_is_logged(self, caplog):
+        """Test that anonymous access to a sensitive entity is still logged."""
+        from lys.core.utils.access import check_access_to_object
+
+        entity_obj = MagicMock()
+        entity_obj.__class__.__name__ = "User"
+        entity_obj._sensitive = True
+        entity_obj.id = "entity-789"
+        entity_obj.check_permission.return_value = True
+
+        context = MagicMock()
+        context.connected_user = None
+        context.access_type = True
+
+        with caplog.at_level("INFO", logger="lys.core.utils.access"):
+            await check_access_to_object(entity_obj, context)
+
+        assert any("AUDIT: Access to User" in msg for msg in caplog.messages)
+        assert any("user=None" in msg for msg in caplog.messages)
+
+    async def test_sensitive_entity_log_includes_webservice(self, caplog):
+        """Test that audit log includes the webservice name."""
+        from lys.core.utils.access import check_access_to_object
+
+        entity_obj = MagicMock()
+        entity_obj.__class__.__name__ = "UserPrivateData"
+        entity_obj._sensitive = True
+        entity_obj.id = "entity-456"
+        entity_obj.check_permission.return_value = True
+
+        context = MagicMock()
+        context.connected_user = {"sub": "user-123"}
+        context.access_type = True
+        context.webservice_name = "get_user_private_data"
+
+        with caplog.at_level("INFO", logger="lys.core.utils.access"):
+            await check_access_to_object(entity_obj, context)
+
+        assert any("webservice=get_user_private_data" in msg for msg in caplog.messages)
 
     async def test_get_db_object_not_found_raises(self):
         """Test get_db_object_and_check_access raises for missing entity."""

@@ -1,5 +1,6 @@
 import dataclasses
 import inspect
+import logging
 from typing import Annotated, Optional, Callable, List, Any, Union, Mapping, Sequence, Literal, Type, get_origin, get_args
 
 import strawberry
@@ -12,6 +13,8 @@ from lys.core.graphql.nodes import EntityNode, ServiceNode, ServiceNodeMixin
 from lys.core.permissions import generate_webservice_permission
 from lys.core.registries import AppRegistry, register_webservice
 from lys.core.utils.webservice import WebserviceIsPublicType, format_filed_description
+
+logger = logging.getLogger(__name__)
 
 
 def _create_strawberry_field_config(
@@ -155,6 +158,17 @@ def lys_field(
     def _resolver_generator(resolver: Callable, ensure_type_: Type[ServiceNodeMixin]):
         async def inner_resolver(self, *args, info: Info, **kwargs) -> ServiceNodeMixin:
             info.context.app_manager = ensure_type_.app_manager
+
+            # Audit log for lys_field accessing sensitive entities
+            entity_class = getattr(ensure_type_.service_class, "entity_class", None)
+            if entity_class is not None and getattr(entity_class, "_sensitive", False):
+                connected_user = info.context.connected_user
+                logger.info(
+                    "AUDIT: Field access to %s by user=%s via webservice=%s",
+                    entity_class.__name__,
+                    connected_user.get("sub") if connected_user else None,
+                    info.context.webservice_name
+                )
 
             async def resolve_node():
                 node = await resolver(self, *args, info=info, **kwargs)

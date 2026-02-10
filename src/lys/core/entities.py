@@ -14,6 +14,10 @@ class Entity(EntityInterface):
     __tablename__: str
     __abstract__: bool = True
 
+    # Set to True on entities containing private/sensitive data (e.g., User, UserPrivateData).
+    # When True, access attempts are logged for audit purposes.
+    _sensitive: bool = False
+
     def __init_subclass__(cls, **kwargs):
         """
         Ensure all subclasses are marked as abstract by default.

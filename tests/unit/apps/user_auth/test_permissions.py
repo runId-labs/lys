@@ -217,6 +217,8 @@ class TestJWTPermissionAddStatementAccessConstraints:
     def mock_entity_class(self):
         """Create mock entity class with user_accessing_filters."""
         entity = MagicMock()
+        entity.__name__ = "MockEntity"
+        entity._sensitive = False
         entity.user_accessing_filters.return_value = (MagicMock(), [MagicMock()])
         return entity
 

@@ -26,6 +26,8 @@ from lys.core.interfaces.entities import EntityInterface
 from lys.core.managers.app import AppManager
 from lys.core.utils.manager import AppManagerCallerMixin
 
+logger = logging.getLogger(__name__)
+
 
 async def get_access_type(app_manager, webservice_id: str,
                           context: Context) -> tuple[dict | bool, tuple[int, str]]:
@@ -169,6 +171,7 @@ def generate_webservice_permission(
 
                 # Populate context for downstream GraphQL resolvers
                 context.access_type = access_type
+                context.webservice_name = webservice_id
 
                 # Convert to boolean for the Strawberry GraphQL framework
                 return bool(access_type)
@@ -198,18 +201,29 @@ async def add_access_constraints(
     :return:
     """
     access_type = context.access_type
+    connected_user_id = context.connected_user.get("sub") if context.connected_user else None
 
     # if no access, return nothing
     if access_type is False:
         stmt = stmt.where(false())
-    # access_type is a dictionary
-    elif isinstance(access_type, dict):
-        or_where = false()
+    else:
+        # Audit log list access to sensitive entities (access is granted at this point)
+        if entity_class is not None and getattr(entity_class, "_sensitive", False):
+            logger.info(
+                "AUDIT: List access to %s by user=%s via webservice=%s with access_type=%s",
+                entity_class.__name__, connected_user_id,
+                context.webservice_name, access_type
+            )
 
-        # check all permission
-        for permission in app_manager.permissions:
-            stmt, or_where = await permission.add_statement_access_constraints(stmt, or_where, context, entity_class)
+        # access_type is a dictionary
+        if isinstance(access_type, dict):
+            or_where = false()
 
-        stmt = stmt.where(or_where)
+            # check all permission
+            for permission in app_manager.permissions:
+                stmt, or_where = await permission.add_statement_access_constraints(stmt, or_where, context,
+                                                                                   entity_class)
+
+            stmt = stmt.where(or_where)
 
     return stmt
