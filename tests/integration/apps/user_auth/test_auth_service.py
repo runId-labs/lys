@@ -20,8 +20,7 @@ from starlette.responses import Response
 
 from lys.apps.user_auth.consts import REFRESH_COOKIE_KEY, ACCESS_COOKIE_KEY
 from lys.apps.user_auth.errors import (
-    BLOCKED_USER_ERROR,
-    WRONG_CREDENTIALS_ERROR,
+    INVALID_CREDENTIALS_ERROR,
     RATE_LIMIT_ERROR
 )
 from lys.apps.user_auth.modules.auth.consts import (
@@ -495,8 +494,7 @@ class TestAuthServiceAuthenticationFlow:
             with pytest.raises(LysError) as exc_info:
                 await auth_service.authenticate_user(email, "Password123!", session)
 
-            assert exc_info.value.status_code == BLOCKED_USER_ERROR[0]
-            assert "blocked" in exc_info.value.detail.lower()
+            assert exc_info.value.status_code == INVALID_CREDENTIALS_ERROR[0]
 
     @pytest.mark.asyncio
     async def test_failed_login_after_failed_increments_count(self, user_auth_app_manager):

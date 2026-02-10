@@ -28,7 +28,7 @@ from lys.apps.user_auth.errors import (
     INVALID_USER_STATUS,
     INVALID_STATUS_CHANGE,
     USER_ALREADY_ANONYMIZED,
-    WRONG_CREDENTIALS_ERROR
+    INVALID_CREDENTIALS_ERROR
 )
 from lys.apps.user_auth.modules.user.entities import (
     UserStatus,
@@ -863,7 +863,7 @@ class UserService(EntityService[User]):
         # 1. Verify current password
         if not bcrypt.checkpw(current_password.encode('utf-8'), user.password.encode('utf-8')):
             raise LysError(
-                WRONG_CREDENTIALS_ERROR,
+                INVALID_CREDENTIALS_ERROR,
                 "Current password is incorrect"
             )
 

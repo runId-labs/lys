@@ -110,11 +110,11 @@ class TestAuthenticationErrors:
 
         assert MISSING_REFRESH_TOKEN_ERROR == (401, "MISSING_REFRESH_TOKEN_ERROR")
 
-    def test_wrong_credentials_error(self):
-        """Test WRONG_CREDENTIALS_ERROR is defined with 401 status."""
-        from lys.apps.user_auth.errors import WRONG_CREDENTIALS_ERROR
+    def test_invalid_credentials_error(self):
+        """Test INVALID_CREDENTIALS_ERROR is defined with 401 status."""
+        from lys.apps.user_auth.errors import INVALID_CREDENTIALS_ERROR
 
-        assert WRONG_CREDENTIALS_ERROR == (401, "WRONG_CREDENTIALS_ERROR")
+        assert INVALID_CREDENTIALS_ERROR == (401, "INVALID_CREDENTIALS_ERROR")
 
     def test_wrong_refresh_token_error(self):
         """Test WRONG_REFRESH_TOKEN_ERROR is defined with 401 status."""
@@ -179,7 +179,7 @@ class TestErrorTupleStructure:
             "EMAIL_ALREADY_VALIDATED_ERROR", "INVALID_STATUS_CHANGE",
             "INVALID_USER_STATUS", "INVALID_USER_ID", "USER_ALREADY_ANONYMIZED",
             "ACCESS_DENIED_ERROR", "INVALID_REFRESH_TOKEN_ERROR",
-            "MISSING_REFRESH_TOKEN_ERROR", "WRONG_CREDENTIALS_ERROR",
+            "MISSING_REFRESH_TOKEN_ERROR", "INVALID_CREDENTIALS_ERROR",
             "WRONG_REFRESH_TOKEN_ERROR", "BLOCKED_USER_ERROR",
             "INVALID_XSRF_TOKEN_ERROR", "ALREADY_CONNECTED_ERROR",
             "USER_ALREADY_EXISTS", "RATE_LIMIT_ERROR"
