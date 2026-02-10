@@ -861,18 +861,14 @@ class UserService(EntityService[User]):
             LysError: If current password is incorrect
         """
         # 1. Verify current password
-        if not bcrypt.checkpw(current_password.encode('utf-8'), user.password.encode('utf-8')):
+        if not cls.check_password(user, current_password):
             raise LysError(
                 INVALID_CREDENTIALS_ERROR,
                 "Current password is incorrect"
             )
 
-        # 2. Hash new password
-        salt = bcrypt.gensalt()
-        hashed_password = bcrypt.hashpw(new_password.encode('utf-8'), salt)
-
-        # 3. Update password
-        user.password = hashed_password.decode('utf-8')
+        # 2. Hash and update password using centralized utility
+        user.password = AuthUtils.hash_password(new_password)
 
         return user
 

@@ -303,7 +303,7 @@ class TestUserServicePasswordManagement:
                     session=session
                 )
 
-            assert "WRONG_CREDENTIALS" in str(exc_info.value)
+            assert "INVALID_CREDENTIALS_ERROR" in str(exc_info.value)
 
     @pytest.mark.asyncio
     async def test_request_password_reset_creates_token(self, user_auth_app_manager):

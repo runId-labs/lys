@@ -20,7 +20,7 @@ ready to be adapted and integrated.
 | H4 | [No Validation of JWT Secret Key Strength](#h4-no-validation-of-jwt-secret-key-strength) | HIGH | Before prod |
 | H5 | [IDOR on Organization User Queries](#h5-idor-on-organization-user-queries) | HIGH | Before prod |
 | H6 | [Default Credentials in Fixture Data](#h6-default-credentials-in-fixture-data) | HIGH | Before prod |
-| H7 | [Inconsistent Password Hashing](#h7-inconsistent-password-hashing) | HIGH | Sprint+1 |
+| H7 | [Inconsistent Password Hashing](#h7-inconsistent-password-hashing--done) | HIGH | Sprint+1 |
 | H8 | [Service-to-Service Token Without Instance Identity](#h8-service-to-service-token-without-instance-identity) | HIGH | Sprint+1 |
 | H9 | [No Audit Logging on Private Data Access](#h9-no-audit-logging-on-private-data-access) | HIGH | Sprint+1 |
 | M1 | [Missing HTTP Security Headers](#m1-missing-http-security-headers) | MEDIUM | Before prod |
@@ -846,41 +846,30 @@ This way, even if fixtures load accidentally, the password is random and unknown
 
 ---
 
-## H7. Inconsistent Password Hashing
+## H7. Inconsistent Password Hashing — DONE
 
-**File:** `src/lys/apps/user_auth/modules/user/services.py:864-875`
+**File:** `src/lys/apps/user_auth/modules/user/services.py`
 
 ### The Problem
 
-Password hashing is done two different ways:
+Password hashing was done two different ways:
 - **User creation:** Uses `AuthUtils.hash_password(password)` (centralized)
 - **Password update:** Uses `bcrypt.gensalt()` + `bcrypt.hashpw()` directly (inline)
 
 If `AuthUtils.hash_password()` is later updated (e.g., to increase bcrypt rounds, add
-pepper, or switch to argon2), the inline code in `update_password()` will not benefit
-from the change.
+pepper, or switch to argon2), the inline code in `update_password()` would not benefit
+from the change. Similarly, password verification used inline `bcrypt.checkpw()` instead
+of the existing `cls.check_password()` method.
 
-### Proto Solution
+### Fix Applied
 
-Replace the inline bcrypt call with the centralized utility:
+Replaced both inline bcrypt calls in `update_password()` with the centralized utilities:
 
-```python
-# src/lys/apps/user_auth/modules/user/services.py
+- `bcrypt.checkpw()` replaced with `cls.check_password(user, current_password)`
+- `bcrypt.gensalt()` + `bcrypt.hashpw()` replaced with `AuthUtils.hash_password(new_password)`
 
-@classmethod
-async def update_password(cls, user, current_password, new_password, session):
-    # 1. Verify current password
-    if not cls.check_password(user, current_password):
-        raise LysError(INVALID_PASSWORD_ERROR, "Current password is incorrect")
-
-    # 2. Validate new password
-    validate_password_for_creation(new_password)
-
-    # 3. Hash using centralized utility (SINGLE SOURCE OF TRUTH)
-    user.password = AuthUtils.hash_password(new_password)
-
-    return user
-```
+All password hashing and verification now goes through a single code path, ensuring
+consistency if the algorithm or parameters are changed in the future.
 
 ---
 
@@ -1357,7 +1346,7 @@ def _get_engine_kwargs(self, async_mode: bool = True) -> dict:
 | H4 | Secret key validation at startup | [x] |
 | ~~H5~~ | ~~Explicit organization check on user queries~~ | SKIPPED (covered by C3) |
 | H6 | Random passwords in fixtures + env guard | [x] |
-| H7 | Centralize password hashing | [ ] |
+| H7 | Centralize password hashing | [x] |
 | H8 | Instance identity in service tokens | [ ] |
 | H9 | Audit logging on private data access | [ ] |
 | M1 | Security headers middleware | [ ] |
