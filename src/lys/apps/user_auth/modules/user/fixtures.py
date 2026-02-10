@@ -1,3 +1,5 @@
+import logging
+import secrets
 from uuid import uuid4
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -192,8 +194,17 @@ class UserDevFixtures(EntityFixtures[UserService]):
         return user_email_address_class(id=email_address)
 
     @classmethod
-    async def format_password(cls, password: str) -> str:
-        return AuthUtils.hash_password(password)
+    async def format_password(cls, password: str, attributes: dict) -> str:
+        """Generate a random password and return its bcrypt hash.
+
+        The provided password is ignored — a cryptographically random
+        password is generated to prevent default credentials in dev fixtures.
+        The generated password is logged so developers can use the accounts.
+        """
+        generated = secrets.token_urlsafe(16)
+        email = attributes.get("email_address", "unknown")
+        logging.info(f"Dev fixture password for {email}: {generated}")
+        return AuthUtils.hash_password(generated)
 
     @classmethod
     async def format_private_data(cls, private_data: dict, session: AsyncSession) -> UserPrivateData:

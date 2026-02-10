@@ -3,6 +3,9 @@ Development fixtures for Client entities with licensing.
 
 Creates test client organizations with their owner users and FREE plan subscriptions.
 """
+import logging
+import secrets
+
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from lys.apps.licensing.modules.client.entities import Client
@@ -79,11 +82,14 @@ class ClientDevFixtures(EntityFixtures[ClientService]):
         - Client entity with owner_id set
         - FREE plan subscription
         """
+        password = secrets.token_urlsafe(16)
+        logging.info(f"Dev fixture password for {attributes['owner_email']}: {password}")
+
         return await cls.service.create_client_with_owner(
             session=session,
             client_name=attributes["name"],
             email=attributes["owner_email"],
-            password=attributes["password"],
+            password=password,
             language_id=attributes["language_id"],
             first_name=attributes.get("first_name"),
             last_name=attributes.get("last_name"),

@@ -222,3 +222,68 @@ class TestEntityFixturesMethodSignatures:
         assert "session" in params
         assert "entity_class" in params
         assert "service" in params
+
+
+class TestFormatAttributesLogic:
+    """Tests for _format_attributes kwarg dispatch logic."""
+
+    @pytest.mark.asyncio
+    async def test_passes_attributes_when_annotated(self):
+        """format_ methods annotated with 'attributes: dict' receive the raw attributes dict."""
+        from lys.core.fixtures import EntityFixtures
+        from unittest.mock import AsyncMock, MagicMock
+
+        received = {}
+
+        class FakeFixture(EntityFixtures):
+            @classmethod
+            async def format_password(cls, value: str, attributes: dict) -> str:
+                received["value"] = value
+                received["attributes"] = attributes
+                return "hashed"
+
+        raw = {"password": "secret", "email": "a@b.com"}
+        result = await FakeFixture._format_attributes(raw, session=MagicMock())
+
+        assert result["password"] == "hashed"
+        assert result["email"] == "a@b.com"
+        assert received["value"] == "secret"
+        assert received["attributes"] is raw
+
+    @pytest.mark.asyncio
+    async def test_does_not_pass_attributes_when_not_annotated(self):
+        """format_ methods without 'attributes' annotation do not receive it."""
+        from lys.core.fixtures import EntityFixtures
+        from unittest.mock import MagicMock
+
+        class FakeFixture(EntityFixtures):
+            @classmethod
+            async def format_name(cls, value: str) -> str:
+                return value.upper()
+
+        raw = {"name": "test"}
+        result = await FakeFixture._format_attributes(raw, session=MagicMock())
+        assert result["name"] == "TEST"
+
+    @pytest.mark.asyncio
+    async def test_passes_session_and_attributes_together(self):
+        """format_ methods can receive both session and attributes."""
+        from lys.core.fixtures import EntityFixtures
+        from unittest.mock import MagicMock
+        from sqlalchemy.ext.asyncio import AsyncSession
+
+        received = {}
+
+        class FakeFixture(EntityFixtures):
+            @classmethod
+            async def format_field(cls, value: str, session: AsyncSession, attributes: dict) -> str:
+                received["session"] = session
+                received["attributes"] = attributes
+                return value
+
+        mock_session = MagicMock()
+        raw = {"field": "val"}
+        await FakeFixture._format_attributes(raw, session=mock_session)
+
+        assert received["session"] is mock_session
+        assert received["attributes"] is raw

@@ -133,17 +133,17 @@ class EntityFixtures(Generic[T], AppManagerCallerMixin, EntityFixtureInterface):
             method_name = "format_" + key
             if hasattr(cls, method_name) and callable(getattr(cls, method_name)):
                 method = getattr(cls, method_name)
-                needs_session = check_is_needing_session(method)
-                needs_extra_data = "extra_data" in method.__annotations__
+                annotations = getattr(method, "__annotations__", {})
 
-                if needs_session and needs_extra_data:
-                    formatted_attributes[key] = await method(attribute, session=session, extra_data=extra_data)
-                elif needs_session:
-                    formatted_attributes[key] = await method(attribute, session=session)
-                elif needs_extra_data:
-                    formatted_attributes[key] = await method(attribute, extra_data=extra_data)
-                else:
-                    formatted_attributes[key] = await method(attribute)
+                kwargs = {}
+                if check_is_needing_session(method):
+                    kwargs["session"] = session
+                if "extra_data" in annotations:
+                    kwargs["extra_data"] = extra_data
+                if "attributes" in annotations:
+                    kwargs["attributes"] = attributes
+
+                formatted_attributes[key] = await method(attribute, **kwargs)
             else:
                 formatted_attributes[key] = attribute
 
