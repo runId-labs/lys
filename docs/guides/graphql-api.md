@@ -324,8 +324,7 @@ from lys.core.graphql.create import lys_creation
 class ProductMutation(Mutation):
 
     @lys_creation(
-        ProductNode,
-        CreateProductInput,
+        ensure_type=ProductNode,
         access_levels=[ROLE_ACCESS_LEVEL],
         is_licenced=False,
         description="Create a new product."
@@ -480,7 +479,7 @@ class UpdateProductInput:
 Convert the Strawberry input to a Pydantic model with `to_pydantic()`:
 
 ```python
-@lys_creation(ProductNode, CreateProductInput)
+@lys_creation(ensure_type=ProductNode)
 async def create_product(self, inputs, info):
     input_data = inputs.to_pydantic()  # Pydantic validation runs here
 
@@ -575,8 +574,7 @@ class ProductQuery(Query):
 class ProductMutation(Mutation):
 
     @lys_creation(
-        ProductNode,
-        CreateProductInput,
+        ensure_type=ProductNode,
         access_levels=[ROLE_ACCESS_LEVEL],
         is_licenced=False,
         description="Create a product."

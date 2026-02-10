@@ -7,6 +7,12 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+- Remove incorrect `CreateProductInput` argument from `@lys_creation` examples in README.md and GraphQL API guide
+
+### Added
+- GitHub Actions workflow for automatic PyPI publishing on version tags
+
 ### Changed
 - Optimize CLAUDE.md as compact agent reference with codebase map, registry names, and common imports
 - Add table of contents to 6 documentation files (FRS and guides)

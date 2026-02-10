@@ -273,13 +273,20 @@ class ProductQuery(Query):
 class ProductMutation(Mutation):
 
     @lys_creation(
-        ProductNode,
-        CreateProductInput,
+        ensure_type=ProductNode,
         access_levels=[ROLE_ACCESS_LEVEL],
         description="Create a new product."
     )
     async def create_product(self, inputs, info):
-        pass  # Handled by lys_creation
+        input_data = inputs.to_pydantic()
+        service = info.context.app_manager.get_service("product")
+        return await service.create(
+            info.context.session,
+            name=input_data.name,
+            price=input_data.price,
+            category_id=input_data.category_id,
+            client_id=input_data.client_id,
+        )
 ```
 
 ### 7. Define Fixtures
