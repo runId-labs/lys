@@ -74,7 +74,7 @@ class UserAuthMiddleware(MiddlewareInterface, BaseHTTPMiddleware):
             # XSRF protection is only needed for cookie-based auth (browser requests)
             if jwt_claims:
                 try:
-                    if not token_from_header and self.auth_utils.config.get(AUTH_PLUGIN_CHECK_XSRF_TOKEN_KEY):
+                    if not token_from_header and self.auth_utils.config.get(AUTH_PLUGIN_CHECK_XSRF_TOKEN_KEY, True):
                         xsrf_token = request.headers.get(REQUEST_HEADER_XSRF_TOKEN_KEY)
                         if not xsrf_token:
                             logging.error("XSRF token missing in request headers")

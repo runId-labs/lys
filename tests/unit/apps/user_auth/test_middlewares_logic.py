@@ -53,7 +53,10 @@ class TestTokenFromCookie:
         from lys.apps.user_auth.middlewares import UserAuthMiddleware
 
         jwt_claims = {"sub": "user-1", "exp": 9999999999, "xsrf_token": "abc123"}
-        request = _make_request(cookies={"access_token": "valid-jwt"})
+        request = _make_request(
+            cookies={"access_token": "valid-jwt"},
+            headers={"x-xsrf-token": "abc123"},
+        )
         call_next, response = _make_call_next()
 
         middleware = UserAuthMiddleware.__new__(UserAuthMiddleware)
