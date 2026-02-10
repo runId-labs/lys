@@ -8,7 +8,7 @@ import asyncio
 from unittest.mock import MagicMock, patch
 
 from lys.core.consts.environments import EnvironmentEnum
-from lys.core.middlewares import _MiddlewareLysError, ErrorManagerMiddleware
+from lys.core.middlewares import _MiddlewareLysError, ErrorManagerMiddleware, SecurityHeadersMiddleware
 
 
 class TestMiddlewareLysError:
@@ -155,3 +155,132 @@ class TestErrorManagerMiddleware:
 
         assert result == {"key1": "value1"}
         assert "key2" not in result
+
+
+class TestSecurityHeadersMiddleware:
+
+    def _make_request(self, scheme="http"):
+        request = MagicMock()
+        request.url.scheme = scheme
+        return request
+
+    def _make_response(self):
+        response = MagicMock()
+        response.headers = {}
+        return response
+
+    def test_sets_content_type_options(self):
+        middleware = SecurityHeadersMiddleware(MagicMock())
+        request = self._make_request()
+        response = self._make_response()
+
+        async def call_next(_):
+            return response
+
+        loop = asyncio.new_event_loop()
+        try:
+            result = loop.run_until_complete(middleware.dispatch(request, call_next))
+        finally:
+            loop.close()
+
+        assert result.headers["X-Content-Type-Options"] == "nosniff"
+
+    def test_sets_frame_options(self):
+        middleware = SecurityHeadersMiddleware(MagicMock())
+        request = self._make_request()
+        response = self._make_response()
+
+        async def call_next(_):
+            return response
+
+        loop = asyncio.new_event_loop()
+        try:
+            result = loop.run_until_complete(middleware.dispatch(request, call_next))
+        finally:
+            loop.close()
+
+        assert result.headers["X-Frame-Options"] == "DENY"
+
+    def test_sets_referrer_policy(self):
+        middleware = SecurityHeadersMiddleware(MagicMock())
+        request = self._make_request()
+        response = self._make_response()
+
+        async def call_next(_):
+            return response
+
+        loop = asyncio.new_event_loop()
+        try:
+            result = loop.run_until_complete(middleware.dispatch(request, call_next))
+        finally:
+            loop.close()
+
+        assert result.headers["Referrer-Policy"] == "strict-origin-when-cross-origin"
+
+    def test_sets_permissions_policy(self):
+        middleware = SecurityHeadersMiddleware(MagicMock())
+        request = self._make_request()
+        response = self._make_response()
+
+        async def call_next(_):
+            return response
+
+        loop = asyncio.new_event_loop()
+        try:
+            result = loop.run_until_complete(middleware.dispatch(request, call_next))
+        finally:
+            loop.close()
+
+        assert result.headers["Permissions-Policy"] == "camera=(), microphone=(), geolocation=()"
+
+    def test_no_hsts_on_http(self):
+        middleware = SecurityHeadersMiddleware(MagicMock())
+        request = self._make_request(scheme="http")
+        response = self._make_response()
+
+        async def call_next(_):
+            return response
+
+        loop = asyncio.new_event_loop()
+        try:
+            result = loop.run_until_complete(middleware.dispatch(request, call_next))
+        finally:
+            loop.close()
+
+        assert "Strict-Transport-Security" not in result.headers
+
+    def test_hsts_on_https(self):
+        middleware = SecurityHeadersMiddleware(MagicMock())
+        request = self._make_request(scheme="https")
+        response = self._make_response()
+
+        async def call_next(_):
+            return response
+
+        loop = asyncio.new_event_loop()
+        try:
+            result = loop.run_until_complete(middleware.dispatch(request, call_next))
+        finally:
+            loop.close()
+
+        assert result.headers["Strict-Transport-Security"] == "max-age=31536000; includeSubDomains"
+
+    def test_all_headers_present_on_https(self):
+        middleware = SecurityHeadersMiddleware(MagicMock())
+        request = self._make_request(scheme="https")
+        response = self._make_response()
+
+        async def call_next(_):
+            return response
+
+        loop = asyncio.new_event_loop()
+        try:
+            result = loop.run_until_complete(middleware.dispatch(request, call_next))
+        finally:
+            loop.close()
+
+        assert "X-Content-Type-Options" in result.headers
+        assert "X-Frame-Options" in result.headers
+        assert "Referrer-Policy" in result.headers
+        assert "Permissions-Policy" in result.headers
+        assert "Strict-Transport-Security" in result.headers

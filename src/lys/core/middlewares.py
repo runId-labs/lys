@@ -2,6 +2,7 @@
 Core middlewares for the lys framework.
 
 This module provides:
+- SecurityHeadersMiddleware: Adds standard HTTP security headers
 - LysCorsMiddleware: CORS middleware with plugin configuration
 - ErrorManagerMiddleware: Error handling and logging middleware
 """
@@ -28,6 +29,31 @@ from lys.core.errors import LysError
 from lys.core.interfaces.middlewares import MiddlewareInterface
 from lys.core.interfaces.services import EntityServiceInterface
 from lys.core.utils.manager import AppManagerCallerMixin
+
+
+class SecurityHeadersMiddleware(MiddlewareInterface, BaseHTTPMiddleware):
+    """Adds standard HTTP security headers to all responses.
+
+    Headers applied:
+    - X-Content-Type-Options: nosniff (prevents MIME sniffing)
+    - X-Frame-Options: DENY (prevents clickjacking)
+    - Referrer-Policy: strict-origin-when-cross-origin
+    - Permissions-Policy: disables camera, microphone, geolocation
+    - Strict-Transport-Security: HSTS on HTTPS requests (1 year, includeSubDomains)
+    """
+
+    async def dispatch(self, request: Request, call_next):
+        response = await call_next(request)
+
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        response.headers["X-Frame-Options"] = "DENY"
+        response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+        response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
+
+        if request.url.scheme == "https":
+            response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
+
+        return response
 
 
 class LysCorsMiddleware(MiddlewareInterface, AppManagerCallerMixin, CORSMiddleware):
