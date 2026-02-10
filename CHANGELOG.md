@@ -10,6 +10,7 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ### Changed
 - Optimize CLAUDE.md as compact agent reference with codebase map, registry names, and common imports
 - Add table of contents to 6 documentation files (FRS and guides)
+- Rename PyPI package from `lys` to `runid-lys` and add metadata (description, classifiers, keywords, repository URL)
 
 ## [0.1.0] - 2026-02-10
 

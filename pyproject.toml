@@ -1,13 +1,23 @@
 [project]
-name = "lys"
+name = "runid-lys"
 version = "0.1.0"
-description = ""
+description = "A modular FastAPI framework for building GraphQL APIs with SQLAlchemy, featuring component-based architecture, JWT authentication, and multi-tenant permissions."
 authors = [
   { name="THEVENIN Anthony", email = "labs@runid.fr" },
 ]
 license = { file = "LICENSE" }
 readme = "README.md"
 requires-python = ">=3.13"
+keywords = ["fastapi", "graphql", "sqlalchemy", "strawberry", "jwt", "multi-tenant", "framework"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Framework :: FastAPI",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: Apache Software License",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Internet :: WWW/HTTP :: HTTP Servers",
+    "Topic :: Software Development :: Libraries :: Application Frameworks",
+]
 
 dependencies = [
     "asyncpg==0.30.0",
@@ -39,6 +49,9 @@ test = [
     "mollie-api-python>=3.0.0",
     "aioboto3>=12.0.0",
 ]
+
+[project.urls]
+Repository = "https://github.com/runid-labs/lys"
 
 [build-system]
 requires = ["setuptools", "wheel"]
