@@ -5,10 +5,12 @@ Tests _MiddlewareLysError and ErrorManagerMiddleware.
 """
 
 import asyncio
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, AsyncMock, patch
 
 from lys.core.consts.environments import EnvironmentEnum
-from lys.core.middlewares import _MiddlewareLysError, ErrorManagerMiddleware, SecurityHeadersMiddleware
+from lys.core.middlewares import (
+    _MiddlewareLysError, ErrorManagerMiddleware, SecurityHeadersMiddleware, RateLimitMiddleware
+)
 
 
 class TestMiddlewareLysError:
@@ -284,3 +286,213 @@ class TestSecurityHeadersMiddleware:
         assert "Referrer-Policy" in result.headers
         assert "Permissions-Policy" in result.headers
         assert "Strict-Transport-Security" in result.headers
+
+
+class TestRateLimitMiddleware:
+
+    def _make_request(self, ip="127.0.0.1"):
+        request = MagicMock()
+        request.client.host = ip
+        return request
+
+    def _make_response(self):
+        return MagicMock()
+
+    def _create_middleware(self, config=None, pubsub=None):
+        mock_app_manager = MagicMock()
+        mock_app_manager.settings.plugins = {}
+        if config:
+            mock_app_manager.settings.plugins["rate_limit"] = config
+        mock_app_manager.pubsub = pubsub
+
+        with patch.object(RateLimitMiddleware, "app_manager", mock_app_manager):
+            middleware = RateLimitMiddleware(MagicMock())
+        return middleware, mock_app_manager
+
+    def _run(self, coro):
+        loop = asyncio.new_event_loop()
+        try:
+            return loop.run_until_complete(coro)
+        finally:
+            loop.close()
+
+    def test_default_config(self):
+        middleware, _ = self._create_middleware()
+        assert middleware.requests_per_minute == 60
+        assert middleware.enabled is True
+
+    def test_custom_config(self):
+        middleware, _ = self._create_middleware({"requests_per_minute": 100, "enabled": False})
+        assert middleware.requests_per_minute == 100
+        assert middleware.enabled is False
+
+    def test_disabled_passes_through(self):
+        middleware, _ = self._create_middleware({"enabled": False})
+        request = self._make_request()
+        response = self._make_response()
+
+        async def call_next(_):
+            return response
+
+        result = self._run(middleware.dispatch(request, call_next))
+        assert result is response
+
+    def test_allows_under_limit_memory(self):
+        middleware, mock_am = self._create_middleware({"requests_per_minute": 5})
+        request = self._make_request()
+        response = self._make_response()
+
+        async def call_next(_):
+            return response
+
+        with patch.object(RateLimitMiddleware, "app_manager", mock_am):
+            result = self._run(middleware.dispatch(request, call_next))
+
+        assert result is response
+
+    def test_blocks_over_limit_memory(self):
+        middleware, mock_am = self._create_middleware({"requests_per_minute": 3})
+        request = self._make_request()
+        response = self._make_response()
+
+        async def call_next(_):
+            return response
+
+        with patch.object(RateLimitMiddleware, "app_manager", mock_am):
+            # Send 3 allowed requests
+            for _ in range(3):
+                self._run(middleware.dispatch(request, call_next))
+
+            # 4th request should be blocked
+            result = self._run(middleware.dispatch(request, call_next))
+
+        assert result.status_code == 429
+        assert result.body is not None
+
+    def test_different_ips_have_separate_limits(self):
+        middleware, mock_am = self._create_middleware({"requests_per_minute": 2})
+        response = self._make_response()
+
+        async def call_next(_):
+            return response
+
+        with patch.object(RateLimitMiddleware, "app_manager", mock_am):
+            # Exhaust limit for IP A
+            for _ in range(2):
+                self._run(middleware.dispatch(self._make_request("10.0.0.1"), call_next))
+
+            # IP A blocked
+            result_a = self._run(middleware.dispatch(self._make_request("10.0.0.1"), call_next))
+            assert result_a.status_code == 429
+
+            # IP B still allowed
+            result_b = self._run(middleware.dispatch(self._make_request("10.0.0.2"), call_next))
+            assert result_b is response
+
+    def test_429_has_retry_after_header(self):
+        middleware, mock_am = self._create_middleware({"requests_per_minute": 1})
+        request = self._make_request()
+        response = self._make_response()
+
+        async def call_next(_):
+            return response
+
+        with patch.object(RateLimitMiddleware, "app_manager", mock_am):
+            self._run(middleware.dispatch(request, call_next))
+            result = self._run(middleware.dispatch(request, call_next))
+
+        assert result.status_code == 429
+        assert result.headers["Retry-After"] == "60"
+
+    def test_uses_redis_when_available(self):
+        mock_redis = AsyncMock()
+        mock_redis.incr = AsyncMock(return_value=1)
+        mock_redis.expire = AsyncMock()
+
+        mock_pubsub = MagicMock()
+        mock_pubsub._async_redis = mock_redis
+
+        middleware, mock_am = self._create_middleware(pubsub=mock_pubsub)
+        request = self._make_request()
+        response = self._make_response()
+
+        async def call_next(_):
+            return response
+
+        with patch.object(RateLimitMiddleware, "app_manager", mock_am):
+            result = self._run(middleware.dispatch(request, call_next))
+
+        assert result is response
+        mock_redis.incr.assert_called_once_with("rate_limit:127.0.0.1")
+        mock_redis.expire.assert_called_once_with("rate_limit:127.0.0.1", 60)
+
+    def test_redis_over_limit_returns_429(self):
+        mock_redis = AsyncMock()
+        mock_redis.incr = AsyncMock(return_value=61)
+
+        mock_pubsub = MagicMock()
+        mock_pubsub._async_redis = mock_redis
+
+        middleware, mock_am = self._create_middleware(pubsub=mock_pubsub)
+        request = self._make_request()
+        response = self._make_response()
+
+        async def call_next(_):
+            return response
+
+        with patch.object(RateLimitMiddleware, "app_manager", mock_am):
+            result = self._run(middleware.dispatch(request, call_next))
+
+        assert result.status_code == 429
+
+    def test_redis_expire_only_on_first_incr(self):
+        mock_redis = AsyncMock()
+        mock_redis.incr = AsyncMock(return_value=5)
+
+        mock_pubsub = MagicMock()
+        mock_pubsub._async_redis = mock_redis
+
+        middleware, mock_am = self._create_middleware(pubsub=mock_pubsub)
+        request = self._make_request()
+        response = self._make_response()
+
+        async def call_next(_):
+            return response
+
+        with patch.object(RateLimitMiddleware, "app_manager", mock_am):
+            self._run(middleware.dispatch(request, call_next))
+
+        mock_redis.expire.assert_not_called()
+
+    def test_redis_failure_allows_request(self):
+        mock_redis = AsyncMock()
+        mock_redis.incr = AsyncMock(side_effect=Exception("Redis down"))
+
+        mock_pubsub = MagicMock()
+        mock_pubsub._async_redis = mock_redis
+
+        middleware, mock_am = self._create_middleware(pubsub=mock_pubsub)
+        request = self._make_request()
+        response = self._make_response()
+
+        async def call_next(_):
+            return response
+
+        with patch.object(RateLimitMiddleware, "app_manager", mock_am):
+            result = self._run(middleware.dispatch(request, call_next))
+
+        assert result is response
+
+    def test_no_client_uses_unknown_ip(self):
+        middleware, mock_am = self._create_middleware({"requests_per_minute": 1})
+        request = MagicMock()
+        request.client = None
+        response = self._make_response()
+
+        async def call_next(_):
+            return response
+
+        with patch.object(RateLimitMiddleware, "app_manager", mock_am):
+            self._run(middleware.dispatch(request, call_next))
+
+        assert "unknown" in middleware._memory_store

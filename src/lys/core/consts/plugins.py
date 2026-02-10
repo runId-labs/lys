@@ -1,0 +1,1 @@
+RATE_LIMIT_PLUGIN_KEY = "rate_limit"

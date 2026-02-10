@@ -3,11 +3,14 @@ Core middlewares for the lys framework.
 
 This module provides:
 - SecurityHeadersMiddleware: Adds standard HTTP security headers
+- RateLimitMiddleware: Global API rate limiting (Redis or in-memory)
 - LysCorsMiddleware: CORS middleware with plugin configuration
 - ErrorManagerMiddleware: Error handling and logging middleware
 """
+import logging
 import os
 import sys
+import time
 import traceback
 from typing import List, Union, Dict, Any
 
@@ -15,6 +18,7 @@ from fastapi import FastAPI, HTTPException
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.middleware.cors import CORSMiddleware
 from starlette.requests import Request
+from starlette.responses import JSONResponse
 
 from lys.apps.base.consts import (
     CORS_PLUGIN_KEY,
@@ -24,6 +28,7 @@ from lys.apps.base.consts import (
     CORS_PLUGIN_ALLOW_CREDENTIALS_KEY,
 )
 from lys.core.consts.environments import EnvironmentEnum
+from lys.core.consts.plugins import RATE_LIMIT_PLUGIN_KEY
 from lys.core.consts.tablenames import LOG_TABLENAME
 from lys.core.errors import LysError
 from lys.core.interfaces.middlewares import MiddlewareInterface
@@ -54,6 +59,94 @@ class SecurityHeadersMiddleware(MiddlewareInterface, BaseHTTPMiddleware):
             response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
 
         return response
+
+
+logger = logging.getLogger(__name__)
+
+
+class RateLimitMiddleware(MiddlewareInterface, AppManagerCallerMixin, BaseHTTPMiddleware):
+    """Global API rate limiting middleware.
+
+    Uses Redis (via app_manager.pubsub) if available for distributed rate limiting
+    across multiple instances. Falls back to in-memory storage for single-instance
+    deployments or when Redis is not configured.
+
+    Configuration via settings.plugins["rate_limit"]:
+        - requests_per_minute: Max requests per IP per minute (default: 60)
+        - enabled: Enable/disable rate limiting (default: True)
+    """
+
+    def __init__(self, app):
+        BaseHTTPMiddleware.__init__(self, app)
+
+        config = self.app_manager.settings.plugins.get(RATE_LIMIT_PLUGIN_KEY, {})
+        self.requests_per_minute: int = config.get("requests_per_minute", 60)
+        self.enabled: bool = config.get("enabled", True)
+
+        # In-memory fallback: {ip: [timestamp, ...]}
+        self._memory_store: dict[str, list[float]] = {}
+
+    def _get_redis(self):
+        """Get async Redis client from pubsub if available."""
+        pubsub = self.app_manager.pubsub
+        if pubsub and pubsub._async_redis:
+            return pubsub._async_redis
+        return None
+
+    async def _check_rate_limit_redis(self, client_ip: str, redis_client) -> bool:
+        """Check rate limit using Redis INCR + EXPIRE (fixed window).
+
+        Returns True if request is allowed, False if rate limited.
+        """
+        key = f"rate_limit:{client_ip}"
+        try:
+            count = await redis_client.incr(key)
+            if count == 1:
+                await redis_client.expire(key, 60)
+            return count <= self.requests_per_minute
+        except Exception as e:
+            logger.warning("Redis rate limit check failed, allowing request: %s", e)
+            return True
+
+    def _check_rate_limit_memory(self, client_ip: str) -> bool:
+        """Check rate limit using in-memory storage (fixed window).
+
+        Returns True if request is allowed, False if rate limited.
+        """
+        now = time.time()
+        window_start = now - 60
+
+        timestamps = self._memory_store.get(client_ip, [])
+        timestamps = [t for t in timestamps if t > window_start]
+
+        if len(timestamps) >= self.requests_per_minute:
+            self._memory_store[client_ip] = timestamps
+            return False
+
+        timestamps.append(now)
+        self._memory_store[client_ip] = timestamps
+        return True
+
+    async def dispatch(self, request: Request, call_next):
+        if not self.enabled:
+            return await call_next(request)
+
+        client_ip = request.client.host if request.client else "unknown"
+
+        redis_client = self._get_redis()
+        if redis_client:
+            allowed = await self._check_rate_limit_redis(client_ip, redis_client)
+        else:
+            allowed = self._check_rate_limit_memory(client_ip)
+
+        if not allowed:
+            return JSONResponse(
+                status_code=429,
+                content={"detail": "Too many requests"},
+                headers={"Retry-After": "60"}
+            )
+
+        return await call_next(request)
 
 
 class LysCorsMiddleware(MiddlewareInterface, AppManagerCallerMixin, CORSMiddleware):
