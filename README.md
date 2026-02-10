@@ -647,6 +647,15 @@ Lys ships with several pre-built apps:
 
 Detailed documentation is available in the `docs/` directory:
 
+**Developer Guides:**
+
+- [`docs/guides/creating-an-app.md`](docs/guides/creating-an-app.md) — App structure, modules, registration, and component loading
+- [`docs/guides/entities-and-services.md`](docs/guides/entities-and-services.md) — Database models, business logic, CRUD, and fixtures
+- [`docs/guides/graphql-api.md`](docs/guides/graphql-api.md) — Nodes, webservices, decorators, inputs, and pagination
+- [`docs/guides/permissions.md`](docs/guides/permissions.md) — Authentication, authorization, and row-level access control
+
+**Functional Specifications:**
+
 - [`docs/FRS/auth.md`](docs/FRS/auth.md) — Authentication system (login, tokens, refresh, logout)
 - [`docs/FRS/jwt_permissions.md`](docs/FRS/jwt_permissions.md) — JWT permission system and access control
 - [`docs/FRS/webservice_management.md`](docs/FRS/webservice_management.md) — Webservice configuration and access levels
