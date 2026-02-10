@@ -4,6 +4,7 @@ Authentication middleware for the user_auth app.
 This module provides:
 - UserAuthMiddleware: User JWT token validation and user context injection
 """
+import hmac
 import logging
 from typing import Union, Dict, Any
 
@@ -84,7 +85,7 @@ class UserAuthMiddleware(MiddlewareInterface, BaseHTTPMiddleware):
                             logging.error("XSRF token missing in JWT claims")
                             raise LysError(INVALID_XSRF_TOKEN_ERROR, "XSRF token not found in JWT")
 
-                        if xsrf_token != expected_xsrf:
+                        if not hmac.compare_digest(xsrf_token, expected_xsrf):
                             logging.error(f"XSRF token mismatch: got '{xsrf_token}', expected '{expected_xsrf}'")
                             raise LysError(
                                 INVALID_XSRF_TOKEN_ERROR,
