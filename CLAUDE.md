@@ -198,12 +198,13 @@ When the user validates code and asks to commit:
 
    - Detail bullet points
    ```
-3. **Auto-detect version bump** from commit type and update `pyproject.toml` line 3:
+3. **Update `CHANGELOG.md`** under `[Unreleased]` — add entry under `Added`, `Changed`, `Fixed`, or `Removed`.
+4. **Auto-detect version bump** from commit type and update `pyproject.toml` line 3:
    - `fix:` → patch bump (e.g., 0.1.0 → 0.1.1)
    - `feat:` → minor bump (e.g., 0.1.0 → 0.2.0)
    - `feat!:` or `BREAKING CHANGE` → major bump (e.g., 0.1.0 → 1.0.0)
    - `refactor:`, `docs:`, `chore:`, `test:`, `style:` → no version bump
-4. **Commit** with conventional commit message (no signatures, no attribution).
+5. **Commit** with conventional commit message (no signatures, no attribution).
 
 Example of correct commit message:
 ```
