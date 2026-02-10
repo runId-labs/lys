@@ -10,6 +10,9 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ### Fixed
 - Remove incorrect `CreateProductInput` argument from `@lys_creation` examples in README.md and GraphQL API guide
 
+### Changed
+- Add git tag creation and `git push origin main --tags` step to commit workflow in CLAUDE.md
+
 ### Added
 - GitHub Actions workflow for automatic PyPI publishing on version tags
 

@@ -205,6 +205,7 @@ When the user validates code and asks to commit:
    - `feat!:` or `BREAKING CHANGE` → major bump (e.g., 0.1.0 → 1.0.0)
    - `refactor:`, `docs:`, `chore:`, `test:`, `style:` → no version bump
 5. **Commit** with conventional commit message (no signatures, no attribution).
+6. **If version was bumped**: create git tag `git tag v{new_version}` and tell the user to run `git push origin main --tags` to push code + tag and trigger PyPI publication.
 
 Example of correct commit message:
 ```
