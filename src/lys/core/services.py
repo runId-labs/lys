@@ -1,3 +1,4 @@
+import logging
 from typing import Callable, Any, TypeVar, Generic, List, cast, Optional, Dict, Type, Union, Self
 
 from sqlalchemy import select, update, delete
@@ -9,6 +10,8 @@ from lys.core.interfaces.services import ServiceInterface, EntityServiceInterfac
 from lys.core.managers.database import Base
 from lys.core.utils.manager import AppManagerCallerMixin
 from lys.core.utils.generic import resolve_service_name_from_generic
+
+logger = logging.getLogger(__name__)
 
 T = TypeVar('T', bound=Entity)
 
@@ -130,7 +133,31 @@ class EntityService(Generic[T], EntityServiceInterface, Service):
         return cast(List[T], result.scalars().all())
 
     @classmethod
+    def _filter_allowed_fields(cls, kwargs: dict) -> dict:
+        """Filter kwargs to only allow fields that are actual columns on the entity.
+
+        Introspects the entity's __table__.columns to determine valid fields.
+        Rejects relationships, hybrid properties, and any non-column attributes.
+
+        Args:
+            kwargs: Field name/value pairs to filter
+
+        Returns:
+            Filtered dict containing only valid column fields
+        """
+        allowed = {c.name for c in cls.entity_class.__table__.columns}
+        unexpected = set(kwargs.keys()) - allowed
+        if unexpected:
+            logger.warning(
+                "Unexpected fields in %s: %s. Allowed columns: %s",
+                cls.__name__, unexpected, allowed
+            )
+            return {k: v for k, v in kwargs.items() if k in allowed}
+        return kwargs
+
+    @classmethod
     async def create(cls, session: AsyncSession, **kwargs) -> T:
+        kwargs = cls._filter_allowed_fields(kwargs)
         entity = cls.entity_class(**kwargs)
         session.add(entity)
         # Flush to get the generated ID
@@ -139,6 +166,7 @@ class EntityService(Generic[T], EntityServiceInterface, Service):
 
     @classmethod
     async def update(cls, entity_id: str, session: AsyncSession, **kwargs) -> Optional[T]:
+        kwargs = cls._filter_allowed_fields(kwargs)
         await session.execute(
             update(cls.entity_class)
             .where(cls.entity_class.id == entity_id)

@@ -5,7 +5,8 @@ Tests Service base class and EntityService value comparison methods.
 """
 
 import asyncio
-from unittest.mock import MagicMock
+import logging
+from unittest.mock import MagicMock, patch
 
 from lys.core.entities import Entity
 from lys.core.services import EntityService, Service
@@ -103,3 +104,75 @@ class TestListValuesDiffer:
 
     def test_different_primitive_lists(self):
         assert EntityService._list_values_differ([1, 2], [3, 4]) is True
+
+
+class TestFilterAllowedFields:
+
+    def _make_service(self, column_names):
+        """Create a mock EntityService subclass with given column names."""
+        mock_columns = []
+        for name in column_names:
+            col = MagicMock()
+            col.name = name
+            mock_columns.append(col)
+
+        mock_table = MagicMock()
+        mock_table.columns = mock_columns
+
+        mock_entity = MagicMock()
+        mock_entity.__table__ = mock_table
+
+        service = type("TestService", (EntityService,), {})
+        service.service_name = "test"
+
+        mock_app_manager = MagicMock()
+        mock_app_manager.get_entity.return_value = mock_entity
+
+        return service, mock_app_manager
+
+    def test_all_fields_valid(self):
+        service, mock_am = self._make_service(["id", "name", "email"])
+        with patch.object(service, "app_manager", mock_am):
+            result = service._filter_allowed_fields({"name": "John", "email": "j@x.com"})
+        assert result == {"name": "John", "email": "j@x.com"}
+
+    def test_filters_out_unknown_fields(self):
+        service, mock_am = self._make_service(["id", "name"])
+        with patch.object(service, "app_manager", mock_am):
+            result = service._filter_allowed_fields({"name": "John", "is_super_user": True})
+        assert result == {"name": "John"}
+        assert "is_super_user" not in result
+
+    def test_filters_out_relationship_attribute(self):
+        service, mock_am = self._make_service(["id", "client_id"])
+        with patch.object(service, "app_manager", mock_am):
+            result = service._filter_allowed_fields({"client_id": "uuid", "client": MagicMock()})
+        assert result == {"client_id": "uuid"}
+        assert "client" not in result
+
+    def test_logs_warning_on_unexpected_fields(self, caplog):
+        service, mock_am = self._make_service(["id", "name"])
+        with patch.object(service, "app_manager", mock_am):
+            with caplog.at_level(logging.WARNING):
+                service._filter_allowed_fields({"name": "John", "hacked": "yes"})
+        assert "Unexpected fields" in caplog.text
+        assert "hacked" in caplog.text
+
+    def test_no_warning_when_all_valid(self, caplog):
+        service, mock_am = self._make_service(["id", "name"])
+        with patch.object(service, "app_manager", mock_am):
+            with caplog.at_level(logging.WARNING):
+                service._filter_allowed_fields({"name": "John"})
+        assert "Unexpected fields" not in caplog.text
+
+    def test_empty_kwargs(self):
+        service, mock_am = self._make_service(["id", "name"])
+        with patch.object(service, "app_manager", mock_am):
+            result = service._filter_allowed_fields({})
+        assert result == {}
+
+    def test_all_fields_unexpected(self):
+        service, mock_am = self._make_service(["id"])
+        with patch.object(service, "app_manager", mock_am):
+            result = service._filter_allowed_fields({"roles": [], "client": MagicMock()})
+        assert result == {}
