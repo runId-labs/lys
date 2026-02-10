@@ -134,7 +134,7 @@ class TestAuthUtilsValidateConfig:
     def mock_app_manager(self):
         """Create mock app_manager with settings."""
         app_manager = MagicMock()
-        app_manager.settings.secret_key = "test_secret_key"
+        app_manager.settings.secret_key = "test_secret_key_for_jwt_32bytes!"
         app_manager.settings.get_plugin_config.return_value = {
             "encryption_algorithm": "HS256"
         }
@@ -153,6 +153,7 @@ class TestAuthUtilsValidateConfig:
         """Test that HS384 algorithm is accepted."""
         from lys.apps.user_auth.utils import AuthUtils
 
+        mock_app_manager.settings.secret_key = "a" * 48
         mock_app_manager.settings.get_plugin_config.return_value = {
             "encryption_algorithm": "HS384"
         }
@@ -165,6 +166,7 @@ class TestAuthUtilsValidateConfig:
         """Test that HS512 algorithm is accepted."""
         from lys.apps.user_auth.utils import AuthUtils
 
+        mock_app_manager.settings.secret_key = "a" * 64
         mock_app_manager.settings.get_plugin_config.return_value = {
             "encryption_algorithm": "HS512"
         }
@@ -211,6 +213,55 @@ class TestAuthUtilsValidateConfig:
             auth_utils = AuthUtils()
             assert auth_utils.config is None
 
+    def test_validate_config_rejects_short_secret_key(self, mock_app_manager):
+        """Test that secret_key shorter than 32 bytes is rejected for HS256."""
+        from lys.apps.user_auth.utils import AuthUtils
+
+        mock_app_manager.settings.secret_key = "too_short"
+
+        with patch.object(AuthUtils, "app_manager", mock_app_manager):
+            with pytest.raises(ValueError) as exc_info:
+                AuthUtils()
+            assert "at least 32 bytes" in str(exc_info.value)
+
+    def test_validate_config_rejects_short_key_for_hs384(self, mock_app_manager):
+        """Test that secret_key shorter than 48 bytes is rejected for HS384."""
+        from lys.apps.user_auth.utils import AuthUtils
+
+        mock_app_manager.settings.secret_key = "a" * 40  # 40 bytes, need 48
+        mock_app_manager.settings.get_plugin_config.return_value = {
+            "encryption_algorithm": "HS384"
+        }
+
+        with patch.object(AuthUtils, "app_manager", mock_app_manager):
+            with pytest.raises(ValueError) as exc_info:
+                AuthUtils()
+            assert "at least 48 bytes" in str(exc_info.value)
+
+    def test_validate_config_rejects_short_key_for_hs512(self, mock_app_manager):
+        """Test that secret_key shorter than 64 bytes is rejected for HS512."""
+        from lys.apps.user_auth.utils import AuthUtils
+
+        mock_app_manager.settings.secret_key = "a" * 50  # 50 bytes, need 64
+        mock_app_manager.settings.get_plugin_config.return_value = {
+            "encryption_algorithm": "HS512"
+        }
+
+        with patch.object(AuthUtils, "app_manager", mock_app_manager):
+            with pytest.raises(ValueError) as exc_info:
+                AuthUtils()
+            assert "at least 64 bytes" in str(exc_info.value)
+
+    def test_validate_config_accepts_exact_min_length(self, mock_app_manager):
+        """Test that secret_key of exactly 32 bytes is accepted for HS256."""
+        from lys.apps.user_auth.utils import AuthUtils
+
+        mock_app_manager.settings.secret_key = "a" * 32
+
+        with patch.object(AuthUtils, "app_manager", mock_app_manager):
+            auth_utils = AuthUtils()
+            assert auth_utils.secret_key == "a" * 32
+
 
 class TestAuthUtilsEncode:
     """Tests for AuthUtils.encode method."""
@@ -221,7 +272,7 @@ class TestAuthUtilsEncode:
         from lys.apps.user_auth.utils import AuthUtils
 
         mock_app_manager = MagicMock()
-        mock_app_manager.settings.secret_key = "test_secret_key_for_jwt"
+        mock_app_manager.settings.secret_key = "test_secret_key_for_jwt_32bytes!"
         mock_app_manager.settings.get_plugin_config.return_value = {
             "encryption_algorithm": "HS256"
         }
@@ -250,7 +301,7 @@ class TestAuthUtilsEncode:
         # Decode manually to verify
         decoded = jwt.decode(
             token,
-            "test_secret_key_for_jwt",
+            "test_secret_key_for_jwt_32bytes!",
             algorithms=["HS256"],
             audience="lys-api",
         )
@@ -266,7 +317,7 @@ class TestAuthUtilsEncode:
 
         decoded = jwt.decode(
             token,
-            "test_secret_key_for_jwt",
+            "test_secret_key_for_jwt_32bytes!",
             algorithms=["HS256"],
             audience="lys-api",
         )
@@ -291,7 +342,7 @@ class TestAuthUtilsEncode:
         token = await auth_utils.encode(claims)
         decoded = jwt.decode(
             token,
-            "test_secret_key_for_jwt",
+            "test_secret_key_for_jwt_32bytes!",
             algorithms=["HS256"],
             audience="lys-api",
         )
@@ -309,7 +360,7 @@ class TestAuthUtilsDecode:
         from lys.apps.user_auth.utils import AuthUtils
 
         mock_app_manager = MagicMock()
-        mock_app_manager.settings.secret_key = "test_secret_key_for_jwt"
+        mock_app_manager.settings.secret_key = "test_secret_key_for_jwt_32bytes!"
         mock_app_manager.settings.get_plugin_config.return_value = {
             "encryption_algorithm": "HS256"
         }
@@ -323,7 +374,7 @@ class TestAuthUtilsDecode:
         # Create a valid token with required iss/aud
         token = jwt.encode(
             {"sub": "user-789", "name": "Test", "iss": "lys-auth", "aud": "lys-api"},
-            "test_secret_key_for_jwt",
+            "test_secret_key_for_jwt_32bytes!",
             algorithm="HS256"
         )
 
@@ -358,7 +409,7 @@ class TestAuthUtilsDecode:
         token = jwt.encode(
             {"sub": "user-123", "exp": int(time.time()) - 3600,
              "iss": "lys-auth", "aud": "lys-api"},
-            "test_secret_key_for_jwt",
+            "test_secret_key_for_jwt_32bytes!",
             algorithm="HS256"
         )
 
@@ -370,7 +421,7 @@ class TestAuthUtilsDecode:
         """Test that token with wrong audience is rejected."""
         token = jwt.encode(
             {"sub": "user-123", "iss": "lys-auth", "aud": "lys-internal"},
-            "test_secret_key_for_jwt",
+            "test_secret_key_for_jwt_32bytes!",
             algorithm="HS256"
         )
 
@@ -382,7 +433,7 @@ class TestAuthUtilsDecode:
         """Test that token with wrong issuer is rejected."""
         token = jwt.encode(
             {"sub": "user-123", "iss": "other-service", "aud": "lys-api"},
-            "test_secret_key_for_jwt",
+            "test_secret_key_for_jwt_32bytes!",
             algorithm="HS256"
         )
 
@@ -394,7 +445,7 @@ class TestAuthUtilsDecode:
         """Test that token without audience is rejected."""
         token = jwt.encode(
             {"sub": "user-123", "iss": "lys-auth"},
-            "test_secret_key_for_jwt",
+            "test_secret_key_for_jwt_32bytes!",
             algorithm="HS256"
         )
 
@@ -407,7 +458,7 @@ class TestAuthUtilsDecode:
         # Service tokens have aud="lys-internal" and iss=service_name
         token = jwt.encode(
             {"type": "service", "service_name": "billing", "iss": "billing", "aud": "lys-internal"},
-            "test_secret_key_for_jwt",
+            "test_secret_key_for_jwt_32bytes!",
             algorithm="HS256"
         )
 

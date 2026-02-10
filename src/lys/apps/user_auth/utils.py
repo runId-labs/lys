@@ -11,6 +11,8 @@ from lys.core.utils.manager import AppManagerCallerMixin
 
 class AuthUtils(AppManagerCallerMixin):
     ALLOWED_ALGORITHMS = ["HS256", "HS384", "HS512"]
+    # Minimum key lengths in bytes per algorithm (NIST recommendation)
+    MIN_KEY_LENGTHS = {"HS256": 32, "HS384": 48, "HS512": 64}
     JWT_ISSUER = "lys-auth"
     API_AUDIENCE = "lys-api"
     def __init__(self):
@@ -31,6 +33,15 @@ class AuthUtils(AppManagerCallerMixin):
 
         if not self.secret_key:
             raise ValueError("JWT secret_key is required for authentication")
+
+        min_length = self.MIN_KEY_LENGTHS.get(algorithm, 32)
+        key_length = len(self.secret_key.encode("utf-8"))
+        if key_length < min_length:
+            raise ValueError(
+                f"secret_key must be at least {min_length} bytes for {algorithm} "
+                f"(current: {key_length} bytes). "
+                f"Generate one with: python -c \"import secrets; print(secrets.token_hex({min_length}))\""
+            )
 
         logging.info(f"Auth middleware initialized with algorithm: {algorithm}")
 
