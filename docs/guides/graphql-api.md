@@ -4,6 +4,17 @@ This guide covers how to define GraphQL types (nodes) and operations (webservice
 
 Lys uses [Strawberry GraphQL](https://strawberry.rocks/) with Relay support for Global IDs, cursor-based pagination, and node resolution.
 
+## Table of Contents
+
+1. [Nodes](#nodes)
+2. [Webservices](#webservices)
+3. [Decorators](#decorators)
+4. [Input Types](#input-types)
+5. [GraphQL Context](#graphql-context)
+6. [Public Endpoints](#public-endpoints)
+7. [Complete CRUD Example](#complete-crud-example)
+8. [Next Steps](#next-steps)
+
 ## Nodes
 
 Nodes are GraphQL type definitions that map entities to the schema.

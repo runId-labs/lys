@@ -2,6 +2,22 @@
 
 This guide covers how Lys handles authentication, authorization, and row-level access control.
 
+## Table of Contents
+
+1. [Overview](#overview)
+2. [Permission Chain](#permission-chain)
+3. [Permission Classes](#permission-classes)
+4. [Access Levels](#access-levels)
+5. [Row-Level Filtering](#row-level-filtering)
+6. [Implementing Access Control on Entities](#implementing-access-control-on-entities)
+7. [Tenant Column Safety Check](#tenant-column-safety-check)
+8. [JWT Claims Generation](#jwt-claims-generation)
+9. [Service-to-Service Authentication](#service-to-service-authentication)
+10. [Auth Server vs Business Server](#auth-server-vs-business-server)
+11. [Permission Flow Example](#permission-flow-example)
+12. [Custom Permission Classes](#custom-permission-classes)
+13. [Next Steps](#next-steps)
+
 ## Overview
 
 Lys implements a **stateless, pluggable permission system** designed for microservices:

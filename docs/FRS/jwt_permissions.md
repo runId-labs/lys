@@ -1,5 +1,22 @@
 # JWT-Based Permission System
 
+## Table of Contents
+
+1. [Quick Reference](#quick-reference)
+2. [Overview](#overview)
+3. [JWT Structure](#jwt-structure)
+4. [Permission Classes](#permission-classes)
+5. [AuthService Inheritance Chain](#authservice-inheritance-chain)
+6. [Access Level Types](#access-level-types)
+7. [Row-Level Filtering](#row-level-filtering)
+8. [Organization Permission Details](#organization-permission-details)
+9. [Middleware Integration](#middleware-integration)
+10. [Configuration](#configuration)
+11. [Security Considerations](#security-considerations)
+12. [Troubleshooting](#troubleshooting)
+13. [Migration from Database Permissions](#migration-from-database-permissions)
+14. [Related Documentation](#related-documentation)
+
 ## Quick Reference
 
 **Purpose**: Stateless permission checking using JWT claims for microservices architecture.

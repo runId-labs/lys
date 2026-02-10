@@ -2,6 +2,20 @@
 
 This guide covers how to create, structure, and register a Lys application module.
 
+## Table of Contents
+
+1. [App Structure](#app-structure)
+2. [Declaring Submodules](#declaring-submodules)
+3. [Component Types](#component-types)
+4. [Component Loading Order](#component-loading-order)
+5. [Registering an App](#registering-an-app)
+6. [Component Registration](#component-registration)
+7. [Registry Locking](#registry-locking)
+8. [Last-Registered-Wins Override](#last-registered-wins-override)
+9. [Controlling Component Types](#controlling-component-types)
+10. [Minimal App Example](#minimal-app-example)
+11. [Next Steps](#next-steps)
+
 ## App Structure
 
 A Lys app is a Python package containing one or more **modules**, each providing up to five component types: entities, services, fixtures, nodes, and webservices.

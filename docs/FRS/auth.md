@@ -1,5 +1,20 @@
 # Authentication System
 
+## Table of Contents
+
+1. [Overview](#overview)
+2. [Authentication Flow](#authentication-flow)
+3. [Token Types](#token-types)
+4. [Login Attempt Tracking](#login-attempt-tracking)
+5. [Rate Limiting](#rate-limiting)
+6. [User Status Management](#user-status-management)
+7. [Security Features](#security-features)
+8. [Configuration Options](#configuration-options)
+9. [API Endpoints](#api-endpoints)
+10. [Password Reset Flow](#password-reset-flow)
+11. [Audit & Monitoring](#audit--monitoring)
+12. [Best Practices](#best-practices)
+
 ## Overview
 
 The authentication system provides secure user authentication with JWT tokens, refresh token management, and progressive rate limiting to prevent brute force attacks.

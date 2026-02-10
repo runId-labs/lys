@@ -2,6 +2,16 @@
 
 This guide covers how to define database models (entities) and business logic (services) in Lys.
 
+## Table of Contents
+
+1. [Entity Types](#entity-types)
+2. [Entity](#entity)
+3. [ParametricEntity](#parametricentity)
+4. [EntityService](#entityservice)
+5. [Field Validation](#field-validation)
+6. [Fixtures](#fixtures)
+7. [Next Steps](#next-steps)
+
 ## Entity Types
 
 Lys provides two base entity classes:
