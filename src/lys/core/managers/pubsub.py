@@ -92,7 +92,7 @@ class PubSubManager:
         """
         try:
             if self._async_redis:
-                await self._async_redis.close()
+                await self._async_redis.aclose()
             if self._async_pool:
                 await self._async_pool.disconnect()
             logging.info("PubSubManager async shutdown complete")
@@ -157,7 +157,7 @@ class PubSubManager:
                         logging.warning(f"Invalid JSON in channel {full_channel}: {data}")
         finally:
             await pubsub.unsubscribe(full_channel)
-            await pubsub.close()
+            await pubsub.aclose()
             logging.debug(f"Unsubscribed from channel: {full_channel}")
 
     # ==================== Sync (Celery worker) ====================

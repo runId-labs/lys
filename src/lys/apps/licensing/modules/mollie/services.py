@@ -9,7 +9,6 @@ Configuration via plugins:
     settings.configure_plugin("payment",
         provider="mollie",
         api_key="live_xxx",
-        webhook_secret="xxx"  # optional
     )
 """
 import logging
@@ -40,7 +39,7 @@ def get_payment_config() -> Dict[str, Any]:
     Get payment provider configuration from plugins.
 
     Returns:
-        Payment config dict with keys: provider, api_key, webhook_secret
+        Payment config dict with keys: provider, api_key
     """
     return settings.get_plugin_config("payment")
 

@@ -65,7 +65,13 @@ async def mollie_webhook(request: Request):
 
     IMPORTANT: Mollie only sends the payment/subscription ID.
     We must fetch full details from the API.
+
+    Security: Mollie only sends the resource ID in the webhook. We always
+    re-fetch the full resource from the Mollie API using our API key, so
+    forged webhooks cannot inject fake data.
     """
+    app_manager = get_app_manager()
+
     # Parse form data (Mollie sends as form, not JSON)
     form_data = await request.form()
     resource_id = form_data.get("id")
@@ -77,7 +83,6 @@ async def mollie_webhook(request: Request):
     logger.info(f"Received Mollie webhook for: {resource_id}")
 
     # Idempotency check via Redis
-    app_manager = get_app_manager()
     if app_manager.pubsub:
         cache_key = f"mollie_webhook:{resource_id}"
         is_new = await app_manager.pubsub.set_if_not_exists(
@@ -149,11 +154,11 @@ async def mollie_webhook(request: Request):
 
     except MollieError as e:
         logger.error(f"Error fetching Mollie resource {resource_id}: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=502, detail="Payment provider error")
 
     except Exception as e:
         logger.exception(f"Error processing Mollie webhook {resource_id}: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Internal processing error")
 
 
 # =============================================================================
