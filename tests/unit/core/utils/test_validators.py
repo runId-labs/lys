@@ -335,6 +335,114 @@ class TestValidateUuid:
         assert exc_info.value.detail == "CUSTOM_UUID_ERROR"
 
 
+class TestValidateRedirectUrl:
+    """Tests for validate_redirect_url function."""
+
+    def test_accepts_valid_https_url(self):
+        from lys.core.utils.validators import validate_redirect_url
+        validate_redirect_url("https://example.com/callback")
+
+    def test_rejects_http_url(self):
+        from lys.core.utils.validators import validate_redirect_url
+        from lys.core.errors import LysError
+        with pytest.raises(LysError, match="UNSAFE_URL"):
+            validate_redirect_url("http://example.com/callback")
+
+    def test_rejects_no_scheme(self):
+        from lys.core.utils.validators import validate_redirect_url
+        from lys.core.errors import LysError
+        with pytest.raises(LysError, match="UNSAFE_URL"):
+            validate_redirect_url("example.com/callback")
+
+    def test_rejects_no_hostname(self):
+        from lys.core.utils.validators import validate_redirect_url
+        from lys.core.errors import LysError
+        with pytest.raises(LysError, match="UNSAFE_URL"):
+            validate_redirect_url("https://")
+
+    def test_rejects_private_ip(self):
+        from lys.core.utils.validators import validate_redirect_url
+        from lys.core.errors import LysError
+        with pytest.raises(LysError, match="UNSAFE_URL"):
+            validate_redirect_url("https://192.168.1.1/callback")
+
+    def test_rejects_loopback_ip(self):
+        from lys.core.utils.validators import validate_redirect_url
+        from lys.core.errors import LysError
+        with pytest.raises(LysError, match="UNSAFE_URL"):
+            validate_redirect_url("https://127.0.0.1/callback")
+
+    def test_rejects_link_local_ip(self):
+        from lys.core.utils.validators import validate_redirect_url
+        from lys.core.errors import LysError
+        with pytest.raises(LysError, match="UNSAFE_URL"):
+            validate_redirect_url("https://169.254.169.254/metadata")
+
+    def test_rejects_localhost(self):
+        from lys.core.utils.validators import validate_redirect_url
+        from lys.core.errors import LysError
+        with pytest.raises(LysError, match="UNSAFE_URL"):
+            validate_redirect_url("https://localhost/callback")
+
+    def test_rejects_metadata_google_internal(self):
+        from lys.core.utils.validators import validate_redirect_url
+        from lys.core.errors import LysError
+        with pytest.raises(LysError, match="UNSAFE_URL"):
+            validate_redirect_url("https://metadata.google.internal/computeMetadata")
+
+    def test_allowed_domains_accepts_exact_match(self):
+        from lys.core.utils.validators import validate_redirect_url
+        validate_redirect_url("https://myapp.com/success", allowed_domains=["myapp.com"])
+
+    def test_allowed_domains_accepts_subdomain(self):
+        from lys.core.utils.validators import validate_redirect_url
+        validate_redirect_url("https://pay.myapp.com/success", allowed_domains=["myapp.com"])
+
+    def test_allowed_domains_rejects_non_matching(self):
+        from lys.core.utils.validators import validate_redirect_url
+        from lys.core.errors import LysError
+        with pytest.raises(LysError, match="UNSAFE_URL"):
+            validate_redirect_url("https://evil.com/phishing", allowed_domains=["myapp.com"])
+
+    def test_allowed_domains_none_accepts_any_valid(self):
+        from lys.core.utils.validators import validate_redirect_url
+        validate_redirect_url("https://any-domain.com/callback", allowed_domains=None)
+
+    def test_allowed_domains_bypasses_localhost_block(self):
+        """Whitelisted localhost is accepted (dev environment)."""
+        from lys.core.utils.validators import validate_redirect_url
+        result = validate_redirect_url("https://localhost:5173/callback", allowed_domains=["localhost"])
+        assert result == "https://localhost:5173/callback"
+
+    def test_allowed_domains_bypasses_private_ip_block(self):
+        """Whitelisted private IP domain is accepted."""
+        from lys.core.utils.validators import validate_redirect_url
+        result = validate_redirect_url("https://192.168.1.1/callback", allowed_domains=["192.168.1.1"])
+        assert result == "https://192.168.1.1/callback"
+
+    def test_rejects_zero_ip(self):
+        from lys.core.utils.validators import validate_redirect_url
+        from lys.core.errors import LysError
+        with pytest.raises(LysError, match="UNSAFE_URL"):
+            validate_redirect_url("https://0.0.0.0/callback")
+
+    def test_accepts_url_with_path_and_query(self):
+        from lys.core.utils.validators import validate_redirect_url
+        validate_redirect_url("https://example.com/callback?session=abc&status=ok")
+
+    def test_rejects_ftp_scheme(self):
+        from lys.core.utils.validators import validate_redirect_url
+        from lys.core.errors import LysError
+        with pytest.raises(LysError, match="UNSAFE_URL"):
+            validate_redirect_url("ftp://example.com/file")
+
+    def test_rejects_javascript_scheme(self):
+        from lys.core.utils.validators import validate_redirect_url
+        from lys.core.errors import LysError
+        with pytest.raises(LysError, match="UNSAFE_URL"):
+            validate_redirect_url("javascript:alert(1)")
+
+
 class TestValidatorConstants:
     """Tests for validator constants."""
 

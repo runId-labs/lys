@@ -33,6 +33,7 @@ from lys.core.graphql.fields import lys_field
 from lys.core.graphql.registries import register_mutation
 from lys.core.graphql.types import Mutation
 from lys.core.managers.app import LysAppManager
+from lys.core.utils.validators import validate_redirect_url
 
 logger = logging.getLogger(__name__)
 
@@ -229,14 +230,18 @@ class MollieMutation(Mutation):
         if error:
             return SubscribeToPlanResultNode(success=False, error=error)
 
+        # Validate success_url before passing to payment provider
+        data = input.to_pydantic()
+        allowed_domains = info.context.app_manager.settings.get_plugin_config("payment").get(
+            "allowed_redirect_domains", []
+        )
+        validate_redirect_url(data.success_url, allowed_domains or None)
+
         # Build webhook URL
         webhook_base = get_webhook_base_url()
         if not webhook_base:
             webhook_base = str(info.context.request.base_url).rstrip("/")
         webhook_url = f"{webhook_base}/webhooks/mollie"
-
-        # Call service
-        data = input.to_pydantic()
         subscription_service = info.context.app_manager.get_service("subscription")
         result = await subscription_service.subscribe_to_plan(
             client_id=client.id,

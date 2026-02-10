@@ -1,9 +1,11 @@
+import ipaddress
 import re
 import uuid
+from urllib.parse import urlparse
 
 from lys.apps.user_auth.errors import EMPTY_PASSWORD_ERROR, WEAK_PASSWORD, INVALID_NAME, INVALID_LANGUAGE, INVALID_GENDER
 from lys.apps.user_auth.modules.user.consts import MALE_GENDER, FEMALE_GENDER, OTHER_GENDER
-from lys.core.consts.errors import NOT_UUID_ERROR
+from lys.core.consts.errors import NOT_UUID_ERROR, UNSAFE_URL_ERROR
 from lys.core.errors import LysError
 
 
@@ -200,3 +202,80 @@ def validate_uuid(id_: str | None, error: tuple[int, str] = NOT_UUID_ERROR):
             error,
             "expected an uuid"
         )
+
+
+# Hostnames that are always blocked for redirect URLs
+_BLOCKED_HOSTNAMES = {"localhost", "metadata.google.internal"}
+
+
+def _is_domain_allowed(hostname: str, allowed_domains: list[str]) -> bool:
+    """Check if hostname matches one of the allowed domains (exact or subdomain)."""
+    hostname = hostname.lower()
+    return any(
+        hostname == domain or hostname.endswith(f".{domain}")
+        for domain in allowed_domains
+    )
+
+
+def validate_redirect_url(url: str, allowed_domains: list[str] | None = None) -> str:
+    """
+    Validate that a URL is safe to use as a redirect target.
+
+    Prevents open redirect and SSRF attacks by enforcing:
+    - HTTPS scheme only
+    - No private/loopback/link-local/reserved IP addresses
+    - No blocked hostnames (localhost, metadata endpoints)
+    - Optional domain whitelist
+
+    When allowed_domains is provided and the hostname matches, IP and hostname
+    blocklist checks are skipped. This allows explicit whitelisting of domains
+    like localhost for development environments.
+
+    Args:
+        url: The URL to validate
+        allowed_domains: If provided, hostname must match one of these domains
+            (exact match or subdomain match). Whitelisted domains bypass
+            IP/hostname blocklists.
+
+    Returns:
+        The validated URL
+
+    Raises:
+        LysError: If the URL fails any validation check
+    """
+    try:
+        parsed = urlparse(url)
+    except Exception:
+        raise LysError(UNSAFE_URL_ERROR, "Invalid URL format")
+
+    if parsed.scheme != "https":
+        raise LysError(UNSAFE_URL_ERROR, "URL must use HTTPS")
+
+    if not parsed.hostname:
+        raise LysError(UNSAFE_URL_ERROR, "URL must have a hostname")
+
+    # If a whitelist is configured, check it first
+    if allowed_domains:
+        if not _is_domain_allowed(parsed.hostname, allowed_domains):
+            raise LysError(
+                UNSAFE_URL_ERROR,
+                f"URL hostname must match one of: {', '.join(allowed_domains)}"
+            )
+        # Whitelisted domain: skip IP/hostname blocklist checks
+        return url
+
+    # No whitelist: apply full security checks
+
+    # Block private IP ranges (SSRF protection)
+    try:
+        ip = ipaddress.ip_address(parsed.hostname)
+        if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved:
+            raise LysError(UNSAFE_URL_ERROR, "URL must not point to a private IP address")
+    except ValueError:
+        pass  # Not an IP address, hostname is fine
+
+    # Block known dangerous hostnames
+    if parsed.hostname.lower() in _BLOCKED_HOSTNAMES:
+        raise LysError(UNSAFE_URL_ERROR, "URL hostname is not allowed")
+
+    return url
