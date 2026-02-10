@@ -15,6 +15,7 @@ OWNER_ACCESS_KEY = "owner"
 # secured cookie key
 ACCESS_COOKIE_KEY = "access_token"
 REFRESH_COOKIE_KEY = "refresh_token"
+XSRF_COOKIE_KEY = "XSRF-TOKEN"
 
 # request header key
 REQUEST_HEADER_XSRF_TOKEN_KEY = 'x-xsrf-token'

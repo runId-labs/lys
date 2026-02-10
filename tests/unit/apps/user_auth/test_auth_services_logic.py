@@ -94,10 +94,11 @@ class TestSetAuthCookies:
         from lys.apps.user_auth.modules.auth.services import AuthService
         mock_response = Mock()
         await AuthService.clear_auth_cookies(mock_response)
-        assert mock_response.delete_cookie.call_count == 2
+        assert mock_response.delete_cookie.call_count == 3
         deleted_keys = [c[1].get("key", c[0][0]) for c in mock_response.delete_cookie.call_args_list]
         assert "refresh_token" in deleted_keys
         assert "access_token" in deleted_keys
+        assert "XSRF-TOKEN" in deleted_keys
 
 
 class TestSetCookieDefaults:

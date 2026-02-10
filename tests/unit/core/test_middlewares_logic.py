@@ -290,9 +290,10 @@ class TestSecurityHeadersMiddleware:
 
 class TestRateLimitMiddleware:
 
-    def _make_request(self, ip="127.0.0.1"):
+    def _make_request(self, ip="127.0.0.1", headers=None):
         request = MagicMock()
         request.client.host = ip
+        request.headers = headers or {}
         return request
 
     def _make_response(self):
@@ -487,6 +488,7 @@ class TestRateLimitMiddleware:
         middleware, mock_am = self._create_middleware({"requests_per_minute": 1})
         request = MagicMock()
         request.client = None
+        request.headers = {}
         response = self._make_response()
 
         async def call_next(_):
@@ -495,4 +497,4 @@ class TestRateLimitMiddleware:
         with patch.object(RateLimitMiddleware, "app_manager", mock_am):
             self._run(middleware.dispatch(request, call_next))
 
-        assert "unknown" in middleware._memory_store
+        assert "rate_limit:unknown" in middleware._memory_store

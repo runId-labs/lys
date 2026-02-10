@@ -100,7 +100,7 @@ class AuthTokenMutation(Mutation):
         access_token, claims = await auth_service.generate_access_token(refresh_token.user, session)
 
         # set authentication cookies
-        await auth_service.set_auth_cookies(response, refresh_token.id, access_token)
+        await auth_service.set_auth_cookies(response, refresh_token.id, access_token, claims.get("xsrf_token"))
 
         return node(
             success=True,

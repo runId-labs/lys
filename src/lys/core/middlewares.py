@@ -81,6 +81,7 @@ class RateLimitMiddleware(MiddlewareInterface, AppManagerCallerMixin, BaseHTTPMi
 
         config = self.app_manager.settings.plugins.get(RATE_LIMIT_PLUGIN_KEY, {})
         self.requests_per_minute: int = config.get("requests_per_minute", 60)
+        self.service_requests_per_minute: int = config.get("service_requests_per_minute", 600)
         self.enabled: bool = config.get("enabled", True)
 
         # In-memory fallback: {ip: [timestamp, ...]}
@@ -93,22 +94,26 @@ class RateLimitMiddleware(MiddlewareInterface, AppManagerCallerMixin, BaseHTTPMi
             return pubsub._async_redis
         return None
 
-    async def _check_rate_limit_redis(self, client_ip: str, redis_client) -> bool:
+    async def _check_rate_limit_redis(
+        self, client_ip: str, redis_client, limit: int, key_prefix: str = "rate_limit"
+    ) -> bool:
         """Check rate limit using Redis INCR + EXPIRE (fixed window).
 
         Returns True if request is allowed, False if rate limited.
         """
-        key = f"rate_limit:{client_ip}"
+        key = f"{key_prefix}:{client_ip}"
         try:
             count = await redis_client.incr(key)
             if count == 1:
                 await redis_client.expire(key, 60)
-            return count <= self.requests_per_minute
+            return count <= limit
         except Exception as e:
             logger.warning("Redis rate limit check failed, allowing request: %s", e)
             return True
 
-    def _check_rate_limit_memory(self, client_ip: str) -> bool:
+    def _check_rate_limit_memory(
+        self, client_ip: str, limit: int, key_prefix: str = "rate_limit"
+    ) -> bool:
         """Check rate limit using in-memory storage (fixed window).
 
         Returns True if request is allowed, False if rate limited.
@@ -116,15 +121,16 @@ class RateLimitMiddleware(MiddlewareInterface, AppManagerCallerMixin, BaseHTTPMi
         now = time.time()
         window_start = now - 60
 
-        timestamps = self._memory_store.get(client_ip, [])
+        key = f"{key_prefix}:{client_ip}"
+        timestamps = self._memory_store.get(key, [])
         timestamps = [t for t in timestamps if t > window_start]
 
-        if len(timestamps) >= self.requests_per_minute:
-            self._memory_store[client_ip] = timestamps
+        if len(timestamps) >= limit:
+            self._memory_store[key] = timestamps
             return False
 
         timestamps.append(now)
-        self._memory_store[client_ip] = timestamps
+        self._memory_store[key] = timestamps
         return True
 
     async def dispatch(self, request: Request, call_next):
@@ -133,11 +139,19 @@ class RateLimitMiddleware(MiddlewareInterface, AppManagerCallerMixin, BaseHTTPMi
 
         client_ip = request.client.host if request.client else "unknown"
 
+        # Service-to-service calls get a separate, higher rate limit bucket.
+        # The token is NOT validated here (ServiceAuthMiddleware handles that),
+        # so we still rate-limit to prevent abuse via forged headers.
+        auth_header = request.headers.get("Authorization", "")
+        is_service_call = auth_header.startswith("Service ")
+        rate_limit = self.service_requests_per_minute if is_service_call else self.requests_per_minute
+        key_prefix = "rate_limit_svc" if is_service_call else "rate_limit"
+
         redis_client = self._get_redis()
         if redis_client:
-            allowed = await self._check_rate_limit_redis(client_ip, redis_client)
+            allowed = await self._check_rate_limit_redis(client_ip, redis_client, rate_limit, key_prefix)
         else:
-            allowed = self._check_rate_limit_memory(client_ip)
+            allowed = self._check_rate_limit_memory(client_ip, rate_limit, key_prefix)
 
         if not allowed:
             return JSONResponse(

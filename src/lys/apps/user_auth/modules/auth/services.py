@@ -13,7 +13,7 @@ from starlette.responses import Response
 
 logger = logging.getLogger(__name__)
 
-from lys.apps.user_auth.consts import REFRESH_COOKIE_KEY, ACCESS_COOKIE_KEY
+from lys.apps.user_auth.consts import REFRESH_COOKIE_KEY, ACCESS_COOKIE_KEY, XSRF_COOKIE_KEY
 from lys.apps.user_auth.errors import INVALID_CREDENTIALS_ERROR, RATE_LIMIT_ERROR
 from lys.core.consts.webservices import (
     NO_LIMITATION_WEBSERVICE_PUBLIC_TYPE,
@@ -262,7 +262,7 @@ class AuthService(Service):
         access_token, claims = await cls.generate_access_token(user, session)
 
         # set authentication cookies
-        await cls.set_auth_cookies(response, refresh_token.id, access_token)
+        await cls.set_auth_cookies(response, refresh_token.id, access_token, claims.get("xsrf_token"))
 
         # success result
         return user, claims
@@ -456,21 +456,24 @@ class AuthService(Service):
         """
         response.delete_cookie(REFRESH_COOKIE_KEY, path="/")
         response.delete_cookie(ACCESS_COOKIE_KEY, path="/")
+        response.delete_cookie(XSRF_COOKIE_KEY, path="/")
 
     @classmethod
     async def set_auth_cookies(
         cls,
         response: Response,
         refresh_token_id: str,
-        access_token: str
+        access_token: str,
+        xsrf_token: str = None
     ) -> None:
         """
-        Set both refresh and access token cookies.
+        Set refresh, access, and XSRF token cookies.
 
-        Both cookies use path="/" (industry standard).
+        All cookies use path="/" (industry standard).
         Security is enforced by server-side validation:
         - UserAuthMiddleware extracts and validates ONLY the access token
         - Refresh token is explicitly extracted only in auth operations (login, logout, refresh)
+        - XSRF cookie is non-httpOnly (readable by JS) for the Double Submit Cookie pattern
 
         This provides defense-in-depth: even if both cookies are sent to all endpoints,
         only the appropriate token is used based on server-side logic.
@@ -479,9 +482,23 @@ class AuthService(Service):
             response: Starlette response object
             refresh_token_id: Refresh token ID to store in cookie
             access_token: Access token to store in cookie
+            xsrf_token: XSRF token to store in a JS-readable cookie
         """
         await cls.set_cookie(response, REFRESH_COOKIE_KEY, refresh_token_id, "/")
         await cls.set_cookie(response, ACCESS_COOKIE_KEY, access_token, "/")
+
+        if xsrf_token:
+            # XSRF cookie: same settings but NOT httpOnly (must be readable by JavaScript)
+            response.set_cookie(
+                key=XSRF_COOKIE_KEY,
+                value=xsrf_token,
+                secure=cls.auth_utils.config.get("cookie_secure", True),
+                httponly=False,
+                samesite=cls.auth_utils.config.get("cookie_same_site", "Lax"),
+                expires=(now_utc() + timedelta(weeks=1)).strftime("%a, %d %b %Y %H:%M:%S GMT"),
+                domain=cls.auth_utils.config.get("cookie_domain"),
+                path="/"
+            )
 
     @classmethod
     async def set_cookie(cls, response: Response, key: str, value: str, path: str):

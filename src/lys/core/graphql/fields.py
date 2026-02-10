@@ -160,7 +160,11 @@ def lys_field(
             info.context.app_manager = ensure_type_.app_manager
 
             # Audit log for lys_field accessing sensitive entities
-            entity_class = getattr(ensure_type_.service_class, "entity_class", None)
+            entity_class = (
+                getattr(ensure_type_.service_class, "entity_class", None)
+                if hasattr(ensure_type_, "service_name")
+                else None
+            )
             if entity_class is not None and getattr(entity_class, "_sensitive", False):
                 connected_user = info.context.connected_user
                 logger.info(
