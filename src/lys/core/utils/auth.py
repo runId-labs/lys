@@ -3,6 +3,7 @@ Authentication utilities for service-to-service communication.
 """
 from datetime import timedelta
 from typing import Dict, Any
+from uuid import uuid4
 
 import jwt
 from jwt import ExpiredSignatureError, InvalidTokenError
@@ -17,14 +18,18 @@ class ServiceAuthUtils:
     TOKEN_TYPE = "service"
     INTERNAL_AUDIENCE = "lys-internal"
 
-    def __init__(self, secret_key: str):
+    def __init__(self, secret_key: str, instance_id: str = None):
         """
         Initialize AuthUtils with a secret key.
 
         Args:
             secret_key: Secret key for JWT encoding/decoding
+            instance_id: Unique identifier for this service instance.
+                Auto-generated if not provided. Included in tokens
+                for tracing which instance made each call.
         """
         self.secret_key = secret_key
+        self.instance_id = instance_id or str(uuid4())[:8]
 
     def generate_token(self, service_name: str, expiration_minutes: int = 1) -> str:
         """
@@ -41,6 +46,7 @@ class ServiceAuthUtils:
         payload = {
             "type": self.TOKEN_TYPE,
             "service_name": service_name,
+            "instance_id": self.instance_id,
             "iat": now,
             "exp": now + timedelta(minutes=expiration_minutes),
             "iss": service_name,

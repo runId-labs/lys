@@ -102,6 +102,48 @@ class TestCoreAuthUtils:
         assert "exp" in decoded
         assert "iat" in decoded
 
+    def test_generate_token_includes_instance_id(self):
+        """Test generated token includes auto-generated instance_id."""
+        from lys.core.utils.auth import ServiceAuthUtils
+
+        utils = ServiceAuthUtils("test-secret")
+        token = utils.generate_token("my-service")
+        decoded = utils.decode_token(token)
+
+        assert "instance_id" in decoded
+        assert len(decoded["instance_id"]) == 8
+
+    def test_custom_instance_id(self):
+        """Test instance_id can be explicitly set."""
+        from lys.core.utils.auth import ServiceAuthUtils
+
+        utils = ServiceAuthUtils("test-secret", instance_id="node-42")
+        token = utils.generate_token("my-service")
+        decoded = utils.decode_token(token)
+
+        assert decoded["instance_id"] == "node-42"
+
+    def test_auto_generated_instance_id_is_stable(self):
+        """Test auto-generated instance_id stays the same across multiple tokens."""
+        from lys.core.utils.auth import ServiceAuthUtils
+
+        utils = ServiceAuthUtils("test-secret")
+        token1 = utils.generate_token("my-service")
+        token2 = utils.generate_token("my-service")
+        decoded1 = utils.decode_token(token1)
+        decoded2 = utils.decode_token(token2)
+
+        assert decoded1["instance_id"] == decoded2["instance_id"]
+
+    def test_different_instances_have_different_ids(self):
+        """Test two instances get different auto-generated instance_ids."""
+        from lys.core.utils.auth import ServiceAuthUtils
+
+        utils1 = ServiceAuthUtils("test-secret")
+        utils2 = ServiceAuthUtils("test-secret")
+
+        assert utils1.instance_id != utils2.instance_id
+
 
 class TestNowUtc:
     """Test datetime utility."""
