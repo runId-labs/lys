@@ -519,7 +519,7 @@ async def list_projects(self, info: Info) -> Select:
 ### Token Security
 
 - JWT signed with `SECRET_KEY` (HS256)
-- Short expiration (default: 5 minutes)
+- Short expiration (configured via `access_token_expire_minutes`, required setting)
 - XSRF token validation (optional)
 - HttpOnly, Secure, SameSite cookies
 

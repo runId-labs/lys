@@ -24,8 +24,8 @@ The authentication system provides secure user authentication with JWT tokens, r
    - XSRF token (cross-site request forgery protection)
 
 4. **System sets cookies**
-   - Refresh token cookie (path: `/auth`)
-   - Access token cookie (path: `/graphql`)
+   - Refresh token cookie (path: `/`)
+   - Access token cookie (path: `/`)
 
 ### Token Refresh Flow
 
@@ -83,7 +83,7 @@ The authentication system provides secure user authentication with JWT tokens, r
 - HttpOnly cookie (prevents JavaScript access)
 - Secure flag (HTTPS only in production)
 - SameSite=Lax (CSRF protection)
-- Path restricted to `/auth`
+- Path: `/`
 
 ### Access Token
 
@@ -97,14 +97,14 @@ The authentication system provides secure user authentication with JWT tokens, r
 - Cookie-based transmission
 
 **Lifetime**:
-- Default: 5 minutes
+- Configured via `access_token_expire_minutes` (required, no default)
 - Must be refreshed via refresh token
 
 **Security features**:
 - HttpOnly cookie
 - Secure flag (HTTPS only in production)
 - SameSite=Lax
-- Path restricted to `/graphql`
+- Path: `/`
 - Signed with secret key (prevents tampering)
 
 ### XSRF Token
@@ -295,8 +295,8 @@ Each login attempt record contains:
 
 ### Token Expiration
 
-- `access_token_expire_minutes`: Access token lifetime (default: 5)
-- `connection_expire_minutes`: Refresh token max lifetime (default: 1440 = 24h)
+- `access_token_expire_minutes`: Access token lifetime (required, no default)
+- `connection_expire_minutes`: Refresh token max lifetime (required, no default)
 - `once_refresh_token_expire_minutes`: Single-use refresh token timeout (optional)
 
 ### Rate Limiting
@@ -306,7 +306,7 @@ Each login attempt record contains:
 
 ### Token Behavior
 
-- `refresh_token_used_once`: Single-use refresh tokens (default: false)
+- `refresh_token_used_once`: Single-use refresh tokens (default: true)
 - `cookie_secure`: HTTPS-only cookies (default: true in production)
 - `cookie_http_only`: Prevent JavaScript access (default: true)
 - `cookie_same_site`: CSRF protection level (default: "Lax")
@@ -336,6 +336,53 @@ Each login attempt record contains:
 - Output: success status
 - Clears: all cookies, revokes refresh token
 - Public access (uses refresh token for auth)
+
+## Password Reset Flow
+
+### Request Password Reset
+
+1. **User submits email address**
+   - Public endpoint (no authentication required)
+
+2. **System validates**
+   - User exists with the given email
+   - User account is enabled
+
+3. **System generates one-time token**
+   - Creates a `UserOneTimeToken` linked to the user
+   - Token has limited validity period
+   - Sends password reset email with token link
+
+4. **User receives email and clicks link**
+   - Redirected to frontend with token in URL
+
+### Reset Password
+
+1. **User submits new password with token**
+   - Public endpoint (no authentication required)
+
+2. **System validates**
+   - Token exists and is not expired
+   - Token has not been used
+   - New password meets requirements (min 8 chars, at least one letter and one digit)
+
+3. **System updates password**
+   - Hashes new password with bcrypt
+   - Marks token as used
+   - Revokes all existing refresh tokens (forces re-login)
+
+### API Endpoints
+
+**request_password_reset**:
+- Input: email address
+- Output: success status
+- Public access (no authentication required)
+- Rate limiting applies
+
+**reset_password**:
+- Input: token, new password
+- Output: success status
+- Public access (uses one-time token for auth)
 
 ## Audit & Monitoring
 

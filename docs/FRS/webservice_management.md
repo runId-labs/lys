@@ -560,7 +560,6 @@ class UserMutation(Mutation):
 Use `override_webservice()` when you want to **modify only the metadata** of an existing webservice without changing its implementation logic. This is the recommended approach for:
 
 - Extending access levels (e.g., adding ROLE access to an OWNER-only webservice)
-- Updating descriptions
 - Changing public/private status
 - Modifying license requirements
 
@@ -570,13 +569,14 @@ Use `override_webservice()` when you want to **modify only the metadata** of an 
 def override_webservice(
     name: str,
     access_levels: List[str] | None = None,
-    description: str | None = None,
     is_public: WebserviceIsPublicType | None = None,
     is_licenced: bool | None = None,
     enabled: bool | None = None,
-    register: AppRegister = None
+    register: AppRegistry = None
 )
 ```
+
+**Note:** `override_webservice()` modifies metadata only (access levels, public status, licensing, enabled). To change the description, use a full implementation override.
 
 ### Example - Extending Access Levels
 
@@ -606,7 +606,6 @@ from lys.apps.user_role.consts import ROLE_ACCESS_LEVEL
 override_webservice(
     name="update_email",
     access_levels=[OWNER_ACCESS_LEVEL, ROLE_ACCESS_LEVEL],
-    description="Update user email address. Accessible to owner or users with ROLE access level."
 )
 ```
 
@@ -617,25 +616,21 @@ override_webservice(
 override_webservice(
     name="user",
     access_levels=[OWNER_ACCESS_LEVEL, ROLE_ACCESS_LEVEL],
-    description="Return user information. Accessible to owner or users with ROLE access level."
 )
 
 override_webservice(
     name="update_email",
     access_levels=[OWNER_ACCESS_LEVEL, ROLE_ACCESS_LEVEL],
-    description="Update user email address. Accessible to owner or users with ROLE access level."
 )
 
 override_webservice(
     name="update_password",
     access_levels=[OWNER_ACCESS_LEVEL, ROLE_ACCESS_LEVEL],
-    description="Update user password. Accessible to owner or users with ROLE access level."
 )
 
 override_webservice(
     name="update_user_private_data",
     access_levels=[OWNER_ACCESS_LEVEL, ROLE_ACCESS_LEVEL],
-    description="Update user private data. Accessible to owner or users with ROLE access level."
 )
 ```
 
@@ -825,8 +820,7 @@ if app_settings.env == EnvironmentEnum.PROD:
 | Scenario | Recommended Approach |
 |----------|---------------------|
 | Extend access levels only | `override_webservice()` |
-| Update description only | `override_webservice()` |
-| Change multiple metadata fields | `override_webservice()` |
+| Change access levels | `override_webservice()` |
 | Different input types | Full implementation override |
 | Additional business logic | Full implementation override |
 | Custom validation | Full implementation override |
@@ -839,7 +833,6 @@ if app_settings.env == EnvironmentEnum.PROD:
 override_webservice(
     name="update_email",
     access_levels=[OWNER_ACCESS_LEVEL, ROLE_ACCESS_LEVEL],
-    description="Update email. Accessible to owner or ROLE users."
 )
 
 # ❌ BAD - Full implementation for metadata change only
@@ -909,7 +902,6 @@ Always document why you're overriding or disabling:
 override_webservice(
     name="update_user_private_data",
     access_levels=[OWNER_ACCESS_LEVEL, ROLE_ACCESS_LEVEL],
-    description="Update user private data. Accessible to owner or users with ROLE access level."
 )
 
 # Disable in production for security - super users should only be created via CLI
