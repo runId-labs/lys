@@ -162,6 +162,20 @@ class TestJWTPermissionCheckWebservicePermission:
         assert error is None
 
     @pytest.mark.asyncio
+    async def test_super_user_access_is_audit_logged(self, context_super_user, caplog):
+        """Test that super user access emits an audit log entry."""
+        with caplog.at_level("INFO", logger="lys.apps.user_auth.permissions"):
+            await JWTPermission.check_webservice_permission(
+                "sensitive_webservice", context_super_user
+            )
+
+        assert len(caplog.records) == 1
+        record = caplog.records[0]
+        assert "AUDIT" in record.message
+        assert "admin-123" in record.message
+        assert "sensitive_webservice" in record.message
+
+    @pytest.mark.asyncio
     async def test_regular_user_full_access_granted(self, context_regular_user):
         """Test that regular user gets full access when in claims."""
         result, error = await JWTPermission.check_webservice_permission(

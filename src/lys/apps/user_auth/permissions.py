@@ -5,6 +5,7 @@ This module provides two permission classes:
 - AnonymousPermission: For non-authenticated users (no JWT), checks registry for public_type
 - JWTPermission: For authenticated users, checks JWT claims for webservice access
 """
+import logging
 from typing import Type, Tuple, Optional, Dict, Union, Any
 
 from sqlalchemy import Select, BinaryExpression, or_
@@ -14,6 +15,8 @@ from lys.apps.user_auth.errors import ACCESS_DENIED_ERROR
 from lys.core.contexts import Context
 from lys.core.interfaces.entities import EntityInterface
 from lys.core.interfaces.permissions import PermissionInterface
+
+logger = logging.getLogger(__name__)
 
 
 class AnonymousPermission(PermissionInterface):
@@ -114,6 +117,11 @@ class JWTPermission(PermissionInterface):
 
         # Super user bypass - full access to everything
         if connected_user.get("is_super_user", False):
+            logger.info(
+                "AUDIT: Super user %s accessed webservice=%s",
+                connected_user.get("sub"),
+                webservice_id,
+            )
             return True, None
 
         # Check if webservice is in JWT claims
