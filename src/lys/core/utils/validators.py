@@ -5,7 +5,7 @@ from urllib.parse import urlparse
 
 from lys.apps.user_auth.errors import EMPTY_PASSWORD_ERROR, WEAK_PASSWORD, INVALID_NAME, INVALID_LANGUAGE, INVALID_GENDER
 from lys.apps.user_auth.modules.user.consts import MALE_GENDER, FEMALE_GENDER, OTHER_GENDER
-from lys.core.consts.errors import NOT_UUID_ERROR, UNSAFE_URL_ERROR
+from lys.core.consts.errors import NOT_UUID_ERROR, UNSAFE_URL_ERROR, SEARCH_TOO_LONG_ERROR
 from lys.core.errors import LysError
 
 
@@ -14,6 +14,8 @@ NAME_PATTERN = r"^[a-zA-ZÀ-ÿ\s\-']+$"
 LANGUAGE_PATTERN = r"^[a-z]{2}(-[a-z]{2})?$"
 
 # Password constraints
+MAX_SEARCH_LENGTH = 200
+
 PASSWORD_MIN_LENGTH = 8
 PASSWORD_MAX_LENGTH = 128
 
@@ -182,6 +184,33 @@ def validate_gender_code(value: str | None) -> str | None:
         )
 
     return value
+
+
+def validate_search_input(search: str | None) -> str | None:
+    """Validate and sanitize search input before use in ILIKE queries.
+
+    Args:
+        search: The search string to validate
+
+    Returns:
+        Sanitized search string, or None if input is None
+
+    Raises:
+        LysError: If search exceeds MAX_SEARCH_LENGTH characters
+    """
+    if search is None:
+        return None
+
+    if len(search) > MAX_SEARCH_LENGTH:
+        raise LysError(
+            SEARCH_TOO_LONG_ERROR,
+            f"Search term must be {MAX_SEARCH_LENGTH} characters or less"
+        )
+
+    # Strip SQL wildcards that could cause expensive LIKE scans
+    search = search.replace("%", "").replace("_", "")
+
+    return search
 
 
 def validate_uuid(id_: str | None, error: tuple[int, str] = NOT_UUID_ERROR):

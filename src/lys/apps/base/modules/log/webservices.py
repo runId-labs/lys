@@ -9,6 +9,7 @@ from lys.core.contexts import Info
 from lys.core.graphql.connection import lys_connection
 from lys.core.graphql.registries import register_query
 from lys.core.graphql.types import Query
+from lys.core.utils.validators import validate_search_input
 
 
 @register_query()
@@ -37,6 +38,7 @@ class LogQuery(Query):
         if end_date is not None:
             stmt = stmt.where(entity_type.created_at <= end_date)
 
+        file_name = validate_search_input(file_name)
         if file_name is not None:
             stmt = stmt.where(entity_type.file_name.ilike(f"%{file_name}%"))
 

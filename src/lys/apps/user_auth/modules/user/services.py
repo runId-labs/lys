@@ -53,6 +53,7 @@ from lys.core.errors import LysError
 from lys.core.registries import register_service
 from lys.core.services import EntityService
 from lys.core.utils.datetime import now_utc
+from lys.core.utils.validators import validate_search_input
 
 logger = logging.getLogger(__name__)
 
@@ -1572,6 +1573,7 @@ class UserAuditLogService(EntityService[UserAuditLog]):
             stmt = stmt.where(cls.entity_class.deleted_at == None)
 
         # Email search (search in both target and author emails)
+        email_search = validate_search_input(email_search)
         if email_search:
             # Join with user_email_address for target_user
             target_email_alias = user_email_address_entity.__table__.alias("target_email")

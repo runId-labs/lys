@@ -16,6 +16,7 @@ from lys.core.graphql.edit import lys_edition
 from lys.core.graphql.getter import lys_getter
 from lys.core.graphql.registries import register_query, register_mutation
 from lys.core.graphql.types import Query, Mutation
+from lys.core.utils.validators import validate_search_input
 
 logger = logging.getLogger(__name__)
 
@@ -51,6 +52,7 @@ class ClientQuery(Query):
 
         stmt = select(client_entity).order_by(client_entity.created_at.desc())
 
+        search = validate_search_input(search)
         if search:
             search_pattern = f"%{search.lower()}%"
             stmt = stmt.where(client_entity.name.ilike(search_pattern))

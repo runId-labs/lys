@@ -19,6 +19,7 @@ from lys.core.graphql.edit import lys_edition
 from lys.core.graphql.registries import register_mutation, register_query
 from lys.core.graphql.types import Mutation, Query
 from lys.core.registries import override_webservice
+from lys.core.utils.validators import validate_search_input
 
 logger = logging.getLogger(__name__)
 
@@ -76,6 +77,7 @@ class UserRoleQuery(Query):
         )
 
         # Apply search filter if provided
+        search = validate_search_input(search)
         if search:
             search_pattern = f"%{search.lower()}%"
             stmt = stmt.where(

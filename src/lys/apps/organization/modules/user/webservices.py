@@ -22,6 +22,7 @@ from lys.core.graphql.edit import lys_edition
 from lys.core.graphql.getter import lys_getter
 from lys.core.graphql.registries import register_query, register_mutation
 from lys.core.graphql.types import Query, Mutation
+from lys.core.utils.validators import validate_search_input
 
 logger = logging.getLogger(__name__)
 
@@ -78,6 +79,7 @@ class OrganizationUserQuery(Query):
         )
 
         # Apply search filter if provided
+        search = validate_search_input(search)
         if search:
             search_pattern = f"%{search.lower()}%"
             stmt = stmt.where(
@@ -172,6 +174,7 @@ class OrganizationUserQuery(Query):
         )
 
         # Apply search filter if provided
+        search = validate_search_input(search)
         if search:
             search_pattern = f"%{search.lower()}%"
             stmt = stmt.where(

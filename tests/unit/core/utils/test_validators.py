@@ -473,3 +473,47 @@ class TestValidatorConstants:
         from lys.core.utils.validators import VALID_GENDER_CODES
         assert VALID_GENDER_CODES is not None
         assert isinstance(VALID_GENDER_CODES, list)
+
+
+class TestValidateSearchInput:
+    """Tests for validate_search_input function."""
+
+    def test_none_returns_none(self):
+        from lys.core.utils.validators import validate_search_input
+        assert validate_search_input(None) is None
+
+    def test_short_string_passes(self):
+        from lys.core.utils.validators import validate_search_input
+        assert validate_search_input("hello") == "hello"
+
+    def test_strips_percent_wildcard(self):
+        from lys.core.utils.validators import validate_search_input
+        assert validate_search_input("hello%world") == "helloworld"
+
+    def test_strips_underscore_wildcard(self):
+        from lys.core.utils.validators import validate_search_input
+        assert validate_search_input("hello_world") == "helloworld"
+
+    def test_strips_multiple_wildcards(self):
+        from lys.core.utils.validators import validate_search_input
+        assert validate_search_input("%a_b%c_") == "abc"
+
+    def test_exact_max_length_passes(self):
+        from lys.core.utils.validators import validate_search_input, MAX_SEARCH_LENGTH
+        search = "a" * MAX_SEARCH_LENGTH
+        assert validate_search_input(search) == search
+
+    def test_over_max_length_raises(self):
+        from lys.core.utils.validators import validate_search_input, MAX_SEARCH_LENGTH
+        from lys.core.errors import LysError
+        search = "a" * (MAX_SEARCH_LENGTH + 1)
+        with pytest.raises(LysError):
+            validate_search_input(search)
+
+    def test_empty_string_passes(self):
+        from lys.core.utils.validators import validate_search_input
+        assert validate_search_input("") == ""
+
+    def test_max_search_length_constant(self):
+        from lys.core.utils.validators import MAX_SEARCH_LENGTH
+        assert MAX_SEARCH_LENGTH == 200
