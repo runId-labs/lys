@@ -1,4 +1,5 @@
 import asyncio
+import logging
 from contextlib import asynccontextmanager, contextmanager
 from typing import Optional, Dict, Any
 
@@ -8,6 +9,8 @@ from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 from sqlalchemy.pool import AsyncAdaptedQueuePool, QueuePool
 
 from lys.core.configs import DatabaseSettings
+
+logger = logging.getLogger(__name__)
 
 
 class Base(AsyncAttrs, DeclarativeBase):
@@ -139,8 +142,22 @@ class DatabaseManager:
         if self.settings.max_overflow is not None:
             kwargs["max_overflow"] = self.settings.max_overflow
 
-        if self.settings.connect_args:
-            kwargs["connect_args"] = self.settings.connect_args
+        # Build connect_args with SSL configuration
+        connect_args = dict(self.settings.connect_args) if self.settings.connect_args else {}
+
+        if self.settings.type == "postgresql":
+            if self.settings.ssl_mode:
+                # asyncpg uses "ssl", psycopg2 uses "sslmode"
+                ssl_key = "ssl" if async_mode else "sslmode"
+                connect_args.setdefault(ssl_key, self.settings.ssl_mode)
+            else:
+                logger.warning(
+                    "PostgreSQL connection without SSL (ssl_mode is disabled). "
+                    "Set database.ssl_mode = 'require' for production environments."
+                )
+
+        if connect_args:
+            kwargs["connect_args"] = connect_args
 
         return kwargs
 

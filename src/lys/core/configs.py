@@ -29,6 +29,9 @@ class DatabaseSettings(BaseSettings):
         self.poolclass: Optional[type[Pool]] = None
         # Additional arguments for database connection
         self.connect_args: dict[str, Any] = {}
+        # SSL mode for database connections (PostgreSQL/MySQL)
+        # "require", "verify-ca", "verify-full", or None to disable
+        self.ssl_mode: Optional[str] = "require"
         # Enable connection health check
         self.pool_pre_ping: bool = True
         # Connection recycles time in seconds

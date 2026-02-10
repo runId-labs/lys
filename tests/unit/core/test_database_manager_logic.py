@@ -135,6 +135,76 @@ class TestGetEngineKwargs:
         assert kwargs["max_overflow"] == 20
 
 
+class TestSSLConfiguration:
+    """Tests for SSL/TLS enforcement in _get_engine_kwargs()."""
+
+    def _make_pg_manager(self, **overrides):
+        settings = DatabaseSettings()
+        settings.type = "postgresql"
+        settings.host = "db.host"
+        settings.port = 5432
+        settings.username = "user"
+        settings.password = "pass"
+        settings.database = "mydb"
+        for k, v in overrides.items():
+            setattr(settings, k, v)
+        return DatabaseManager(settings)
+
+    def test_postgresql_async_ssl_require_by_default(self):
+        """Test that PostgreSQL async engine gets ssl='require' by default."""
+        mgr = self._make_pg_manager()
+        kwargs = mgr._get_engine_kwargs(async_mode=True)
+        assert kwargs["connect_args"]["ssl"] == "require"
+
+    def test_postgresql_sync_sslmode_require_by_default(self):
+        """Test that PostgreSQL sync engine gets sslmode='require' by default."""
+        mgr = self._make_pg_manager()
+        kwargs = mgr._get_engine_kwargs(async_mode=False)
+        assert kwargs["connect_args"]["sslmode"] == "require"
+
+    def test_postgresql_ssl_mode_verify_full(self):
+        """Test custom ssl_mode is forwarded."""
+        mgr = self._make_pg_manager(ssl_mode="verify-full")
+        kwargs = mgr._get_engine_kwargs(async_mode=True)
+        assert kwargs["connect_args"]["ssl"] == "verify-full"
+
+    def test_postgresql_ssl_mode_none_disables_ssl(self):
+        """Test that ssl_mode=None disables SSL injection."""
+        mgr = self._make_pg_manager(ssl_mode=None)
+        kwargs = mgr._get_engine_kwargs(async_mode=True)
+        assert "connect_args" not in kwargs or "ssl" not in kwargs.get("connect_args", {})
+
+    def test_postgresql_ssl_mode_none_logs_warning(self, caplog):
+        """Test that disabling SSL logs a warning."""
+        mgr = self._make_pg_manager(ssl_mode=None)
+        with caplog.at_level("WARNING", logger="lys.core.managers.database"):
+            mgr._get_engine_kwargs(async_mode=True)
+        assert len(caplog.records) == 1
+        assert "without SSL" in caplog.records[0].message
+
+    def test_postgresql_explicit_connect_args_ssl_not_overridden(self):
+        """Test that explicit ssl in connect_args is preserved (setdefault)."""
+        mgr = self._make_pg_manager(connect_args={"ssl": "verify-ca"})
+        kwargs = mgr._get_engine_kwargs(async_mode=True)
+        assert kwargs["connect_args"]["ssl"] == "verify-ca"
+
+    def test_sqlite_no_ssl_injected(self):
+        """Test that SQLite does not get SSL connect_args."""
+        settings = DatabaseSettings()
+        settings.type = "sqlite"
+        settings.database = ":memory:"
+        mgr = DatabaseManager(settings)
+        kwargs = mgr._get_engine_kwargs(async_mode=True)
+        assert "connect_args" not in kwargs
+
+    def test_postgresql_ssl_merged_with_other_connect_args(self):
+        """Test that SSL is merged alongside other connect_args."""
+        mgr = self._make_pg_manager(connect_args={"statement_cache_size": 0})
+        kwargs = mgr._get_engine_kwargs(async_mode=True)
+        assert kwargs["connect_args"]["ssl"] == "require"
+        assert kwargs["connect_args"]["statement_cache_size"] == 0
+
+
 class TestResetAndHasDatabase:
     """Tests for reset_database_connection() and has_database_configured()."""
 
