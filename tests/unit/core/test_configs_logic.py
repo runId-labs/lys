@@ -63,10 +63,10 @@ class TestAppSettingsProperties:
         app.env = EnvironmentEnum.DEV
         assert app.debug is True
 
-    def test_debug_true_for_demo(self):
+    def test_debug_false_for_demo(self):
         app = AppSettings()
         app.env = EnvironmentEnum.DEMO
-        assert app.debug is True
+        assert app.debug is False
 
     def test_debug_false_for_preprod(self):
         app = AppSettings()

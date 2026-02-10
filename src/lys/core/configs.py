@@ -256,13 +256,13 @@ class AppSettings(BaseSettings):
         - Verbose logging and validation
         - Development-friendly features
 
-        Environments with debug enabled: DEV, DEMO
-        Environments with debug disabled: PREPROD, PROD
+        Only enabled in DEV environment. DEMO, PREPROD and PROD have debug disabled
+        to prevent exposure of stack traces, verbose logging, and GraphQL IDE.
 
         Returns:
-            bool: True for development/demo environments, False for production
+            bool: True only in DEV environment
         """
-        return self.env in (EnvironmentEnum.DEV, EnvironmentEnum.DEMO)
+        return self.env == EnvironmentEnum.DEV
 
     @property
     def testing(self) -> bool:
