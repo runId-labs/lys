@@ -103,6 +103,7 @@ class TestOrganizationPermissionAddStatementAccessConstraintsLogic:
     @pytest.mark.asyncio
     async def test_calls_organization_filters_when_conditions_met(self, mock_context):
         """Test organization_accessing_filters is called when all conditions are met."""
+        from unittest.mock import patch
         from lys.apps.organization.permissions import OrganizationPermission
         from lys.core.consts.permissions import ORGANIZATION_ROLE_ACCESS_KEY
 
@@ -119,14 +120,85 @@ class TestOrganizationPermissionAddStatementAccessConstraintsLogic:
 
         or_where = MagicMock()
 
-        await OrganizationPermission.add_statement_access_constraints(
-            mock_stmt, or_where, mock_context, mock_entity_class
-        )
+        with patch.object(OrganizationPermission, "_check_tenant_filter_override"):
+            await OrganizationPermission.add_statement_access_constraints(
+                mock_stmt, or_where, mock_context, mock_entity_class
+            )
 
         # Verify organization_accessing_filters was called with correct args
         mock_entity_class.organization_accessing_filters.assert_called_once_with(
             mock_stmt, {"client": ["client-1"]}
         )
+
+
+class TestTenantFilterSafetyCheck:
+    """Tests for _check_tenant_filter_override runtime safety check."""
+
+    def _make_entity_class(self, name, columns, override=False):
+        """Create a minimal class for testing the safety check."""
+        from lys.core.entities import Entity
+
+        def custom_filter(cls, stmt, org_dict):
+            client_ids = org_dict.get("client", [])
+            return stmt, [MagicMock()] if client_ids else []
+
+        mock_columns = []
+        for c in columns:
+            col = MagicMock()
+            col.name = c
+            mock_columns.append(col)
+        attrs = {
+            "__table__": MagicMock(columns=mock_columns),
+        }
+        if override:
+            attrs["organization_accessing_filters"] = classmethod(custom_filter)
+        else:
+            # Store the raw function so __func__ identity check works
+            base_func = Entity.organization_accessing_filters.__func__
+            attrs["organization_accessing_filters"] = classmethod(base_func)
+
+        return type(name, (), attrs)
+
+    def test_entity_with_client_id_and_no_override_raises(self):
+        """Entity with client_id column that doesn't override organization_accessing_filters raises."""
+        from lys.apps.organization.permissions import OrganizationPermission
+
+        entity_class = self._make_entity_class("UnsafeEntity", ["id", "client_id"])
+
+        with pytest.raises(RuntimeError, match="UnsafeEntity has tenant columns"):
+            OrganizationPermission._check_tenant_filter_override(entity_class)
+
+    def test_entity_with_override_passes(self):
+        """Entity that overrides organization_accessing_filters passes the check."""
+        from lys.apps.organization.permissions import OrganizationPermission
+
+        entity_class = self._make_entity_class("SafeEntity", ["id", "client_id"], override=True)
+
+        # Should not raise
+        OrganizationPermission._check_tenant_filter_override(entity_class)
+
+    def test_entity_without_tenant_columns_passes(self):
+        """Entity without tenant columns passes even without override."""
+        from lys.apps.organization.permissions import OrganizationPermission
+
+        entity_class = self._make_entity_class("GlobalEntity", ["id", "name"])
+
+        # Should not raise
+        OrganizationPermission._check_tenant_filter_override(entity_class)
+
+    def test_parametric_entity_skipped(self):
+        """ParametricEntity subclass with client_id passes (global config data)."""
+        from lys.apps.organization.permissions import OrganizationPermission
+        from lys.apps.licensing.modules.plan.entities import LicensePlan
+
+        # LicensePlan is a real ParametricEntity with client_id — should not raise
+        OrganizationPermission._check_tenant_filter_override(LicensePlan)
+
+    def test_default_tenant_columns_contains_client_id(self):
+        """DEFAULT_TENANT_COLUMNS includes client_id."""
+        from lys.apps.organization.permissions import OrganizationPermission
+
+        assert "client_id" in OrganizationPermission.DEFAULT_TENANT_COLUMNS
 
 
 class TestOrganizationPermissionMethodSignatures:

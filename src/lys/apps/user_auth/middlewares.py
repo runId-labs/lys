@@ -70,11 +70,15 @@ class UserAuthMiddleware(MiddlewareInterface, BaseHTTPMiddleware):
                 jwt_claims = None
 
             # Validate JWT and XSRF token if present
-            # Skip XSRF validation for Bearer header auth (API/service calls)
-            # XSRF protection is only needed for cookie-based auth (browser requests)
+            # Skip XSRF validation for:
+            # - Bearer header auth (API/service calls)
+            # - Safe HTTP methods (GET, HEAD, OPTIONS) per RFC 7231
+            #   CSRF targets state-changing requests; safe methods are read-only
+            #   This also allows EventSource/SSE which only supports GET with cookies
             if jwt_claims:
                 try:
-                    if not token_from_header and self.auth_utils.config.get(AUTH_PLUGIN_CHECK_XSRF_TOKEN_KEY, True):
+                    is_safe_method = request.method in ("GET", "HEAD", "OPTIONS")
+                    if not token_from_header and not is_safe_method and self.auth_utils.config.get(AUTH_PLUGIN_CHECK_XSRF_TOKEN_KEY, True):
                         xsrf_token = request.headers.get(REQUEST_HEADER_XSRF_TOKEN_KEY)
                         if not xsrf_token:
                             logging.error("XSRF token missing in request headers")

@@ -11,6 +11,7 @@ from sqlalchemy import Select, BinaryExpression, or_
 
 from lys.core.consts.permissions import ORGANIZATION_ROLE_ACCESS_KEY
 from lys.core.contexts import Context
+from lys.core.entities import Entity, ParametricEntity
 from lys.core.interfaces.entities import EntityInterface
 from lys.core.interfaces.permissions import PermissionInterface
 
@@ -40,6 +41,11 @@ class OrganizationPermission(PermissionInterface):
         }
     }
     """
+
+    # Columns that indicate an entity is tenant-scoped.
+    # Entities with these columns must override organization_accessing_filters().
+    # Apps inheriting from Lys can extend this set in their own permission subclass.
+    DEFAULT_TENANT_COLUMNS = {"client_id"}
 
     @classmethod
     async def check_webservice_permission(cls, webservice_id: str,
@@ -122,6 +128,11 @@ class OrganizationPermission(PermissionInterface):
                 accessing_organization_dict = access_type.get(ORGANIZATION_ROLE_ACCESS_KEY)
 
                 if accessing_organization_dict:
+                    # Safety check: detect entities with tenant columns that forgot
+                    # to override organization_accessing_filters().
+                    # ParametricEntity subclasses are excluded (global config data).
+                    cls._check_tenant_filter_override(entity_class)
+
                     stmt, conditions = entity_class.organization_accessing_filters(
                         stmt, accessing_organization_dict
                     )
@@ -129,3 +140,35 @@ class OrganizationPermission(PermissionInterface):
                         or_where |= or_(*conditions)
 
         return stmt, or_where
+
+    @classmethod
+    def _check_tenant_filter_override(cls, entity_class: Type[EntityInterface]) -> None:
+        """
+        Verify that entities with tenant columns override organization_accessing_filters().
+
+        Raises RuntimeError if an entity has columns matching DEFAULT_TENANT_COLUMNS
+        but still uses Entity's default (no-op) implementation. This catches forgotten
+        filter implementations that would silently return no data instead of properly
+        filtered tenant data.
+
+        ParametricEntity subclasses are skipped (global configuration data).
+        """
+        try:
+            if issubclass(entity_class, ParametricEntity):
+                return
+        except TypeError:
+            pass
+
+        entity_func = getattr(entity_class.organization_accessing_filters, "__func__",
+                              entity_class.organization_accessing_filters)
+        base_func = getattr(Entity.organization_accessing_filters, "__func__",
+                            Entity.organization_accessing_filters)
+        if entity_func is base_func:
+            entity_columns = {c.name for c in entity_class.__table__.columns}
+            tenant_cols = cls.DEFAULT_TENANT_COLUMNS & entity_columns
+            if tenant_cols:
+                raise RuntimeError(
+                    f"{entity_class.__name__} has tenant columns {tenant_cols} but does not "
+                    f"override organization_accessing_filters(). Implement the method to add "
+                    f"proper tenant filtering."
+                )

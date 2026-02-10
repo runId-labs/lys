@@ -10,11 +10,12 @@ import pytest
 from unittest.mock import AsyncMock, Mock, patch, MagicMock
 
 
-def _make_request(cookies=None, headers=None):
+def _make_request(cookies=None, headers=None, method="POST"):
     """Create a mock Starlette Request."""
     request = Mock()
     request.cookies = cookies or {}
     request.headers = headers or {}
+    request.method = method
     request.state = Mock()
     return request
 
@@ -240,3 +241,47 @@ class TestXSRFValidation:
         await middleware.dispatch(request, call_next)
 
         assert request.state.connected_user == jwt_claims
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("method", ["GET", "HEAD", "OPTIONS"])
+    async def test_xsrf_skipped_for_safe_methods(self, method):
+        """XSRF check is skipped for safe HTTP methods (GET, HEAD, OPTIONS)."""
+        from lys.apps.user_auth.middlewares import UserAuthMiddleware
+
+        jwt_claims = {"sub": "user-1", "exp": 9999999999, "xsrf_token": "token"}
+        request = _make_request(
+            cookies={"access_token": "valid-jwt"},
+            method=method,
+        )
+        call_next, response = _make_call_next()
+
+        middleware = UserAuthMiddleware.__new__(UserAuthMiddleware)
+        middleware.auth_utils = Mock()
+        middleware.auth_utils.decode = AsyncMock(return_value=jwt_claims)
+        middleware.auth_utils.config = {"check_xsrf_token": True}
+
+        # Should NOT raise even though no x-xsrf-token header
+        await middleware.dispatch(request, call_next)
+
+        assert request.state.connected_user == jwt_claims
+
+    @pytest.mark.asyncio
+    async def test_xsrf_enforced_for_post(self):
+        """XSRF check is enforced for POST requests with cookie auth."""
+        from lys.apps.user_auth.middlewares import UserAuthMiddleware
+        from lys.core.errors import LysError
+
+        jwt_claims = {"sub": "user-1", "exp": 9999999999, "xsrf_token": "expected-token"}
+        request = _make_request(
+            cookies={"access_token": "valid-jwt"},
+            method="POST",
+        )
+        call_next, response = _make_call_next()
+
+        middleware = UserAuthMiddleware.__new__(UserAuthMiddleware)
+        middleware.auth_utils = Mock()
+        middleware.auth_utils.decode = AsyncMock(return_value=jwt_claims)
+        middleware.auth_utils.config = {"check_xsrf_token": True}
+
+        with pytest.raises(LysError, match="INVALID_XSRF_TOKEN_ERROR"):
+            await middleware.dispatch(request, call_next)

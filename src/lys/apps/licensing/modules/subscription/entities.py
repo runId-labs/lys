@@ -146,6 +146,14 @@ class Subscription(Entity):
         """Returns True if on a free plan (no provider subscription)."""
         return self.provider_subscription_id is None
 
+    @classmethod
+    def organization_accessing_filters(cls, stmt, organization_id_dict):
+        """Filter subscriptions by client organization access."""
+        client_ids = organization_id_dict.get("client", [])
+        if client_ids:
+            return stmt, [cls.client_id.in_(client_ids)]
+        return stmt, []
+
     def accessing_users(self) -> list[str]:
         """Users who can access this subscription."""
         return []

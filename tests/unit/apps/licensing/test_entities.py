@@ -385,6 +385,19 @@ class TestSubscriptionEntityRelationships:
         from lys.apps.licensing.modules.subscription.entities import Subscription
         assert hasattr(Subscription, "accessing_organizations")
 
+    def test_has_organization_accessing_filters(self):
+        """Test Subscription has organization_accessing_filters classmethod."""
+        from lys.apps.licensing.modules.subscription.entities import Subscription
+        assert hasattr(Subscription, "organization_accessing_filters")
+
+    def test_organization_accessing_filters_overrides_entity(self):
+        """Test Subscription overrides Entity.organization_accessing_filters."""
+        from lys.apps.licensing.modules.subscription.entities import Subscription
+        from lys.core.entities import Entity
+        entity_func = Entity.organization_accessing_filters.__func__
+        sub_func = Subscription.organization_accessing_filters.__func__
+        assert sub_func is not entity_func
+
 
 class TestLicensePlanRelationships:
     """Tests for LicensePlan relationships."""
