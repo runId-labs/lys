@@ -488,9 +488,9 @@ class AuthService(Service):
         response.set_cookie(
             key=key,
             value=value,
-            secure=cls.auth_utils.config.get("cookie_secure"),
-            httponly=cls.auth_utils.config.get("cookie_http_only"),
-            samesite=cls.auth_utils.config.get("cookie_same_site"),
+            secure=cls.auth_utils.config.get("cookie_secure", True),
+            httponly=cls.auth_utils.config.get("cookie_http_only", True),
+            samesite=cls.auth_utils.config.get("cookie_same_site", "Lax"),
             expires=(now_utc() + timedelta(weeks=1)).strftime("%a, %d %b %Y %H:%M:%S GMT"),
             domain=cls.auth_utils.config.get("cookie_domain"),
             path=path

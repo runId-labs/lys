@@ -100,6 +100,56 @@ class TestSetAuthCookies:
         assert "access_token" in deleted_keys
 
 
+class TestSetCookieDefaults:
+    """Tests for AuthService.set_cookie() secure defaults."""
+
+    @pytest.mark.asyncio
+    async def test_defaults_secure_true(self):
+        from lys.apps.user_auth.modules.auth.services import AuthService
+        mock_response = Mock()
+        with patch.object(AuthService, "auth_utils", create=True) as mock_utils:
+            mock_utils.config = {}
+            await AuthService.set_cookie(mock_response, "key", "value", "/")
+        call_kwargs = mock_response.set_cookie.call_args[1]
+        assert call_kwargs["secure"] is True
+
+    @pytest.mark.asyncio
+    async def test_defaults_httponly_true(self):
+        from lys.apps.user_auth.modules.auth.services import AuthService
+        mock_response = Mock()
+        with patch.object(AuthService, "auth_utils", create=True) as mock_utils:
+            mock_utils.config = {}
+            await AuthService.set_cookie(mock_response, "key", "value", "/")
+        call_kwargs = mock_response.set_cookie.call_args[1]
+        assert call_kwargs["httponly"] is True
+
+    @pytest.mark.asyncio
+    async def test_defaults_samesite_lax(self):
+        from lys.apps.user_auth.modules.auth.services import AuthService
+        mock_response = Mock()
+        with patch.object(AuthService, "auth_utils", create=True) as mock_utils:
+            mock_utils.config = {}
+            await AuthService.set_cookie(mock_response, "key", "value", "/")
+        call_kwargs = mock_response.set_cookie.call_args[1]
+        assert call_kwargs["samesite"] == "Lax"
+
+    @pytest.mark.asyncio
+    async def test_config_overrides_defaults(self):
+        from lys.apps.user_auth.modules.auth.services import AuthService
+        mock_response = Mock()
+        with patch.object(AuthService, "auth_utils", create=True) as mock_utils:
+            mock_utils.config = {
+                "cookie_secure": False,
+                "cookie_http_only": False,
+                "cookie_same_site": "Strict",
+            }
+            await AuthService.set_cookie(mock_response, "key", "value", "/")
+        call_kwargs = mock_response.set_cookie.call_args[1]
+        assert call_kwargs["secure"] is False
+        assert call_kwargs["httponly"] is False
+        assert call_kwargs["samesite"] == "Strict"
+
+
 class TestDummyHash:
     """Tests for _DUMMY_HASH constant used for timing equalization."""
 
