@@ -31,9 +31,11 @@ def trigger_event(
 
     Email handling:
     - If emailing_id is provided: send directly (critical, no config/preference check)
-    - If no emailing_id: check config and user's preference, create on the fly if enabled
+    - If no emailing_id: dispatch via EmailingBatchService to all resolved recipients
+      (role-based + org-scoped), with per-recipient preference filtering
 
     Notification handling:
+    - Dispatched via NotificationBatchService to all resolved recipients
     - User preferences are checked per-recipient inside dispatch_sync
 
     Args:
@@ -73,29 +75,31 @@ def trigger_event(
             except Exception as e:
                 logger.error(f"Event {event_type}: failed to send email {emailing_id}: {e}")
                 raise self.retry(exc=e)
-        elif config.get("email", False) and event_service.should_send(user_id, event_type, "email", session):
-            # Non-critical email, create on the fly and send
+        elif config.get("email", False):
+            # Non-critical email, dispatch to all resolved recipients
             try:
-                user_entity = app_manager.get_entity("user")
-                user = session.get(user_entity, user_id)
-                if user:
-                    emailing_service = app_manager.get_service("emailing")
-                    emailing = emailing_service.entity_class(
-                        email_address=user.email_address.id,
-                        type_id=event_type,
-                        language_id=user.language_id or "fr",
-                        context=email_context or {},
-                    )
-                    session.add(emailing)
-                    session.flush()
+                emailing_batch_service = app_manager.get_service("emailing_batch")
 
-                    emailing_service.send_email(str(emailing.id))
+                # Callback to check per-recipient preference
+                def should_send_email(recipient_user_id: str) -> bool:
+                    return event_service.should_send(
+                        recipient_user_id, event_type, "email", session
+                    )
+
+                emailing_ids = emailing_batch_service.dispatch_sync(
+                    session=session,
+                    type_id=event_type,
+                    email_context=email_context,
+                    triggered_by_user_id=user_id,
+                    additional_user_ids=additional_user_ids,
+                    organization_data=organization_data,
+                    should_send_fn=should_send_email,
+                )
+                if emailing_ids:
                     result["email_sent"] = True
-                    logger.info(f"Event {event_type}: created and sent email to {user_id}")
-                else:
-                    logger.warning(f"Event {event_type}: user {user_id} not found, skipping email")
+                    logger.info(f"Event {event_type}: dispatched {len(emailing_ids)} email(s)")
             except Exception as e:
-                logger.error(f"Event {event_type}: failed to create/send email: {e}")
+                logger.error(f"Event {event_type}: failed to dispatch emails: {e}")
                 raise self.retry(exc=e)
 
         # Handle notification

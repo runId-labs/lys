@@ -1,6 +1,7 @@
 from . import access_level
 from . import auth
 from . import client
+from . import emailing
 from . import notification
 from . import role
 from . import user
@@ -12,6 +13,7 @@ __submodules__ = [
     auth,
     user,
     client,
+    emailing,
     notification,
     role,
     webservice,

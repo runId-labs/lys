@@ -1,26 +1,12 @@
-<!DOCTYPE html>
-<html lang="fr">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Verification de votre adresse email</title>
-</head>
-<body style="font-family: Arial, sans-serif; line-height: 1.6; color: #333; max-width: 600px; margin: 0 auto; padding: 20px;">
-    <div style="background-color: #f8f9fa; padding: 20px; border-radius: 8px;">
-        <h1 style="color: #0d6efd; margin-top: 0;">Verification de votre adresse email</h1>
-
-        <p>Bonjour {{ private_data.first_name }},</p>
-
-        <p>Merci de vous etre inscrit. Veuillez confirmer votre adresse email en cliquant sur le bouton ci-dessous :</p>
-
-        <p style="text-align: center; margin: 30px 0;">
-            <a href="{{ front_url }}/verify-email?token={{ token }}"
-               style="background-color: #0d6efd; color: white; padding: 12px 24px; text-decoration: none; border-radius: 4px; display: inline-block;">
-                Verifier mon email
-            </a>
-        </p>
-
-        <p>Si vous n'avez pas cree de compte, vous pouvez ignorer cet email.</p>
+{% extends "_base.html" %}
+{% block title %}Vérification de votre adresse email{% endblock %}
+{% block heading %}Vérification de votre adresse email{% endblock %}
+{% block greeting %}Bonjour {{ private_data.first_name }},{% endblock %}
+{% block intro %}Merci de vous être inscrit. Veuillez confirmer votre adresse email en cliquant sur le bouton ci-dessous :{% endblock %}
+{% block cta_url %}{{ front_url }}/verify-email?token={{ token }}{% endblock %}
+{% block cta_text %}Vérifier mon email{% endblock %}
+{% block footer_section %}
+        <p>Si vous n'avez pas créé de compte, vous pouvez ignorer cet email.</p>
 
         <hr style="border: none; border-top: 1px solid #dee2e6; margin: 20px 0;">
 
@@ -30,6 +16,4 @@
                 {{ front_url }}/verify-email?token={{ token }}
             </a>
         </p>
-    </div>
-</body>
-</html>
+{% endblock %}

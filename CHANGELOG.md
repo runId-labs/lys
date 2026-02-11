@@ -7,19 +7,35 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
-### Fixed
-- Remove incorrect `CreateProductInput` argument from `@lys_creation` examples in README.md and GraphQL API guide
-
-### Changed
-- Add git tag creation and `git push origin main --tags` step to commit workflow in CLAUDE.md
+## [0.2.0] - 2026-02-11
 
 ### Added
-- GitHub Actions workflow for automatic PyPI publishing on version tags
+- Role-based and organization-scoped email dispatch via `EmailingBatchService` override chain
+- `RecipientResolutionMixin` (base), `RoleRecipientResolutionMixin` (user_role), `OrganizationRecipientResolutionMixin` (organization)
+- `emailing_type_role` association table linking `EmailingType` to `Role` (many-to-many)
+- Extended `EmailingType` entity with `roles` relationship in user_role app
+- `EmailingTypeFixtures` base class with `format_roles` for role-aware fixture loading
+- `EmailingTypeFixturesModel` Pydantic model for fixture validation with optional `roles`
+- Organization-scoped `EmailingBatchService` with `organization_data` parameter
+- Per-recipient `private_data` enrichment in `_create_and_send_emails` / `_create_and_send_emails_sync`
+- `trigger_event` Celery task: unified event handler for emails and notifications
+- Jinja2 base template (`_base.html`) with blocks for consistent email layout
+- Licensing emailing fixtures with `context_description` and role assignments
+- 5 licensing email templates (EN/FR): license_granted, license_revoked, subscription_payment_success/failed, subscription_canceled
+- Minimum 75% combined coverage threshold rule in CLAUDE.md
+- Integration tests for role-based and organization-scoped batch dispatch
+- Unit tests for all mixins, batch service, emailing entities, templates, fixtures, email context, and trigger_event task (220+ new tests)
 
 ### Changed
-- Optimize CLAUDE.md as compact agent reference with codebase map, registry names, and common imports
-- Add table of contents to 6 documentation files (FRS and guides)
-- Rename PyPI package from `lys` to `runid-lys` and add metadata (description, classifiers, keywords, repository URL)
+- Refactored all 16 email templates to extend `_base.html` with block inheritance
+- `email_context` in licensing services now includes all template variables (front_url, client_name, plan_name, etc.)
+- Registered `emailing` module in `user_role` and `organization` app `__submodules__`
+- Updated coverage badge in README.md from 75% to 77%
+
+### Fixed
+- `RoleRecipientResolutionMixin` fallback to `Base.metadata.tables` when `user_role` is a raw Table (not a registered entity)
+- `EmailingTypeFixturesModel.roles` now optional (default `[]`) to support emailing types without role dispatch
+- Missing `await` on `session.execute()` for association table inserts in async context
 
 ## [0.1.0] - 2026-02-10
 

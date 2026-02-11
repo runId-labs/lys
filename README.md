@@ -1,6 +1,6 @@
 # Lys
 
-![Coverage](https://img.shields.io/badge/coverage-75%25-green)
+![Coverage](https://img.shields.io/badge/coverage-77%25-green)
 ![Python](https://img.shields.io/badge/python-3.13+-blue)
 ![License](https://img.shields.io/badge/license-Apache%202.0-blue)
 

@@ -1,42 +1,22 @@
-<!DOCTYPE html>
-<html lang="fr">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Paiement échoué</title>
-</head>
-<body style="font-family: Arial, sans-serif; line-height: 1.6; color: #333; max-width: 600px; margin: 0 auto; padding: 20px;">
-    <div style="background-color: #f8f9fa; padding: 20px; border-radius: 8px;">
-        <h1 style="color: #dc3545; margin-top: 0;">Paiement échoué</h1>
-
-        <p>Bonjour,</p>
-
-        <p>Nous n'avons pas pu traiter votre paiement d'abonnement.</p>
-
+{% extends "_base.html" %}
+{% block title %}Paiement échoué{% endblock %}
+{% block theme_color %}#dc3545{% endblock %}
+{% block heading %}Paiement échoué{% endblock %}
+{% block greeting %}Bonjour {{ private_data.first_name }},{% endblock %}
+{% block intro %}Nous n'avons pas pu traiter votre paiement d'abonnement.{% endblock %}
+{% block info_box %}
         <div style="background-color: #ffffff; padding: 15px; border-left: 4px solid #dc3545; margin: 20px 0;">
-            <p style="margin: 0;"><strong>Plan :</strong> {{ plan_name }}</p>
-            {% if amount and currency %}
+            <p style="margin: 0;"><strong>Organisation :</strong> {{ client_name }}</p>
+            <p style="margin: 10px 0 0 0;"><strong>Plan :</strong> {{ plan_name }}</p>
             <p style="margin: 10px 0 0 0;"><strong>Montant :</strong> {{ amount }} {{ currency }}</p>
-            {% endif %}
             {% if error_reason %}
             <p style="margin: 10px 0 0 0;"><strong>Raison :</strong> {{ error_reason }}</p>
             {% endif %}
         </div>
-
+{% endblock %}
+{% block body %}
         <p>Veuillez vérifier votre moyen de paiement et réessayer. Votre abonnement peut être suspendu si le paiement n'est pas reçu.</p>
-
-        {% if retry_url %}
-        <p style="text-align: center; margin: 30px 0;">
-            <a href="{{ retry_url }}"
-               style="background-color: #dc3545; color: white; padding: 12px 24px; text-decoration: none; border-radius: 5px; display: inline-block;">
-                Réessayer le paiement
-            </a>
-        </p>
-        {% endif %}
-
-        <p style="color: #666; font-size: 14px; margin-top: 30px;">
-            Si vous avez besoin d'aide, veuillez contacter le support.
-        </p>
-    </div>
-</body>
-</html>
+{% endblock %}
+{% block cta_color %}#dc3545{% endblock %}
+{% block cta_text %}Accéder à la plateforme{% endblock %}
+{% block footer %}Si vous avez besoin d'aide, veuillez contacter votre administrateur.{% endblock %}

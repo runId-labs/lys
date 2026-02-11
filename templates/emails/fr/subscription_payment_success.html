@@ -1,44 +1,21 @@
-
-<!DOCTYPE html>
-<html lang="fr">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Paiement réussi</title>
-</head>
-<body style="font-family: Arial, sans-serif; line-height: 1.6; color: #333; max-width: 600px; margin: 0 auto; padding: 20px;">
-    <div style="background-color: #f8f9fa; padding: 20px; border-radius: 8px;">
-        <h1 style="color: #198754; margin-top: 0;">Paiement réussi</h1>
-
-        <p>Bonjour,</p>
-
-        <p>Votre paiement d'abonnement a été traité avec succès.</p>
-
+{% extends "_base.html" %}
+{% block title %}Paiement réussi{% endblock %}
+{% block theme_color %}#198754{% endblock %}
+{% block heading %}Paiement réussi{% endblock %}
+{% block greeting %}Bonjour {{ private_data.first_name }},{% endblock %}
+{% block intro %}Votre paiement d'abonnement a été traité avec succès.{% endblock %}
+{% block info_box %}
         <div style="background-color: #ffffff; padding: 15px; border-left: 4px solid #198754; margin: 20px 0;">
-            <p style="margin: 0;"><strong>Plan :</strong> {{ plan_name }}</p>
-            {% if amount and currency %}
+            <p style="margin: 0;"><strong>Organisation :</strong> {{ client_name }}</p>
+            <p style="margin: 10px 0 0 0;"><strong>Plan :</strong> {{ plan_name }}</p>
             <p style="margin: 10px 0 0 0;"><strong>Montant :</strong> {{ amount }} {{ currency }}</p>
-            {% endif %}
-            {% if billing_period %}
             <p style="margin: 10px 0 0 0;"><strong>Facturation :</strong> {{ billing_period }}</p>
-            {% endif %}
-            {% if next_billing_date %}
             <p style="margin: 10px 0 0 0;"><strong>Prochaine facturation :</strong> {{ next_billing_date }}</p>
-            {% endif %}
         </div>
-
+{% endblock %}
+{% block body %}
         <p>Votre abonnement est maintenant actif. Merci de votre confiance !</p>
-
-        <p style="text-align: center; margin: 30px 0;">
-            <a href="{{ front_url }}"
-               style="background-color: #198754; color: white; padding: 12px 24px; text-decoration: none; border-radius: 5px; display: inline-block;">
-                Accéder à la plateforme
-            </a>
-        </p>
-
-        <p style="color: #666; font-size: 14px; margin-top: 30px;">
-            Si vous avez des questions concernant votre abonnement, veuillez contacter le support.
-        </p>
-    </div>
-</body>
-</html>
+{% endblock %}
+{% block cta_color %}#198754{% endblock %}
+{% block cta_text %}Accéder à la plateforme{% endblock %}
+{% block footer %}Si vous avez des questions concernant votre abonnement, veuillez contacter votre administrateur.{% endblock %}

@@ -600,16 +600,28 @@ class SubscriptionService(EntityService[Subscription]):
                 subscription.pending_plan_version_id = free_version.id
 
         # Trigger subscription canceled event (notification + email)
+        client_name = client.name if client else None
         plan_name = None
         if subscription.plan_version and subscription.plan_version.plan:
-            plan_name = subscription.plan_version.plan.name
+            plan_name = subscription.plan_version.plan.id
+        effective_date = (
+            subscription.current_period_end.isoformat()
+            if subscription.current_period_end else None
+        )
 
         trigger_event.delay(
             event_type=SUBSCRIPTION_CANCELED,
             user_id=None,  # No specific user, sent to LICENSE_ADMIN_ROLE
-            notification_data={
+            email_context={
+                "client_name": client_name,
                 "plan_name": plan_name,
-                "effective_date": subscription.current_period_end.isoformat() if subscription.current_period_end else None,
+                "effective_date": effective_date,
+                "front_url": cls.app_manager.settings.front_url,
+            },
+            notification_data={
+                "client_name": client_name,
+                "plan_name": plan_name,
+                "effective_date": effective_date,
             },
             organization_data={"client_ids": [client_id]},
         )

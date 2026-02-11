@@ -69,7 +69,7 @@ class UserService(BaseUserService):
 
         # Trigger LICENSE_GRANTED event after commit
         user_id = str(user.id)
-        license_name = subscription.plan_version.plan.name if subscription.plan_version else "License"
+        license_name = subscription.plan_version.plan.id if subscription.plan_version else "License"
         client_name = user.client.name if user.client else None
         client_id = user.client_id
 
@@ -77,6 +77,10 @@ class UserService(BaseUserService):
             lambda: trigger_event.delay(
                 event_type=LICENSE_GRANTED,
                 user_id=user_id,
+                email_context={
+                    "license_name": license_name,
+                    "client_name": client_name,
+                },
                 notification_data={
                     "license_name": license_name,
                     "client_name": client_name,
@@ -124,7 +128,7 @@ class UserService(BaseUserService):
 
         # Trigger LICENSE_REVOKED event after commit
         user_id = str(user.id)
-        license_name = subscription.plan_version.plan.name if subscription.plan_version else "License"
+        license_name = subscription.plan_version.plan.id if subscription.plan_version else "License"
         client_name = user.client.name if user.client else None
         client_id = user.client_id
 
@@ -132,6 +136,10 @@ class UserService(BaseUserService):
             lambda: trigger_event.delay(
                 event_type=LICENSE_REVOKED,
                 user_id=user_id,
+                email_context={
+                    "license_name": license_name,
+                    "client_name": client_name,
+                },
                 notification_data={
                     "license_name": license_name,
                     "client_name": client_name,

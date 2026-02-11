@@ -1,14 +1,10 @@
 """
 Notification services for user_role app.
 
-Extends base NotificationBatchService with role-based recipient resolution.
+Extends base NotificationBatchService with role-based recipient resolution
+via RoleRecipientResolutionMixin.
 """
-from typing import List
-
-from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import Session
-
+from lys.apps.user_role.mixins.recipient_resolution import RoleRecipientResolutionMixin
 from lys.apps.user_role.modules.notification.entities import NotificationType
 from lys.apps.user_auth.modules.notification.services import (
     NotificationBatchService as BaseNotificationBatchService,
@@ -29,93 +25,14 @@ class NotificationTypeService(EntityService[NotificationType]):
 
 
 @register_service()
-class NotificationBatchService(BaseNotificationBatchService):
+class NotificationBatchService(RoleRecipientResolutionMixin, BaseNotificationBatchService):
     """
     Extended NotificationBatchService with role-based recipient resolution.
 
-    Adds resolution of recipients from:
-    - Users with roles linked to the NotificationType (via user_role table)
+    Role-based resolution is provided by RoleRecipientResolutionMixin which
+    adds users with roles linked to the NotificationType (via user_role table).
+
+    No method override needed — the mixin's _resolve_recipients() and
+    _resolve_recipients_sync() are used automatically via MRO.
     """
-
-    @classmethod
-    async def _resolve_recipients(
-        cls,
-        session: AsyncSession,
-        notification_type: NotificationType,
-        triggered_by_user_id: str | None,
-        additional_user_ids: List[str] | None,
-    ) -> List[str]:
-        """
-        Resolve recipient user IDs including role-based recipients.
-
-        Extends base implementation with:
-        - Users with roles linked to the NotificationType (via user_role table)
-
-        Args:
-            session: Database session
-            notification_type: The NotificationType entity
-            triggered_by_user_id: User who triggered the notification
-            additional_user_ids: Extra users to include
-
-        Returns:
-            Deduplicated list of user IDs
-        """
-        # Start with base recipients (triggered_by + additional)
-        recipient_ids = set(await super()._resolve_recipients(
-            session=session,
-            notification_type=notification_type,
-            triggered_by_user_id=triggered_by_user_id,
-            additional_user_ids=additional_user_ids,
-        ))
-
-        # Add role-based recipients
-        role_ids = [role.id for role in notification_type.roles]
-
-        if role_ids:
-            user_role_entity = cls.app_manager.get_entity("user_role", nullable=True)
-            if user_role_entity:
-                stmt = select(user_role_entity.user_id).where(
-                    user_role_entity.role_id.in_(role_ids)
-                )
-                result = await session.execute(stmt)
-                for row in result:
-                    recipient_ids.add(row[0])
-
-        return list(recipient_ids)
-
-    @classmethod
-    def _resolve_recipients_sync(
-        cls,
-        session: Session,
-        notification_type: NotificationType,
-        triggered_by_user_id: str | None,
-        additional_user_ids: List[str] | None,
-    ) -> List[str]:
-        """
-        Synchronous version of role-based recipient resolution.
-
-        Extends base implementation with:
-        - Users with roles linked to the NotificationType (via user_role table)
-        """
-        # Start with base recipients (triggered_by + additional)
-        recipient_ids = set(super()._resolve_recipients_sync(
-            session=session,
-            notification_type=notification_type,
-            triggered_by_user_id=triggered_by_user_id,
-            additional_user_ids=additional_user_ids,
-        ))
-
-        # Add role-based recipients
-        role_ids = [role.id for role in notification_type.roles]
-
-        if role_ids:
-            user_role_entity = cls.app_manager.get_entity("user_role", nullable=True)
-            if user_role_entity:
-                stmt = select(user_role_entity.user_id).where(
-                    user_role_entity.role_id.in_(role_ids)
-                )
-                result = session.execute(stmt)
-                for row in result:
-                    recipient_ids.add(row[0])
-
-        return list(recipient_ids)
+    pass

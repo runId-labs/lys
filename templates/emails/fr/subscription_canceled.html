@@ -1,39 +1,23 @@
-<!DOCTYPE html>
-<html lang="fr">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Abonnement annulé</title>
-</head>
-<body style="font-family: Arial, sans-serif; line-height: 1.6; color: #333; max-width: 600px; margin: 0 auto; padding: 20px;">
-    <div style="background-color: #f8f9fa; padding: 20px; border-radius: 8px;">
-        <h1 style="color: #6c757d; margin-top: 0;">Abonnement annulé</h1>
-
-        <p>Bonjour,</p>
-
-        <p>Votre abonnement a été annulé comme demandé.</p>
-
+{% extends "_base.html" %}
+{% block title %}Abonnement annulé{% endblock %}
+{% block theme_color %}#6c757d{% endblock %}
+{% block heading %}Abonnement annulé{% endblock %}
+{% block greeting %}Bonjour {{ private_data.first_name }},{% endblock %}
+{% block intro %}Votre abonnement a été annulé comme demandé.{% endblock %}
+{% block info_box %}
         <div style="background-color: #ffffff; padding: 15px; border-left: 4px solid #6c757d; margin: 20px 0;">
-            <p style="margin: 0;"><strong>Plan :</strong> {{ plan_name }}</p>
+            <p style="margin: 0;"><strong>Organisation :</strong> {{ client_name }}</p>
+            <p style="margin: 10px 0 0 0;"><strong>Plan :</strong> {{ plan_name }}</p>
             {% if effective_date %}
             <p style="margin: 10px 0 0 0;"><strong>Accès jusqu'au :</strong> {{ effective_date }}</p>
             {% endif %}
         </div>
-
+{% endblock %}
+{% block body %}
         <p>Vous continuerez à avoir accès aux fonctionnalités de votre plan actuel jusqu'à la fin de votre période de facturation. Après cela, votre compte sera rétrogradé au plan gratuit.</p>
 
         <p>Nous sommes désolés de vous voir partir. Si vous changez d'avis, vous pouvez vous réabonner à tout moment.</p>
-
-        <p style="text-align: center; margin: 30px 0;">
-            <a href="{{ front_url }}"
-               style="background-color: #6c757d; color: white; padding: 12px 24px; text-decoration: none; border-radius: 5px; display: inline-block;">
-                Gérer l'abonnement
-            </a>
-        </p>
-
-        <p style="color: #666; font-size: 14px; margin-top: 30px;">
-            Si vous avez des commentaires ou des questions, veuillez contacter le support.
-        </p>
-    </div>
-</body>
-</html>
+{% endblock %}
+{% block cta_color %}#6c757d{% endblock %}
+{% block cta_text %}Gérer l'abonnement{% endblock %}
+{% block footer %}Si vous avez des commentaires ou des questions, veuillez contacter votre administrateur.{% endblock %}

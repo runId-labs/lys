@@ -128,6 +128,8 @@ pytest tests/integration/ --forked --cov=src/lys --cov-append --cov-report=term-
 
 Unit and integration tests cannot run in the same pytest process due to SQLAlchemy registry singleton isolation. Use `--cov-append` to accumulate coverage across both runs.
 
+**Coverage threshold**: Combined coverage (unit + integration + e2e) MUST remain at or above **75%**. Do not merge changes that lower coverage below this threshold.
+
 Test file structure: `tests/{unit,integration}/apps/{app_name}/test_{module}_{component}.py`
 
 ## Documentation Reference

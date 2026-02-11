@@ -277,15 +277,37 @@ class MollieWebhookService(Service):
                     f"Cannot create Mollie subscription for {client_id}: webhook_base_url not configured"
                 )
 
+        # Resolve context data for email/notification
+        plan_version_entity = cls.app_manager.get_entity("license_plan_version")
+        plan_version = await session.get(plan_version_entity, plan_version_id)
+        plan_name = plan_version.plan.id if plan_version and plan_version.plan else None
+        if not client:
+            stmt = select(client_entity).where(client_entity.id == client_id)
+            result = await session.execute(stmt)
+            client = result.scalar_one_or_none()
+        client_name = client.name if client else None
+        amount_str = str(payment.amount["value"]) if hasattr(payment, "amount") else None
+        currency_str = payment.amount["currency"] if hasattr(payment, "amount") else None
+
         # Trigger payment success event (notification + email)
         trigger_event.delay(
             event_type=SUBSCRIPTION_PAYMENT_SUCCESS,
             user_id=None,  # No specific user, sent to LICENSE_ADMIN_ROLE
-            notification_data={
-                "plan_version_id": plan_version_id,
+            email_context={
+                "client_name": client_name,
+                "plan_name": plan_name,
+                "amount": amount_str,
+                "currency": currency_str,
                 "billing_period": billing_period,
-                "amount": str(payment.amount["value"]) if hasattr(payment, "amount") else None,
-                "currency": payment.amount["currency"] if hasattr(payment, "amount") else None,
+                "next_billing_date": period_end.isoformat() if period_end else None,
+                "front_url": settings.front_url,
+            },
+            notification_data={
+                "client_name": client_name,
+                "plan_name": plan_name,
+                "billing_period": billing_period,
+                "amount": amount_str,
+                "currency": currency_str,
             },
             organization_data={"client_ids": [client_id]},
         )
@@ -300,16 +322,40 @@ class MollieWebhookService(Service):
         logger.warning(f"Payment failed for client {client_id}: {payment.id}")
 
         if client_id:
+            # Resolve context data for email/notification
+            plan_version_entity = cls.app_manager.get_entity("license_plan_version")
+            client_entity = cls.app_manager.get_entity("client")
+            plan_version = await session.get(plan_version_entity, plan_version_id) if plan_version_id else None
+            plan_name = plan_version.plan.id if plan_version and plan_version.plan else None
+            stmt = select(client_entity).where(client_entity.id == client_id)
+            result = await session.execute(stmt)
+            client = result.scalar_one_or_none()
+            client_name = client.name if client else None
+            amount_str = str(payment.amount["value"]) if hasattr(payment, "amount") else None
+            currency_str = payment.amount["currency"] if hasattr(payment, "amount") else None
+            error_reason = (
+                getattr(payment, "details", {}).get("failureReason")
+                if hasattr(payment, "details") else None
+            )
+
             # Trigger payment failed event (notification + email)
             trigger_event.delay(
                 event_type=SUBSCRIPTION_PAYMENT_FAILED,
                 user_id=None,  # No specific user, sent to LICENSE_ADMIN_ROLE
+                email_context={
+                    "client_name": client_name,
+                    "plan_name": plan_name,
+                    "amount": amount_str,
+                    "currency": currency_str,
+                    "error_reason": error_reason,
+                    "front_url": settings.front_url,
+                },
                 notification_data={
-                    "plan_version_id": plan_version_id,
-                    "billing_period": billing_period,
-                    "amount": str(payment.amount["value"]) if hasattr(payment, "amount") else None,
-                    "currency": payment.amount["currency"] if hasattr(payment, "amount") else None,
-                    "failure_reason": getattr(payment, "details", {}).get("failureReason") if hasattr(payment, "details") else None,
+                    "client_name": client_name,
+                    "plan_name": plan_name,
+                    "amount": amount_str,
+                    "currency": currency_str,
+                    "error_reason": error_reason,
                 },
                 organization_data={"client_ids": [client_id]},
             )

@@ -1,37 +1,17 @@
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>License Granted</title>
-</head>
-<body style="font-family: Arial, sans-serif; line-height: 1.6; color: #333; max-width: 600px; margin: 0 auto; padding: 20px;">
-    <div style="background-color: #f8f9fa; padding: 20px; border-radius: 8px;">
-        <h1 style="color: #0d6efd; margin-top: 0;">New License Granted</h1>
-
-        <p>Hello {{ private_data.first_name }},</p>
-
-        <p>Good news! A new license has been granted to you:</p>
-
+{% extends "_base.html" %}
+{% block lang %}en{% endblock %}
+{% block title %}License Granted{% endblock %}
+{% block heading %}New License Granted{% endblock %}
+{% block greeting %}Hello {{ private_data.first_name }},{% endblock %}
+{% block intro %}Good news! A new license has been granted to you:{% endblock %}
+{% block info_box %}
         <div style="background-color: #ffffff; padding: 15px; border-left: 4px solid #0d6efd; margin: 20px 0;">
-            <p style="margin: 0;"><strong>License:</strong> {{ license_name }}</p>
-            {% if client_name %}
-            <p style="margin: 10px 0 0 0;"><strong>Organization:</strong> {{ client_name }}</p>
-            {% endif %}
+            <p style="margin: 0;"><strong>Organization:</strong> {{ client_name }}</p>
+            <p style="margin: 10px 0 0 0;"><strong>License:</strong> {{ license_name }}</p>
         </div>
-
+{% endblock %}
+{% block body %}
         <p>You now have access to all features included in this license.</p>
-
-        <p style="text-align: center; margin: 30px 0;">
-            <a href="{{ front_url }}"
-               style="background-color: #0d6efd; color: white; padding: 12px 24px; text-decoration: none; border-radius: 5px; display: inline-block;">
-                Access the platform
-            </a>
-        </p>
-
-        <p style="color: #666; font-size: 14px; margin-top: 30px;">
-            If you have any questions, please contact your administrator.
-        </p>
-    </div>
-</body>
-</html>
+{% endblock %}
+{% block cta_text %}Access the platform{% endblock %}
+{% block footer %}If you have any questions, please contact your administrator.{% endblock %}

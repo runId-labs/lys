@@ -5,9 +5,8 @@ Base services for creating and managing notifications:
 - NotificationBatchService: Creates notification batches and dispatches to recipients
 - NotificationService: Manages individual user notifications
 
-Extensions:
-- user_role app extends with role-based recipient resolution
-- organization app extends with organization-scoped recipient resolution
+Recipient resolution is provided by RecipientResolutionMixin (base app) and
+extended by user_role (role-based) and organization (org-scoped) mixins.
 """
 from typing import List, Callable
 
@@ -18,6 +17,7 @@ from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Session
 
+from lys.apps.base.mixins.recipient_resolution import RecipientResolutionMixin
 from lys.apps.user_auth.modules.notification.entities import (
     Notification,
     NotificationBatch,
@@ -28,19 +28,20 @@ from lys.core.services import EntityService
 
 
 @register_service()
-class NotificationBatchService(EntityService[NotificationBatch]):
+class NotificationBatchService(RecipientResolutionMixin, EntityService[NotificationBatch]):
     """
     Base service for creating notification batches and dispatching notifications.
 
     Handles the base flow:
     1. Create a NotificationBatch with event data
-    2. Resolve recipients from triggered_by_user_id and additional_user_ids
+    2. Resolve recipients via RecipientResolutionMixin
     3. Create individual Notification for each recipient
     4. Publish signals for real-time delivery
 
-    Extensions:
-    - user_role app adds role-based recipient resolution
-    - organization app adds organization-scoped recipient resolution
+    Recipient resolution is provided by the mixin chain:
+    - RecipientResolutionMixin: triggered_by + additional_user_ids
+    - RoleRecipientResolutionMixin (user_role app): + role-based
+    - OrganizationRecipientResolutionMixin (organization app): + org-scoped
     """
 
     @classmethod
@@ -55,10 +56,6 @@ class NotificationBatchService(EntityService[NotificationBatch]):
     ) -> NotificationBatch:
         """
         Create a notification batch and dispatch to all recipients.
-
-        Base implementation resolves recipients from:
-        1. The user who triggered the notification (if provided)
-        2. Any additional user IDs explicitly specified
 
         Args:
             session: Database session
@@ -92,10 +89,11 @@ class NotificationBatchService(EntityService[NotificationBatch]):
             data=data,
         )
 
-        # Resolve recipient user IDs
+        # Resolve recipient user IDs via mixin
         recipient_user_ids = await cls._resolve_recipients(
+            app_manager=cls.app_manager,
             session=session,
-            notification_type=notification_type,
+            type_entity=notification_type,
             triggered_by_user_id=triggered_by_user_id,
             additional_user_ids=additional_user_ids,
         )
@@ -109,44 +107,6 @@ class NotificationBatchService(EntityService[NotificationBatch]):
         )
 
         return batch
-
-    @classmethod
-    async def _resolve_recipients(
-        cls,
-        session: AsyncSession,
-        notification_type: NotificationType,
-        triggered_by_user_id: str | None,
-        additional_user_ids: List[str] | None,
-    ) -> List[str]:
-        """
-        Resolve recipient user IDs for a notification.
-
-        Base implementation only includes:
-        1. The triggering user
-        2. Additional explicit user IDs
-
-        Override in subclasses to add role-based or organization-scoped resolution.
-
-        Args:
-            session: Database session
-            notification_type: The NotificationType entity
-            triggered_by_user_id: User who triggered the notification
-            additional_user_ids: Extra users to include
-
-        Returns:
-            Deduplicated list of user IDs
-        """
-        recipient_ids = set()
-
-        # Add triggered_by user
-        if triggered_by_user_id:
-            recipient_ids.add(triggered_by_user_id)
-
-        # Add additional users
-        if additional_user_ids:
-            recipient_ids.update(additional_user_ids)
-
-        return list(recipient_ids)
 
     @classmethod
     async def _create_notifications_and_publish(
@@ -237,10 +197,11 @@ class NotificationBatchService(EntityService[NotificationBatch]):
         session.add(batch)
         session.flush()
 
-        # Resolve recipient user IDs
+        # Resolve recipient user IDs via mixin
         recipient_user_ids = cls._resolve_recipients_sync(
+            app_manager=cls.app_manager,
             session=session,
-            notification_type=notification_type,
+            type_entity=notification_type,
             triggered_by_user_id=triggered_by_user_id,
             additional_user_ids=additional_user_ids,
         )
@@ -254,30 +215,6 @@ class NotificationBatchService(EntityService[NotificationBatch]):
         )
 
         return batch
-
-    @classmethod
-    def _resolve_recipients_sync(
-        cls,
-        session: Session,
-        notification_type: NotificationType,
-        triggered_by_user_id: str | None,
-        additional_user_ids: List[str] | None,
-    ) -> List[str]:
-        """
-        Synchronous version of recipient resolution.
-
-        Base implementation only includes triggered_by and additional users.
-        Override in subclasses to add role-based resolution.
-        """
-        recipient_ids = set()
-
-        if triggered_by_user_id:
-            recipient_ids.add(triggered_by_user_id)
-
-        if additional_user_ids:
-            recipient_ids.update(additional_user_ids)
-
-        return list(recipient_ids)
 
     @classmethod
     def _create_notifications_and_publish_sync(

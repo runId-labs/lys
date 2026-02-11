@@ -1,0 +1,36 @@
+<!DOCTYPE html>
+<html lang="{% block lang %}fr{% endblock %}">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{% block title %}{% endblock %}</title>
+</head>
+<body style="font-family: Arial, sans-serif; line-height: 1.6; color: #333; max-width: 600px; margin: 0 auto; padding: 20px;">
+    <div style="background-color: #f8f9fa; padding: 20px; border-radius: 8px;">
+        <h1 style="color: {% block theme_color %}#0d6efd{% endblock %}; margin-top: 0;">{% block heading %}{% endblock %}</h1>
+
+        <p>{% block greeting %}{% endblock %}</p>
+
+        <p>{% block intro %}{% endblock %}</p>
+
+        {% block info_box %}{% endblock %}
+
+        {% block body %}{% endblock %}
+
+        {% block cta %}
+        <p style="text-align: center; margin: 30px 0;">
+            <a href="{% block cta_url %}{{ front_url }}{% endblock %}"
+               style="background-color: {% block cta_color %}#0d6efd{% endblock %}; color: white; padding: 12px 24px; text-decoration: none; border-radius: 5px; display: inline-block;">
+                {% block cta_text %}{% endblock %}
+            </a>
+        </p>
+        {% endblock %}
+
+        {% block footer_section %}
+        <p style="color: #666; font-size: 14px; margin-top: 30px;">
+            {% block footer %}{% endblock %}
+        </p>
+        {% endblock %}
+    </div>
+</body>
+</html>

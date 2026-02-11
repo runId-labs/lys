@@ -1,18 +1,21 @@
 import json
+import logging
 import pathlib
 import smtplib
-import logging
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
+from typing import List, Callable
 
 from jinja2 import Environment, FileSystemLoader
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import Session
 
+from lys.apps.base.mixins.recipient_resolution import RecipientResolutionMixin
 from lys.apps.base.modules.emailing.consts import SENT_EMAILING_STATUS, ERROR_EMAILING_STATUS
 from lys.apps.base.modules.emailing.entities import Emailing, EmailingType, EmailingStatus
 from lys.core.entities import Entity
 from lys.core.registries import register_service
-from lys.core.services import EntityService
+from lys.core.services import Service, EntityService
 
 logger = logging.getLogger(__name__)
 
@@ -239,3 +242,243 @@ class EmailingService(EntityService[Emailing]):
                 emailing.error = str(ex)
                 logger.error(f"Error sending email {emailing_id}: {ex}")
                 raise
+
+
+@register_service()
+class EmailingBatchService(RecipientResolutionMixin, Service):
+    """
+    Service for dispatching emails to multiple recipients based on role/org resolution.
+
+    Follows the same mixin override chain as NotificationBatchService:
+    - RecipientResolutionMixin: triggered_by + additional_user_ids
+    - RoleRecipientResolutionMixin (user_role app): + role-based
+    - OrganizationRecipientResolutionMixin (organization app): + org-scoped
+
+    Unlike NotificationBatchService, there is no EmailingBatch entity.
+    Each resolved recipient gets their own Emailing record.
+
+    Critical emails (password reset, email verification, invitation) are NOT
+    handled here — they use the pre-created emailing_id path in trigger_event.
+    """
+    service_name = "emailing_batch"
+
+    @classmethod
+    async def dispatch(
+        cls,
+        session: AsyncSession,
+        type_id: str,
+        email_context: dict | None = None,
+        triggered_by_user_id: str | None = None,
+        additional_user_ids: List[str] | None = None,
+        should_send_fn: Callable[[str], bool] | None = None,
+    ) -> List[str]:
+        """
+        Create and send emails to all resolved recipients.
+
+        Args:
+            session: Async database session
+            type_id: EmailingType ID (e.g., "LICENSE_GRANTED")
+            email_context: Context data for the email template
+            triggered_by_user_id: User who triggered the event
+            additional_user_ids: Extra users to email
+            should_send_fn: Optional callback to filter recipients by user preference.
+                            Signature: (user_id: str) -> bool
+
+        Returns:
+            List of created Emailing IDs
+
+        Raises:
+            ValueError: If EmailingType not found
+        """
+        # Fetch EmailingType
+        emailing_type = await session.get(
+            cls.app_manager.get_entity("emailing_type"),
+            type_id
+        )
+        if not emailing_type:
+            raise ValueError(f"EmailingType '{type_id}' not found")
+
+        # Resolve recipients via mixin
+        recipient_user_ids = await cls._resolve_recipients(
+            app_manager=cls.app_manager,
+            session=session,
+            type_entity=emailing_type,
+            triggered_by_user_id=triggered_by_user_id,
+            additional_user_ids=additional_user_ids,
+        )
+
+        # Create and send emails
+        return await cls._create_and_send_emails(
+            session=session,
+            type_id=type_id,
+            email_context=email_context,
+            recipient_user_ids=recipient_user_ids,
+            should_send_fn=should_send_fn,
+        )
+
+    @classmethod
+    async def _create_and_send_emails(
+        cls,
+        session: AsyncSession,
+        type_id: str,
+        email_context: dict | None,
+        recipient_user_ids: List[str],
+        should_send_fn: Callable[[str], bool] | None = None,
+    ) -> List[str]:
+        """
+        Create Emailing records and send emails for each recipient.
+
+        Args:
+            session: Async database session
+            type_id: EmailingType ID
+            email_context: Context data for the email template
+            recipient_user_ids: Resolved list of user IDs
+            should_send_fn: Optional callback to filter recipients
+
+        Returns:
+            List of created Emailing IDs
+        """
+        user_entity = cls.app_manager.get_entity("user")
+        emailing_service = cls.app_manager.get_service("emailing")
+        created_ids = []
+
+        for user_id in recipient_user_ids:
+            if should_send_fn is not None and not should_send_fn(user_id):
+                continue
+
+            user = await session.get(user_entity, user_id)
+            if not user or not hasattr(user, "email_address") or not user.email_address:
+                logger.warning(f"EmailingBatch: user {user_id} not found or has no email, skipping")
+                continue
+
+            # Enrich context with per-recipient user data
+            recipient_context = dict(email_context or {})
+            if hasattr(user, "private_data") and user.private_data:
+                recipient_context["private_data"] = {
+                    "first_name": user.private_data.first_name,
+                    "last_name": user.private_data.last_name,
+                }
+
+            emailing = await emailing_service.create(
+                session,
+                email_address=user.email_address.id,
+                type_id=type_id,
+                language_id=user.language_id or "fr",
+                context=recipient_context,
+            )
+
+            emailing_service.send_email(str(emailing.id))
+            created_ids.append(str(emailing.id))
+
+        return created_ids
+
+    @classmethod
+    def dispatch_sync(
+        cls,
+        session: Session,
+        type_id: str,
+        email_context: dict | None = None,
+        triggered_by_user_id: str | None = None,
+        additional_user_ids: List[str] | None = None,
+        should_send_fn: Callable[[str], bool] | None = None,
+    ) -> List[str]:
+        """
+        Synchronous version of dispatch for use in Celery tasks.
+
+        Args:
+            session: Sync database session
+            type_id: EmailingType ID (e.g., "LICENSE_GRANTED")
+            email_context: Context data for the email template
+            triggered_by_user_id: User who triggered the event
+            additional_user_ids: Extra users to email
+            should_send_fn: Optional callback to filter recipients by user preference.
+                            Signature: (user_id: str) -> bool
+
+        Returns:
+            List of created Emailing IDs
+
+        Raises:
+            ValueError: If EmailingType not found
+        """
+        # Fetch EmailingType
+        emailing_type = session.get(
+            cls.app_manager.get_entity("emailing_type"),
+            type_id
+        )
+        if not emailing_type:
+            raise ValueError(f"EmailingType '{type_id}' not found")
+
+        # Resolve recipients via mixin
+        recipient_user_ids = cls._resolve_recipients_sync(
+            app_manager=cls.app_manager,
+            session=session,
+            type_entity=emailing_type,
+            triggered_by_user_id=triggered_by_user_id,
+            additional_user_ids=additional_user_ids,
+        )
+
+        # Create and send emails
+        return cls._create_and_send_emails_sync(
+            session=session,
+            type_id=type_id,
+            email_context=email_context,
+            recipient_user_ids=recipient_user_ids,
+            should_send_fn=should_send_fn,
+        )
+
+    @classmethod
+    def _create_and_send_emails_sync(
+        cls,
+        session: Session,
+        type_id: str,
+        email_context: dict | None,
+        recipient_user_ids: List[str],
+        should_send_fn: Callable[[str], bool] | None = None,
+    ) -> List[str]:
+        """
+        Synchronous version of email creation and sending.
+
+        Args:
+            session: Sync database session
+            type_id: EmailingType ID
+            email_context: Context data for the email template
+            recipient_user_ids: Resolved list of user IDs
+            should_send_fn: Optional callback to filter recipients
+
+        Returns:
+            List of created Emailing IDs
+        """
+        user_entity = cls.app_manager.get_entity("user")
+        emailing_service = cls.app_manager.get_service("emailing")
+        created_ids = []
+
+        for user_id in recipient_user_ids:
+            if should_send_fn is not None and not should_send_fn(user_id):
+                continue
+
+            user = session.get(user_entity, user_id)
+            if not user or not hasattr(user, "email_address") or not user.email_address:
+                logger.warning(f"EmailingBatch: user {user_id} not found or has no email, skipping")
+                continue
+
+            # Enrich context with per-recipient user data
+            recipient_context = dict(email_context or {})
+            if hasattr(user, "private_data") and user.private_data:
+                recipient_context["private_data"] = {
+                    "first_name": user.private_data.first_name,
+                    "last_name": user.private_data.last_name,
+                }
+
+            emailing = emailing_service.entity_class(
+                email_address=user.email_address.id,
+                type_id=type_id,
+                language_id=user.language_id or "fr",
+                context=recipient_context,
+            )
+            session.add(emailing)
+            session.flush()
+
+            emailing_service.send_email(str(emailing.id))
+            created_ids.append(str(emailing.id))
+
+        return created_ids

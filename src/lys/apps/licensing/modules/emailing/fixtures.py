@@ -1,3 +1,4 @@
+from lys.apps.licensing.consts import LICENSE_ADMIN_ROLE
 from lys.apps.licensing.modules.emailing.consts import (
     LICENSE_GRANTED_EMAILING_TYPE,
     LICENSE_REVOKED_EMAILING_TYPE,
@@ -5,17 +6,14 @@ from lys.apps.licensing.modules.emailing.consts import (
     SUBSCRIPTION_PAYMENT_FAILED_EMAILING_TYPE,
     SUBSCRIPTION_CANCELED_EMAILING_TYPE,
 )
-from lys.apps.base.modules.emailing.services import EmailingTypeService
-from lys.core.fixtures import EntityFixtures
-from lys.core.models.fixtures import ParametricEntityFixturesModel
+from lys.apps.user_role.modules.emailing.fixtures import (
+    EmailingTypeFixtures as BaseEmailingTypeFixtures,
+)
 from lys.core.registries import register_fixture
 
 
-@register_fixture()
-class EmailingTypeFixtures(EntityFixtures[EmailingTypeService]):
-
-    model = ParametricEntityFixturesModel
-    delete_previous_data = False
+@register_fixture(depends_on=["RoleFixtures"])
+class EmailingTypeFixtures(BaseEmailingTypeFixtures):
 
     data_list = [
         {
@@ -58,10 +56,11 @@ class EmailingTypeFixtures(EntityFixtures[EmailingTypeService]):
                     "client_name": None,
                     "plan_name": None,
                     "amount": None,
+                    "currency": None,
                     "billing_period": None,
                     "next_billing_date": None,
-                    "user": [{"private_data": ["first_name", "last_name", "gender_id"]}]
-                }
+                },
+                "roles": [LICENSE_ADMIN_ROLE]
             }
         },
         {
@@ -75,10 +74,10 @@ class EmailingTypeFixtures(EntityFixtures[EmailingTypeService]):
                     "client_name": None,
                     "plan_name": None,
                     "amount": None,
+                    "currency": None,
                     "error_reason": None,
-                    "retry_url": None,
-                    "user": [{"private_data": ["first_name", "last_name", "gender_id"]}]
-                }
+                },
+                "roles": [LICENSE_ADMIN_ROLE]
             }
         },
         {
@@ -92,8 +91,8 @@ class EmailingTypeFixtures(EntityFixtures[EmailingTypeService]):
                     "client_name": None,
                     "plan_name": None,
                     "effective_date": None,
-                    "user": [{"private_data": ["first_name", "last_name", "gender_id"]}]
-                }
+                },
+                "roles": [LICENSE_ADMIN_ROLE]
             }
         }
     ]

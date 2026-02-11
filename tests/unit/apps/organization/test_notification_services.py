@@ -36,15 +36,15 @@ class TestOrganizationDataModel:
     """Tests for OrganizationData Pydantic model."""
 
     def test_model_exists(self):
-        from lys.apps.organization.modules.notification.services import OrganizationData
+        from lys.apps.organization.mixins.recipient_resolution import OrganizationData
         assert OrganizationData is not None
 
     def test_model_accepts_client_ids(self):
-        from lys.apps.organization.modules.notification.services import OrganizationData
+        from lys.apps.organization.mixins.recipient_resolution import OrganizationData
         data = OrganizationData(client_ids=["client-1", "client-2"])
         assert data.client_ids == ["client-1", "client-2"]
 
     def test_model_accepts_empty(self):
-        from lys.apps.organization.modules.notification.services import OrganizationData
+        from lys.apps.organization.mixins.recipient_resolution import OrganizationData
         data = OrganizationData()
         assert data is not None

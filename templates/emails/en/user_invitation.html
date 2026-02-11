@@ -1,27 +1,15 @@
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Invitation to join the platform</title>
-</head>
-<body style="font-family: Arial, sans-serif; line-height: 1.6; color: #333; max-width: 600px; margin: 0 auto; padding: 20px;">
-    <div style="background-color: #f8f9fa; padding: 20px; border-radius: 8px;">
-        <h1 style="color: #0d6efd; margin-top: 0;">Welcome!</h1>
-
-        <p>Hello {{ private_data.first_name }},</p>
-
-        <p>You have been invited by <strong>{{ inviter_name }}</strong> to join Eywa.</p>
-
+{% extends "_base.html" %}
+{% block lang %}en{% endblock %}
+{% block title %}Invitation to join the platform{% endblock %}
+{% block heading %}Welcome!{% endblock %}
+{% block greeting %}Hello {{ private_data.first_name }},{% endblock %}
+{% block intro %}You have been invited by <strong>{{ inviter_name }}</strong> to join our platform.{% endblock %}
+{% block body %}
         <p>To activate your account and set your password, click the button below:</p>
-
-        <p style="text-align: center; margin: 30px 0;">
-            <a href="{{ front_url }}/activate?token={{ token }}"
-               style="background-color: #0d6efd; color: white; padding: 12px 24px; text-decoration: none; border-radius: 4px; display: inline-block;">
-                Activate my account
-            </a>
-        </p>
-
+{% endblock %}
+{% block cta_url %}{{ front_url }}/activate?token={{ token }}{% endblock %}
+{% block cta_text %}Activate my account{% endblock %}
+{% block footer_section %}
         <p>This link will expire in 7 days.</p>
 
         <hr style="border: none; border-top: 1px solid #dee2e6; margin: 20px 0;">
@@ -32,6 +20,4 @@
                 {{ front_url }}/activate?token={{ token }}
             </a>
         </p>
-    </div>
-</body>
-</html>
+{% endblock %}
