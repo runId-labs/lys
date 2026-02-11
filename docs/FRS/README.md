@@ -51,6 +51,15 @@ Each FRS document follows this structure:
   - Webservice disabling
   - Best practices and patterns
 
+- **[emails_and_notifications.md](./emails_and_notifications.md)**: Emails and Notifications
+  - Unified event system (trigger_event Celery task)
+  - Critical vs batch email dispatch
+  - Recipient resolution (base, role-based, organization-scoped)
+  - Email templates with Jinja2 inheritance
+  - Notification dispatch via Redis pub/sub
+  - User preferences and blocked channels
+  - Database schema and entity relationships
+
 ## How to Use These Documents
 
 ### For Product Owners and Business Analysts

@@ -143,6 +143,8 @@ Consult these docs by task:
 - **Creating a new app** → `docs/guides/creating-an-app.md`
 - **Defining entities and services** → `docs/guides/entities-and-services.md`
 - **Building GraphQL queries/mutations** → `docs/guides/graphql-api.md`
+- **Emails, notifications, and events (guide)** → `docs/guides/emails-and-notifications.md`
+- **Emails, notifications, and events (FRS)** → `docs/FRS/emails_and_notifications.md`
 - **Implementation notes and migrations** → `docs/todos/`
 
 ## Development Guidelines
