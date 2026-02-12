@@ -307,8 +307,8 @@ class EmailingBatchService(RecipientResolutionMixin, Service):
             additional_user_ids=additional_user_ids,
         )
 
-        # Create and send emails
-        return await cls._create_and_send_emails(
+        # Create emails (sending is handled by the worker via send_pending_email)
+        return await cls._create_emails(
             session=session,
             type_id=type_id,
             email_context=email_context,
@@ -317,7 +317,7 @@ class EmailingBatchService(RecipientResolutionMixin, Service):
         )
 
     @classmethod
-    async def _create_and_send_emails(
+    async def _create_emails(
         cls,
         session: AsyncSession,
         type_id: str,
@@ -326,7 +326,8 @@ class EmailingBatchService(RecipientResolutionMixin, Service):
         should_send_fn: Callable[[str], bool] | None = None,
     ) -> List[str]:
         """
-        Create Emailing records and send emails for each recipient.
+        Create Emailing records for each recipient.
+        Actual sending is delegated to the worker via send_pending_email task.
 
         Args:
             session: Async database session
@@ -367,7 +368,6 @@ class EmailingBatchService(RecipientResolutionMixin, Service):
                 context=recipient_context,
             )
 
-            emailing_service.send_email(str(emailing.id))
             created_ids.append(str(emailing.id))
 
         return created_ids
@@ -417,8 +417,8 @@ class EmailingBatchService(RecipientResolutionMixin, Service):
             additional_user_ids=additional_user_ids,
         )
 
-        # Create and send emails
-        return cls._create_and_send_emails_sync(
+        # Create emails (sending is handled by the worker via send_pending_email)
+        return cls._create_emails_sync(
             session=session,
             type_id=type_id,
             email_context=email_context,
@@ -427,7 +427,7 @@ class EmailingBatchService(RecipientResolutionMixin, Service):
         )
 
     @classmethod
-    def _create_and_send_emails_sync(
+    def _create_emails_sync(
         cls,
         session: Session,
         type_id: str,
@@ -436,7 +436,8 @@ class EmailingBatchService(RecipientResolutionMixin, Service):
         should_send_fn: Callable[[str], bool] | None = None,
     ) -> List[str]:
         """
-        Synchronous version of email creation and sending.
+        Create Emailing records for each recipient (sync version).
+        Actual sending is delegated to the worker via send_pending_email task.
 
         Args:
             session: Sync database session
@@ -478,7 +479,6 @@ class EmailingBatchService(RecipientResolutionMixin, Service):
             session.add(emailing)
             session.flush()
 
-            emailing_service.send_email(str(emailing.id))
             created_ids.append(str(emailing.id))
 
         return created_ids

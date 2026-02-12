@@ -107,6 +107,62 @@ class TestThreadSafeSessionProxyAsyncMethods:
         session.rollback.assert_awaited_once()
 
 
+class TestThreadSafeSessionProxyExecuteFlushRefreshAddCommit:
+    """Tests for ThreadSafeSessionProxy execute, flush, refresh, add, commit."""
+
+    def _run(self, coro):
+        loop = asyncio.new_event_loop()
+        try:
+            return loop.run_until_complete(coro)
+        finally:
+            loop.close()
+
+    def test_execute_delegates_to_session(self):
+        session = AsyncMock()
+        expected = MagicMock()
+        session.execute.return_value = expected
+        proxy = ThreadSafeSessionProxy(session)
+
+        result = self._run(proxy.execute("SELECT 1"))
+
+        session.execute.assert_awaited_once_with("SELECT 1")
+        assert result is expected
+
+    def test_flush_delegates_to_session(self):
+        session = AsyncMock()
+        proxy = ThreadSafeSessionProxy(session)
+
+        self._run(proxy.flush())
+
+        session.flush.assert_awaited_once()
+
+    def test_refresh_delegates_to_session(self):
+        session = AsyncMock()
+        instance = MagicMock()
+        proxy = ThreadSafeSessionProxy(session)
+
+        self._run(proxy.refresh(instance))
+
+        session.refresh.assert_awaited_once_with(instance)
+
+    def test_add_delegates_to_session(self):
+        session = MagicMock()
+        instance = MagicMock()
+        proxy = ThreadSafeSessionProxy(session)
+
+        proxy.add(instance)
+
+        session.add.assert_called_once_with(instance, _warn=True)
+
+    def test_commit_delegates_to_session(self):
+        session = AsyncMock()
+        proxy = ThreadSafeSessionProxy(session)
+
+        self._run(proxy.commit())
+
+        session.commit.assert_awaited_once()
+
+
 class TestThreadSafeSessionProxySyncMethods:
     """Tests for ThreadSafeSessionProxy synchronous methods."""
 

@@ -78,6 +78,38 @@ class ClientService(BaseClientService):
         return client
 
     @classmethod
+    async def create_client_with_sso_owner(
+        cls,
+        session: AsyncSession,
+        client_name: str,
+        sso_token: str,
+        language_id: str,
+        first_name: str | None = None,
+        last_name: str | None = None,
+        gender_id: str | None = None
+    ):
+        """
+        Create a new client with an SSO-authenticated owner and FREE plan subscription.
+
+        Extends the base method to automatically assign the FREE plan
+        subscription after client creation.
+        """
+        client = await super().create_client_with_sso_owner(
+            session=session,
+            client_name=client_name,
+            sso_token=sso_token,
+            language_id=language_id,
+            first_name=first_name,
+            last_name=last_name,
+            gender_id=gender_id
+        )
+
+        # Assign FREE plan subscription
+        await cls._assign_free_plan(client.id, session)
+
+        return client
+
+    @classmethod
     async def _assign_free_plan(cls, client_id: str, session: AsyncSession) -> None:
         """
         Assign the FREE plan subscription to a newly created client.

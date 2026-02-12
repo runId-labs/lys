@@ -14,6 +14,7 @@ from . import checker
 from . import client
 from . import event
 from . import emailing
+from . import notification
 from . import mollie
 from . import role
 from . import subscription
@@ -34,5 +35,6 @@ __submodules__ = [
     user,
     event,
     emailing,
+    notification,
     webservice,
 ]

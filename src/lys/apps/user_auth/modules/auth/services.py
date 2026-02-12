@@ -180,6 +180,11 @@ class AuthService(Service):
                 )
 
         # verify password (bcrypt runs here for real users)
+        if user.password is None:
+            # SSO-only user — run dummy hash to equalize timing, then fail
+            bcrypt.checkpw(password.encode("utf-8"), _DUMMY_HASH.encode("utf-8"))
+            raise LysError(INVALID_CREDENTIALS_ERROR, f"unknown user with login '{login}'")
+
         password_valid = user_service.check_password(user, password)
 
         # handle failed login attempt

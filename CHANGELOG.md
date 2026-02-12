@@ -7,6 +7,31 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-02-12
+
+### Added
+- SSO authentication app (`sso`) with Google/Microsoft provider support
+- `UserSSOLink` entity linking users to external SSO providers
+- `SSOAuthService` with OAuth2 flow, session management via Redis key-value store
+- SSO callback REST endpoints (link mode + signup mode)
+- `create_client_with_sso_owner` in organization and licensing `ClientService`
+- `CreateClientWithSSOInput` / `CreateClientWithSSOInputModel` for SSO signup
+- `create_client_with_sso` GraphQL mutation (public, unlicenced)
+- PubSubManager key-value operations: `set_key`, `get_key`, `delete_key`, `get_and_delete_key`
+- `authlib` and `httpx` dependencies for OAuth2 flows
+- Licensing `notification` module registered in `__submodules__`
+- Unit tests for SSO endpoints, auth service, models, nodes, and pub/sub KV operations
+- Integration tests for SSO link service
+- Additional unit tests improving combined coverage to 77%
+
+### Changed
+- Email dispatch decoupled from batch creation: `_create_and_send_emails` renamed to `_create_emails`, sending delegated to `send_pending_email` Celery task
+- `trigger_event` dispatches `send_pending_email.delay()` per email after session commit
+- `send_pending_email` upgraded to `bind=True` with retry logic (`max_retries=3`)
+- `UserService.create_user` accepts `password=None` for SSO-only users
+- `AuthService.login` handles SSO-only users (no password) with constant-time rejection
+- Notification dispatch failures in `trigger_event` now log and continue instead of retrying
+
 ## [0.2.0] - 2026-02-11
 
 ### Added

@@ -234,6 +234,89 @@ class PubSubManager:
         full_channel = self._build_channel(channel)
         return self._sync_redis.publish(full_channel, self._build_message(signal, params))
 
+    # ==================== Key-Value Operations ====================
+
+    async def set_key(self, key: str, value: str, ttl_seconds: int = None) -> bool:
+        """
+        Set a key-value pair in Redis with optional TTL.
+
+        Args:
+            key: Redis key
+            value: Value to store
+            ttl_seconds: Optional time-to-live in seconds
+
+        Returns:
+            True if the key was set successfully
+        """
+        if not self._async_redis:
+            logging.warning("PubSubManager not initialized, cannot set key")
+            return False
+
+        if ttl_seconds:
+            result = await self._async_redis.set(key, value, ex=ttl_seconds)
+        else:
+            result = await self._async_redis.set(key, value)
+        return bool(result)
+
+    async def get_key(self, key: str) -> str | None:
+        """
+        Get a value from Redis by key.
+
+        Args:
+            key: Redis key
+
+        Returns:
+            Value as string, or None if key doesn't exist
+        """
+        if not self._async_redis:
+            return None
+
+        result = await self._async_redis.get(key)
+        if result is None:
+            return None
+        if isinstance(result, bytes):
+            return result.decode("utf-8")
+        return result
+
+    async def delete_key(self, key: str) -> bool:
+        """
+        Delete a key from Redis.
+
+        Args:
+            key: Redis key
+
+        Returns:
+            True if the key was deleted
+        """
+        if not self._async_redis:
+            return False
+
+        result = await self._async_redis.delete(key)
+        return bool(result)
+
+    async def get_and_delete_key(self, key: str) -> str | None:
+        """
+        Atomically get and delete a key from Redis (GETDEL).
+
+        Used for one-time tokens and state consumption where the read
+        and delete must be atomic to prevent race conditions.
+
+        Args:
+            key: Redis key
+
+        Returns:
+            Value as string, or None if key doesn't exist
+        """
+        if not self._async_redis:
+            return None
+
+        result = await self._async_redis.getdel(key)
+        if result is None:
+            return None
+        if isinstance(result, bytes):
+            return result.decode("utf-8")
+        return result
+
     # ==================== Idempotency and Locking ====================
 
     async def set_if_not_exists(self, key: str, value: str, ttl_seconds: int) -> bool:

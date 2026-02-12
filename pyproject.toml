@@ -1,6 +1,6 @@
 [project]
 name = "runid-lys"
-version = "0.2.0"
+version = "0.3.0"
 description = "A modular FastAPI framework for building GraphQL APIs with SQLAlchemy, featuring component-based architecture, JWT authentication, and multi-tenant permissions."
 authors = [
   { name="THEVENIN Anthony", email = "labs@runid.fr" },
@@ -32,7 +32,9 @@ dependencies = [
     "strawberry-graphql[fastapi]>=0.287.0",
     "graphene>=3.4.1",
     "pandas>=2.2.0",
-    "openpyxl>=3.1.0"
+    "openpyxl>=3.1.0",
+    "authlib>=1.3.0",
+    "httpx>=0.27.0"
 ]
 
 [project.optional-dependencies]

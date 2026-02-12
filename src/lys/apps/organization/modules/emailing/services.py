@@ -85,8 +85,8 @@ class EmailingBatchService(OrganizationRecipientResolutionMixin, BaseEmailingBat
             organization_data=validated_org_data,
         )
 
-        # Create and send emails
-        return await cls._create_and_send_emails(
+        # Create emails (sending is handled by the worker via send_pending_email)
+        return await cls._create_emails(
             session=session,
             type_id=type_id,
             email_context=email_context,
@@ -143,8 +143,8 @@ class EmailingBatchService(OrganizationRecipientResolutionMixin, BaseEmailingBat
             organization_data=validated_org_data,
         )
 
-        # Create and send emails
-        return cls._create_and_send_emails_sync(
+        # Create emails (sending is handled by the worker via send_pending_email)
+        return cls._create_emails_sync(
             session=session,
             type_id=type_id,
             email_context=email_context,

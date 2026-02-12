@@ -224,6 +224,107 @@ class TestEntityFixturesMethodSignatures:
         assert "service" in params
 
 
+class TestFixtureValidatorLogic:
+    """Tests for _FixtureValidator logic."""
+
+    def test_is_valid_fixture_class_with_subclass(self):
+        """Test is_valid_fixture_class returns True for a valid subclass."""
+        from lys.core.fixtures import _FixtureValidator, EntityFixtures
+
+        class MyFixture(EntityFixtures):
+            pass
+
+        assert _FixtureValidator.is_valid_fixture_class(EntityFixtures, MyFixture) is True
+
+    def test_has_required_attributes_with_model_and_data(self):
+        """Test has_required_attributes returns True when both model and data_list are set."""
+        from lys.core.fixtures import _FixtureValidator
+        from unittest.mock import MagicMock
+
+        obj = MagicMock()
+        obj.model = MagicMock()
+        obj.data_list = [{"id": "1"}]
+
+        assert _FixtureValidator.has_required_attributes(obj) is True
+
+    def test_has_required_attributes_missing_model(self):
+        """Test has_required_attributes returns False when model is None."""
+        from lys.core.fixtures import _FixtureValidator
+        from unittest.mock import MagicMock
+
+        obj = MagicMock()
+        obj.model = None
+        obj.data_list = [{"id": "1"}]
+
+        assert _FixtureValidator.has_required_attributes(obj) is False
+
+    def test_has_required_attributes_missing_data_list(self):
+        """Test has_required_attributes returns False when data_list is None."""
+        from lys.core.fixtures import _FixtureValidator
+        from unittest.mock import MagicMock
+
+        obj = MagicMock()
+        obj.model = MagicMock()
+        obj.data_list = None
+
+        assert _FixtureValidator.has_required_attributes(obj) is False
+
+
+class TestFixtureLoggerLogic:
+    """Tests for _FixtureLogger log_start and log_results."""
+
+    def test_log_start_calls_logging_info(self):
+        """Test log_start calls logging.info with table name."""
+        import logging
+        from unittest.mock import patch
+        from lys.core.fixtures import _FixtureLogger
+
+        with patch.object(logging, "info") as mock_info:
+            _FixtureLogger.log_start("my_table")
+            mock_info.assert_called_once()
+            assert "my_table" in str(mock_info.call_args)
+
+    def test_log_results_calls_logging_info(self):
+        """Test log_results calls logging.info multiple times."""
+        import logging
+        from unittest.mock import patch
+        from lys.core.fixtures import _FixtureLogger
+
+        with patch.object(logging, "info") as mock_info:
+            _FixtureLogger.log_results("my_table", 1, 2, 3, 4)
+            # 7 calls: separator, header, deleted, added, updated, unchanged, separator
+            assert mock_info.call_count == 7
+
+
+class TestEntityFixturesCreateFromService:
+    """Tests for EntityFixtures.create_from_service base implementation."""
+
+    @pytest.mark.asyncio
+    async def test_create_from_service_returns_none(self):
+        """Test base create_from_service returns None."""
+        from lys.core.fixtures import EntityFixtures
+        from unittest.mock import MagicMock
+
+        result = await EntityFixtures.create_from_service(
+            attributes={"id": "1"},
+            session=MagicMock()
+        )
+        assert result is None
+
+
+class TestEntityFixturesDoBeforeAdd:
+    """Tests for EntityFixtures._do_before_add base hook."""
+
+    @pytest.mark.asyncio
+    async def test_do_before_add_is_noop(self):
+        """Test base _do_before_add is a no-op (returns None)."""
+        from lys.core.fixtures import EntityFixtures
+        from unittest.mock import MagicMock
+
+        result = await EntityFixtures._do_before_add(MagicMock())
+        assert result is None
+
+
 class TestFormatAttributesLogic:
     """Tests for _format_attributes kwarg dispatch logic."""
 

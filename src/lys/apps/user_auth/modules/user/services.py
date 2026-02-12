@@ -169,7 +169,7 @@ class UserService(EntityService[User]):
         cls,
         session: AsyncSession,
         email: str,
-        password: str,
+        password: str | None,
         language_id: str,
         first_name: str | None = None,
         last_name: str | None = None,
@@ -204,8 +204,8 @@ class UserService(EntityService[User]):
         # 4. Create email address entity
         email_address = user_email_address_service.entity_class(id=email)
 
-        # 5. Hash the password
-        hashed_password = AuthUtils.hash_password(password)
+        # 5. Hash the password (None for SSO-only users)
+        hashed_password = AuthUtils.hash_password(password) if password is not None else None
 
         # 6. Create private data entity
         private_data = user_private_data_service.entity_class(
@@ -222,7 +222,7 @@ class UserService(EntityService[User]):
         cls,
         session: AsyncSession,
         email: str,
-        password: str,
+        password: str | None,
         language_id: str,
         is_super_user: bool = False,
         send_verification_email: bool = True,
@@ -343,7 +343,7 @@ class UserService(EntityService[User]):
         cls,
         session: AsyncSession,
         email: str,
-        password: str,
+        password: str | None,
         language_id: str,
         send_verification_email: bool = True,
         background_tasks=None,

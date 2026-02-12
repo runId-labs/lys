@@ -4,7 +4,7 @@ Unit tests for EmailingBatchService.
 Tests:
 - Class structure and inheritance
 - Method signatures (dispatch, dispatch_sync)
-- Private_data enrichment logic in _create_and_send_emails_sync
+- Private_data enrichment logic in _create_emails_sync
 - should_send_fn filtering
 """
 import inspect
@@ -54,17 +54,17 @@ class TestEmailingBatchServiceStructure:
             inspect.getattr_static(EmailingBatchService, "dispatch_sync"), classmethod
         )
 
-    def test_has_create_and_send_emails(self):
-        assert hasattr(EmailingBatchService, "_create_and_send_emails")
+    def test_has_create_emails(self):
+        assert hasattr(EmailingBatchService, "_create_emails")
 
-    def test_create_and_send_emails_is_async(self):
-        assert inspect.iscoroutinefunction(EmailingBatchService._create_and_send_emails)
+    def test_create_emails_is_async(self):
+        assert inspect.iscoroutinefunction(EmailingBatchService._create_emails)
 
-    def test_has_create_and_send_emails_sync(self):
-        assert hasattr(EmailingBatchService, "_create_and_send_emails_sync")
+    def test_has_create_emails_sync(self):
+        assert hasattr(EmailingBatchService, "_create_emails_sync")
 
-    def test_create_and_send_emails_sync_is_sync(self):
-        assert not inspect.iscoroutinefunction(EmailingBatchService._create_and_send_emails_sync)
+    def test_create_emails_sync_is_sync(self):
+        assert not inspect.iscoroutinefunction(EmailingBatchService._create_emails_sync)
 
 
 class TestDispatchSignature:
@@ -100,7 +100,7 @@ class TestDispatchSignature:
 
 
 class TestCreateAndSendEmailsSyncLogic:
-    """Tests for _create_and_send_emails_sync enrichment and filtering logic."""
+    """Tests for _create_emails_sync creation and filtering logic."""
 
     def _setup_mocks(self):
         """Set up common mocks for create_and_send tests."""
@@ -140,7 +140,7 @@ class TestCreateAndSendEmailsSyncLogic:
         email_context = {"client_name": "Corp", "plan_name": "Pro"}
 
         with patch.object(EmailingBatchService, "app_manager", app_manager):
-            result = EmailingBatchService._create_and_send_emails_sync(
+            result = EmailingBatchService._create_emails_sync(
                 session=session,
                 type_id="TEST_TYPE",
                 email_context=email_context,
@@ -162,7 +162,7 @@ class TestCreateAndSendEmailsSyncLogic:
         email_context = {"client_name": "Corp"}
 
         with patch.object(EmailingBatchService, "app_manager", app_manager):
-            EmailingBatchService._create_and_send_emails_sync(
+            EmailingBatchService._create_emails_sync(
                 session=session,
                 type_id="TEST_TYPE",
                 email_context=email_context,
@@ -178,7 +178,7 @@ class TestCreateAndSendEmailsSyncLogic:
         user.private_data = None
 
         with patch.object(EmailingBatchService, "app_manager", app_manager):
-            EmailingBatchService._create_and_send_emails_sync(
+            EmailingBatchService._create_emails_sync(
                 session=session,
                 type_id="TEST_TYPE",
                 email_context={"key": "value"},
@@ -197,7 +197,7 @@ class TestCreateAndSendEmailsSyncLogic:
         should_send_fn = Mock(return_value=False)
 
         with patch.object(EmailingBatchService, "app_manager", app_manager):
-            result = EmailingBatchService._create_and_send_emails_sync(
+            result = EmailingBatchService._create_emails_sync(
                 session=session,
                 type_id="TEST_TYPE",
                 email_context={},
@@ -214,7 +214,7 @@ class TestCreateAndSendEmailsSyncLogic:
         user.email_address = None
 
         with patch.object(EmailingBatchService, "app_manager", app_manager):
-            result = EmailingBatchService._create_and_send_emails_sync(
+            result = EmailingBatchService._create_emails_sync(
                 session=session,
                 type_id="TEST_TYPE",
                 email_context={},
@@ -229,7 +229,7 @@ class TestCreateAndSendEmailsSyncLogic:
         session.get.return_value = None
 
         with patch.object(EmailingBatchService, "app_manager", app_manager):
-            result = EmailingBatchService._create_and_send_emails_sync(
+            result = EmailingBatchService._create_emails_sync(
                 session=session,
                 type_id="TEST_TYPE",
                 email_context={},
@@ -238,19 +238,20 @@ class TestCreateAndSendEmailsSyncLogic:
 
         assert result == []
 
-    def test_send_email_called_per_recipient(self):
-        """Verify send_email is called for each valid recipient."""
+    def test_emailing_created_per_recipient(self):
+        """Verify emailing record is created for each valid recipient."""
         app_manager, session, user, emailing_service, emailing_instance = self._setup_mocks()
 
         with patch.object(EmailingBatchService, "app_manager", app_manager):
-            result = EmailingBatchService._create_and_send_emails_sync(
+            result = EmailingBatchService._create_emails_sync(
                 session=session,
                 type_id="TEST_TYPE",
                 email_context={},
                 recipient_user_ids=["user-1"],
             )
 
-        emailing_service.send_email.assert_called_once_with(str(emailing_instance.id))
+        emailing_service.entity_class.assert_called_once()
+        session.add.assert_called_once()
         assert len(result) == 1
 
     def test_none_email_context_treated_as_empty_dict(self):
@@ -258,7 +259,7 @@ class TestCreateAndSendEmailsSyncLogic:
         app_manager, session, user, emailing_service, emailing_instance = self._setup_mocks()
 
         with patch.object(EmailingBatchService, "app_manager", app_manager):
-            result = EmailingBatchService._create_and_send_emails_sync(
+            result = EmailingBatchService._create_emails_sync(
                 session=session,
                 type_id="TEST_TYPE",
                 email_context=None,
@@ -276,7 +277,7 @@ class TestCreateAndSendEmailsSyncLogic:
         user.language_id = "fr"
 
         with patch.object(EmailingBatchService, "app_manager", app_manager):
-            EmailingBatchService._create_and_send_emails_sync(
+            EmailingBatchService._create_emails_sync(
                 session=session,
                 type_id="TEST_TYPE",
                 email_context={},
@@ -292,7 +293,7 @@ class TestCreateAndSendEmailsSyncLogic:
         user.language_id = None
 
         with patch.object(EmailingBatchService, "app_manager", app_manager):
-            EmailingBatchService._create_and_send_emails_sync(
+            EmailingBatchService._create_emails_sync(
                 session=session,
                 type_id="TEST_TYPE",
                 email_context={},

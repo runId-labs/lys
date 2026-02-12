@@ -6,7 +6,7 @@ from sqlalchemy import Select, select
 
 from lys.apps.organization.consts import ORGANIZATION_ROLE_ACCESS_LEVEL, CLIENT_ADMIN_ROLE
 from lys.apps.organization.modules.client.entities import Client
-from lys.apps.organization.modules.client.inputs import CreateClientInput, UpdateClientInput
+from lys.apps.organization.modules.client.inputs import CreateClientInput, CreateClientWithSSOInput, UpdateClientInput
 from lys.apps.organization.modules.client.nodes import ClientNode
 from lys.apps.user_role.consts import ROLE_ACCESS_LEVEL
 from lys.core.contexts import Info
@@ -129,6 +129,42 @@ class ClientMutation(Mutation):
         )
 
         logger.info(f"Client created: {input_data.client_name} with owner: {input_data.email}")
+
+        return client
+
+    @lys_creation(
+        ensure_type=ClientNode,
+        is_public=True,
+        is_licenced=False,
+        description="Create a new organization with SSO-authenticated owner. Required: sso_token, client_name, language_code."
+    )
+    async def create_client_with_sso(
+        self,
+        inputs: CreateClientWithSSOInput,
+        info: Info
+    ):
+        """
+        Create a new client organization with an SSO-authenticated owner (no password).
+
+        Uses the sso_token from the SSO signup flow to retrieve provider-verified user info.
+        The owner is created without a password and with a validated email.
+        """
+        input_data = inputs.to_pydantic()
+
+        session = info.context.session
+        client_service = info.context.app_manager.get_service("client")
+
+        client = await client_service.create_client_with_sso_owner(
+            session=session,
+            client_name=input_data.client_name,
+            sso_token=input_data.sso_token,
+            language_id=input_data.language_code,
+            first_name=input_data.first_name,
+            last_name=input_data.last_name,
+            gender_id=input_data.gender_code
+        )
+
+        logger.info(f"Client created via SSO: {input_data.client_name}")
 
         return client
 

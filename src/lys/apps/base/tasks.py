@@ -4,12 +4,15 @@ Celery tasks for base app.
 Tasks defined here can be executed by Celery workers
 and scheduled via Celery Beat.
 """
+import logging
 
 from celery import shared_task, current_app
 
+logger = logging.getLogger(__name__)
 
-@shared_task
-def send_pending_email(emailing_id: str):
+
+@shared_task(bind=True, max_retries=3, default_retry_delay=60)
+def send_pending_email(self, emailing_id: str):
     """
     Send a single pending email.
 
@@ -36,11 +39,10 @@ def send_pending_email(emailing_id: str):
     try:
         # Call send_email service method
         emailing_service.send_email(emailing_id)
-        print(f"Email {emailing_id} sent successfully")
+        logger.info(f"Email {emailing_id} sent successfully")
         return True
 
     except Exception as e:
-        # Log error - status already updated by send_email
-        print(f"Failed to send email {emailing_id}: {e}")
-        return False
+        logger.error(f"Failed to send email {emailing_id}: {e}")
+        raise self.retry(exc=e)
 

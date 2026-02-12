@@ -8,6 +8,8 @@ import logging
 
 from celery import shared_task, current_app
 
+from lys.apps.base.tasks import send_pending_email
+
 logger = logging.getLogger(__name__)
 
 
@@ -62,6 +64,7 @@ def trigger_event(
         raise ValueError(f"Unknown event type: {event_type}")
 
     result = {"event_type": event_type, "email_sent": False, "notification_sent": False}
+    batch_emailing_ids = []
 
     with app_manager.database.get_sync_session() as session:
         # Handle email
@@ -76,7 +79,7 @@ def trigger_event(
                 logger.error(f"Event {event_type}: failed to send email {emailing_id}: {e}")
                 raise self.retry(exc=e)
         elif config.get("email", False):
-            # Non-critical email, dispatch to all resolved recipients
+            # Non-critical email, create records for all resolved recipients
             try:
                 emailing_batch_service = app_manager.get_service("emailing_batch")
 
@@ -86,7 +89,7 @@ def trigger_event(
                         recipient_user_id, event_type, "email", session
                     )
 
-                emailing_ids = emailing_batch_service.dispatch_sync(
+                batch_emailing_ids = emailing_batch_service.dispatch_sync(
                     session=session,
                     type_id=event_type,
                     email_context=email_context,
@@ -95,11 +98,11 @@ def trigger_event(
                     organization_data=organization_data,
                     should_send_fn=should_send_email,
                 )
-                if emailing_ids:
+                if batch_emailing_ids:
                     result["email_sent"] = True
-                    logger.info(f"Event {event_type}: dispatched {len(emailing_ids)} email(s)")
+                    logger.info(f"Event {event_type}: created {len(batch_emailing_ids)} email(s)")
             except Exception as e:
-                logger.error(f"Event {event_type}: failed to dispatch emails: {e}")
+                logger.error(f"Event {event_type}: failed to create emails: {e}")
                 raise self.retry(exc=e)
 
         # Handle notification
@@ -126,8 +129,11 @@ def trigger_event(
                 logger.info(f"Event {event_type}: notification dispatched")
             except Exception as e:
                 logger.error(f"Event {event_type}: failed to dispatch notification: {e}")
-                raise self.retry(exc=e)
 
         session.commit()
+
+    # After commit, dispatch sending tasks to worker
+    for eid in batch_emailing_ids:
+        send_pending_email.delay(eid)
 
     return result

@@ -6,7 +6,7 @@ Tests Service base class and EntityService value comparison methods.
 
 import asyncio
 import logging
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, AsyncMock, patch
 
 from lys.core.entities import Entity
 from lys.core.services import EntityService, Service
@@ -104,6 +104,71 @@ class TestListValuesDiffer:
 
     def test_different_primitive_lists(self):
         assert EntityService._list_values_differ([1, 2], [3, 4]) is True
+
+
+class TestExecuteParallel:
+    """Tests for Service.execute_parallel."""
+
+    def test_execute_parallel_delegates_to_database_manager(self):
+        """Test execute_parallel delegates to app_manager.database.execute_parallel."""
+        import asyncio
+
+        mock_db = MagicMock()
+        mock_db.execute_parallel = AsyncMock(return_value=["result1", "result2"])
+        mock_app_manager = MagicMock()
+        mock_app_manager.database = mock_db
+
+        with patch.object(Service, "app_manager", mock_app_manager):
+            loop = asyncio.new_event_loop()
+            try:
+                fn1 = lambda s: s.execute("q1")
+                fn2 = lambda s: s.execute("q2")
+                result = loop.run_until_complete(Service.execute_parallel(fn1, fn2))
+            finally:
+                loop.close()
+
+        mock_db.execute_parallel.assert_awaited_once_with(fn1, fn2)
+        assert result == ["result1", "result2"]
+
+
+class TestCheckAndUpdate:
+    """Tests for EntityService.check_and_update."""
+
+    def test_updates_changed_attribute(self):
+        """Test check_and_update detects and applies changes."""
+        import asyncio
+
+        entity = MagicMock()
+        entity.name = "old"
+        entity.email = "same@test.com"
+
+        loop = asyncio.new_event_loop()
+        try:
+            updated_entity, is_updated = loop.run_until_complete(
+                EntityService.check_and_update(entity, name="new", email="same@test.com")
+            )
+        finally:
+            loop.close()
+
+        assert is_updated is True
+        assert updated_entity.name == "new"
+
+    def test_no_update_when_values_same(self):
+        """Test check_and_update returns False when no changes."""
+        import asyncio
+
+        entity = MagicMock()
+        entity.name = "same"
+
+        loop = asyncio.new_event_loop()
+        try:
+            updated_entity, is_updated = loop.run_until_complete(
+                EntityService.check_and_update(entity, name="same")
+            )
+        finally:
+            loop.close()
+
+        assert is_updated is False
 
 
 class TestFilterAllowedFields:

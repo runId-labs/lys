@@ -36,17 +36,19 @@ class TestSendPendingEmailTask:
         mock_emailing_service.send_email.assert_called_once_with("email-123")
         assert result is True
 
-    def test_send_pending_email_failure(self, mock_celery_app, mock_emailing_service):
-        """Test email sending failure."""
+    def test_send_pending_email_failure_retries(self, mock_celery_app, mock_emailing_service):
+        """Test email sending failure triggers retry."""
         from lys.apps.base.tasks import send_pending_email
 
         mock_celery_app.app_manager.get_service.return_value = mock_emailing_service
         mock_emailing_service.send_email.side_effect = Exception("SMTP error")
 
         with patch('lys.apps.base.tasks.current_app', mock_celery_app):
-            result = send_pending_email("email-456")
+            with patch.object(send_pending_email, 'retry', side_effect=Exception("retry")) as mock_retry:
+                with pytest.raises(Exception, match="retry"):
+                    send_pending_email.run("email-456")
 
-        assert result is False
+                mock_retry.assert_called_once()
 
     def test_send_pending_email_gets_service_from_app_manager(self, mock_celery_app, mock_emailing_service):
         """Test that emailing service is retrieved from app_manager."""

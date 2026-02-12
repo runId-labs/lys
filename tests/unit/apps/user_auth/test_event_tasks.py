@@ -103,8 +103,9 @@ class TestTriggerEventCriticalEmail:
 class TestTriggerEventBatchEmail:
     """Tests for non-critical batch email path."""
 
+    @patch("lys.apps.user_auth.modules.event.tasks.send_pending_email")
     @patch("lys.apps.user_auth.modules.event.tasks.current_app")
-    def test_batch_email_calls_dispatch_sync(self, mock_current_app):
+    def test_batch_email_calls_dispatch_sync(self, mock_current_app, mock_send_pending):
         """Without emailing_id, dispatch_sync is called for batch emails."""
         event_service = Mock()
         event_service.get_channels.return_value = {
@@ -239,8 +240,8 @@ class TestTriggerEventNotification:
         assert result["notification_sent"] is True
 
     @patch("lys.apps.user_auth.modules.event.tasks.current_app")
-    def test_notification_retries_on_failure(self, mock_current_app):
-        """When notification dispatch fails, the task retries."""
+    def test_notification_failure_logs_and_continues(self, mock_current_app):
+        """When notification dispatch fails, error is logged but task continues."""
         event_service = Mock()
         event_service.get_channels.return_value = {
             "TEST_EVENT": {"email": False, "notification": True}
@@ -249,27 +250,28 @@ class TestTriggerEventNotification:
         notification_batch = Mock()
         notification_batch.dispatch_sync.side_effect = RuntimeError("fail")
 
-        _setup_app_manager(mock_current_app, {
+        _, mock_session = _setup_app_manager(mock_current_app, {
             "event": event_service,
             "notification_batch": notification_batch,
         })
 
-        with patch.object(trigger_event, "retry", side_effect=RuntimeError("retry")):
-            with pytest.raises(RuntimeError, match="retry"):
-                trigger_event.run(
-                    event_type="TEST_EVENT",
-                    user_id="user-1",
-                    notification_data={"title": "Hello"},
-                )
+        result = trigger_event.run(
+            event_type="TEST_EVENT",
+            user_id="user-1",
+            notification_data={"title": "Hello"},
+        )
 
-            trigger_event.retry.assert_called_once()
+        # Notification failed silently (no retry), session still committed
+        assert result["notification_sent"] is False
+        mock_session.commit.assert_called_once()
 
 
 class TestTriggerEventCombined:
     """Tests for combined email + notification scenarios."""
 
+    @patch("lys.apps.user_auth.modules.event.tasks.send_pending_email")
     @patch("lys.apps.user_auth.modules.event.tasks.current_app")
-    def test_both_email_and_notification(self, mock_current_app):
+    def test_both_email_and_notification(self, mock_current_app, mock_send_pending):
         """When both email and notification are enabled, both are dispatched."""
         event_service = Mock()
         event_service.get_channels.return_value = {
@@ -314,8 +316,9 @@ class TestTriggerEventCombined:
                 user_id="user-1",
             )
 
+    @patch("lys.apps.user_auth.modules.event.tasks.send_pending_email")
     @patch("lys.apps.user_auth.modules.event.tasks.current_app")
-    def test_should_send_fn_passed_to_batch(self, mock_current_app):
+    def test_should_send_fn_passed_to_batch(self, mock_current_app, mock_send_pending):
         """The should_send callback wraps event_service.should_send."""
         event_service = Mock()
         event_service.get_channels.return_value = {
