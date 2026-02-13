@@ -357,15 +357,6 @@ class DatabaseManager:
         tasks = [execute_with_session(query_func) for query_func in queries]
         return await asyncio.gather(*tasks)
 
-    async def initialize_database(self):
-        """
-        Initialize database by creating all tables.
-
-        This method creates all tables defined in the Base metadata.
-        """
-        async with self.engine.begin() as conn:
-            await conn.run_sync(Base.metadata.create_all)
-
     async def close(self):
         """
         Close database connections and dispose of the engine.

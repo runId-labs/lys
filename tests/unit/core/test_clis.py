@@ -1,11 +1,16 @@
 """
-Unit tests for CLI functions (run_fast_app, export_graphql_schema).
+Unit tests for CLI functions (run_fast_app, export_graphql_schema, Alembic wrappers).
 """
+import os
+
 import pytest
 from pathlib import Path
 from unittest.mock import patch, MagicMock
 
-from lys.core.clis import run_fast_app, export_graphql_schema
+from lys.core.clis import (
+    run_fast_app, export_graphql_schema,
+    _find_alembic_ini, run_migrate, run_makemigrations, run_db_status, run_db_stamp,
+)
 
 
 class TestRunFastApp:
@@ -77,3 +82,92 @@ class TestExportGraphqlSchema:
         mock_import_module.side_effect = ImportError("module not found")
         with pytest.raises(Exception, match="Failed to import settings module"):
             export_graphql_schema(output_path=tmp_path / "schema.graphql")
+
+
+class TestFindAlembicIni:
+    """Tests for _find_alembic_ini()."""
+
+    def test_finds_alembic_ini_in_cwd(self, tmp_path):
+        ini_file = tmp_path / "alembic.ini"
+        ini_file.write_text("[alembic]\n")
+        with patch("lys.core.clis.os.getcwd", return_value=str(tmp_path)):
+            result = _find_alembic_ini()
+        assert result == str(ini_file)
+
+    def test_raises_when_not_found(self, tmp_path):
+        with patch("lys.core.clis.os.getcwd", return_value=str(tmp_path)):
+            with pytest.raises(FileNotFoundError, match="alembic.ini not found"):
+                _find_alembic_ini()
+
+
+class TestRunMigrate:
+    """Tests for run_migrate()."""
+
+    @patch("lys.core.clis._find_alembic_ini", return_value="/fake/alembic.ini")
+    @patch("alembic.command.upgrade")
+    @patch("alembic.config.Config")
+    def test_calls_upgrade_with_head(self, mock_config_cls, mock_upgrade, mock_find):
+        mock_cfg = MagicMock()
+        mock_config_cls.return_value = mock_cfg
+        run_migrate()
+        mock_config_cls.assert_called_once_with("/fake/alembic.ini")
+        mock_upgrade.assert_called_once_with(mock_cfg, "head")
+
+    @patch("lys.core.clis._find_alembic_ini", return_value="/fake/alembic.ini")
+    @patch("alembic.command.upgrade")
+    @patch("alembic.config.Config")
+    def test_calls_upgrade_with_custom_revision(self, mock_config_cls, mock_upgrade, mock_find):
+        mock_cfg = MagicMock()
+        mock_config_cls.return_value = mock_cfg
+        run_migrate(revision="abc123")
+        mock_upgrade.assert_called_once_with(mock_cfg, "abc123")
+
+
+class TestRunMakemigrations:
+    """Tests for run_makemigrations()."""
+
+    @patch("lys.core.clis._find_alembic_ini", return_value="/fake/alembic.ini")
+    @patch("alembic.command.revision")
+    @patch("alembic.config.Config")
+    def test_calls_revision_autogenerate(self, mock_config_cls, mock_revision, mock_find):
+        mock_cfg = MagicMock()
+        mock_config_cls.return_value = mock_cfg
+        run_makemigrations("add users table")
+        mock_revision.assert_called_once_with(
+            mock_cfg, message="add users table", autogenerate=True
+        )
+
+
+class TestRunDbStatus:
+    """Tests for run_db_status()."""
+
+    @patch("lys.core.clis._find_alembic_ini", return_value="/fake/alembic.ini")
+    @patch("alembic.command.current")
+    @patch("alembic.config.Config")
+    def test_calls_current(self, mock_config_cls, mock_current, mock_find):
+        mock_cfg = MagicMock()
+        mock_config_cls.return_value = mock_cfg
+        run_db_status()
+        mock_current.assert_called_once_with(mock_cfg, verbose=True)
+
+
+class TestRunDbStamp:
+    """Tests for run_db_stamp()."""
+
+    @patch("lys.core.clis._find_alembic_ini", return_value="/fake/alembic.ini")
+    @patch("alembic.command.stamp")
+    @patch("alembic.config.Config")
+    def test_calls_stamp_with_head(self, mock_config_cls, mock_stamp, mock_find):
+        mock_cfg = MagicMock()
+        mock_config_cls.return_value = mock_cfg
+        run_db_stamp()
+        mock_stamp.assert_called_once_with(mock_cfg, "head")
+
+    @patch("lys.core.clis._find_alembic_ini", return_value="/fake/alembic.ini")
+    @patch("alembic.command.stamp")
+    @patch("alembic.config.Config")
+    def test_calls_stamp_with_custom_revision(self, mock_config_cls, mock_stamp, mock_find):
+        mock_cfg = MagicMock()
+        mock_config_cls.return_value = mock_cfg
+        run_db_stamp(revision="abc123")
+        mock_stamp.assert_called_once_with(mock_cfg, "abc123")

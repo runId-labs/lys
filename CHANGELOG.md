@@ -7,6 +7,25 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-02-13
+
+### Added
+- Alembic migration helper (`lys.core.migrations`) with `configure_alembic_env()` for standardized migration setup
+- Alembic CLI wrappers: `run_migrate`, `run_makemigrations`, `run_db_status`, `run_db_stamp` with auto-discovery of `alembic.ini`
+- Secure ZIP extraction utility (`lys.core.utils.zip`) with ZIP Slip, ZIP bomb, and per-file size protections
+- Configurable `relay_max_results` on `AppSettings` (default 100), passed to `StrawberryConfig`
+- `alembic>=1.15.0` dependency
+- Unit tests for migrations, Alembic CLI wrappers, ZIP utilities, and relay_max_results
+- `create_all_tables()` test helper in `tests/fixtures/database.py`
+
+### Changed
+- Removed `initialize_database()` from `DatabaseManager` (Alembic now handles schema migrations)
+- Removed database initialization phase from `_app_lifespan`
+- XSRF mismatch log no longer exposes token values
+- Test fixtures use `create_all_tables()` helper instead of `initialize_database()`
+- Updated coverage badge from 77% to 79%
+- Updated README testing section with E2E tests and combined coverage commands
+
 ## [0.3.0] - 2026-02-12
 
 ### Added

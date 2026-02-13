@@ -90,7 +90,7 @@ class UserAuthMiddleware(MiddlewareInterface, BaseHTTPMiddleware):
                             raise LysError(INVALID_XSRF_TOKEN_ERROR, "XSRF token not found in JWT")
 
                         if not hmac.compare_digest(xsrf_token, expected_xsrf):
-                            logging.error(f"XSRF token mismatch: got '{xsrf_token}', expected '{expected_xsrf}'")
+                            logging.error("XSRF token mismatch")
                             raise LysError(
                                 INVALID_XSRF_TOKEN_ERROR,
                                 f"XSRF token mismatch: got '{xsrf_token}', expected '{expected_xsrf}'"

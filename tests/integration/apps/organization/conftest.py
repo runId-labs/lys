@@ -10,6 +10,7 @@ import pytest_asyncio
 from lys.core.configs import LysAppSettings
 from lys.core.consts.component_types import AppComponentTypeEnum
 from lys.core.managers.app import AppManager
+from tests.fixtures.database import create_all_tables
 
 
 @pytest_asyncio.fixture(scope="session")
@@ -34,7 +35,7 @@ async def organization_app_manager():
         AppComponentTypeEnum.SERVICES,
     ])
     app_manager.load_all_components()
-    await app_manager.database.initialize_database()
+    await create_all_tables(app_manager.database)
 
     # Seed base parametric data
     async with app_manager.database.get_session() as session:

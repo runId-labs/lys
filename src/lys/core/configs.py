@@ -243,6 +243,7 @@ class AppSettings(BaseSettings):
         self.graphql_schema_name: str = "graphql"
         self.query_depth_limit = 10
         self.query_alias_limit = 10
+        self.relay_max_results = 100
 
         # Inter-service communication
         self.service_name: Optional[str] = None  # Name of this microservice

@@ -483,6 +483,7 @@ class TestLoadSchema:
         manager.graphql_registry.subscriptions = {}
         manager.settings.query_depth_limit = 10
         manager.settings.query_alias_limit = 10
+        manager.settings.relay_max_results = 100
         manager.settings.graphql_schema_name = "graphql"
         manager.settings.env = MagicMock()
         manager.settings.env.__eq__ = MagicMock(return_value=True)
@@ -493,6 +494,31 @@ class TestLoadSchema:
             mock_schema.return_value = MagicMock()
             result = manager._load_schema()
         assert result is not None
+
+    def test_passes_relay_max_results_to_strawberry_config(self):
+        """Verify StrawberryConfig(relay_max_results=...) is passed to FederationSchema."""
+        from strawberry.schema.config import StrawberryConfig
+        manager = _create_app_manager()
+        manager.graphql_registry.is_empty = False
+        manager.graphql_registry.queries = {}
+        manager.graphql_registry.mutations = {}
+        manager.graphql_registry.subscriptions = {}
+        manager.settings.query_depth_limit = 10
+        manager.settings.query_alias_limit = 10
+        manager.settings.relay_max_results = 200
+        manager.settings.graphql_schema_name = "graphql"
+        manager.settings.env = MagicMock()
+        manager.settings.env.__eq__ = MagicMock(return_value=True)
+        with patch("lys.core.managers.app.FederationSchema") as mock_schema, \
+             patch("lys.core.managers.app.DatabaseSessionExtension"), \
+             patch("lys.core.managers.app.QueryDepthLimiter"), \
+             patch("lys.core.managers.app.MaxAliasesLimiter"):
+            mock_schema.return_value = MagicMock()
+            manager._load_schema()
+            call_kwargs = mock_schema.call_args[1]
+            assert "config" in call_kwargs
+            assert isinstance(call_kwargs["config"], StrawberryConfig)
+            assert call_kwargs["config"].relay_max_results == 200
 
 
 class TestAppLifespan:
@@ -548,9 +574,9 @@ class TestAppLifespan:
         shutdown_cb.assert_awaited_once()
 
     @pytest.mark.asyncio
-    async def test_lifespan_initializes_database_when_configured(self):
+    async def test_lifespan_does_not_call_initialize_database(self):
+        """Verify lifespan no longer calls initialize_database (removed, Alembic handles migrations)."""
         manager = _create_app_manager()
-        manager.database.has_database_configured.return_value = True
         manager.database.initialize_database = AsyncMock()
         manager.settings.get_plugin_config.return_value = {}
         manager.component_types = []
@@ -561,7 +587,7 @@ class TestAppLifespan:
         with patch.object(manager, "_register_webservices_to_auth_server", new_callable=AsyncMock):
             async with manager._app_lifespan(MagicMock()):
                 pass
-        manager.database.initialize_database.assert_awaited_once()
+        manager.database.initialize_database.assert_not_awaited()
 
 
 class TestInitializeApp:

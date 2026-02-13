@@ -336,6 +336,19 @@ class TestAppSettings:
         app.env = EnvironmentEnum.PROD
         assert app.log_level == "ERROR"
 
+    def test_relay_max_results_default(self):
+        """Test relay_max_results defaults to 100."""
+        from lys.core.configs import AppSettings
+        app = AppSettings()
+        assert app.relay_max_results == 100
+
+    def test_relay_max_results_configurable(self):
+        """Test relay_max_results can be changed via configure."""
+        from lys.core.configs import AppSettings
+        app = AppSettings()
+        app.configure(relay_max_results=50)
+        assert app.relay_max_results == 50
+
 
 class TestLysAppSettings:
     """Tests for LysAppSettings singleton."""

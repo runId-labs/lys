@@ -1,6 +1,6 @@
 # Lys
 
-![Coverage](https://img.shields.io/badge/coverage-77%25-green)
+![Coverage](https://img.shields.io/badge/coverage-79%25-green)
 ![Python](https://img.shields.io/badge/python-3.13+-blue)
 ![License](https://img.shields.io/badge/license-Apache%202.0-blue)
 
@@ -428,7 +428,7 @@ Components are discovered automatically via the `@register_entity()`, `@register
 
 ### App Manager
 
-`LysAppManager` is the central orchestrator. It loads apps, registers components, initializes the database, and creates the FastAPI application.
+`LysAppManager` is the central orchestrator. It loads apps, registers components, and creates the FastAPI application. Database schema migrations are handled by Alembic.
 
 All entities and services are accessed through the app manager:
 
@@ -612,9 +612,13 @@ pytest tests/unit/ -v
 # Integration tests (real database, forked for isolation)
 pytest tests/integration/ --forked -v
 
-# Combined coverage
+# E2E tests (full FastAPI app with httpx client, forked)
+pytest tests/e2e/ --forked -v
+
+# Combined coverage (ALWAYS use separate processes — required for singleton isolation)
 pytest tests/unit/ --cov=src/lys --cov-report=
-pytest tests/integration/ --forked --cov=src/lys --cov-append --cov-report=term-missing
+pytest tests/integration/ --forked --cov=src/lys --cov-append --cov-report=
+pytest tests/e2e/ --forked --cov=src/lys --cov-append --cov-report=term-missing
 ```
 
 ### Test Structure
@@ -631,10 +635,14 @@ tests/
 │   └── apps/
 │       └── catalog/
 │           └── test_product_service.py
+├── e2e/                     # Full app with httpx AsyncClient, forked
+│   └── test_product_api.py
+├── fixtures/                # Shared test helpers (create_all_tables, etc.)
+│   └── database.py
 └── conftest.py              # Shared fixtures
 ```
 
-Integration tests run in forked subprocesses (`pytest-forked`) to isolate the SQLAlchemy registry singleton between test runs.
+Integration and E2E tests run in forked subprocesses (`pytest-forked`) to isolate the SQLAlchemy registry singleton between test runs.
 
 ## Built-in Apps
 

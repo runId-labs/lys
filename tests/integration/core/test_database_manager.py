@@ -281,8 +281,8 @@ class TestDatabaseManagerInitialization:
     """Test database initialization and cleanup."""
 
     @pytest.mark.asyncio
-    async def test_initialize_database_creates_engine(self):
-        """Test initialize_database() creates engine and allows sessions."""
+    async def test_engine_creation_and_session(self):
+        """Test engine is created lazily and allows sessions."""
         settings = DatabaseSettings()
         settings.configure(
             type="sqlite",

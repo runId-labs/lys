@@ -126,6 +126,7 @@ async def e2e_app():
     from lys.core.consts.environments import EnvironmentEnum
     from lys.core.managers.app import AppManager
     from lys.core.utils.manager import AppManagerCallerMixin
+    from tests.fixtures.database import create_all_tables
 
     settings = LysAppSettings()
     settings.database.configure(type="sqlite", database=":memory:", echo=False)
@@ -178,7 +179,7 @@ async def e2e_app():
     )
 
     # Manually run startup tasks (bypass ASGI lifespan)
-    await app_manager.database.initialize_database()
+    await create_all_tables(app_manager.database)
     await app_manager._load_fixtures_in_order()
 
     # Reset dev fixture passwords to known values for E2E testing.

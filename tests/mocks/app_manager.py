@@ -46,10 +46,6 @@ class MockDatabaseManager:
             results.append(result)
         return results
 
-    async def initialize_database(self):
-        """Mock database initialization."""
-        pass
-
     async def dispose(self):
         """Mock database disposal."""
         pass

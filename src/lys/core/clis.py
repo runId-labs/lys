@@ -1,3 +1,4 @@
+import os
 import uvicorn
 from pathlib import Path
 
@@ -122,3 +123,78 @@ def export_graphql_schema(
 
     print(f"GraphQL schema exported to: {output_path}")
     print(f"Schema export completed successfully!")
+
+
+def _find_alembic_ini() -> str:
+    """
+    Find alembic.ini in the current working directory.
+
+    Returns:
+        Absolute path to alembic.ini
+
+    Raises:
+        FileNotFoundError: If alembic.ini is not found
+    """
+    ini_path = os.path.join(os.getcwd(), "alembic.ini")
+    if not os.path.exists(ini_path):
+        raise FileNotFoundError(
+            f"alembic.ini not found in {os.getcwd()}. "
+            "Run this command from the project directory containing alembic.ini."
+        )
+    return ini_path
+
+
+def run_migrate(revision: str = "head"):
+    """
+    Apply database migrations up to the given revision.
+
+    Args:
+        revision: Target revision (default: "head" for latest)
+    """
+    from alembic.config import Config
+    from alembic import command
+
+    alembic_cfg = Config(_find_alembic_ini())
+    command.upgrade(alembic_cfg, revision)
+    print(f"Migration applied to: {revision}")
+
+
+def run_makemigrations(message: str):
+    """
+    Auto-generate a new migration by comparing models to the current database schema.
+
+    Args:
+        message: Description for the migration revision
+    """
+    from alembic.config import Config
+    from alembic import command
+
+    alembic_cfg = Config(_find_alembic_ini())
+    command.revision(alembic_cfg, message=message, autogenerate=True)
+    print(f"Migration created: {message}")
+
+
+def run_db_status():
+    """Show the current migration revision applied to the database."""
+    from alembic.config import Config
+    from alembic import command
+
+    alembic_cfg = Config(_find_alembic_ini())
+    command.current(alembic_cfg, verbose=True)
+
+
+def run_db_stamp(revision: str = "head"):
+    """
+    Stamp the database with a revision without running migrations.
+
+    Useful for marking an existing database as up-to-date.
+
+    Args:
+        revision: Revision to stamp (default: "head")
+    """
+    from alembic.config import Config
+    from alembic import command
+
+    alembic_cfg = Config(_find_alembic_ini())
+    command.stamp(alembic_cfg, revision)
+    print(f"Database stamped with: {revision}")

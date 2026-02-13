@@ -11,6 +11,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from lys.core.configs import LysAppSettings
 from lys.core.consts.component_types import AppComponentTypeEnum
 from lys.core.managers.app import AppManager
+from lys.core.managers.database import Base, DatabaseManager
+
+
+async def create_all_tables(database: DatabaseManager):
+    """Create all tables from SQLAlchemy metadata. Use this instead of Alembic in tests."""
+    async with database.engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
 
 
 @pytest_asyncio.fixture
@@ -54,9 +61,9 @@ async def test_app_manager():
     # Load all components
     app_manager.load_all_components()
 
-    # Initialize database (create tables)
+    # Create tables (in tests, use metadata directly instead of Alembic)
     if app_manager.database.has_database_configured():
-        await app_manager.database.initialize_database()
+        await create_all_tables(app_manager.database)
 
     yield app_manager
 

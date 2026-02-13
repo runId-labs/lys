@@ -20,6 +20,7 @@ from lys.core.configs import LysAppSettings
 from lys.core.consts.component_types import AppComponentTypeEnum
 from lys.core.errors import LysError
 from lys.core.managers.app import AppManager
+from tests.fixtures.database import create_all_tables
 
 
 @pytest_asyncio.fixture(scope="session")
@@ -39,7 +40,7 @@ async def sso_app_manager():
         AppComponentTypeEnum.SERVICES,
     ])
     app_manager.load_all_components()
-    await app_manager.database.initialize_database()
+    await create_all_tables(app_manager.database)
 
     # Create base parametric data
     language_service = app_manager.get_service("language")

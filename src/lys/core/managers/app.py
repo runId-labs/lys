@@ -10,6 +10,7 @@ from graphql import NoSchemaIntrospectionCustomRule
 from strawberry.extensions import QueryDepthLimiter, MaxAliasesLimiter, AddValidationRules
 from strawberry.fastapi import GraphQLRouter
 from strawberry.federation import Schema as FederationSchema
+from strawberry.schema.config import StrawberryConfig
 
 from lys.core.configs import LysAppSettings, AppSettings
 from lys.core.consts.component_types import AppComponentTypeEnum
@@ -586,6 +587,7 @@ class AppManager:
             schema_types.get("Mutation"),
             schema_types.get("Subscription"),
             extensions=extensions,
+            config=StrawberryConfig(relay_max_results=self.settings.relay_max_results),
         )
 
     @asynccontextmanager
@@ -594,11 +596,7 @@ class AppManager:
         FastAPI application lifespan context manager.
         """
 
-        # Phase 1: Initialize database if configured
-        if self.database.has_database_configured():
-            await self.database.initialize_database()
-
-        # Phase 2: Initialize PubSub if configured
+        # Phase 1: Initialize PubSub if configured
         pubsub_config = self.settings.get_plugin_config("pubsub")
         if pubsub_config:
             validated_config = PubSubConfig(**pubsub_config)
@@ -608,17 +606,17 @@ class AppManager:
             )
             await self.pubsub.initialize()
 
-        # Phase 3: Load fixtures in dependency order (after database is ready)
+        # Phase 2: Load fixtures in dependency order (after database is ready)
         if AppComponentTypeEnum.FIXTURES in self.component_types:
             await self._load_fixtures_in_order()
 
-        # Phase 4: Register webservices with Auth Server (for business microservices)
+        # Phase 3: Register webservices with Auth Server (for business microservices)
         await self._register_webservices_to_auth_server()
 
-        # Phase 5: Initialize services (async lifecycle hooks)
+        # Phase 4: Initialize services (async lifecycle hooks)
         await self.registry.initialize_services()
 
-        # Phase 6: Call custom startup callback if provided
+        # Phase 5: Call custom startup callback if provided
         if self._on_startup:
             await self._on_startup()
 
