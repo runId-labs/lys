@@ -9,7 +9,67 @@ from unittest.mock import MagicMock, AsyncMock, patch, PropertyMock
 
 import pytest
 
-from lys.core.graphql.extensions import ThreadSafeSessionProxy, DatabaseSessionExtension
+from lys.core.graphql.extensions import ThreadSafeSessionProxy, DatabaseSessionExtension, _MaterializedAsyncResult
+
+
+class _AsyncIterStub:
+    """Async-iterable stub used to simulate stream/stream_scalars return values."""
+
+    def __init__(self, items):
+        self._items = iter(items)
+
+    def __aiter__(self):
+        return self
+
+    async def __anext__(self):
+        try:
+            return next(self._items)
+        except StopIteration:
+            raise StopAsyncIteration
+
+
+class TestMaterializedAsyncResult:
+    """Tests for _MaterializedAsyncResult async iterable wrapper."""
+
+    def _run(self, coro):
+        loop = asyncio.new_event_loop()
+        try:
+            return loop.run_until_complete(coro)
+        finally:
+            loop.close()
+
+    def test_iterates_all_items(self):
+        items = [1, 2, 3]
+        result = _MaterializedAsyncResult(items)
+
+        async def collect():
+            return [item async for item in result]
+
+        assert self._run(collect()) == [1, 2, 3]
+
+    def test_empty_list(self):
+        result = _MaterializedAsyncResult([])
+
+        async def collect():
+            return [item async for item in result]
+
+        assert self._run(collect()) == []
+
+    def test_raises_stop_async_iteration_when_exhausted(self):
+        result = _MaterializedAsyncResult([42])
+
+        async def exhaust():
+            it = result.__aiter__()
+            val = await it.__anext__()
+            assert val == 42
+            with pytest.raises(StopAsyncIteration):
+                await it.__anext__()
+
+        self._run(exhaust())
+
+    def test_aiter_returns_self(self):
+        result = _MaterializedAsyncResult([])
+        assert result.__aiter__() is result
 
 
 class TestThreadSafeSessionProxyAsyncMethods:
@@ -44,27 +104,37 @@ class TestThreadSafeSessionProxyAsyncMethods:
         session.scalars.assert_awaited_once_with("SELECT id FROM t")
         assert result == expected
 
-    def test_stream_delegates_to_session(self):
+    def test_stream_materializes_and_returns_async_result(self):
         session = AsyncMock()
-        sentinel = object()
-        session.stream.return_value = sentinel
+        rows = [("row1",), ("row2",), ("row3",)]
+        session.stream.return_value = _AsyncIterStub(rows)
         proxy = ThreadSafeSessionProxy(session)
 
-        result = self._run(proxy.stream("SELECT *"))
+        async def run():
+            result = await proxy.stream("SELECT *")
+            assert isinstance(result, _MaterializedAsyncResult)
+            return [item async for item in result]
+
+        collected = self._run(run())
 
         session.stream.assert_awaited_once_with("SELECT *")
-        assert result is sentinel
+        assert collected == rows
 
-    def test_stream_scalars_delegates_to_session(self):
+    def test_stream_scalars_materializes_and_returns_async_result(self):
         session = AsyncMock()
-        sentinel = object()
-        session.stream_scalars.return_value = sentinel
+        items = [1, 2, 3]
+        session.stream_scalars.return_value = _AsyncIterStub(items)
         proxy = ThreadSafeSessionProxy(session)
 
-        result = self._run(proxy.stream_scalars("SELECT id"))
+        async def run():
+            result = await proxy.stream_scalars("SELECT id")
+            assert isinstance(result, _MaterializedAsyncResult)
+            return [item async for item in result]
+
+        collected = self._run(run())
 
         session.stream_scalars.assert_awaited_once_with("SELECT id")
-        assert result is sentinel
+        assert collected == items
 
     def test_get_delegates_to_session(self):
         session = AsyncMock()

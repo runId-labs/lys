@@ -17,7 +17,7 @@ from lys.core.utils.webservice import WebserviceIsPublicType, format_filed_descr
 logger = logging.getLogger(__name__)
 
 
-def _create_strawberry_field_config(
+def create_strawberry_field_config(
     resolver: Callable,
     name: Optional[str],
     is_subscription: bool,
@@ -95,7 +95,7 @@ def lys_typed_field(
     def wrapper(resolver: Callable):
         wrapped_resolver = resolver_wrapper(resolver, effective_ensure_type)
 
-        field_config = _create_strawberry_field_config(
+        field_config = create_strawberry_field_config(
             resolver=wrapped_resolver,
             name=name,
             is_subscription=is_subscription,
@@ -352,7 +352,7 @@ def lys_connection_field(
         inner_resolver.__qualname__ = resolver.__qualname__
         inner_resolver.__module__ = resolver.__module__
 
-        field_config = _create_strawberry_field_config(
+        field_config = create_strawberry_field_config(
             resolver=inner_resolver,
             name=name,
             is_subscription=is_subscription,

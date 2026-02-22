@@ -123,20 +123,40 @@ class TestDeleteResolverGenerator:
 class TestLysDelete:
     """Tests for lys_delete function."""
 
-    def test_lys_delete_returns_field(self):
+    def test_lys_delete_returns_wrapper(self):
         from lys.core.graphql.delete import lys_delete
 
         mock_ensure_type = MagicMock()
         mock_ensure_type.get_effective_node.return_value = mock_ensure_type
 
-        with patch("lys.core.graphql.delete.lys_typed_field") as mock_lys_typed_field:
+        result = lys_delete(ensure_type=mock_ensure_type, description="Delete item")
+
+        assert callable(result)
+
+    def test_lys_delete_wrapper_calls_create_strawberry_field_config(self):
+        from lys.core.graphql.delete import lys_delete
+
+        mock_ensure_type = MagicMock()
+        mock_ensure_type.get_effective_node.return_value = mock_ensure_type
+
+        wrapper = lys_delete(ensure_type=mock_ensure_type, description="Delete item")
+
+        with patch("lys.core.graphql.delete.create_strawberry_field_config", return_value={}) as mock_config, \
+             patch("lys.core.graphql.delete.strawberry") as mock_strawberry, \
+             patch("lys.core.graphql.delete._apply_webservice_config") as mock_apply:
             mock_field = MagicMock()
             mock_field.base_resolver = MagicMock()
-            mock_lys_typed_field.return_value = mock_field
+            mock_strawberry.field.return_value = mock_field
+            mock_apply.return_value = mock_field
 
-            result = lys_delete(ensure_type=mock_ensure_type, description="Delete item")
+            async def my_resolver(self, obj, info):
+                pass
 
-            mock_lys_typed_field.assert_called_once()
+            result = wrapper(my_resolver)
+
+            mock_config.assert_called_once()
+            mock_strawberry.field.assert_called_once_with(**{})
+            mock_apply.assert_called_once()
             assert result is mock_field
 
     def test_lys_delete_public_description(self):
@@ -145,14 +165,22 @@ class TestLysDelete:
         mock_ensure_type = MagicMock()
         mock_ensure_type.get_effective_node.return_value = mock_ensure_type
 
-        with patch("lys.core.graphql.delete.lys_typed_field") as mock_lys_typed_field:
+        wrapper = lys_delete(ensure_type=mock_ensure_type, is_public=True, description="Test")
+
+        with patch("lys.core.graphql.delete.create_strawberry_field_config", return_value={}) as mock_config, \
+             patch("lys.core.graphql.delete.strawberry") as mock_strawberry, \
+             patch("lys.core.graphql.delete._apply_webservice_config") as mock_apply:
             mock_field = MagicMock()
             mock_field.base_resolver = MagicMock()
-            mock_lys_typed_field.return_value = mock_field
+            mock_strawberry.field.return_value = mock_field
+            mock_apply.return_value = mock_field
 
-            lys_delete(ensure_type=mock_ensure_type, is_public=True, description="Test")
+            async def my_resolver(self, obj, info):
+                pass
 
-            call_kwargs = mock_lys_typed_field.call_args.kwargs
+            wrapper(my_resolver)
+
+            call_kwargs = mock_config.call_args.kwargs
             assert "PUBLIC" in call_kwargs["description"]
 
     def test_lys_delete_access_levels_description(self):
@@ -161,18 +189,26 @@ class TestLysDelete:
         mock_ensure_type = MagicMock()
         mock_ensure_type.get_effective_node.return_value = mock_ensure_type
 
-        with patch("lys.core.graphql.delete.lys_typed_field") as mock_lys_typed_field:
+        wrapper = lys_delete(
+            ensure_type=mock_ensure_type,
+            access_levels=["ADMIN", "MANAGER"],
+            description="Delete"
+        )
+
+        with patch("lys.core.graphql.delete.create_strawberry_field_config", return_value={}) as mock_config, \
+             patch("lys.core.graphql.delete.strawberry") as mock_strawberry, \
+             patch("lys.core.graphql.delete._apply_webservice_config") as mock_apply:
             mock_field = MagicMock()
             mock_field.base_resolver = MagicMock()
-            mock_lys_typed_field.return_value = mock_field
+            mock_strawberry.field.return_value = mock_field
+            mock_apply.return_value = mock_field
 
-            lys_delete(
-                ensure_type=mock_ensure_type,
-                access_levels=["ADMIN", "MANAGER"],
-                description="Delete"
-            )
+            async def my_resolver(self, obj, info):
+                pass
 
-            call_kwargs = mock_lys_typed_field.call_args.kwargs
+            wrapper(my_resolver)
+
+            call_kwargs = mock_config.call_args.kwargs
             assert "ADMIN" in call_kwargs["description"]
             assert "MANAGER" in call_kwargs["description"]
 
@@ -182,12 +218,73 @@ class TestLysDelete:
         mock_ensure_type = MagicMock()
         mock_ensure_type.get_effective_node.return_value = mock_ensure_type
 
-        with patch("lys.core.graphql.delete.lys_typed_field") as mock_lys_typed_field:
+        wrapper = lys_delete(ensure_type=mock_ensure_type, description="Delete")
+
+        with patch("lys.core.graphql.delete.create_strawberry_field_config", return_value={}) as mock_config, \
+             patch("lys.core.graphql.delete.strawberry") as mock_strawberry, \
+             patch("lys.core.graphql.delete._apply_webservice_config") as mock_apply:
             mock_field = MagicMock()
             mock_field.base_resolver = MagicMock()
-            mock_lys_typed_field.return_value = mock_field
+            mock_strawberry.field.return_value = mock_field
+            mock_apply.return_value = mock_field
 
-            lys_delete(ensure_type=mock_ensure_type, description="Delete")
+            async def my_resolver(self, obj, info):
+                pass
 
-            call_kwargs = mock_lys_typed_field.call_args.kwargs
+            wrapper(my_resolver)
+
+            call_kwargs = mock_config.call_args.kwargs
             assert "SUPER USER" in call_kwargs["description"]
+
+    def test_lys_delete_sets_success_node_type_annotation(self):
+        from lys.core.graphql.delete import lys_delete
+        from lys.core.graphql.nodes import SuccessNode
+
+        mock_ensure_type = MagicMock()
+        mock_ensure_type.get_effective_node.return_value = mock_ensure_type
+
+        wrapper = lys_delete(ensure_type=mock_ensure_type, description="Delete")
+
+        with patch("lys.core.graphql.delete.create_strawberry_field_config", return_value={}) as mock_config, \
+             patch("lys.core.graphql.delete.strawberry") as mock_strawberry, \
+             patch("lys.core.graphql.delete._apply_webservice_config") as mock_apply:
+            mock_field = MagicMock()
+            mock_field.base_resolver = MagicMock()
+            mock_strawberry.field.return_value = mock_field
+            mock_apply.return_value = mock_field
+
+            async def my_resolver(self, obj, info):
+                pass
+
+            wrapper(my_resolver)
+
+            # Verify type_annotation was set to StrawberryAnnotation(SuccessNode)
+            annotation = mock_field.base_resolver.type_annotation
+            assert annotation.annotation is SuccessNode
+
+    def test_lys_delete_default_risk_level(self):
+        from lys.core.graphql.delete import lys_delete
+        from lys.core.consts.ai import ToolRiskLevel
+
+        mock_ensure_type = MagicMock()
+        mock_ensure_type.get_effective_node.return_value = mock_ensure_type
+
+        wrapper = lys_delete(ensure_type=mock_ensure_type, description="Delete")
+
+        with patch("lys.core.graphql.delete.create_strawberry_field_config", return_value={}) as mock_config, \
+             patch("lys.core.graphql.delete.strawberry") as mock_strawberry, \
+             patch("lys.core.graphql.delete._apply_webservice_config") as mock_apply:
+            mock_field = MagicMock()
+            mock_field.base_resolver = MagicMock()
+            mock_strawberry.field.return_value = mock_field
+            mock_apply.return_value = mock_field
+
+            async def my_resolver(self, obj, info):
+                pass
+
+            wrapper(my_resolver)
+
+            # Check that _apply_webservice_config received effective_options with DELETE risk_level
+            apply_args = mock_apply.call_args
+            effective_options = apply_args[0][8]  # 9th positional arg
+            assert effective_options["risk_level"] == ToolRiskLevel.DELETE

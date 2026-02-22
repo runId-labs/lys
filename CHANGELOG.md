@@ -7,6 +7,15 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-02-22
+
+### Changed
+- Refactored `lys_delete` to use `create_strawberry_field_config` directly instead of `lys_typed_field`
+- Materialized `stream`/`stream_scalars` results in `ThreadSafeSessionProxy` to prevent asyncpg concurrent operation errors
+- Exposed `create_strawberry_field_config` as public API in `fields.py`
+- Added coverage calculation step (unit + integration + e2e) with README badge update to commit workflow in CLAUDE.md
+- `refactor:` commits now trigger a patch version bump
+
 ## [0.4.0] - 2026-02-13
 
 ### Added

@@ -10,6 +10,28 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from strawberry.extensions import SchemaExtension
 
 
+class _MaterializedAsyncResult:
+    """
+    Async-iterable wrapper over an already-materialized list of results.
+
+    Used by ThreadSafeSessionProxy to replace stream/stream_scalars cursors
+    with pre-fetched data, so the asyncpg connection is freed before the
+    lock is released.
+    """
+
+    def __init__(self, items: list):
+        self._iter = iter(items)
+
+    def __aiter__(self):
+        return self
+
+    async def __anext__(self):
+        try:
+            return next(self._iter)
+        except StopIteration:
+            raise StopAsyncIteration
+
+
 class ThreadSafeSessionProxy:
     """
     Proxy that serializes all access to an AsyncSession.
@@ -44,11 +66,23 @@ class ThreadSafeSessionProxy:
 
     async def stream(self, *args, **kwargs):
         async with self._lock:
-            return await self._session.stream(*args, **kwargs)
+            result = await self._session.stream(*args, **kwargs)
+            # Materialize all rows while holding the lock.
+            # stream() returns a cursor that keeps the asyncpg connection busy
+            # until fully consumed. Releasing the lock before consumption would
+            # cause "another operation is in progress" errors for concurrent resolvers.
+            rows = [row async for row in result]
+        return _MaterializedAsyncResult(rows)
 
     async def stream_scalars(self, *args, **kwargs):
         async with self._lock:
-            return await self._session.stream_scalars(*args, **kwargs)
+            result = await self._session.stream_scalars(*args, **kwargs)
+            # Materialize all scalars while holding the lock.
+            # stream_scalars() returns a cursor that keeps the asyncpg connection busy
+            # until fully consumed. Releasing the lock before consumption would
+            # cause "another operation is in progress" errors for concurrent resolvers.
+            items = [item async for item in result]
+        return _MaterializedAsyncResult(items)
 
     async def flush(self, *args, **kwargs):
         async with self._lock:

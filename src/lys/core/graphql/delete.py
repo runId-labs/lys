@@ -1,7 +1,9 @@
 import dataclasses
 from typing import Optional, Callable, List, Any, Union, Mapping, Sequence, Literal, Type
 
+import strawberry
 from strawberry import relay
+from strawberry.annotation import StrawberryAnnotation
 from strawberry.extensions import FieldExtension
 
 from lys.core.consts.ai import ToolRiskLevel
@@ -9,7 +11,7 @@ from lys.core.consts.errors import NOT_FOUND_ERROR
 from lys.core.contexts import Info
 from lys.core.entities import Entity
 from lys.core.errors import LysError
-from lys.core.graphql.fields import lys_typed_field
+from lys.core.graphql.fields import create_strawberry_field_config, _apply_webservice_config
 from lys.core.graphql.nodes import EntityNode, SuccessNode
 from lys.core.utils.access import get_db_object_and_check_access
 from lys.core.utils.webservice import WebserviceIsPublicType
@@ -75,7 +77,7 @@ def lys_delete(
         options: dict = None,
 ) -> Any:
     """
-    Field used to update a specified database object
+    Field used to delete a specified database object
     :param ensure_type:
     :param is_public:
     :param enabled:
@@ -110,28 +112,35 @@ def lys_delete(
     if "risk_level" not in effective_options:
         effective_options["risk_level"] = ToolRiskLevel.DELETE
 
-    field = lys_typed_field(
-        ensure_type=ensure_type,
-        resolver_wrapper=_delete_resolver_generator,
-        is_public=is_public,
-        enabled=enabled,
-        access_levels=access_levels,
-        is_licenced=is_licenced,
-        allow_override=allow_override,
-        name=name,
-        is_subscription=is_subscription,
-        description=description,
-        deprecation_reason=deprecation_reason,
-        default=default,
-        default_factory=default_factory,
-        metadata=metadata,
-        directives=directives,
-        extensions=extensions,
-        graphql_type=graphql_type,
-        init=init,
-        options=effective_options,
-    )
+    effective_ensure_type = ensure_type.get_effective_node()
 
-    field.base_resolver.type_annotation = SuccessNode
+    def wrapper(resolver: Callable):
+        wrapped_resolver = _delete_resolver_generator(resolver, effective_ensure_type)
 
-    return field
+        field_config = create_strawberry_field_config(
+            resolver=wrapped_resolver,
+            name=name,
+            is_subscription=is_subscription,
+            description=description,
+            is_public=is_public,
+            access_levels=access_levels,
+            is_licenced=is_licenced,
+            deprecation_reason=deprecation_reason,
+            default=default,
+            default_factory=default_factory,
+            metadata=metadata,
+            directives=directives,
+            extensions=extensions,
+            graphql_type=graphql_type,
+            init=init,
+        )
+
+        field = strawberry.field(**field_config)
+        field.base_resolver.type_annotation = StrawberryAnnotation(SuccessNode)
+
+        return _apply_webservice_config(
+            field, is_public, enabled, access_levels, is_licenced,
+            allow_override, description, None, effective_options,
+        )
+
+    return wrapper

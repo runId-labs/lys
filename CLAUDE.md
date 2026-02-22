@@ -120,13 +120,15 @@ pip install -e .                                    # Install
 
 pytest tests/unit/                                  # Unit tests only
 pytest tests/integration/ --forked                  # Integration tests only
+pytest tests/e2e/ --forked                          # E2E tests only
 
 # Combined coverage (ALWAYS use this method — separate processes required)
 pytest tests/unit/ --cov=src/lys --cov-report=
-pytest tests/integration/ --forked --cov=src/lys --cov-append --cov-report=term-missing
+pytest tests/integration/ --forked --cov=src/lys --cov-append --cov-report=
+pytest tests/e2e/ --forked --cov=src/lys --cov-append --cov-report=term-missing
 ```
 
-Unit and integration tests cannot run in the same pytest process due to SQLAlchemy registry singleton isolation. Use `--cov-append` to accumulate coverage across both runs.
+Unit, integration, and e2e tests cannot run in the same pytest process due to SQLAlchemy registry singleton isolation. Use `--cov-append` to accumulate coverage across all three runs.
 
 **Coverage threshold**: Combined coverage (unit + integration + e2e) MUST remain at or above **75%**. Do not merge changes that lower coverage below this threshold.
 
@@ -196,20 +198,30 @@ Consult these docs by task:
 When the user validates code and asks to commit:
 
 1. **Write/update tests** covering the changes (unit, integration, or e2e). Verify they pass.
-2. **Determine commit type** using conventional commit format:
+2. **Run combined coverage** and update the README badge:
+   ```bash
+   pytest tests/unit/ --cov=src/lys --cov-report=
+   pytest tests/integration/ --forked --cov=src/lys --cov-append --cov-report=
+   pytest tests/e2e/ --forked --cov=src/lys --cov-append --cov-report=term-missing
+   ```
+   - Parse the **total coverage percentage** from the output.
+   - Read the current badge value from `README.md` line 3 (`![Coverage](https://img.shields.io/badge/coverage-XX%25-...)`).
+   - **If coverage increased or stayed the same**: update the badge in `README.md` with the new value (use `green` for ≥75%, `yellow` for 60-74%, `red` for <60%).
+   - **If coverage decreased**: alert the user with the old and new values. Only update the badge if the user explicitly approves.
+3. **Determine commit type** using conventional commit format:
    ```
    type(scope): description
 
    - Detail bullet points
    ```
-3. **Update `CHANGELOG.md`** under `[Unreleased]` — add entry under `Added`, `Changed`, `Fixed`, or `Removed`.
-4. **Auto-detect version bump** from commit type and update `pyproject.toml` line 3:
-   - `fix:` → patch bump (e.g., 0.1.0 → 0.1.1)
+4. **Update `CHANGELOG.md`** under `[Unreleased]` — add entry under `Added`, `Changed`, `Fixed`, or `Removed`.
+5. **Auto-detect version bump** from commit type and update `pyproject.toml` line 3:
+   - `fix:`, `refactor:` → patch bump (e.g., 0.1.0 → 0.1.1)
    - `feat:` → minor bump (e.g., 0.1.0 → 0.2.0)
    - `feat!:` or `BREAKING CHANGE` → major bump (e.g., 0.1.0 → 1.0.0)
-   - `refactor:`, `docs:`, `chore:`, `test:`, `style:` → no version bump
-5. **Commit** with conventional commit message (no signatures, no attribution).
-6. **If version was bumped**: create git tag `git tag v{new_version}` and tell the user to run `git push origin main --tags` to push code + tag and trigger PyPI publication.
+   - `docs:`, `chore:`, `test:`, `style:` → no version bump
+6. **Commit** with conventional commit message (no signatures, no attribution).
+7. **If version was bumped**: create git tag `git tag v{new_version}` and tell the user to run `git push origin main --tags` to push code + tag and trigger PyPI publication.
 
 Example of correct commit message:
 ```
