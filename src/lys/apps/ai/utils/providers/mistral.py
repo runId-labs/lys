@@ -5,12 +5,13 @@ This module implements the AIProvider interface for Mistral AI,
 supporting both standard chat and structured JSON responses.
 """
 
+import json
 import logging
-from typing import List, Dict, Any, Optional, Type
+from typing import AsyncGenerator, List, Dict, Any, Optional, Type
 
 import httpx
 
-from lys.apps.ai.utils.providers.abstracts import AIProvider, AIResponse, T
+from lys.apps.ai.utils.providers.abstracts import AIProvider, AIResponse, AIStreamChunk, T
 from lys.apps.ai.utils.providers.config import AIEndpointConfig
 from lys.apps.ai.utils.providers.exceptions import (
     AIAuthError,
@@ -139,6 +140,83 @@ class MistralProvider(AIProvider):
         except httpx.TimeoutException:
             raise AITimeoutError(f"Request timed out after {config.timeout}s")
 
+    # ========== Streaming ==========
+
+    async def chat_stream(
+        self,
+        messages: List[Dict[str, Any]],
+        config: AIEndpointConfig,
+        tools: Optional[List[Dict[str, Any]]] = None,
+    ) -> AsyncGenerator[AIStreamChunk, None]:
+        """Stream a chat response from Mistral API, yielding chunks."""
+        base_url = self.get_base_url(config)
+
+        filtered_options = {k: v for k, v in config.options.items() if k in self.VALID_OPTIONS}
+
+        payload = {
+            "model": config.model,
+            "messages": messages,
+            "stream": True,
+            **filtered_options,
+        }
+
+        if tools:
+            cleaned_tools = [
+                {k: v for k, v in tool.items() if not k.startswith("_")}
+                for tool in tools
+            ]
+            payload["tools"] = cleaned_tools
+            payload["tool_choice"] = "auto"
+
+        headers = {
+            "Authorization": f"Bearer {config.api_key}",
+            "Content-Type": "application/json",
+        }
+
+        try:
+            async with httpx.AsyncClient() as client:
+                async with client.stream(
+                    "POST",
+                    f"{base_url}/chat/completions",
+                    headers=headers,
+                    json=payload,
+                    timeout=config.timeout,
+                ) as response:
+                    self._handle_error_status(response)
+
+                    async for line in response.aiter_lines():
+                        if not line.startswith("data: "):
+                            continue
+
+                        data_str = line[6:]  # Strip "data: " prefix
+                        if data_str.strip() == "[DONE]":
+                            return
+
+                        try:
+                            data = json.loads(data_str)
+                        except json.JSONDecodeError:
+                            logger.warning(f"Mistral stream: invalid JSON: {data_str}")
+                            continue
+
+                        choice = data.get("choices", [{}])[0]
+                        delta = choice.get("delta", {})
+                        finish_reason = choice.get("finish_reason")
+
+                        content = delta.get("content")
+                        tool_calls = delta.get("tool_calls")
+
+                        yield AIStreamChunk(
+                            content=content,
+                            tool_calls=tool_calls,
+                            finish_reason=finish_reason,
+                            usage=data.get("usage"),
+                            model=data.get("model"),
+                            provider=self.name,
+                        )
+
+        except httpx.TimeoutException:
+            raise AITimeoutError(f"Request timed out after {config.timeout}s")
+
     # ========== JSON Methods ==========
 
     async def chat_json(
@@ -242,8 +320,8 @@ class MistralProvider(AIProvider):
 
     # ========== Helpers ==========
 
-    def _parse_response(self, response: httpx.Response) -> AIResponse:
-        """Parse Mistral API response."""
+    def _handle_error_status(self, response: httpx.Response) -> None:
+        """Check response status and raise appropriate errors."""
         if response.status_code == 401:
             raise AIAuthError("Invalid Mistral API key")
         if response.status_code == 429:
@@ -255,6 +333,10 @@ class MistralProvider(AIProvider):
         if response.status_code != 200:
             logger.error(f"Mistral API error {response.status_code}: {response.text}")
             raise AIProviderError(f"Mistral error: {response.status_code}")
+
+    def _parse_response(self, response: httpx.Response) -> AIResponse:
+        """Parse Mistral API response."""
+        self._handle_error_status(response)
 
         data = response.json()
         choice = data.get("choices", [{}])[0]

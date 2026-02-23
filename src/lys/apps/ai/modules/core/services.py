@@ -9,12 +9,12 @@ for managing AI tool definitions.
 import asyncio
 import logging
 import time
-from typing import List, Dict, Any, Optional, Type, TypeVar
+from typing import AsyncGenerator, List, Dict, Any, Optional, Type, TypeVar
 
 import httpx
 from pydantic import BaseModel
 
-from lys.apps.ai.utils.providers.abstracts import AIProvider, AIResponse
+from lys.apps.ai.utils.providers.abstracts import AIProvider, AIResponse, AIStreamChunk
 from lys.apps.ai.utils.providers.config import AIEndpointConfig, parse_plugin_config, AIConfig
 from lys.apps.ai.utils.providers.exceptions import (
     AIError,
@@ -204,6 +204,48 @@ class AIService(Service):
         """Synchronous version for Celery workers."""
         config = cls.get_endpoint(purpose)
         return cls.chat_sync(messages, config, tools)
+
+    @classmethod
+    async def chat_stream_with_purpose(
+        cls,
+        messages: List[Dict[str, Any]],
+        purpose: str,
+        tools: Optional[List[Dict[str, Any]]] = None,
+    ) -> AsyncGenerator[AIStreamChunk, None]:
+        """
+        Stream a chat response using a configured purpose.
+
+        Tries the primary provider, falls back on connection error (no retry mid-stream).
+
+        Args:
+            messages: Conversation messages
+            purpose: Purpose name (e.g., "chatbot")
+            tools: Optional tool definitions
+
+        Yields:
+            AIStreamChunk for each piece of the response
+        """
+        endpoint = cls.get_endpoint(purpose)
+
+        if endpoint.system_prompt:
+            messages = [{"role": "system", "content": endpoint.system_prompt}] + messages
+
+        current_endpoint = endpoint
+        while current_endpoint is not None:
+            provider = cls.get_provider(current_endpoint.provider)
+            try:
+                async for chunk in provider.chat_stream(messages, current_endpoint, tools):
+                    yield chunk
+                return
+            except (httpx.ConnectError, httpx.ConnectTimeout) as e:
+                logger.warning(f"Connection error on {current_endpoint.provider}: {e}")
+                current_endpoint = current_endpoint.fallback
+                if current_endpoint:
+                    logger.info(f"Falling back to {current_endpoint.provider}/{current_endpoint.model}")
+            except AIError:
+                raise
+
+        raise AIError("All providers failed for streaming")
 
     # ========== Standard Chat ==========
 
@@ -599,7 +641,7 @@ class AIToolService(Service):
         await cls._load_tools_remote(executor_config)
 
         cls._initialized = True
-        logger.info(f"AIToolService loaded {len(cls._tools)} tools from gateway")
+        logger.debug(f"AIToolService loaded {len(cls._tools)} tools from gateway: {list(cls._tools.keys())}")
 
     @classmethod
     async def _load_tools_remote(cls, executor_config: Dict[str, Any]):

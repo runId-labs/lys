@@ -8,7 +8,7 @@ allowing consistent usage across different LLM providers.
 import json
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import List, Dict, Any, Optional, TypeVar, Type
+from typing import AsyncGenerator, List, Dict, Any, Optional, TypeVar, Type
 
 from pydantic import BaseModel
 
@@ -24,6 +24,18 @@ class AIResponse:
     content: str
     tool_calls: List[Dict[str, Any]] = field(default_factory=list)
     usage: Optional[Dict[str, int]] = None  # tokens used
+    model: Optional[str] = None
+    provider: Optional[str] = None
+
+
+@dataclass
+class AIStreamChunk:
+    """A single chunk from a streaming AI response."""
+
+    content: Optional[str] = None
+    tool_calls: Optional[List[Dict[str, Any]]] = None
+    finish_reason: Optional[str] = None
+    usage: Optional[Dict[str, int]] = None
     model: Optional[str] = None
     provider: Optional[str] = None
 
@@ -124,6 +136,32 @@ class AIProvider(ABC):
     ) -> T:
         """Synchronous version for Celery workers."""
         pass
+
+    # ========== Streaming ==========
+
+    async def chat_stream(
+        self,
+        messages: List[Dict[str, Any]],
+        config: AIEndpointConfig,
+        tools: Optional[List[Dict[str, Any]]] = None,
+    ) -> AsyncGenerator[AIStreamChunk, None]:
+        """
+        Stream a chat response from the provider, yielding chunks as they arrive.
+
+        Args:
+            messages: Conversation history
+            config: Endpoint configuration
+            tools: Optional tool definitions for function calling
+
+        Yields:
+            AIStreamChunk for each SSE data line from the provider
+
+        Raises:
+            NotImplementedError: If the provider does not support streaming
+        """
+        raise NotImplementedError(f"{self.name} provider does not support streaming")
+        # Make this an async generator
+        yield  # pragma: no cover
 
     # ========== Helpers ==========
 

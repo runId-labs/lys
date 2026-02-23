@@ -7,6 +7,25 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-02-23
+
+### Added
+- AI streaming support via `chat_with_tools_streaming` with SSE (Server-Sent Events)
+- `AIStreamChunk` dataclass for structured streaming responses from providers
+- `MistralProvider.chat_stream()` for async streaming via httpx
+- `GraphQLToolExecutor.register_special_tool()` for extensible special tool dispatch
+- Guard clauses in `chat_with_tools_streaming` for JWT claim validation
+- Unit tests for streaming helpers, providers, special tools, and conversation services
+
+### Changed
+- Extracted `_prepare_chat_context()` to eliminate setup duplication between streaming and non-streaming paths
+- Refactored `GraphQLToolExecutor` special tools from if/elif chain to dictionary dispatch
+- Refactored `MistralProvider._handle_error_status()` out of `_parse_response()`
+- Sanitized error messages in `chat_with_tools` and `chat_with_tools_streaming` to prevent internal details leaking to clients
+- Downgraded debug-level tool/stream logs from INFO to DEBUG
+- Replaced hardcoded `provider="mistral"` with dynamic provider tracking from stream chunks
+- Updated coverage badge from 79% to 80%
+
 ## [0.4.1] - 2026-02-22
 
 ### Changed

@@ -8,7 +8,7 @@ import json
 import logging
 import time
 from datetime import datetime, UTC
-from typing import Optional, List, Dict, Any
+from typing import AsyncGenerator, Optional, List, Dict, Any
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -427,35 +427,36 @@ class AIConversationService(EntityService[AIConversation]):
         return executor
 
     @classmethod
-    async def chat_with_tools(
+    async def _prepare_chat_context(
         cls,
         user_id: str,
         content: str,
         session: AsyncSession,
+        connected_user: Dict[str, Any],
         info: Any,
         conversation_id: Optional[str] = None,
         page_context: Optional[PageContextModel] = None,
-        max_tool_iterations: int = 10,
     ) -> Dict[str, Any]:
         """
-        Send a message with tool execution support (agent loop).
+        Prepare the shared context for both streaming and non-streaming chat.
 
-        Handles tool loading, system prompt building, and tool execution internally.
+        Handles tool loading, permission filtering, system prompt building,
+        executor initialization, conversation retrieval, and message history.
 
         Args:
             user_id: User ID
             content: User message content
             session: Database session
-            info: GraphQL info context
+            connected_user: Connected user dict from JWT
+            info: GraphQL info context (or _StreamingInfo shim)
             conversation_id: Optional conversation ID to continue
             page_context: Optional page context for tool filtering and param injection
-            max_tool_iterations: Maximum number of tool call iterations
 
         Returns:
-            Dict with content, conversation_id, tool_calls_count, tool_results, frontend_actions
+            Dict with keys: tools, llm_tools, executor, conversation,
+            message_service, ai_service, messages, info
         """
         app_manager = cls.app_manager
-        connected_user = info.context.connected_user
 
         # Get tools via AIToolService filtered by JWT claims
         # Note: Tools are lazy-loaded once and cached at class level, only filtering is done here
@@ -474,7 +475,6 @@ class AIConversationService(EntityService[AIConversation]):
                 f"[PageContext] Page webservices for '{page_context.page_name}': {page_webservices}"
             )
             if page_webservices:
-                # Keep only tools whose webservice is available on the current page
                 tools = [
                     tool for tool in tools
                     if tool.get("webservice") in page_webservices
@@ -595,6 +595,57 @@ class AIConversationService(EntityService[AIConversation]):
             content=content,
         )
 
+        return {
+            "tools": tools,
+            "llm_tools": llm_tools,
+            "executor": executor,
+            "conversation": conversation,
+            "message_service": message_service,
+            "ai_service": ai_service,
+            "messages": messages,
+            "info": info,
+        }
+
+    @classmethod
+    async def chat_with_tools(
+        cls,
+        user_id: str,
+        content: str,
+        session: AsyncSession,
+        info: Any,
+        conversation_id: Optional[str] = None,
+        page_context: Optional[PageContextModel] = None,
+        max_tool_iterations: int = 10,
+    ) -> Dict[str, Any]:
+        """
+        Send a message with tool execution support (agent loop).
+
+        Handles tool loading, system prompt building, and tool execution internally.
+
+        Args:
+            user_id: User ID
+            content: User message content
+            session: Database session
+            info: GraphQL info context
+            conversation_id: Optional conversation ID to continue
+            page_context: Optional page context for tool filtering and param injection
+            max_tool_iterations: Maximum number of tool call iterations
+
+        Returns:
+            Dict with content, conversation_id, tool_calls_count, tool_results, frontend_actions
+        """
+        connected_user = info.context.connected_user
+        ctx = await cls._prepare_chat_context(
+            user_id, content, session, connected_user, info,
+            conversation_id=conversation_id, page_context=page_context,
+        )
+        executor = ctx["executor"]
+        conversation = ctx["conversation"]
+        message_service = ctx["message_service"]
+        ai_service = ctx["ai_service"]
+        llm_tools = ctx["llm_tools"]
+        messages = ctx["messages"]
+
         tool_results = []
         tool_calls_count = 0
 
@@ -698,19 +749,19 @@ class AIConversationService(EntityService[AIConversation]):
                     )
 
                 except Exception as e:
-                    error_msg = f"Error executing tool '{tool_name}': {str(e)}"
-                    logger.error(error_msg)
+                    logger.error(f"Tool '{tool_name}' execution failed: {e}")
+                    safe_error_msg = f"Tool '{tool_name}' failed to execute."
                     tool_results.append({
                         "tool_name": tool_name,
-                        "result": error_msg,
+                        "result": safe_error_msg,
                         "success": False,
                     })
 
-                    # Add error to messages
+                    # Add error to messages (generic message for LLM)
                     error_tool_msg = {
                         "role": "tool",
                         "tool_call_id": tool_call_id,
-                        "content": json.dumps({"error": error_msg}),
+                        "content": json.dumps({"error": safe_error_msg}),
                     }
                     messages.append(error_tool_msg)
 
@@ -718,7 +769,7 @@ class AIConversationService(EntityService[AIConversation]):
                     await message_service.add_tool_result(
                         conversation.id,
                         tool_call_id,
-                        {"error": error_msg},
+                        {"error": safe_error_msg},
                         session,
                     )
 
@@ -732,6 +783,285 @@ class AIConversationService(EntityService[AIConversation]):
             "tool_results": tool_results,
             "frontend_actions": frontend_actions if frontend_actions else None,
         }
+
+    # ========== Streaming Agent Loop ==========
+
+    @classmethod
+    async def chat_with_tools_streaming(
+        cls,
+        user_id: str,
+        content: str,
+        session: "AsyncSession",
+        connected_user: Dict[str, Any],
+        access_token: str,
+        conversation_id: Optional[str] = None,
+        page_context: Optional[PageContextModel] = None,
+        max_tool_iterations: int = 10,
+    ) -> AsyncGenerator[str, None]:
+        """
+        Streaming version of chat_with_tools. Yields SSE-formatted strings.
+
+        Args:
+            user_id: User ID
+            content: User message content
+            session: Database session
+            connected_user: Connected user dict from JWT
+            access_token: User's access token for tool execution
+            conversation_id: Optional conversation ID to continue
+            page_context: Optional page context
+            max_tool_iterations: Maximum tool call iterations
+
+        Yields:
+            SSE-formatted event strings
+        """
+        # Defensive guard: these values should already be validated by UserAuthMiddleware,
+        # but we verify them here in case this method is called from a non-middleware context.
+        if not connected_user or not connected_user.get("sub"):
+            raise ValueError("connected_user must contain a valid 'sub' claim")
+        if not access_token:
+            raise ValueError("access_token is required")
+
+        # Build a shim info object for _get_tool_executor (expects info.context.access_token etc.)
+        info = _StreamingInfo(connected_user=connected_user, access_token=access_token)
+
+        ctx = await cls._prepare_chat_context(
+            user_id, content, session, connected_user, info,
+            conversation_id=conversation_id, page_context=page_context,
+        )
+        executor = ctx["executor"]
+        conversation = ctx["conversation"]
+        message_service = ctx["message_service"]
+        ai_service = ctx["ai_service"]
+        llm_tools = ctx["llm_tools"]
+        messages = ctx["messages"]
+
+        tool_results = []
+        tool_calls_count = 0
+
+        # Agent loop
+        for iteration in range(max_tool_iterations):
+            accumulated_content = ""
+            tool_calls_accumulator: Dict[int, Dict[str, Any]] = {}
+            last_finish_reason = None
+            last_usage = None
+            last_model = None
+            last_provider = None
+
+            try:
+                async for chunk in ai_service.chat_stream_with_purpose(
+                    messages, AI_PURPOSE_CHATBOT, llm_tools if llm_tools else None
+                ):
+                    # Yield token events for text content
+                    if chunk.content:
+                        accumulated_content += chunk.content
+                        yield _format_sse("token", {"content": chunk.content})
+
+                    # Accumulate tool calls from partial chunks
+                    if chunk.tool_calls:
+                        _accumulate_tool_calls(tool_calls_accumulator, chunk.tool_calls)
+
+                    if chunk.finish_reason:
+                        last_finish_reason = chunk.finish_reason
+                    if chunk.usage:
+                        last_usage = chunk.usage
+                    if chunk.model:
+                        last_model = chunk.model
+                    if chunk.provider:
+                        last_provider = chunk.provider
+
+            except Exception as e:
+                logger.error(f"Streaming provider error: {e}")
+                yield _format_sse("error", {
+                    "message": "An error occurred while generating the response.",
+                    "code": "PROVIDER_ERROR",
+                })
+                return
+
+            # Build finalized tool_calls list from accumulator
+            finalized_tool_calls = _finalize_tool_calls(tool_calls_accumulator)
+
+            if not finalized_tool_calls:
+                # No tool calls — final response
+                await message_service.create(
+                    session,
+                    conversation_id=conversation.id,
+                    role=AIMessageRole.ASSISTANT.value,
+                    content=accumulated_content,
+                    provider=last_provider,
+                    model=last_model,
+                    tokens_in=last_usage.get("prompt_tokens") if last_usage else None,
+                    tokens_out=last_usage.get("completion_tokens") if last_usage else None,
+                )
+
+                frontend_actions = list(getattr(info.context, "frontend_actions", []))
+
+                result = {
+                    "conversationId": conversation.id,
+                    "toolCallsCount": tool_calls_count,
+                    "frontendActions": frontend_actions if frontend_actions else None,
+                }
+                cls._process_response({
+                    "content": accumulated_content,
+                    "conversation_id": conversation.id,
+                    "tool_calls_count": tool_calls_count,
+                    "tool_results": tool_results,
+                    "frontend_actions": frontend_actions if frontend_actions else None,
+                })
+                yield _format_sse("done", result)
+                return
+
+            # Tool calls detected — execute them
+            tool_calls_count += len(finalized_tool_calls)
+
+            # Save assistant message with tool calls
+            assistant_msg = {
+                "role": "assistant",
+                "content": accumulated_content,
+                "tool_calls": finalized_tool_calls,
+            }
+            messages.append(assistant_msg)
+
+            await message_service.create(
+                session,
+                conversation_id=conversation.id,
+                role=AIMessageRole.ASSISTANT.value,
+                content=accumulated_content,
+                tool_calls=finalized_tool_calls,
+                provider=last_provider,
+                model=last_model,
+                tokens_in=last_usage.get("prompt_tokens") if last_usage else None,
+                tokens_out=last_usage.get("completion_tokens") if last_usage else None,
+            )
+
+            # Execute each tool
+            for tool_call in finalized_tool_calls:
+                tool_name = tool_call.get("function", {}).get("name", "")
+                tool_args_str = tool_call.get("function", {}).get("arguments", "{}")
+                tool_call_id = tool_call.get("id", "")
+
+                yield _format_sse("tool_start", {"name": tool_name, "arguments": tool_args_str})
+
+                try:
+                    tool_args = json.loads(tool_args_str) if isinstance(tool_args_str, str) else tool_args_str
+                    result = await executor.execute(
+                        tool_name=tool_name,
+                        arguments=tool_args,
+                        context={"session": session, "info": info},
+                    )
+                    tool_results.append({
+                        "tool_name": tool_name,
+                        "result": str(result),
+                        "success": True,
+                    })
+
+                    yield _format_sse("tool_result", {
+                        "name": tool_name,
+                        "result": result if isinstance(result, dict) else {"result": str(result)},
+                        "success": True,
+                    })
+
+                    tool_msg = {
+                        "role": "tool",
+                        "tool_call_id": tool_call_id,
+                        "content": json.dumps(result) if not isinstance(result, str) else result,
+                    }
+                    messages.append(tool_msg)
+
+                    await message_service.add_tool_result(
+                        conversation.id, tool_call_id,
+                        result if isinstance(result, dict) else {"result": result},
+                        session,
+                    )
+
+                except Exception as e:
+                    logger.error(f"Tool '{tool_name}' execution failed: {e}")
+                    safe_error_msg = f"Tool '{tool_name}' failed to execute."
+                    tool_results.append({
+                        "tool_name": tool_name,
+                        "result": safe_error_msg,
+                        "success": False,
+                    })
+
+                    yield _format_sse("tool_result", {
+                        "name": tool_name,
+                        "result": {"error": safe_error_msg},
+                        "success": False,
+                    })
+
+                    messages.append({
+                        "role": "tool",
+                        "tool_call_id": tool_call_id,
+                        "content": json.dumps({"error": safe_error_msg}),
+                    })
+
+                    await message_service.add_tool_result(
+                        conversation.id, tool_call_id,
+                        {"error": safe_error_msg}, session,
+                    )
+
+        # Max iterations reached
+        yield _format_sse("error", {
+            "message": "Maximum tool iterations reached.",
+            "code": "MAX_ITERATIONS",
+        })
+
+
+# ========== Streaming Helpers ==========
+
+
+class _StreamingContext:
+    """Minimal context shim for streaming (replaces GraphQL info.context)."""
+
+    def __init__(self, connected_user: Dict[str, Any], access_token: str):
+        self.connected_user = connected_user
+        self.access_token = access_token
+        self.frontend_actions: List[Dict[str, Any]] = []
+
+
+class _StreamingInfo:
+    """Minimal info shim for streaming (replaces GraphQL info)."""
+
+    def __init__(self, connected_user: Dict[str, Any], access_token: str):
+        self.context = _StreamingContext(connected_user, access_token)
+
+
+def _format_sse(event: str, data: Any) -> str:
+    """Format an SSE event string."""
+    return f"event: {event}\ndata: {json.dumps(data)}\n\n"
+
+
+def _accumulate_tool_calls(accumulator: Dict[int, Dict[str, Any]], deltas: List[Dict[str, Any]]) -> None:
+    """
+    Merge partial tool call chunks into the accumulator.
+
+    Mistral sends tool_calls as partial deltas with an index. Each chunk may contain:
+    - id: tool call ID (usually in the first chunk)
+    - function.name: tool name (usually in the first chunk)
+    - function.arguments: partial argument string (concatenated across chunks)
+    """
+    for delta in deltas:
+        idx = delta.get("index", 0)
+        if idx not in accumulator:
+            accumulator[idx] = {
+                "id": delta.get("id", ""),
+                "type": "function",
+                "function": {"name": "", "arguments": ""},
+            }
+        entry = accumulator[idx]
+        if delta.get("id"):
+            entry["id"] = delta["id"]
+        func = delta.get("function", {})
+        if func.get("name"):
+            entry["function"]["name"] = func["name"]
+        if func.get("arguments"):
+            entry["function"]["arguments"] += func["arguments"]
+
+
+def _finalize_tool_calls(accumulator: Dict[int, Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Convert accumulator dict to sorted list of finalized tool calls."""
+    if not accumulator:
+        return []
+    return [accumulator[idx] for idx in sorted(accumulator.keys())]
 
 
 @register_service()

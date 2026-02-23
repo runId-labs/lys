@@ -5,6 +5,7 @@ Tests the GraphQL tool executor, particularly the _build_operation method
 which reconstructs flattened input parameters into GraphQL input objects.
 """
 
+import inspect
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -533,3 +534,122 @@ class TestGraphQLToolExecutorExecute:
 
         assert result["status"] == "error"
         assert "bio" in result["message"]
+
+
+# ========== Special tools dispatch ==========
+
+
+class TestGraphQLToolExecutorSpecialTools:
+    """Tests for _special_tools dispatch and register_special_tool."""
+
+    @pytest.fixture
+    def executor(self):
+        """Create an initialized executor."""
+        with patch("lys.apps.ai.modules.core.executors.graphql.GraphQLClient"):
+            executor = GraphQLToolExecutor(
+                gateway_url="http://test:4000/graphql",
+                secret_key="secret",
+                service_name="test",
+            )
+            executor._initialized = True
+            return executor
+
+    def test_default_special_tools(self, executor):
+        """Test that navigate and confirm_action are registered by default."""
+        assert "navigate" in executor._special_tools
+        assert "confirm_action" in executor._special_tools
+
+    @pytest.mark.asyncio
+    async def test_execute_sync_special_tool(self, executor):
+        """Test executing a sync special tool (navigate) with valid path."""
+        info = MagicMock()
+        info.context.frontend_actions = []
+        executor._accessible_routes = [{"path": "/dashboard", "name": "Dashboard"}]
+
+        result = executor._handle_navigate(
+            {"path": "/dashboard"},
+            {"info": info},
+        )
+
+        assert result["status"] == "navigation_scheduled"
+        assert len(info.context.frontend_actions) == 1
+
+    @pytest.mark.asyncio
+    async def test_execute_dispatches_to_special_tool(self, executor):
+        """Test that execute() dispatches to a special tool handler."""
+        info = MagicMock()
+        info.context.frontend_actions = []
+        executor._accessible_routes = [{"path": "/home", "name": "Home"}]
+
+        result = await executor.execute(
+            tool_name="navigate",
+            arguments={"path": "/home"},
+            context={"info": info},
+        )
+
+        assert result["status"] == "navigation_scheduled"
+
+    @pytest.mark.asyncio
+    async def test_execute_dispatches_async_special_tool(self, executor):
+        """Test that execute() correctly awaits async special tool handlers."""
+        async def async_handler(arguments, context):
+            return {"status": "async_ok", "value": arguments.get("x")}
+
+        executor.register_special_tool("my_async_tool", async_handler)
+
+        result = await executor.execute(
+            tool_name="my_async_tool",
+            arguments={"x": 42},
+            context={},
+        )
+
+        assert result["status"] == "async_ok"
+        assert result["value"] == 42
+
+    def test_register_special_tool(self, executor):
+        """Test registering a custom special tool."""
+        def my_handler(arguments, context):
+            return {"result": "ok"}
+
+        executor.register_special_tool("custom_tool", my_handler)
+
+        assert "custom_tool" in executor._special_tools
+        assert executor._special_tools["custom_tool"] is my_handler
+
+    @pytest.mark.asyncio
+    async def test_register_special_tool_sync_execution(self, executor):
+        """Test that a registered sync special tool is executed correctly."""
+        def sync_handler(arguments, context):
+            return {"computed": arguments.get("a", 0) + arguments.get("b", 0)}
+
+        executor.register_special_tool("add", sync_handler)
+
+        result = await executor.execute(
+            tool_name="add",
+            arguments={"a": 3, "b": 7},
+            context={},
+        )
+
+        assert result["computed"] == 10
+
+    @pytest.mark.asyncio
+    async def test_special_tool_takes_priority_over_regular_tools(self, executor):
+        """Test that special tools take priority when name conflicts exist."""
+        # Add a regular tool with the same name
+        executor._tools["navigate"] = {
+            "definition": {"type": "function", "function": {"name": "navigate"}},
+            "operation_type": "query",
+        }
+        executor._accessible_routes = [{"path": "/test", "name": "Test"}]
+
+        info = MagicMock()
+        info.context.frontend_actions = []
+
+        result = await executor.execute(
+            tool_name="navigate",
+            arguments={"path": "/test"},
+            context={"info": info},
+        )
+
+        # Should use the special tool handler, not the GraphQL path
+        assert result["status"] == "navigation_scheduled"

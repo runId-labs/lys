@@ -5,6 +5,7 @@ Executes tools via GraphQL calls to Apollo Gateway (microservice mode).
 """
 
 import base64
+import inspect
 import logging
 from typing import Dict, Any, List, Optional
 
@@ -57,6 +58,10 @@ class GraphQLToolExecutor(ToolExecutor):
         self.gateway_url = gateway_url
         self.timeout = timeout
         self._tools: Dict[str, Dict[str, Any]] = {}
+        self._special_tools: Dict[str, Any] = {
+            "navigate": self._handle_navigate,
+            "confirm_action": self._handle_confirm_action,
+        }
         self._initialized = False
         self._accessible_routes = []
         self._client = GraphQLClient(
@@ -166,11 +171,12 @@ class GraphQLToolExecutor(ToolExecutor):
             raise RuntimeError("GraphQLToolExecutor not initialized. Call initialize() first.")
 
         # Handle special tools that don't go through GraphQL
-        if tool_name == "navigate":
-            return self._handle_navigate(arguments, context)
-
-        if tool_name == "confirm_action":
-            return await self._handle_confirm_action(arguments, context)
+        if tool_name in self._special_tools:
+            handler = self._special_tools[tool_name]
+            result = handler(arguments, context)
+            if inspect.isawaitable(result):
+                return await result
+            return result
 
         if tool_name not in self._tools:
             raise ValueError(f"Tool '{tool_name}' not found")
@@ -431,6 +437,16 @@ class GraphQLToolExecutor(ToolExecutor):
             "definition": definition,
             "operation_type": operation_type,
         }
+
+    def register_special_tool(self, name: str, handler):
+        """
+        Register a special tool handler that executes locally without GraphQL.
+
+        Args:
+            name: Tool name
+            handler: Handler function(arguments, context) -> dict. Can be sync or async.
+        """
+        self._special_tools[name] = handler
 
     def _to_global_id(self, param_name: str, value: str, node_type: str = None) -> str:
         """
