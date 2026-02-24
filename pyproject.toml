@@ -1,6 +1,6 @@
 [project]
 name = "runid-lys"
-version = "0.5.0"
+version = "0.6.0"
 description = "A modular FastAPI framework for building GraphQL APIs with SQLAlchemy, featuring component-based architecture, JWT authentication, and multi-tenant permissions."
 authors = [
   { name="THEVENIN Anthony", email = "labs@runid.fr" },

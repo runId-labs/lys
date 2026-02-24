@@ -10,8 +10,18 @@ from unittest.mock import MagicMock, AsyncMock, patch
 
 import pytest
 
+from contextlib import asynccontextmanager
+
 from lys.core.consts.component_types import AppComponentTypeEnum
 from lys.core.managers.app import AppManager, LysAppManager
+
+
+def _async_context_manager(mock_session):
+    """Create an async context manager wrapping a mock session."""
+    @asynccontextmanager
+    async def _ctx():
+        yield mock_session
+    return _ctx()
 
 
 def _create_app_manager():
@@ -94,6 +104,9 @@ class TestAppManagerClassStructure:
     def test_has_app_lifespan_method(self):
         assert hasattr(AppManager, "_app_lifespan")
 
+    def test_has_ensure_super_user_method(self):
+        assert hasattr(AppManager, "_ensure_super_user")
+
 
 class TestAppManagerAsyncMethods:
     """Tests for async method signatures."""
@@ -103,6 +116,9 @@ class TestAppManagerAsyncMethods:
 
     def test_register_webservices_to_auth_server_is_async(self):
         assert inspect.iscoroutinefunction(AppManager._register_webservices_to_auth_server)
+
+    def test_ensure_super_user_is_async(self):
+        assert inspect.iscoroutinefunction(AppManager._ensure_super_user)
 
     def test_app_lifespan_is_callable(self):
         assert callable(AppManager._app_lifespan)
@@ -410,6 +426,162 @@ class TestRegisterWebservicesToAuthServer:
         assert result is False
 
 
+class TestEnsureSuperUser:
+    """Tests for _ensure_super_user method."""
+
+    @pytest.mark.asyncio
+    async def test_skips_when_no_email_configured(self):
+        """Test that nothing happens when super_user_email is None."""
+        manager = _create_app_manager()
+        manager.settings.super_user_email = None
+        await manager._ensure_super_user()
+        manager.registry.get_service.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_skips_when_email_is_empty_string(self):
+        """Test that nothing happens when super_user_email is empty."""
+        manager = _create_app_manager()
+        manager.settings.super_user_email = ""
+        await manager._ensure_super_user()
+        manager.registry.get_service.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_skips_when_user_service_not_registered(self):
+        """Test graceful handling when user service is not available."""
+        manager = _create_app_manager()
+        manager.settings.super_user_email = "admin@example.com"
+        manager.registry.get_service.return_value = None
+        await manager._ensure_super_user()
+        manager.registry.get_service.assert_called_once_with("user", nullable=True)
+
+    @pytest.mark.asyncio
+    async def test_skips_creation_when_user_already_exists(self):
+        """Test that existing user is not modified or recreated."""
+        manager = _create_app_manager()
+        manager.settings.super_user_email = "admin@example.com"
+
+        mock_service = MagicMock()
+        mock_service.get_by_email = AsyncMock(return_value=MagicMock())  # user exists
+        mock_service.create_super_user = AsyncMock()
+        manager.registry.get_service.return_value = mock_service
+
+        mock_session = AsyncMock()
+        manager.database.session = MagicMock(return_value=_async_context_manager(mock_session))
+
+        await manager._ensure_super_user()
+
+        mock_service.get_by_email.assert_awaited_once_with(email="admin@example.com", session=mock_session)
+        mock_service.create_super_user.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_creates_super_user_when_not_exists(self):
+        """Test that super user is created when not found in database."""
+        manager = _create_app_manager()
+        manager.settings.super_user_email = "admin@example.com"
+        manager.settings.super_user_language = "fr"
+
+        mock_service = MagicMock()
+        mock_service.get_by_email = AsyncMock(return_value=None)  # user does not exist
+        mock_service.create_super_user = AsyncMock()
+        manager.registry.get_service.return_value = mock_service
+
+        mock_session = AsyncMock()
+        manager.database.session = MagicMock(return_value=_async_context_manager(mock_session))
+
+        await manager._ensure_super_user()
+
+        mock_service.create_super_user.assert_awaited_once()
+        call_kwargs = mock_service.create_super_user.call_args[1]
+        assert call_kwargs["email"] == "admin@example.com"
+        assert call_kwargs["language_id"] == "fr"
+        assert call_kwargs["send_verification_email"] is False
+        assert call_kwargs["session"] is mock_session
+        # Password must be provided and non-empty
+        assert isinstance(call_kwargs["password"], str)
+        assert len(call_kwargs["password"]) > 0
+
+    @pytest.mark.asyncio
+    async def test_commits_session_after_creation(self):
+        """Test that session is committed after super user creation."""
+        manager = _create_app_manager()
+        manager.settings.super_user_email = "admin@example.com"
+        manager.settings.super_user_language = "en"
+
+        mock_service = MagicMock()
+        mock_service.get_by_email = AsyncMock(return_value=None)
+        mock_service.create_super_user = AsyncMock()
+        manager.registry.get_service.return_value = mock_service
+
+        mock_session = AsyncMock()
+        manager.database.session = MagicMock(return_value=_async_context_manager(mock_session))
+
+        await manager._ensure_super_user()
+
+        mock_session.commit.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_does_not_commit_when_user_exists(self):
+        """Test that session is not committed when user already exists."""
+        manager = _create_app_manager()
+        manager.settings.super_user_email = "admin@example.com"
+
+        mock_service = MagicMock()
+        mock_service.get_by_email = AsyncMock(return_value=MagicMock())
+        manager.registry.get_service.return_value = mock_service
+
+        mock_session = AsyncMock()
+        manager.database.session = MagicMock(return_value=_async_context_manager(mock_session))
+
+        await manager._ensure_super_user()
+
+        mock_session.commit.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_password_is_randomly_generated(self):
+        """Test that each call generates a different password."""
+        passwords = []
+
+        for _ in range(2):
+            manager = _create_app_manager()
+            manager.settings.super_user_email = "admin@example.com"
+            manager.settings.super_user_language = "en"
+
+            mock_service = MagicMock()
+            mock_service.get_by_email = AsyncMock(return_value=None)
+            mock_service.create_super_user = AsyncMock()
+            manager.registry.get_service.return_value = mock_service
+
+            mock_session = AsyncMock()
+            manager.database.session = MagicMock(return_value=_async_context_manager(mock_session))
+
+            await manager._ensure_super_user()
+
+            call_kwargs = mock_service.create_super_user.call_args[1]
+            passwords.append(call_kwargs["password"])
+
+        assert passwords[0] != passwords[1]
+
+    @pytest.mark.asyncio
+    async def test_uses_configured_language(self):
+        """Test that super_user_language setting is passed to create_super_user."""
+        manager = _create_app_manager()
+        manager.settings.super_user_email = "admin@example.com"
+        manager.settings.super_user_language = "nl"
+
+        mock_service = MagicMock()
+        mock_service.get_by_email = AsyncMock(return_value=None)
+        mock_service.create_super_user = AsyncMock()
+        manager.registry.get_service.return_value = mock_service
+
+        mock_session = AsyncMock()
+        manager.database.session = MagicMock(return_value=_async_context_manager(mock_session))
+
+        await manager._ensure_super_user()
+
+        call_kwargs = mock_service.create_super_user.call_args[1]
+        assert call_kwargs["language_id"] == "nl"
+
+
 class TestLoadPermissions:
     """Tests for _load_permissions method."""
 
@@ -535,11 +707,28 @@ class TestAppLifespan:
         manager.registry.shutdown_services = AsyncMock()
         manager._on_startup = None
         manager._on_shutdown = None
-        with patch.object(manager, "_register_webservices_to_auth_server", new_callable=AsyncMock):
+        with patch.object(manager, "_register_webservices_to_auth_server", new_callable=AsyncMock), \
+             patch.object(manager, "_ensure_super_user", new_callable=AsyncMock):
             async with manager._app_lifespan(mock_app):
                 pass
         manager.registry.initialize_services.assert_awaited_once()
         manager.registry.shutdown_services.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_lifespan_calls_ensure_super_user(self):
+        """Test that lifespan calls _ensure_super_user during startup."""
+        manager = _create_app_manager()
+        manager.settings.get_plugin_config.return_value = {}
+        manager.component_types = []
+        manager.registry.initialize_services = AsyncMock()
+        manager.registry.shutdown_services = AsyncMock()
+        manager._on_startup = None
+        manager._on_shutdown = None
+        with patch.object(manager, "_register_webservices_to_auth_server", new_callable=AsyncMock), \
+             patch.object(manager, "_ensure_super_user", new_callable=AsyncMock) as mock_ensure:
+            async with manager._app_lifespan(MagicMock()):
+                pass
+        mock_ensure.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_lifespan_calls_startup_callback(self):
@@ -552,7 +741,8 @@ class TestAppLifespan:
         manager.registry.shutdown_services = AsyncMock()
         manager._on_startup = startup_cb
         manager._on_shutdown = None
-        with patch.object(manager, "_register_webservices_to_auth_server", new_callable=AsyncMock):
+        with patch.object(manager, "_register_webservices_to_auth_server", new_callable=AsyncMock), \
+             patch.object(manager, "_ensure_super_user", new_callable=AsyncMock):
             async with manager._app_lifespan(MagicMock()):
                 pass
         startup_cb.assert_awaited_once()
@@ -568,7 +758,8 @@ class TestAppLifespan:
         manager.registry.shutdown_services = AsyncMock()
         manager._on_startup = None
         manager._on_shutdown = shutdown_cb
-        with patch.object(manager, "_register_webservices_to_auth_server", new_callable=AsyncMock):
+        with patch.object(manager, "_register_webservices_to_auth_server", new_callable=AsyncMock), \
+             patch.object(manager, "_ensure_super_user", new_callable=AsyncMock):
             async with manager._app_lifespan(MagicMock()):
                 pass
         shutdown_cb.assert_awaited_once()
@@ -584,7 +775,8 @@ class TestAppLifespan:
         manager.registry.shutdown_services = AsyncMock()
         manager._on_startup = None
         manager._on_shutdown = None
-        with patch.object(manager, "_register_webservices_to_auth_server", new_callable=AsyncMock):
+        with patch.object(manager, "_register_webservices_to_auth_server", new_callable=AsyncMock), \
+             patch.object(manager, "_ensure_super_user", new_callable=AsyncMock):
             async with manager._app_lifespan(MagicMock()):
                 pass
         manager.database.initialize_database.assert_not_awaited()

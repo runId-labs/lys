@@ -245,6 +245,10 @@ class AppSettings(BaseSettings):
         self.query_alias_limit = 10
         self.relay_max_results = 100
 
+        # Super user auto-creation (created once at startup if not exists)
+        self.super_user_email: Optional[str] = None  # Email from .env; password is randomly generated
+        self.super_user_language: str = "en"  # Language ID for the super user
+
         # Inter-service communication
         self.service_name: Optional[str] = None  # Name of this microservice
         self.gateway_server_url: Optional[str] = None  # URL of Apollo Gateway for inter-service communication

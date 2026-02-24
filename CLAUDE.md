@@ -151,6 +151,14 @@ Consult these docs by task:
 
 ## Development Guidelines
 
+### Production-Grade Code Standards
+- **Production mindset**: All code MUST be written as production-ready. No shortcuts, no "good enough for now" — every implementation targets real deployments.
+- **No hardcoded values**: Any value that may vary between environments or projects MUST be configurable via `AppSettings` (and ultimately from `.env`). Never hardcode secrets, URLs, emails, credentials, or environment-specific values.
+- **Security by default**: Follow OWASP best practices. Use cryptographically secure random generation (`secrets` module), hash passwords with bcrypt, never log sensitive data (passwords, tokens, API keys). Validate and sanitize all external inputs.
+- **Follow Lys architecture**: Use `app_manager` for entity/service access, use the registry system, respect the component lifecycle. Never bypass the framework with direct imports or ad-hoc patterns.
+- **Idempotent operations**: Startup hooks and data initialization must be safe to run multiple times without side effects (no duplicates, no data loss).
+- **Fail safely**: Handle errors gracefully without exposing internal details. Log errors with enough context for debugging but never leak sensitive information in logs or responses.
+
 ### Language and Documentation Standards
 - **Project language**: All code, comments, documentation, and commit messages must be in English
 - **Communication style**: Use objective, factual language in all documentation and comments

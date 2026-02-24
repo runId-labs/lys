@@ -7,6 +7,18 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-02-24
+
+### Added
+- Auto-creation of initial super user at startup via `_ensure_super_user()` in AppManager
+- `super_user_email` and `super_user_language` settings in AppSettings for configurable super user provisioning
+- Password is randomly generated with `secrets.token_urlsafe`; user must reset via forgot-password flow
+- Production-grade code standards section in CLAUDE.md
+
+### Changed
+- Removed hardcoded super user from `UserDevFixtures` dev fixture
+- Super user creation is now idempotent: skips if user already exists, never updates or deletes
+
 ## [0.5.0] - 2026-02-23
 
 ### Added

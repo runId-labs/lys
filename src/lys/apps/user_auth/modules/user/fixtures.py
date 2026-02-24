@@ -166,19 +166,6 @@ class UserDevFixtures(EntityFixtures[UserService]):
                 }
             }
         },
-        {
-            "attributes": {
-                "email_address": "super_user@lys-test.fr",
-                "password": "password",
-                "is_super_user": True,
-                "language_id": "fr",
-                "private_data": {
-                    "first_name": "Admin",
-                    "last_name": "Super",
-                    "gender_id": OTHER_GENDER
-                }
-            }
-        },
     ]
 
     @classmethod

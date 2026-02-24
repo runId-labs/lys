@@ -350,6 +350,45 @@ class TestAppSettings:
         assert app.relay_max_results == 50
 
 
+    def test_has_super_user_email_attribute(self):
+        """Test AppSettings has super_user_email attribute."""
+        from lys.core.configs import AppSettings
+        app = AppSettings()
+        assert hasattr(app, "super_user_email")
+
+    def test_super_user_email_default_is_none(self):
+        """Test super_user_email defaults to None."""
+        from lys.core.configs import AppSettings
+        app = AppSettings()
+        assert app.super_user_email is None
+
+    def test_super_user_email_configurable(self):
+        """Test super_user_email can be set via configure."""
+        from lys.core.configs import AppSettings
+        app = AppSettings()
+        app.configure(super_user_email="admin@example.com")
+        assert app.super_user_email == "admin@example.com"
+
+    def test_has_super_user_language_attribute(self):
+        """Test AppSettings has super_user_language attribute."""
+        from lys.core.configs import AppSettings
+        app = AppSettings()
+        assert hasattr(app, "super_user_language")
+
+    def test_super_user_language_default_is_en(self):
+        """Test super_user_language defaults to 'en'."""
+        from lys.core.configs import AppSettings
+        app = AppSettings()
+        assert app.super_user_language == "en"
+
+    def test_super_user_language_configurable(self):
+        """Test super_user_language can be set via configure."""
+        from lys.core.configs import AppSettings
+        app = AppSettings()
+        app.configure(super_user_language="fr")
+        assert app.super_user_language == "fr"
+
+
 class TestLysAppSettings:
     """Tests for LysAppSettings singleton."""
 

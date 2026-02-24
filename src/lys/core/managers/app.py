@@ -1,5 +1,6 @@
 import importlib
 import logging
+import secrets
 import traceback
 from contextlib import asynccontextmanager
 from typing import List, Optional, Callable, Awaitable
@@ -590,6 +591,42 @@ class AppManager:
             config=StrawberryConfig(relay_max_results=self.settings.relay_max_results),
         )
 
+    async def _ensure_super_user(self) -> None:
+        """
+        Create the initial super user if configured and not already existing.
+
+        Reads super_user_email from settings. If set, checks whether a user
+        with that email already exists. If not, creates a super user with a
+        randomly generated password (the user can reset it via forgot-password).
+
+        This method is idempotent: it never updates or deletes an existing user.
+        """
+        email = self.settings.super_user_email
+        if not email:
+            return
+
+        user_service = self.registry.get_service("user", nullable=True)
+        if user_service is None:
+            logging.warning("Cannot ensure super user: user service not registered")
+            return
+
+        async with self.database.session() as session:
+            existing = await user_service.get_by_email(email=email, session=session)
+            if existing is not None:
+                logging.info(f"Super user already exists: {email}")
+                return
+
+            password = secrets.token_urlsafe(32)
+            await user_service.create_super_user(
+                session=session,
+                email=email,
+                password=password,
+                language_id=self.settings.super_user_language,
+                send_verification_email=False,
+            )
+            await session.commit()
+            logging.info(f"Super user created: {email} (password randomly generated, use forgot-password to set it)")
+
     @asynccontextmanager
     async def _app_lifespan(self, app: FastAPI):
         """
@@ -610,13 +647,16 @@ class AppManager:
         if AppComponentTypeEnum.FIXTURES in self.component_types:
             await self._load_fixtures_in_order()
 
-        # Phase 3: Register webservices with Auth Server (for business microservices)
+        # Phase 3: Ensure super user exists (if configured)
+        await self._ensure_super_user()
+
+        # Phase 4: Register webservices with Auth Server (for business microservices)
         await self._register_webservices_to_auth_server()
 
-        # Phase 4: Initialize services (async lifecycle hooks)
+        # Phase 5: Initialize services (async lifecycle hooks)
         await self.registry.initialize_services()
 
-        # Phase 5: Call custom startup callback if provided
+        # Phase 6: Call custom startup callback if provided
         if self._on_startup:
             await self._on_startup()
 
