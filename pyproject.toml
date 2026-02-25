@@ -42,6 +42,8 @@ dependencies = [
 dev = ["pytest", "pytest-asyncio", "pytest-cov", "pytest-forked", "aiosqlite", "fakeredis"]
 mollie = ["mollie-api-python>=3.0.0"]
 storage = ["aioboto3>=12.0.0"]
+ai = ["mistralai"]
+all = ["mollie-api-python>=3.0.0", "aioboto3>=12.0.0", "mistralai"]
 test = [
     "pytest",
     "pytest-asyncio",
