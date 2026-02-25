@@ -610,7 +610,7 @@ class AppManager:
             logging.warning("Cannot ensure super user: user service not registered")
             return
 
-        async with self.database.session() as session:
+        async with self.database.get_session() as session:
             existing = await user_service.get_by_email(email=email, session=session)
             if existing is not None:
                 logging.info(f"Super user already exists: {email}")

@@ -7,6 +7,12 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.6.1] - 2026-02-25
+
+### Fixed
+- Fix `AttributeError` in `_ensure_super_user`: call `database.get_session()` instead of non-existent `database.session()`
+- Add `spec=DatabaseManager` to database mock in tests to prevent silent attribute errors on MagicMock
+
 ## [0.6.0] - 2026-02-24
 
 ### Added

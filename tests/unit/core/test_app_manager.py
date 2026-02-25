@@ -14,6 +14,7 @@ from contextlib import asynccontextmanager
 
 from lys.core.consts.component_types import AppComponentTypeEnum
 from lys.core.managers.app import AppManager, LysAppManager
+from lys.core.managers.database import DatabaseManager
 
 
 def _async_context_manager(mock_session):
@@ -35,7 +36,7 @@ def _create_app_manager():
         mock_settings.return_value.permissions = []
         mock_settings.return_value.middlewares = []
         mock_settings.return_value.database = MagicMock()
-        mock_db.return_value = MagicMock()
+        mock_db.return_value = MagicMock(spec=DatabaseManager)
         mock_registry.return_value = MagicMock()
         mock_registry.return_value.services = {}
         mock_registry.return_value.entities = {}
@@ -466,7 +467,7 @@ class TestEnsureSuperUser:
         manager.registry.get_service.return_value = mock_service
 
         mock_session = AsyncMock()
-        manager.database.session = MagicMock(return_value=_async_context_manager(mock_session))
+        manager.database.get_session = MagicMock(return_value=_async_context_manager(mock_session))
 
         await manager._ensure_super_user()
 
@@ -486,7 +487,7 @@ class TestEnsureSuperUser:
         manager.registry.get_service.return_value = mock_service
 
         mock_session = AsyncMock()
-        manager.database.session = MagicMock(return_value=_async_context_manager(mock_session))
+        manager.database.get_session = MagicMock(return_value=_async_context_manager(mock_session))
 
         await manager._ensure_super_user()
 
@@ -513,7 +514,7 @@ class TestEnsureSuperUser:
         manager.registry.get_service.return_value = mock_service
 
         mock_session = AsyncMock()
-        manager.database.session = MagicMock(return_value=_async_context_manager(mock_session))
+        manager.database.get_session = MagicMock(return_value=_async_context_manager(mock_session))
 
         await manager._ensure_super_user()
 
@@ -530,7 +531,7 @@ class TestEnsureSuperUser:
         manager.registry.get_service.return_value = mock_service
 
         mock_session = AsyncMock()
-        manager.database.session = MagicMock(return_value=_async_context_manager(mock_session))
+        manager.database.get_session = MagicMock(return_value=_async_context_manager(mock_session))
 
         await manager._ensure_super_user()
 
@@ -552,7 +553,7 @@ class TestEnsureSuperUser:
             manager.registry.get_service.return_value = mock_service
 
             mock_session = AsyncMock()
-            manager.database.session = MagicMock(return_value=_async_context_manager(mock_session))
+            manager.database.get_session = MagicMock(return_value=_async_context_manager(mock_session))
 
             await manager._ensure_super_user()
 
@@ -574,7 +575,7 @@ class TestEnsureSuperUser:
         manager.registry.get_service.return_value = mock_service
 
         mock_session = AsyncMock()
-        manager.database.session = MagicMock(return_value=_async_context_manager(mock_session))
+        manager.database.get_session = MagicMock(return_value=_async_context_manager(mock_session))
 
         await manager._ensure_super_user()
 
