@@ -7,6 +7,11 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.6.2] - 2026-02-25
+
+### Added
+- `ai` and `all` optional dependency groups in pyproject.toml
+
 ## [0.6.1] - 2026-02-25
 
 ### Fixed
