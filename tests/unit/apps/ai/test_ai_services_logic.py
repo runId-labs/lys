@@ -328,10 +328,12 @@ class TestContextToolService:
             ContextToolService.register("my_tool", my_func)
 
             result = await ContextToolService.execute(
-                "my_tool", session="fake-session", company_id="c1"
+                "my_tool", session="fake-session", access_token="test-token", company_id="c1"
             )
             assert result == "result data"
-            my_func.assert_called_once_with(session="fake-session", company_id="c1")
+            my_func.assert_called_once_with(
+                session="fake-session", access_token="test-token", company_id="c1"
+            )
         finally:
             ContextToolService._registry = original_registry
 
@@ -342,7 +344,7 @@ class TestContextToolService:
         original_registry = ContextToolService._registry
         try:
             ContextToolService._registry = {}
-            result = await ContextToolService.execute("nonexistent", session="s")
+            result = await ContextToolService.execute("nonexistent", session="s", access_token="t")
             assert result is None
         finally:
             ContextToolService._registry = original_registry
@@ -357,7 +359,7 @@ class TestContextToolService:
             my_func = AsyncMock(side_effect=ValueError("boom"))
             ContextToolService.register("my_tool", my_func)
 
-            result = await ContextToolService.execute("my_tool", session="s")
+            result = await ContextToolService.execute("my_tool", session="s", access_token="t")
             assert result is None
         finally:
             ContextToolService._registry = original_registry
@@ -377,6 +379,7 @@ class TestContextToolService:
             result = await ContextToolService.execute_all(
                 context_tools={"label_a": "tool_a", "label_b": "tool_b"},
                 session="s",
+                access_token="test-token",
                 year=2024
             )
             assert result == {"label_a": "data_a", "label_b": "data_b"}
@@ -395,7 +398,8 @@ class TestContextToolService:
 
             result = await ContextToolService.execute_all(
                 context_tools={"label_a": "tool_a", "label_missing": "nonexistent"},
-                session="s"
+                session="s",
+                access_token="test-token"
             )
             assert result == {"label_a": "data_a"}
             assert "label_missing" not in result

@@ -425,6 +425,7 @@ class TestMistralProviderChatStream:
         mock_response = MagicMock()
         mock_response.status_code = status_code
         mock_response.text = f"Error {status_code}"
+        mock_response.aread = AsyncMock()
         mock_response.aiter_lines = aiter_lines
 
         # stream() returns an async context manager whose __aenter__ yields mock_response

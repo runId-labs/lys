@@ -781,6 +781,7 @@ class ContextToolService(Service):
         cls,
         name: str,
         session: Any,
+        access_token: str,
         **params,
     ) -> Optional[str]:
         """
@@ -789,6 +790,7 @@ class ContextToolService(Service):
         Args:
             name: Function name to execute
             session: Database session
+            access_token: User's JWT access token for authenticated GraphQL calls
             **params: Parameters to pass to the function
 
         Returns:
@@ -800,7 +802,7 @@ class ContextToolService(Service):
             return None
 
         try:
-            return await func(session=session, **params)
+            return await func(session=session, access_token=access_token, **params)
         except Exception as e:
             logger.error(f"ContextToolService: error executing '{name}': {e}")
             return None
@@ -810,6 +812,7 @@ class ContextToolService(Service):
         cls,
         context_tools: Dict[str, str],
         session: Any,
+        access_token: str,
         **params,
     ) -> Dict[str, str]:
         """
@@ -819,6 +822,7 @@ class ContextToolService(Service):
             context_tools: Dict mapping labels to function names
                 e.g., {"contextual_questions": "get_contextual_questions"}
             session: Database session
+            access_token: User's JWT access token for authenticated GraphQL calls
             **params: Parameters to pass to functions
 
         Returns:
@@ -827,7 +831,7 @@ class ContextToolService(Service):
         results = {}
 
         for label, function_name in context_tools.items():
-            result = await cls.execute(function_name, session, **params)
+            result = await cls.execute(function_name, session, access_token, **params)
             if result:
                 results[label] = result
 

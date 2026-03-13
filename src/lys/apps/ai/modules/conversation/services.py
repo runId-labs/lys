@@ -540,15 +540,20 @@ class AIConversationService(EntityService[AIConversation]):
                 # Execute context_tools to fetch dynamic data
                 context_tools = page_behaviour.get("context_tools", {})
                 if context_tools:
-                    context_tool_service = app_manager.get_service("context_tool")
-                    context_data = await context_tool_service.execute_all(
-                        context_tools,
-                        session,
-                        **(page_context.params or {}),
-                    )
-                    logger.debug(
-                        f"[ContextTools] Fetched data for {len(context_data)} labels"
-                    )
+                    access_token = info.context.access_token if info.context else None
+                    if not access_token:
+                        logger.warning("[ContextTools] No access_token available, skipping context tools")
+                    else:
+                        context_tool_service = app_manager.get_service("context_tool")
+                        context_data = await context_tool_service.execute_all(
+                            context_tools,
+                            session,
+                            access_token,
+                            **(page_context.params or {}),
+                        )
+                        logger.debug(
+                            f"[ContextTools] Fetched data for {len(context_data)} labels"
+                        )
 
         # Build system prompt
         # TODO: Optimize - consider caching system prompt per conversation_id to avoid
@@ -588,7 +593,7 @@ class AIConversationService(EntityService[AIConversation]):
         messages.append({"role": "user", "content": content})
 
         # Save user message to DB
-        await message_service.create(
+        user_message = await message_service.create(
             session,
             conversation_id=conversation.id,
             role=AIMessageRole.USER.value,
@@ -604,6 +609,7 @@ class AIConversationService(EntityService[AIConversation]):
             "ai_service": ai_service,
             "messages": messages,
             "info": info,
+            "user_message_id": user_message.id,
         }
 
     @classmethod
@@ -834,6 +840,7 @@ class AIConversationService(EntityService[AIConversation]):
         ai_service = ctx["ai_service"]
         llm_tools = ctx["llm_tools"]
         messages = ctx["messages"]
+        user_message_id = ctx["user_message_id"]
 
         tool_results = []
         tool_calls_count = 0
@@ -871,6 +878,12 @@ class AIConversationService(EntityService[AIConversation]):
 
             except Exception as e:
                 logger.error(f"Streaming provider error: {e}")
+                # Delete the orphaned user message to keep conversation history valid
+                if iteration == 0:
+                    try:
+                        await message_service.delete(user_message_id, session)
+                    except Exception as del_err:
+                        logger.error(f"Failed to delete orphaned user message {user_message_id}: {del_err}")
                 yield _format_sse("error", {
                     "message": "An error occurred while generating the response.",
                     "code": "PROVIDER_ERROR",

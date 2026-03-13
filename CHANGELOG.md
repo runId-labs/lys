@@ -7,6 +7,14 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.6.3] - 2026-03-13
+
+### Fixed
+- Pass `access_token` to context tool functions for authenticated GraphQL calls
+- Fix orphaned user message on streaming provider error (delete with error handling)
+- Fix Mistral provider streaming error handling (read response body before raising)
+- Fix `logger.debug` indentation for context tools when `access_token` is absent
+
 ## [0.6.2] - 2026-02-25
 
 ### Added

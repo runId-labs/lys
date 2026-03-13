@@ -182,6 +182,8 @@ class MistralProvider(AIProvider):
                     json=payload,
                     timeout=config.timeout,
                 ) as response:
+                    if response.status_code != 200:
+                        await response.aread()
                     self._handle_error_status(response)
 
                     async for line in response.aiter_lines():

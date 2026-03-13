@@ -610,7 +610,7 @@ class TestPrepareChatContext:
             info=mock_info,
         )
 
-        expected_keys = {"tools", "llm_tools", "executor", "conversation", "message_service", "ai_service", "messages", "info"}
+        expected_keys = {"tools", "llm_tools", "executor", "conversation", "message_service", "ai_service", "messages", "info", "user_message_id"}
         assert set(ctx.keys()) == expected_keys
 
     @pytest.mark.asyncio
@@ -933,6 +933,7 @@ class TestChatWithToolsStreaming:
             "llm_tools": [],
             "messages": [{"role": "system", "content": "sys"}, {"role": "user", "content": "Hi"}],
             "info": MagicMock(),
+            "user_message_id": "user-msg-1",
         }
 
         events = []
@@ -965,14 +966,16 @@ class TestChatWithToolsStreaming:
         mock_ai_service = MagicMock()
         mock_ai_service.chat_stream_with_purpose = failing_stream
 
+        mock_msg_service = AsyncMock()
         ctx = {
             "executor": MagicMock(),
             "conversation": MagicMock(id="conv-1"),
-            "message_service": AsyncMock(),
+            "message_service": mock_msg_service,
             "ai_service": mock_ai_service,
             "llm_tools": [],
             "messages": [{"role": "system", "content": "sys"}],
             "info": MagicMock(),
+            "user_message_id": "user-msg-1",
         }
 
         events = []
@@ -991,6 +994,49 @@ class TestChatWithToolsStreaming:
         assert "An error occurred" in error_data["message"]
         assert "sk-secret" not in error_data["message"]
         assert "api-key" not in error_data["message"]
+        # Orphaned user message should be deleted
+        mock_msg_service.delete.assert_called_once_with("user-msg-1", mock_session)
+
+    @pytest.mark.asyncio
+    async def test_provider_error_delete_failure_still_yields_error_event(self, mock_session, connected_user):
+        """Test that client receives error event even when orphaned message deletion fails."""
+        from lys.apps.ai.modules.conversation.services import AIConversationService
+
+        async def failing_stream(*args, **kwargs):
+            raise ConnectionError("Provider down")
+            yield  # pragma: no cover
+
+        mock_ai_service = MagicMock()
+        mock_ai_service.chat_stream_with_purpose = failing_stream
+
+        mock_msg_service = AsyncMock()
+        mock_msg_service.delete.side_effect = Exception("DB connection lost")
+        ctx = {
+            "executor": MagicMock(),
+            "conversation": MagicMock(id="conv-1"),
+            "message_service": mock_msg_service,
+            "ai_service": mock_ai_service,
+            "llm_tools": [],
+            "messages": [{"role": "system", "content": "sys"}],
+            "info": MagicMock(),
+            "user_message_id": "user-msg-1",
+        }
+
+        events = []
+        with patch.object(AIConversationService, "_prepare_chat_context", new_callable=AsyncMock, return_value=ctx):
+            async for event in AIConversationService.chat_with_tools_streaming(
+                user_id="user-123", content="Hi", session=mock_session,
+                connected_user=connected_user, access_token="tok",
+            ):
+                events.append(event)
+
+        # Delete was attempted despite failure
+        mock_msg_service.delete.assert_called_once_with("user-msg-1", mock_session)
+        # Client still receives the error event
+        assert len(events) == 1
+        error_data = json.loads(events[0].split("data: ")[1].strip())
+        assert error_data["code"] == "PROVIDER_ERROR"
+        assert "An error occurred" in error_data["message"]
 
     @pytest.mark.asyncio
     async def test_tool_error_sanitized_in_stream(self, mock_session, connected_user):
@@ -1034,6 +1080,7 @@ class TestChatWithToolsStreaming:
             "llm_tools": [{"type": "function", "function": {"name": "bad_tool"}}],
             "messages": [{"role": "system", "content": "sys"}, {"role": "user", "content": "Go"}],
             "info": MagicMock(),
+            "user_message_id": "user-msg-1",
         }
 
         events = []
@@ -1079,6 +1126,7 @@ class TestChatWithToolsStreaming:
             "llm_tools": [],
             "messages": [{"role": "system", "content": "sys"}, {"role": "user", "content": "Hi"}],
             "info": MagicMock(),
+            "user_message_id": "user-msg-1",
         }
 
         with patch.object(AIConversationService, "_prepare_chat_context", new_callable=AsyncMock, return_value=ctx):
@@ -1124,6 +1172,7 @@ class TestChatWithToolsStreaming:
             "llm_tools": [{"type": "function", "function": {"name": "loop"}}],
             "messages": [{"role": "system", "content": "sys"}, {"role": "user", "content": "Go"}],
             "info": MagicMock(),
+            "user_message_id": "user-msg-1",
         }
 
         events = []
