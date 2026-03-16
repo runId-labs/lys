@@ -7,6 +7,11 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.6.4] - 2026-03-16
+
+### Fixed
+- Protect `add_tool_result` DB calls in agent loop with try/except to prevent cascade failures when saving tool errors
+
 ## [0.6.3] - 2026-03-13
 
 ### Fixed

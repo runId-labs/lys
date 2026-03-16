@@ -848,6 +848,57 @@ class TestChatWithTools:
         assert "Maximum tool iterations" in result["content"]
         assert result["tool_calls_count"] == 2
 
+    @pytest.mark.asyncio
+    async def test_tool_error_db_save_failure_does_not_cascade(self, mock_session, mock_info):
+        """Test that a DB failure when saving tool error does not crash the agent loop."""
+        from lys.apps.ai.modules.conversation.services import AIConversationService
+
+        mock_conversation = MagicMock()
+        mock_conversation.id = "conv-1"
+        mock_msg_service = AsyncMock()
+        # add_tool_result raises to simulate DB failure
+        mock_msg_service.add_tool_result = AsyncMock(side_effect=Exception("DB connection lost"))
+        mock_ai_service = AsyncMock()
+        mock_executor = AsyncMock()
+
+        tool_call_response = self._make_ai_response(
+            content="",
+            tool_calls=[{
+                "id": "call-1",
+                "function": {"name": "failing_tool", "arguments": "{}"},
+            }],
+        )
+        final_response = self._make_ai_response("Done despite DB error.")
+
+        mock_ai_service.chat_with_purpose = AsyncMock(
+            side_effect=[tool_call_response, final_response]
+        )
+        mock_executor.execute = AsyncMock(
+            side_effect=Exception("Tool execution failed")
+        )
+
+        ctx = {
+            "executor": mock_executor,
+            "conversation": mock_conversation,
+            "message_service": mock_msg_service,
+            "ai_service": mock_ai_service,
+            "llm_tools": [{"type": "function", "function": {"name": "failing_tool"}}],
+            "messages": [{"role": "system", "content": "sys"}, {"role": "user", "content": "Do it"}],
+            "info": mock_info,
+        }
+
+        with patch.object(AIConversationService, "_prepare_chat_context", new_callable=AsyncMock, return_value=ctx):
+            result = await AIConversationService.chat_with_tools(
+                user_id="user-123", content="Do it", session=mock_session,
+                info=mock_info,
+            )
+
+        # Loop should complete successfully despite DB save failure
+        assert result["content"] == "Done despite DB error."
+        assert result["conversation_id"] == "conv-1"
+        # DB save was attempted
+        mock_msg_service.add_tool_result.assert_called_once()
+
 
 # ========== chat_with_tools_streaming ==========
 
@@ -1100,6 +1151,67 @@ class TestChatWithToolsStreaming:
         # Must NOT contain sensitive info
         assert "password" not in error_data["result"]["error"]
         assert "prod-db" not in error_data["result"]["error"]
+
+    @pytest.mark.asyncio
+    async def test_tool_error_db_save_failure_does_not_cascade_stream(self, mock_session, connected_user):
+        """Test that a DB failure when saving tool error does not crash the streaming loop."""
+        from lys.apps.ai.modules.conversation.services import AIConversationService
+        from lys.apps.ai.utils.providers.abstracts import AIStreamChunk
+
+        mock_conversation = MagicMock()
+        mock_conversation.id = "conv-1"
+        mock_msg_service = AsyncMock()
+        # add_tool_result raises to simulate DB failure
+        mock_msg_service.add_tool_result = AsyncMock(side_effect=Exception("DB connection lost"))
+        mock_executor = AsyncMock()
+        mock_executor.execute = AsyncMock(
+            side_effect=Exception("Tool execution failed")
+        )
+
+        call_count = 0
+
+        async def fake_stream(*args, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                yield AIStreamChunk(
+                    tool_calls=[{"index": 0, "id": "call-1", "function": {"name": "bad_tool", "arguments": "{}"}}],
+                    finish_reason="tool_calls",
+                    model="m1",
+                    provider="test-provider",
+                )
+            else:
+                yield AIStreamChunk(content="Recovered.", finish_reason="stop", model="m1", provider="test-provider")
+
+        mock_ai_service = MagicMock()
+        mock_ai_service.chat_stream_with_purpose = fake_stream
+
+        ctx = {
+            "executor": mock_executor,
+            "conversation": mock_conversation,
+            "message_service": mock_msg_service,
+            "ai_service": mock_ai_service,
+            "llm_tools": [{"type": "function", "function": {"name": "bad_tool"}}],
+            "messages": [{"role": "system", "content": "sys"}, {"role": "user", "content": "Go"}],
+            "info": MagicMock(),
+            "user_message_id": "user-msg-1",
+        }
+
+        events = []
+        with patch.object(AIConversationService, "_prepare_chat_context", new_callable=AsyncMock, return_value=ctx):
+            async for event in AIConversationService.chat_with_tools_streaming(
+                user_id="user-123", content="Go", session=mock_session,
+                connected_user=connected_user, access_token="tok",
+            ):
+                events.append(event)
+
+        # Streaming should complete despite DB save failure
+        token_events = [e for e in events if "event: token" in e]
+        done_events = [e for e in events if "event: done" in e]
+        assert len(token_events) >= 1
+        assert len(done_events) == 1
+        # DB save was attempted
+        mock_msg_service.add_tool_result.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_dynamic_provider_from_chunks(self, mock_session, connected_user):

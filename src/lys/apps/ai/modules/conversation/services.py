@@ -771,13 +771,16 @@ class AIConversationService(EntityService[AIConversation]):
                     }
                     messages.append(error_tool_msg)
 
-                    # Save error to DB
-                    await message_service.add_tool_result(
-                        conversation.id,
-                        tool_call_id,
-                        {"error": safe_error_msg},
-                        session,
-                    )
+                    # Save error to DB (protected to avoid cascade failure)
+                    try:
+                        await message_service.add_tool_result(
+                            conversation.id,
+                            tool_call_id,
+                            {"error": safe_error_msg},
+                            session,
+                        )
+                    except Exception as db_err:
+                        logger.error(f"Failed to save tool error to DB: {db_err}")
 
         # Max iterations reached
         frontend_actions = getattr(info.context, "frontend_actions", [])
@@ -1007,10 +1010,14 @@ class AIConversationService(EntityService[AIConversation]):
                         "content": json.dumps({"error": safe_error_msg}),
                     })
 
-                    await message_service.add_tool_result(
-                        conversation.id, tool_call_id,
-                        {"error": safe_error_msg}, session,
-                    )
+                    # Save error to DB (protected to avoid cascade failure)
+                    try:
+                        await message_service.add_tool_result(
+                            conversation.id, tool_call_id,
+                            {"error": safe_error_msg}, session,
+                        )
+                    except Exception as db_err:
+                        logger.error(f"Failed to save tool error to DB: {db_err}")
 
         # Max iterations reached
         yield _format_sse("error", {
