@@ -7,6 +7,14 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.6.5] - 2026-03-28
+
+### Changed
+- Move notification user filtering from webservice query to `Notification.user_accessing_filters` classmethod, leveraging framework OWNER_ACCESS_LEVEL
+
+### Added
+- Unit tests for notification entities (NotificationType, NotificationBatch, Notification)
+
 ## [0.6.4] - 2026-03-16
 
 ### Fixed

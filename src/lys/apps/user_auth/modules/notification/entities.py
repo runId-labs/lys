@@ -148,3 +148,7 @@ class Notification(Entity):
 
     def accessing_organizations(self) -> dict[str, list[str]]:
         return {}
+
+    @classmethod
+    def user_accessing_filters(cls, stmt, user_id: str):
+        return stmt, [cls.user_id == user_id]

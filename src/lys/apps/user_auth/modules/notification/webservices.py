@@ -51,11 +51,8 @@ class NotificationQuery(Query):
         Only returns notifications owned by the current user (OWNER access level).
         """
         notification_entity = info.context.app_manager.get_entity("notification")
-        user = info.context.connected_user
 
-        stmt = select(notification_entity).where(
-            notification_entity.user_id == user["sub"]
-        ).order_by(notification_entity.created_at.desc())
+        stmt = select(notification_entity).order_by(notification_entity.created_at.desc())
 
         return stmt
 
