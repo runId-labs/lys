@@ -7,6 +7,13 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-03-31
+
+### Added
+- Add `head_object` and `download_range` methods to `StorageBackend` abstract class and `S3StorageBackend` implementation (async + sync variants)
+- Add input validation on byte range parameters in `download_range`
+- Add unit tests for all new storage methods (16 tests)
+
 ## [0.6.5] - 2026-03-28
 
 ### Changed

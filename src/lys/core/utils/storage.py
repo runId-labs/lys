@@ -97,6 +97,34 @@ class StorageBackend(ABC):
         pass
 
     @abstractmethod
+    async def head_object(self, path: str) -> dict:
+        """
+        Get object metadata without downloading.
+
+        Args:
+            path: Path to the file in storage
+
+        Returns:
+            Dict with 'size' (int) and 'content_type' (str)
+        """
+        pass
+
+    @abstractmethod
+    async def download_range(self, path: str, start: int, end: int) -> bytes:
+        """
+        Download a byte range from an object.
+
+        Args:
+            path: Path to the file in storage
+            start: Start byte offset (inclusive, >= 0)
+            end: End byte offset (inclusive, >= start)
+
+        Returns:
+            File content as bytes for the requested range
+        """
+        pass
+
+    @abstractmethod
     async def exists(self, path: str) -> bool:
         """
         Check if a file exists in storage.
@@ -159,6 +187,16 @@ class StorageBackend(ABC):
     @abstractmethod
     def get_presigned_url_sync(self, path: str, expires_in: int = 300) -> str:
         """Synchronous version of get_presigned_url."""
+        pass
+
+    @abstractmethod
+    def head_object_sync(self, path: str) -> dict:
+        """Synchronous version of head_object."""
+        pass
+
+    @abstractmethod
+    def download_range_sync(self, path: str, start: int, end: int) -> bytes:
+        """Synchronous version of download_range."""
         pass
 
 
@@ -276,6 +314,36 @@ class S3StorageBackend(StorageBackend):
             logger.error(f"S3 presigned URL error: {ex}")
             raise StorageError(str(ex), "get_presigned_url", ex)
 
+    async def head_object(self, path: str) -> dict:
+        """Get object metadata (size, content_type, etc.)."""
+        try:
+            async with self._async_session.client("s3", **self._get_client_config()) as client:
+                response = await client.head_object(Bucket=self.bucket, Key=path)
+                return {
+                    "size": response.get("ContentLength", 0),
+                    "content_type": response.get("ContentType", ""),
+                }
+        except Exception as ex:
+            logger.error(f"S3 head_object error: {ex}")
+            raise StorageError(str(ex), "head_object", ex)
+
+    async def download_range(self, path: str, start: int, end: int) -> bytes:
+        """Download a byte range from an object."""
+        if start < 0 or end < start:
+            raise ValueError(f"Invalid byte range: start={start}, end={end}")
+        try:
+            async with self._async_session.client("s3", **self._get_client_config()) as client:
+                response = await client.get_object(
+                    Bucket=self.bucket,
+                    Key=path,
+                    Range=f"bytes={start}-{end}"
+                )
+                async with response["Body"] as stream:
+                    return await stream.read()
+        except Exception as ex:
+            logger.error(f"S3 download_range error: {ex}")
+            raise StorageError(str(ex), "download_range", ex)
+
     async def exists(self, path: str) -> bool:
         try:
             async with self._async_session.client("s3", **self._get_client_config()) as client:
@@ -380,6 +448,35 @@ class S3StorageBackend(StorageBackend):
         except Exception as ex:
             logger.error(f"S3 presigned_url_sync error: {ex}")
             raise StorageError(str(ex), "get_presigned_url_sync", ex)
+
+    def head_object_sync(self, path: str) -> dict:
+        """Get object metadata (size, content_type, etc.)."""
+        try:
+            client = self._sync_session.client("s3", **self._get_client_config())
+            response = client.head_object(Bucket=self.bucket, Key=path)
+            return {
+                "size": response.get("ContentLength", 0),
+                "content_type": response.get("ContentType", ""),
+            }
+        except Exception as ex:
+            logger.error(f"S3 head_object_sync error: {ex}")
+            raise StorageError(str(ex), "head_object_sync", ex)
+
+    def download_range_sync(self, path: str, start: int, end: int) -> bytes:
+        """Download a byte range from an object."""
+        if start < 0 or end < start:
+            raise ValueError(f"Invalid byte range: start={start}, end={end}")
+        try:
+            client = self._sync_session.client("s3", **self._get_client_config())
+            response = client.get_object(
+                Bucket=self.bucket,
+                Key=path,
+                Range=f"bytes={start}-{end}"
+            )
+            return response["Body"].read()
+        except Exception as ex:
+            logger.error(f"S3 download_range_sync error: {ex}")
+            raise StorageError(str(ex), "download_range_sync", ex)
 
 
 # Backend registry for future extensibility
