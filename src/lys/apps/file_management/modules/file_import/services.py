@@ -522,3 +522,4 @@ class AbstractImportService(abc.ABC):
                     report=report,
                 )
                 session.commit()
+                raise

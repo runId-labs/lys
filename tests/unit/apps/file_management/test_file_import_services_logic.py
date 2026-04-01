@@ -89,3 +89,56 @@ class TestUpdateProgress:
         fi.errors = {"old": "data"}
         FileImportService.update_progress(fi, "PROCESSING", report=None)
         assert fi.errors == {"old": "data"}
+
+
+class TestPerformImportReRaises:
+    """Tests that perform_import re-raises exceptions after updating status."""
+
+    def test_reraises_exception_on_import_failure(self):
+        """Test that perform_import re-raises after setting FAILED status."""
+        from lys.apps.file_management.modules.file_import.services import AbstractImportService
+        import pytest
+
+        mock_file_import = Mock()
+        mock_file_import.stored_file = Mock()
+        mock_file_import.config = None
+
+        mock_session = Mock()
+        mock_session.get.return_value = mock_file_import
+        mock_session.__enter__ = Mock(return_value=mock_session)
+        mock_session.__exit__ = Mock(return_value=False)
+
+        mock_file_import_service = Mock()
+        mock_file_import_service.entity_class = Mock
+
+        mock_stored_file_service = Mock()
+        mock_stored_file_service.download_sync.side_effect = RuntimeError("download failed")
+
+        mock_app_manager = Mock()
+        mock_app_manager.database.get_sync_session.return_value = mock_session
+        mock_app_manager.get_service.side_effect = lambda name: {
+            "file_import": mock_file_import_service,
+            "stored_file": mock_stored_file_service,
+        }[name]
+
+        # Create a concrete subclass for testing
+        class ConcreteImportService(AbstractImportService):
+            import_type = "TEST"
+            unique_column = "id"
+
+            def get_column_mapping(self):
+                return {}
+
+            def init_entity(self, unique_value, session):
+                return Mock()
+
+        service = ConcreteImportService(mock_app_manager)
+
+        with pytest.raises(RuntimeError, match="download failed"):
+            service.perform_import("test-id")
+
+        # Verify status was updated to FAILED before re-raising
+        mock_file_import_service.update_progress.assert_called_once()
+        call_args = mock_file_import_service.update_progress.call_args
+        assert call_args[0][1] == "FAILED"
+        mock_session.commit.assert_called_once()
