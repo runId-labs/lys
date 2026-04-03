@@ -341,6 +341,13 @@ class EntityNode(Generic[T], ServiceNodeMixin):
                     protected_stmt = await add_access_constraints(stmt, info.context, node_cls.entity_class,
                                                                   node_cls.app_manager)
 
+                    # Append id as tiebreaker to guarantee stable pagination order.
+                    # Without this, rows with identical values on the primary ORDER BY column
+                    # (e.g. same created_at, same name) can shift between pages across queries.
+                    entity_class = node_cls.entity_class
+                    if hasattr(entity_class, "id"):
+                        protected_stmt = protected_stmt.order_by(entity_class.id)
+
                     if slice_metadata.overfetch:
                         protected_stmt = protected_stmt.limit(slice_metadata.overfetch)
 

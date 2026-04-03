@@ -19,6 +19,9 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Fix `ActiveFileImportsCountNode` to use `ServiceNode[FileImportService]` instead of `ServiceNode[Service]`
 
 ### Fixed
+- Add `id` tiebreaker to Relay connection pagination to guarantee stable ordering across pages
+
+### Fixed
 - Re-raise exceptions in `AbstractImportService.perform_import` after setting FAILED status, so Celery correctly detects task failures and can retry
 
 ## [0.7.0] - 2026-03-31

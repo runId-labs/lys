@@ -745,6 +745,7 @@ class TestBuildListConnectionResolveConnection:
 
         mock_info = MagicMock()
         mock_stmt = MagicMock()
+        mock_stmt.order_by = MagicMock(return_value=mock_stmt)
         mock_stmt.limit = MagicMock(return_value=mock_stmt)
         mock_stmt.offset = MagicMock(return_value=mock_stmt)
 
@@ -817,6 +818,7 @@ class TestBuildListConnectionResolveConnection:
 
         mock_info = MagicMock()
         mock_stmt = MagicMock()
+        mock_stmt.order_by = MagicMock(return_value=mock_stmt)
         mock_stmt.limit = MagicMock(return_value=mock_stmt)
         mock_stmt.offset = MagicMock(return_value=mock_stmt)
 
