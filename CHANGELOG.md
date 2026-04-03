@@ -7,6 +7,10 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+- Rename `ai_conversations` table to `ai_conversation` and `ai_messages` table to `ai_message` to follow singular naming convention
+- Document singular table naming convention as mandatory in Architecture Rules
+
 ### Fixed
 - Re-raise exceptions in `AbstractImportService.perform_import` after setting FAILED status, so Celery correctly detects task failures and can retry
 

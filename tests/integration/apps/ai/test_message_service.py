@@ -21,8 +21,8 @@ class TestAIMessageService:
     @pytest.mark.asyncio
     async def test_create_user_message(self, ai_app_manager):
         """Test creating a user message."""
-        conversation_service = ai_app_manager.get_service("ai_conversations")
-        message_service = ai_app_manager.get_service("ai_messages")
+        conversation_service = ai_app_manager.get_service("ai_conversation")
+        message_service = ai_app_manager.get_service("ai_message")
         user_id = str(uuid4())
 
         async with ai_app_manager.database.get_session() as session:
@@ -43,8 +43,8 @@ class TestAIMessageService:
     @pytest.mark.asyncio
     async def test_create_assistant_message_with_metrics(self, ai_app_manager):
         """Test creating an assistant message with token metrics."""
-        conversation_service = ai_app_manager.get_service("ai_conversations")
-        message_service = ai_app_manager.get_service("ai_messages")
+        conversation_service = ai_app_manager.get_service("ai_conversation")
+        message_service = ai_app_manager.get_service("ai_message")
         user_id = str(uuid4())
 
         async with ai_app_manager.database.get_session() as session:
@@ -72,8 +72,8 @@ class TestAIMessageService:
     @pytest.mark.asyncio
     async def test_add_tool_result(self, ai_app_manager):
         """Test adding a tool result message."""
-        conversation_service = ai_app_manager.get_service("ai_conversations")
-        message_service = ai_app_manager.get_service("ai_messages")
+        conversation_service = ai_app_manager.get_service("ai_conversation")
+        message_service = ai_app_manager.get_service("ai_message")
         user_id = str(uuid4())
 
         async with ai_app_manager.database.get_session() as session:
@@ -93,8 +93,8 @@ class TestAIMessageService:
     @pytest.mark.asyncio
     async def test_messages_ordered_by_created_at(self, ai_app_manager):
         """Test that conversation messages are ordered by creation time."""
-        conversation_service = ai_app_manager.get_service("ai_conversations")
-        message_service = ai_app_manager.get_service("ai_messages")
+        conversation_service = ai_app_manager.get_service("ai_conversation")
+        message_service = ai_app_manager.get_service("ai_message")
         user_id = str(uuid4())
 
         async with ai_app_manager.database.get_session() as session:
@@ -120,7 +120,7 @@ class TestAIMessageService:
             )
 
         async with ai_app_manager.database.get_session() as session:
-            message_entity = ai_app_manager.get_entity("ai_messages")
+            message_entity = ai_app_manager.get_entity("ai_message")
             stmt = (
                 select(message_entity)
                 .where(message_entity.conversation_id == conversation.id)

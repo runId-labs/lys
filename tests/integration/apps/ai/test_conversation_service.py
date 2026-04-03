@@ -19,7 +19,7 @@ class TestAIConversationServiceGetOrCreate:
     @pytest.mark.asyncio
     async def test_get_or_create_new_conversation(self, ai_app_manager):
         """Test creating a new conversation when none exists."""
-        conversation_service = ai_app_manager.get_service("ai_conversations")
+        conversation_service = ai_app_manager.get_service("ai_conversation")
         user_id = str(uuid4())
 
         async with ai_app_manager.database.get_session() as session:
@@ -33,7 +33,7 @@ class TestAIConversationServiceGetOrCreate:
     @pytest.mark.asyncio
     async def test_get_or_create_existing_conversation(self, ai_app_manager):
         """Test retrieving an existing conversation by ID."""
-        conversation_service = ai_app_manager.get_service("ai_conversations")
+        conversation_service = ai_app_manager.get_service("ai_conversation")
         user_id = str(uuid4())
 
         async with ai_app_manager.database.get_session() as session:
@@ -48,7 +48,7 @@ class TestAIConversationServiceGetOrCreate:
     @pytest.mark.asyncio
     async def test_get_or_create_wrong_user_creates_new(self, ai_app_manager):
         """Test that accessing another user's conversation creates a new one."""
-        conversation_service = ai_app_manager.get_service("ai_conversations")
+        conversation_service = ai_app_manager.get_service("ai_conversation")
         user_a = str(uuid4())
         user_b = str(uuid4())
 
@@ -66,7 +66,7 @@ class TestAIConversationServiceGetOrCreate:
     @pytest.mark.asyncio
     async def test_get_or_create_nonexistent_id_creates_new(self, ai_app_manager):
         """Test that a nonexistent conversation_id creates a new conversation."""
-        conversation_service = ai_app_manager.get_service("ai_conversations")
+        conversation_service = ai_app_manager.get_service("ai_conversation")
         user_id = str(uuid4())
 
         async with ai_app_manager.database.get_session() as session:
@@ -84,7 +84,7 @@ class TestAIConversationServiceArchive:
     @pytest.mark.asyncio
     async def test_archive_conversation(self, ai_app_manager):
         """Test archiving a conversation sets archived_at."""
-        conversation_service = ai_app_manager.get_service("ai_conversations")
+        conversation_service = ai_app_manager.get_service("ai_conversation")
         user_id = str(uuid4())
 
         async with ai_app_manager.database.get_session() as session:
@@ -102,7 +102,7 @@ class TestAIConversationServiceArchive:
     @pytest.mark.asyncio
     async def test_archive_nonexistent_conversation(self, ai_app_manager):
         """Test archiving a nonexistent conversation returns False."""
-        conversation_service = ai_app_manager.get_service("ai_conversations")
+        conversation_service = ai_app_manager.get_service("ai_conversation")
 
         async with ai_app_manager.database.get_session() as session:
             result = await conversation_service.archive(str(uuid4()), session)
@@ -120,7 +120,7 @@ class TestAIConversationServiceBuildMessages:
     @pytest.mark.asyncio
     async def test_build_messages_empty_conversation(self, ai_app_manager):
         """Test _build_messages returns empty list for new conversation."""
-        conversation_service = ai_app_manager.get_service("ai_conversations")
+        conversation_service = ai_app_manager.get_service("ai_conversation")
         user_id = str(uuid4())
 
         async with ai_app_manager.database.get_session() as session:
@@ -131,8 +131,8 @@ class TestAIConversationServiceBuildMessages:
     @pytest.mark.asyncio
     async def test_build_messages_with_user_and_assistant(self, ai_app_manager):
         """Test _build_messages includes user and assistant messages in order."""
-        conversation_service = ai_app_manager.get_service("ai_conversations")
-        message_entity = ai_app_manager.get_entity("ai_messages")
+        conversation_service = ai_app_manager.get_service("ai_conversation")
+        message_entity = ai_app_manager.get_entity("ai_message")
         user_id = str(uuid4())
 
         async with ai_app_manager.database.get_session() as session:
@@ -166,8 +166,8 @@ class TestAIConversationServiceBuildMessages:
     @pytest.mark.asyncio
     async def test_build_messages_with_tool_calls(self, ai_app_manager):
         """Test _build_messages correctly handles tool call messages."""
-        conversation_service = ai_app_manager.get_service("ai_conversations")
-        message_entity = ai_app_manager.get_entity("ai_messages")
+        conversation_service = ai_app_manager.get_service("ai_conversation")
+        message_entity = ai_app_manager.get_entity("ai_message")
         user_id = str(uuid4())
 
         async with ai_app_manager.database.get_session() as session:

@@ -572,7 +572,7 @@ class TestPrepareChatContext:
         mock_app_manager = MagicMock()
         mock_app_manager.settings.get_plugin_config.return_value = {"chatbot": {}}
         mock_app_manager.get_service.side_effect = lambda name: {
-            "ai_messages": mock_message_service,
+            "ai_message": mock_message_service,
             "ai": mock_ai_service,
         }.get(name, MagicMock())
 

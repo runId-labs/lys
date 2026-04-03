@@ -55,7 +55,7 @@ class AIMutation(Mutation):
             )
 
         # Get conversation service
-        conversation_service = info.context.app_manager.get_service("ai_conversations")
+        conversation_service = info.context.app_manager.get_service("ai_conversation")
 
         # Initialize frontend_actions in context for collection during tool execution
         info.context.frontend_actions = []

@@ -24,7 +24,7 @@ class AIConversation(Entity):
     that determines which AI endpoint configuration is used.
     """
 
-    __tablename__ = "ai_conversations"
+    __tablename__ = "ai_conversation"
 
     user_id: Mapped[str] = mapped_column(
         Uuid(as_uuid=False),
@@ -39,9 +39,9 @@ class AIConversation(Entity):
     @declared_attr
     def messages(cls):
         return relationship(
-            "ai_messages",
+            "ai_message",
             back_populates="conversation",
-            order_by="ai_messages.created_at",
+            order_by="ai_message.created_at",
             cascade="all, delete-orphan",
             lazy="selectin",
         )
@@ -62,10 +62,10 @@ class AIMessage(Entity):
     includes metrics like token usage and latency.
     """
 
-    __tablename__ = "ai_messages"
+    __tablename__ = "ai_message"
 
     conversation_id: Mapped[str] = mapped_column(
-        ForeignKey("ai_conversations.id", ondelete="CASCADE"),
+        ForeignKey("ai_conversation.id", ondelete="CASCADE"),
         nullable=False,
         index=True,
     )
@@ -88,7 +88,7 @@ class AIMessage(Entity):
 
     @declared_attr
     def conversation(cls):
-        return relationship("ai_conversations", back_populates="messages")
+        return relationship("ai_conversation", back_populates="messages")
 
     @declared_attr
     def feedback(cls):
@@ -118,7 +118,7 @@ class AIMessageFeedback(Entity):
     __tablename__ = "ai_message_feedback"
 
     message_id: Mapped[str] = mapped_column(
-        ForeignKey("ai_messages.id", ondelete="CASCADE"),
+        ForeignKey("ai_message.id", ondelete="CASCADE"),
         nullable=False,
         unique=True,
         index=True,
@@ -134,7 +134,7 @@ class AIMessageFeedback(Entity):
 
     @declared_attr
     def message(cls):
-        return relationship("ai_messages", back_populates="feedback")
+        return relationship("ai_message", back_populates="feedback")
 
     def accessing_users(self) -> list[str]:
         return [self.user_id] if self.user_id else []

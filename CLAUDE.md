@@ -44,7 +44,7 @@ Names used with `app_manager.get_entity(name)` and `app_manager.get_service(name
 - **user_role**: `role`, `role_webservice`
 - **organization**: `client`, `client_user_role`
 - **file_management**: `stored_file_type`, `stored_file`, `file_import_type`, `file_import_status`, `file_import`
-- **ai**: `ai_conversations`, `ai_messages`, `ai_message_feedback`
+- **ai**: `ai_conversation`, `ai_message`, `ai_message_feedback`
 - **licensing**: `license_application`, `license_rule`, `license_plan`, `license_plan_version`, `license_plan_version_rule`, `subscription`
 
 ## Common Imports
@@ -82,6 +82,10 @@ from lys.apps.organization.consts import ORGANIZATION_ROLE_ACCESS_LEVEL
 ```
 
 ## Architecture Rules
+
+### Table Naming Convention — MANDATORY
+
+All `__tablename__` values MUST be **singular** (e.g., `user`, `ai_conversation`, `stored_file`). Never use plural forms (e.g., ~~`ai_conversations`~~, ~~`ai_messages`~~).
 
 ### Entity UUID Fields — MANDATORY
 

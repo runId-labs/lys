@@ -18,8 +18,8 @@ class TestAIMessageFeedbackService:
     @pytest.mark.asyncio
     async def test_rate_message_creates_feedback(self, ai_app_manager):
         """Test rating a message creates a new feedback entry."""
-        conversation_service = ai_app_manager.get_service("ai_conversations")
-        message_service = ai_app_manager.get_service("ai_messages")
+        conversation_service = ai_app_manager.get_service("ai_conversation")
+        message_service = ai_app_manager.get_service("ai_message")
         feedback_service = ai_app_manager.get_service("ai_message_feedback")
         user_id = str(uuid4())
 
@@ -46,8 +46,8 @@ class TestAIMessageFeedbackService:
     @pytest.mark.asyncio
     async def test_rate_message_updates_existing(self, ai_app_manager):
         """Test rating a message again updates the existing feedback."""
-        conversation_service = ai_app_manager.get_service("ai_conversations")
-        message_service = ai_app_manager.get_service("ai_messages")
+        conversation_service = ai_app_manager.get_service("ai_conversation")
+        message_service = ai_app_manager.get_service("ai_message")
         feedback_service = ai_app_manager.get_service("ai_message_feedback")
         user_id = str(uuid4())
 
@@ -82,8 +82,8 @@ class TestAIMessageFeedbackService:
     @pytest.mark.asyncio
     async def test_add_comment_creates_feedback(self, ai_app_manager):
         """Test adding a comment creates feedback if none exists."""
-        conversation_service = ai_app_manager.get_service("ai_conversations")
-        message_service = ai_app_manager.get_service("ai_messages")
+        conversation_service = ai_app_manager.get_service("ai_conversation")
+        message_service = ai_app_manager.get_service("ai_message")
         feedback_service = ai_app_manager.get_service("ai_message_feedback")
         user_id = str(uuid4())
 
@@ -109,8 +109,8 @@ class TestAIMessageFeedbackService:
     @pytest.mark.asyncio
     async def test_add_comment_to_existing_feedback(self, ai_app_manager):
         """Test adding a comment to an existing feedback with a rating."""
-        conversation_service = ai_app_manager.get_service("ai_conversations")
-        message_service = ai_app_manager.get_service("ai_messages")
+        conversation_service = ai_app_manager.get_service("ai_conversation")
+        message_service = ai_app_manager.get_service("ai_message")
         feedback_service = ai_app_manager.get_service("ai_message_feedback")
         user_id = str(uuid4())
 

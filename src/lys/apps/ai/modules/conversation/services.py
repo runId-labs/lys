@@ -186,7 +186,7 @@ class AIConversationService(EntityService[AIConversation]):
         """
         conversation = await cls.get_or_create(user_id, session, conversation_id)
 
-        message_service = cls.app_manager.get_service("ai_messages")
+        message_service = cls.app_manager.get_service("ai_message")
         ai_service = cls.app_manager.get_service("ai")
 
         # Save user message
@@ -228,7 +228,7 @@ class AIConversationService(EntityService[AIConversation]):
         session: AsyncSession,
     ) -> List[Dict[str, Any]]:
         """Build messages list from conversation history."""
-        message_entity = cls.app_manager.get_entity("ai_messages")
+        message_entity = cls.app_manager.get_entity("ai_message")
         result = await session.execute(
             select(message_entity)
             .where(message_entity.conversation_id == conversation.id)
@@ -569,7 +569,7 @@ class AIConversationService(EntityService[AIConversation]):
         executor = await cls._get_tool_executor(tools, info, accessible_routes, page_context)
 
         conversation = await cls.get_or_create(user_id, session, conversation_id)
-        message_service = app_manager.get_service("ai_messages")
+        message_service = app_manager.get_service("ai_message")
         ai_service = app_manager.get_service("ai")
 
         # Extract just the definitions for the LLM (tools contain operation_type metadata)
