@@ -7,9 +7,16 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+- Add `StoredFileNode` GraphQL node for stored file entity
+- Add `FileImportNode`, `FileImportTypeNode`, `FileImportStatusNode`, and `ActiveFileImportsCountNode` GraphQL nodes for file import module
+- Add `FileImportQuery` with `all_file_imports` connection and `active_file_imports_count` field
+- Add unit tests for file import nodes and webservices
+
 ### Changed
 - Rename `ai_conversations` table to `ai_conversation` and `ai_messages` table to `ai_message` to follow singular naming convention
 - Document singular table naming convention as mandatory in Architecture Rules
+- Fix `ActiveFileImportsCountNode` to use `ServiceNode[FileImportService]` instead of `ServiceNode[Service]`
 
 ### Fixed
 - Re-raise exceptions in `AbstractImportService.perform_import` after setting FAILED status, so Celery correctly detects task failures and can retry
