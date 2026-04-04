@@ -82,7 +82,8 @@ class AuthWebserviceService(WebserviceService):
         """
         # Build subquery for distinct IDs only (avoids DISTINCT on JSON columns
         # which PostgreSQL can't compare for equality)
-        id_subquery = select(cls.entity_class.id)
+    # Filter disabled webservices globally — applies to all access levels
+        id_subquery = select(cls.entity_class.id).where(cls.entity_class.enabled.is_(True))
 
         id_subquery, where = await cls._accessible_webservices_or_where(id_subquery, user)
 

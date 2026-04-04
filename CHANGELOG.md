@@ -20,9 +20,8 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 - Add `id` tiebreaker to Relay connection pagination to guarantee stable ordering across pages
-
-### Fixed
 - Re-raise exceptions in `AbstractImportService.perform_import` after setting FAILED status, so Celery correctly detects task failures and can retry
+- Filter disabled webservices from `accessible_webservices` query, preventing `enabled=False` webservices from appearing in user-accessible lists
 
 ## [0.7.0] - 2026-03-31
 
