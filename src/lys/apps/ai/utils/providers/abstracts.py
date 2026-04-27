@@ -25,6 +25,7 @@ class AIResponse:
     usage: Optional[Dict[str, int]] = None  # tokens used
     model: Optional[str] = None
     provider: Optional[str] = None
+    finish_reason: Optional[str] = None  # "stop" | "length" | "tool_calls" | ...
 
 
 @dataclass

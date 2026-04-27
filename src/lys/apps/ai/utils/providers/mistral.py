@@ -273,10 +273,12 @@ class MistralProvider(AIProvider):
                 )
 
             ai_response = self._parse_response(response)
+            self._warn_if_non_stop_finish(ai_response, schema)
 
             try:
                 return schema.model_validate_json(ai_response.content)
             except Exception as e:
+                self._log_validation_failure(ai_response, schema, e)
                 raise AIValidationError(
                     f"Failed to validate response against schema {schema.__name__}: {e}"
                 )
@@ -322,11 +324,12 @@ class MistralProvider(AIProvider):
                 )
 
             ai_response = self._parse_response(response)
+            self._warn_if_non_stop_finish(ai_response, schema)
 
             try:
                 return schema.model_validate_json(ai_response.content)
             except Exception as e:
-                logger.warning(f"Mistral response validation failed for {schema.__name__}: {e}")
+                self._log_validation_failure(ai_response, schema, e)
                 raise AIValidationError(
                     f"Failed to validate response against schema {schema.__name__}: {e}"
                 )
@@ -335,6 +338,40 @@ class MistralProvider(AIProvider):
             raise AITimeoutError(f"Request timed out after {config.timeout}s")
 
     # ========== Helpers ==========
+
+    @staticmethod
+    def _warn_if_non_stop_finish(ai_response: AIResponse, schema: Type[T]) -> None:
+        """Log a warning when ``finish_reason`` indicates the response was not naturally stopped.
+
+        ``stop`` means the model finished cleanly. Any other value (``length``, ``content_filter``,
+        ``model_length``, ...) signals an unexpected interruption that may yield truncated or
+        unsafe content even when Pydantic validation incidentally succeeds.
+        """
+        finish_reason = ai_response.finish_reason
+        if not finish_reason or finish_reason == "stop":
+            return
+        completion_tokens = (ai_response.usage or {}).get("completion_tokens")
+        logger.warning(
+            "Mistral non-stop finish_reason for %s: finish_reason=%s, "
+            "completion_tokens=%s, content_chars=%s",
+            schema.__name__, finish_reason, completion_tokens, len(ai_response.content),
+        )
+
+    @staticmethod
+    def _log_validation_failure(ai_response: AIResponse, schema: Type[T], error: Exception) -> None:
+        """Log a warning when Pydantic validation fails on a Mistral structured response.
+
+        Includes ``finish_reason``, ``completion_tokens`` and content length to help triage
+        between truncation (``finish_reason=length``), schema mismatch (``finish_reason=stop``)
+        and other interruptions. Caller is expected to raise ``AIValidationError`` afterward.
+        """
+        completion_tokens = (ai_response.usage or {}).get("completion_tokens")
+        logger.warning(
+            "Mistral response validation failed for %s: %s "
+            "(finish_reason=%s, completion_tokens=%s, content_chars=%s)",
+            schema.__name__, error, ai_response.finish_reason,
+            completion_tokens, len(ai_response.content),
+        )
 
     @staticmethod
     def _build_json_schema_response_format(schema: Type[T]) -> Dict[str, Any]:
@@ -392,6 +429,7 @@ class MistralProvider(AIProvider):
             usage=data.get("usage"),
             model=data.get("model"),
             provider=self.name,
+            finish_reason=choice.get("finish_reason"),
         )
 
     @classmethod

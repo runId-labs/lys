@@ -7,6 +7,12 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.9.1] - 2026-04-27
+
+### Changed
+- Expose `finish_reason` field on `AIResponse` and propagate it from `MistralProvider._parse_response` (covers `chat`, `chat_sync`, `chat_json`, `chat_json_sync`)
+- Add Mistral structured-output observability: warn when `finish_reason` is non-stop (e.g. `length`, `content_filter`) and log Pydantic validation failures with finish_reason / completion_tokens / content length context
+
 ## [0.9.0] - 2026-04-27
 
 ### Changed

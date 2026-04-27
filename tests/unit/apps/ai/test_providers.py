@@ -4,6 +4,8 @@ Unit tests for AI providers.
 Tests provider error handling with mocked HTTP responses.
 """
 
+import logging
+
 import pytest
 from unittest.mock import patch, MagicMock, AsyncMock
 
@@ -11,6 +13,7 @@ import httpx
 from pydantic import BaseModel
 
 from lys.apps.ai.utils.providers import MistralProvider
+from lys.apps.ai.utils.providers.abstracts import AIResponse
 from lys.apps.ai.utils.providers.config import AIEndpointConfig
 from lys.apps.ai.utils.providers.exceptions import (
     AIAuthError,
@@ -587,6 +590,204 @@ class TestMistralProviderBuildJsonSchemaResponseFormat:
         assert result["json_schema"]["name"] == "_SampleSchema"
         assert result["json_schema"]["strict"] is True
         assert result["json_schema"]["schema"] == _SampleSchema.model_json_schema()
+
+
+class TestMistralProviderParseResponseFinishReason:
+    """Tests that MistralProvider._parse_response propagates finish_reason."""
+
+    @pytest.fixture
+    def provider(self):
+        return MistralProvider()
+
+    @staticmethod
+    def _build_response(finish_reason):
+        data = {
+            "choices": [{
+                "message": {"content": "ok", "tool_calls": []},
+                "finish_reason": finish_reason,
+            }],
+            "usage": {"prompt_tokens": 5, "completion_tokens": 7},
+            "model": "mistral-large-latest",
+        }
+        response = MagicMock(spec=httpx.Response)
+        response.status_code = 200
+        response.json.return_value = data
+        return response
+
+    def test_finish_reason_stop_is_propagated(self, provider):
+        result = provider._parse_response(self._build_response("stop"))
+        assert result.finish_reason == "stop"
+
+    def test_finish_reason_length_is_propagated(self, provider):
+        result = provider._parse_response(self._build_response("length"))
+        assert result.finish_reason == "length"
+
+    def test_missing_finish_reason_is_none(self, provider):
+        data = {
+            "choices": [{"message": {"content": "ok", "tool_calls": []}}],
+            "usage": {"prompt_tokens": 5, "completion_tokens": 7},
+            "model": "mistral-large-latest",
+        }
+        response = MagicMock(spec=httpx.Response)
+        response.status_code = 200
+        response.json.return_value = data
+
+        result = provider._parse_response(response)
+        assert result.finish_reason is None
+
+
+class TestMistralProviderWarnIfNonStopFinish:
+    """Tests for the static helper MistralProvider._warn_if_non_stop_finish."""
+
+    @staticmethod
+    def _ai_response(finish_reason, completion_tokens=12, content="abcdef"):
+        return AIResponse(
+            content=content,
+            tool_calls=[],
+            usage={"prompt_tokens": 5, "completion_tokens": completion_tokens},
+            model="mistral-large-latest",
+            provider="mistral",
+            finish_reason=finish_reason,
+        )
+
+    def test_silent_when_finish_reason_is_stop(self, caplog):
+        with caplog.at_level(logging.WARNING, logger="lys.apps.ai.utils.providers.mistral"):
+            MistralProvider._warn_if_non_stop_finish(self._ai_response("stop"), _SampleSchema)
+        assert caplog.records == []
+
+    def test_silent_when_finish_reason_is_none(self, caplog):
+        with caplog.at_level(logging.WARNING, logger="lys.apps.ai.utils.providers.mistral"):
+            MistralProvider._warn_if_non_stop_finish(self._ai_response(None), _SampleSchema)
+        assert caplog.records == []
+
+    def test_warns_when_finish_reason_is_length(self, caplog):
+        with caplog.at_level(logging.WARNING, logger="lys.apps.ai.utils.providers.mistral"):
+            MistralProvider._warn_if_non_stop_finish(self._ai_response("length"), _SampleSchema)
+
+        assert len(caplog.records) == 1
+        message = caplog.records[0].getMessage()
+        assert "_SampleSchema" in message
+        assert "length" in message
+        assert "completion_tokens=12" in message
+        assert "content_chars=6" in message
+
+    def test_warns_when_finish_reason_is_content_filter(self, caplog):
+        with caplog.at_level(logging.WARNING, logger="lys.apps.ai.utils.providers.mistral"):
+            MistralProvider._warn_if_non_stop_finish(
+                self._ai_response("content_filter", completion_tokens=None), _SampleSchema
+            )
+
+        assert len(caplog.records) == 1
+        message = caplog.records[0].getMessage()
+        assert "content_filter" in message
+        assert "completion_tokens=None" in message
+
+    def test_handles_missing_usage_dict(self, caplog):
+        response = AIResponse(
+            content="x",
+            tool_calls=[],
+            usage=None,
+            model="m",
+            provider="mistral",
+            finish_reason="length",
+        )
+        with caplog.at_level(logging.WARNING, logger="lys.apps.ai.utils.providers.mistral"):
+            MistralProvider._warn_if_non_stop_finish(response, _SampleSchema)
+
+        assert len(caplog.records) == 1
+        assert "completion_tokens=None" in caplog.records[0].getMessage()
+
+
+class TestMistralProviderLogValidationFailure:
+    """Tests for the static helper MistralProvider._log_validation_failure."""
+
+    def test_logs_warning_with_full_context(self, caplog):
+        ai_response = AIResponse(
+            content='{"name": "Alice"}',
+            tool_calls=[],
+            usage={"prompt_tokens": 5, "completion_tokens": 4},
+            model="mistral-large-latest",
+            provider="mistral",
+            finish_reason="stop",
+        )
+        error = ValueError("missing field 'age'")
+
+        with caplog.at_level(logging.WARNING, logger="lys.apps.ai.utils.providers.mistral"):
+            MistralProvider._log_validation_failure(ai_response, _SampleSchema, error)
+
+        assert len(caplog.records) == 1
+        message = caplog.records[0].getMessage()
+        assert "_SampleSchema" in message
+        assert "missing field 'age'" in message
+        assert "finish_reason=stop" in message
+        assert "completion_tokens=4" in message
+        assert f"content_chars={len(ai_response.content)}" in message
+
+    def test_invoked_by_chat_json_on_validation_error(self, caplog):
+        provider = MistralProvider()
+        config = AIEndpointConfig(
+            provider="mistral", model="mistral-large-latest", api_key="k", timeout=30
+        )
+
+        data = {
+            "choices": [{
+                "message": {"content": '{"name": "Alice"}', "tool_calls": []},
+                "finish_reason": "stop",
+            }],
+            "usage": {"prompt_tokens": 5, "completion_tokens": 4},
+            "model": "mistral-large-latest",
+        }
+        response = MagicMock(spec=httpx.Response)
+        response.status_code = 200
+        response.json.return_value = data
+
+        with patch("httpx.Client") as mock_client:
+            mock_instance = MagicMock()
+            mock_instance.post.return_value = response
+            mock_client.return_value.__enter__.return_value = mock_instance
+
+            with caplog.at_level(logging.WARNING, logger="lys.apps.ai.utils.providers.mistral"):
+                with pytest.raises(AIValidationError):
+                    provider.chat_json_sync([{"role": "user", "content": "x"}], config, _SampleSchema)
+
+        validation_logs = [r for r in caplog.records if "validation failed" in r.getMessage()]
+        assert len(validation_logs) == 1
+        assert "finish_reason=stop" in validation_logs[0].getMessage()
+
+    @pytest.mark.asyncio
+    async def test_chat_json_warns_on_non_stop_finish_then_validates(self, caplog):
+        """When finish_reason='length' and JSON happens to be valid, warn but don't raise."""
+        provider = MistralProvider()
+        config = AIEndpointConfig(
+            provider="mistral", model="mistral-large-latest", api_key="k", timeout=30
+        )
+
+        data = {
+            "choices": [{
+                "message": {"content": '{"name": "Alice", "age": 30}', "tool_calls": []},
+                "finish_reason": "length",
+            }],
+            "usage": {"prompt_tokens": 5, "completion_tokens": 99},
+            "model": "mistral-large-latest",
+        }
+        response = MagicMock(spec=httpx.Response)
+        response.status_code = 200
+        response.json.return_value = data
+
+        with patch("httpx.AsyncClient") as mock_client:
+            mock_instance = AsyncMock()
+            mock_instance.post.return_value = response
+            mock_client.return_value.__aenter__.return_value = mock_instance
+
+            with caplog.at_level(logging.WARNING, logger="lys.apps.ai.utils.providers.mistral"):
+                result = await provider.chat_json(
+                    [{"role": "user", "content": "x"}], config, _SampleSchema
+                )
+
+        assert isinstance(result, _SampleSchema)
+        non_stop_logs = [r for r in caplog.records if "non-stop finish_reason" in r.getMessage()]
+        assert len(non_stop_logs) == 1
+        assert "length" in non_stop_logs[0].getMessage()
 
 
 class TestMistralProviderChatJson:
