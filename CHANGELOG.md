@@ -7,6 +7,23 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-04-27
+
+### Changed
+- Switch `MistralProvider.chat_json` / `chat_json_sync` to Mistral's native `response_format: json_schema` (strict) mode; remove obsolete schema-injection helper `AIProvider._inject_schema_in_messages`
+
+## [0.8.2] - 2026-04-04
+
+### Fixed
+- Filter disabled webservices from `accessible_webservices` query, preventing `enabled=False` webservices from appearing in user-accessible lists
+
+## [0.8.1] - 2026-04-03
+
+### Fixed
+- Add `id` tiebreaker to Relay connection pagination to guarantee stable ordering across pages
+
+## [0.8.0] - 2026-04-03
+
 ### Added
 - Add `StoredFileNode` GraphQL node for stored file entity
 - Add `FileImportNode`, `FileImportTypeNode`, `FileImportStatusNode`, and `ActiveFileImportsCountNode` GraphQL nodes for file import module
@@ -14,14 +31,18 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Add unit tests for file import nodes and webservices
 
 ### Changed
-- Rename `ai_conversations` table to `ai_conversation` and `ai_messages` table to `ai_message` to follow singular naming convention
-- Document singular table naming convention as mandatory in Architecture Rules
 - Fix `ActiveFileImportsCountNode` to use `ServiceNode[FileImportService]` instead of `ServiceNode[Service]`
 
+## [0.7.2] - 2026-04-03
+
+### Changed
+- Rename `ai_conversations` table to `ai_conversation` and `ai_messages` table to `ai_message` to follow singular naming convention
+- Document singular table naming convention as mandatory in Architecture Rules
+
+## [0.7.1] - 2026-04-01
+
 ### Fixed
-- Add `id` tiebreaker to Relay connection pagination to guarantee stable ordering across pages
 - Re-raise exceptions in `AbstractImportService.perform_import` after setting FAILED status, so Celery correctly detects task failures and can retry
-- Filter disabled webservices from `accessible_webservices` query, preventing `enabled=False` webservices from appearing in user-accessible lists
 
 ## [0.7.0] - 2026-03-31
 

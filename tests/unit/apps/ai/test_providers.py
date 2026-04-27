@@ -8,6 +8,7 @@ import pytest
 from unittest.mock import patch, MagicMock, AsyncMock
 
 import httpx
+from pydantic import BaseModel
 
 from lys.apps.ai.utils.providers import MistralProvider
 from lys.apps.ai.utils.providers.config import AIEndpointConfig
@@ -17,6 +18,7 @@ from lys.apps.ai.utils.providers.exceptions import (
     AIModelNotFoundError,
     AIProviderError,
     AITimeoutError,
+    AIValidationError,
 )
 from lys.apps.ai.modules.core.services import AIService
 
@@ -563,6 +565,203 @@ class TestMistralProviderChatStream:
             assert payload["stream"] is True
             assert payload["tools"] == tools
             assert payload["tool_choice"] == "auto"
+
+
+# ========== MistralProvider.chat_json / chat_json_sync ==========
+
+
+class _SampleSchema(BaseModel):
+    """Minimal Pydantic schema used to drive chat_json tests."""
+
+    name: str
+    age: int
+
+
+class TestMistralProviderBuildJsonSchemaResponseFormat:
+    """Tests for the static helper MistralProvider._build_json_schema_response_format."""
+
+    def test_returns_native_json_schema_payload(self):
+        result = MistralProvider._build_json_schema_response_format(_SampleSchema)
+
+        assert result["type"] == "json_schema"
+        assert result["json_schema"]["name"] == "_SampleSchema"
+        assert result["json_schema"]["strict"] is True
+        assert result["json_schema"]["schema"] == _SampleSchema.model_json_schema()
+
+
+class TestMistralProviderChatJson:
+    """Tests for MistralProvider.chat_json (async) and chat_json_sync."""
+
+    @pytest.fixture
+    def provider(self):
+        return MistralProvider()
+
+    @pytest.fixture
+    def config(self):
+        return AIEndpointConfig(
+            provider="mistral",
+            model="mistral-large-latest",
+            api_key="test-api-key",
+            timeout=30,
+        )
+
+    @pytest.fixture
+    def messages(self):
+        return [{"role": "user", "content": "Give me a person"}]
+
+    @staticmethod
+    def _mock_json_response(status_code: int, content: str = ""):
+        """Create a mock httpx.Response for the /chat/completions endpoint."""
+        response = MagicMock(spec=httpx.Response)
+        response.status_code = status_code
+        if status_code == 200:
+            response.json.return_value = {
+                "choices": [{
+                    "message": {"content": content, "tool_calls": []},
+                }],
+                "usage": {"prompt_tokens": 10, "completion_tokens": 20},
+                "model": "mistral-large-latest",
+            }
+        else:
+            response.text = f"Error {status_code}"
+        return response
+
+    # ---------- async ----------
+
+    @pytest.mark.asyncio
+    async def test_chat_json_success_returns_validated_model(self, provider, config, messages):
+        mock_response = self._mock_json_response(200, content='{"name": "Alice", "age": 30}')
+
+        with patch("httpx.AsyncClient") as mock_client:
+            mock_instance = AsyncMock()
+            mock_instance.post.return_value = mock_response
+            mock_client.return_value.__aenter__.return_value = mock_instance
+
+            result = await provider.chat_json(messages, config, _SampleSchema)
+
+            assert isinstance(result, _SampleSchema)
+            assert result.name == "Alice"
+            assert result.age == 30
+
+    @pytest.mark.asyncio
+    async def test_chat_json_payload_uses_native_json_schema(self, provider, config, messages):
+        """The request must use response_format json_schema and forward messages as-is."""
+        mock_response = self._mock_json_response(200, content='{"name": "Bob", "age": 5}')
+
+        with patch("httpx.AsyncClient") as mock_client:
+            mock_instance = AsyncMock()
+            mock_instance.post.return_value = mock_response
+            mock_client.return_value.__aenter__.return_value = mock_instance
+
+            await provider.chat_json(messages, config, _SampleSchema)
+
+            payload = mock_instance.post.call_args[1]["json"]
+            assert payload["model"] == "mistral-large-latest"
+            # No schema injection — messages forwarded unchanged
+            assert payload["messages"] == messages
+            assert payload["response_format"]["type"] == "json_schema"
+            assert payload["response_format"]["json_schema"]["name"] == "_SampleSchema"
+            assert payload["response_format"]["json_schema"]["strict"] is True
+            assert payload["response_format"]["json_schema"]["schema"] == _SampleSchema.model_json_schema()
+
+    @pytest.mark.asyncio
+    async def test_chat_json_invalid_response_raises_validation_error(self, provider, config, messages):
+        mock_response = self._mock_json_response(200, content='{"name": "Alice"}')  # missing age
+
+        with patch("httpx.AsyncClient") as mock_client:
+            mock_instance = AsyncMock()
+            mock_instance.post.return_value = mock_response
+            mock_client.return_value.__aenter__.return_value = mock_instance
+
+            with pytest.raises(AIValidationError) as exc_info:
+                await provider.chat_json(messages, config, _SampleSchema)
+
+            assert "_SampleSchema" in str(exc_info.value)
+
+    @pytest.mark.asyncio
+    async def test_chat_json_auth_error(self, provider, config, messages):
+        mock_response = self._mock_json_response(401)
+
+        with patch("httpx.AsyncClient") as mock_client:
+            mock_instance = AsyncMock()
+            mock_instance.post.return_value = mock_response
+            mock_client.return_value.__aenter__.return_value = mock_instance
+
+            with pytest.raises(AIAuthError):
+                await provider.chat_json(messages, config, _SampleSchema)
+
+    @pytest.mark.asyncio
+    async def test_chat_json_timeout(self, provider, config, messages):
+        with patch("httpx.AsyncClient") as mock_client:
+            mock_instance = AsyncMock()
+            mock_instance.post.side_effect = httpx.TimeoutException("Timeout")
+            mock_client.return_value.__aenter__.return_value = mock_instance
+
+            with pytest.raises(AITimeoutError):
+                await provider.chat_json(messages, config, _SampleSchema)
+
+    # ---------- sync ----------
+
+    def test_chat_json_sync_success_returns_validated_model(self, provider, config, messages):
+        mock_response = self._mock_json_response(200, content='{"name": "Carol", "age": 42}')
+
+        with patch("httpx.Client") as mock_client:
+            mock_instance = MagicMock()
+            mock_instance.post.return_value = mock_response
+            mock_client.return_value.__enter__.return_value = mock_instance
+
+            result = provider.chat_json_sync(messages, config, _SampleSchema)
+
+            assert isinstance(result, _SampleSchema)
+            assert result.name == "Carol"
+            assert result.age == 42
+
+    def test_chat_json_sync_payload_uses_native_json_schema(self, provider, config, messages):
+        mock_response = self._mock_json_response(200, content='{"name": "Dan", "age": 7}')
+
+        with patch("httpx.Client") as mock_client:
+            mock_instance = MagicMock()
+            mock_instance.post.return_value = mock_response
+            mock_client.return_value.__enter__.return_value = mock_instance
+
+            provider.chat_json_sync(messages, config, _SampleSchema)
+
+            payload = mock_instance.post.call_args[1]["json"]
+            assert payload["messages"] == messages
+            assert payload["response_format"]["type"] == "json_schema"
+            assert payload["response_format"]["json_schema"]["strict"] is True
+            assert payload["response_format"]["json_schema"]["schema"] == _SampleSchema.model_json_schema()
+
+    def test_chat_json_sync_invalid_response_raises_validation_error(self, provider, config, messages):
+        mock_response = self._mock_json_response(200, content='{"name": "Dan"}')  # missing age
+
+        with patch("httpx.Client") as mock_client:
+            mock_instance = MagicMock()
+            mock_instance.post.return_value = mock_response
+            mock_client.return_value.__enter__.return_value = mock_instance
+
+            with pytest.raises(AIValidationError):
+                provider.chat_json_sync(messages, config, _SampleSchema)
+
+    def test_chat_json_sync_auth_error(self, provider, config, messages):
+        mock_response = self._mock_json_response(401)
+
+        with patch("httpx.Client") as mock_client:
+            mock_instance = MagicMock()
+            mock_instance.post.return_value = mock_response
+            mock_client.return_value.__enter__.return_value = mock_instance
+
+            with pytest.raises(AIAuthError):
+                provider.chat_json_sync(messages, config, _SampleSchema)
+
+    def test_chat_json_sync_timeout(self, provider, config, messages):
+        with patch("httpx.Client") as mock_client:
+            mock_instance = MagicMock()
+            mock_instance.post.side_effect = httpx.TimeoutException("Timeout")
+            mock_client.return_value.__enter__.return_value = mock_instance
+
+            with pytest.raises(AITimeoutError):
+                provider.chat_json_sync(messages, config, _SampleSchema)
 
 
 # ========== MistralProvider._handle_error_status ==========

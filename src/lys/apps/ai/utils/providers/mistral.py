@@ -227,13 +227,25 @@ class MistralProvider(AIProvider):
         config: AIEndpointConfig,
         schema: Type[T],
     ) -> T:
-        """
-        Mistral: Uses json_object + schema in prompt.
-        No native JSON schema support, so we inject schema description.
-        """
-        # Inject schema into messages
-        enriched_messages = self._inject_schema_in_messages(messages, schema)
+        """Send a chat request expecting a JSON response constrained by a Pydantic schema.
 
+        Uses Mistral's native ``response_format: {"type": "json_schema", ...}`` mode. The schema
+        constraint is applied directly by the decoder rather than by injecting schema text into
+        the system prompt.
+
+        Args:
+            messages: Conversation history forwarded to Mistral as-is.
+            config: Endpoint configuration (model, api_key, timeout, options).
+            schema: Pydantic model class describing the expected response structure.
+
+        Returns:
+            A validated instance of ``schema``.
+
+        Raises:
+            AIAuthError, AIRateLimitError, AIModelNotFoundError, AIProviderError: Provider errors.
+            AITimeoutError: Request exceeded ``config.timeout``.
+            AIValidationError: Response could not be validated against ``schema``.
+        """
         base_url = self.get_base_url(config)
 
         # Filter options to only include valid Mistral API parameters
@@ -241,8 +253,8 @@ class MistralProvider(AIProvider):
 
         payload = {
             "model": config.model,
-            "messages": enriched_messages,
-            "response_format": {"type": "json_object"},
+            "messages": messages,
+            "response_format": self._build_json_schema_response_format(schema),
             **filtered_options,
         }
 
@@ -278,9 +290,11 @@ class MistralProvider(AIProvider):
         config: AIEndpointConfig,
         schema: Type[T],
     ) -> T:
-        """Synchronous version."""
-        enriched_messages = self._inject_schema_in_messages(messages, schema)
+        """Synchronous version of :meth:`chat_json` for Celery workers.
 
+        Uses Mistral's native ``response_format: {"type": "json_schema", ...}`` mode.
+        See :meth:`chat_json` for details on parameters, return value, and exceptions.
+        """
         base_url = self.get_base_url(config)
 
         # Filter options to only include valid Mistral API parameters
@@ -288,8 +302,8 @@ class MistralProvider(AIProvider):
 
         payload = {
             "model": config.model,
-            "messages": enriched_messages,
-            "response_format": {"type": "json_object"},
+            "messages": messages,
+            "response_format": self._build_json_schema_response_format(schema),
             **filtered_options,
         }
 
@@ -321,6 +335,28 @@ class MistralProvider(AIProvider):
             raise AITimeoutError(f"Request timed out after {config.timeout}s")
 
     # ========== Helpers ==========
+
+    @staticmethod
+    def _build_json_schema_response_format(schema: Type[T]) -> Dict[str, Any]:
+        """Build the ``response_format`` payload for Mistral's native ``json_schema`` mode.
+
+        The Pydantic-generated schema is sent as-is. ``strict`` is enabled so that the decoder
+        enforces the schema constraint deterministically.
+
+        Args:
+            schema: Pydantic model class describing the expected response structure.
+
+        Returns:
+            A dict suitable for the Mistral chat completions ``response_format`` field.
+        """
+        return {
+            "type": "json_schema",
+            "json_schema": {
+                "name": schema.__name__,
+                "schema": schema.model_json_schema(),
+                "strict": True,
+            },
+        }
 
     def _handle_error_status(self, response: httpx.Response) -> None:
         """Check response status and raise appropriate errors."""

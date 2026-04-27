@@ -5,7 +5,6 @@ This module defines the abstract interface for AI providers,
 allowing consistent usage across different LLM providers.
 """
 
-import json
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import AsyncGenerator, List, Dict, Any, Optional, TypeVar, Type
@@ -50,7 +49,7 @@ class AIProvider(ABC):
 
     Each provider handles JSON responses according to its API:
     - OpenAI: response_format with json_schema (strict)
-    - Mistral: response_format with json_object + schema in prompt
+    - Mistral: response_format with json_schema (strict)
     - Anthropic: tool_use with forced tool choice
     """
 
@@ -110,7 +109,7 @@ class AIProvider(ABC):
 
         Each provider implements this differently:
         - OpenAI: Uses response_format with json_schema (strict)
-        - Mistral: Uses response_format json_object + schema in prompt
+        - Mistral: Uses response_format with json_schema (strict)
         - Anthropic: Uses tool_use with forced tool choice
 
         Args:
@@ -173,33 +172,6 @@ class AIProvider(ABC):
     def get_available_models(cls) -> List[str]:
         """Return list of known models for this provider."""
         return []
-
-    def _inject_schema_in_messages(
-        self,
-        messages: List[Dict[str, Any]],
-        schema: Type[BaseModel],
-    ) -> List[Dict[str, Any]]:
-        """
-        Inject JSON schema description into system message.
-        Used by providers that don't support native JSON schema (Mistral).
-        """
-        schema_prompt = f"""Respond with a JSON object matching this schema:
-```json
-{json.dumps(schema.model_json_schema(), indent=2)}
-```
-Return ONLY valid JSON, no additional text."""
-
-        messages = messages.copy()
-
-        if messages and messages[0]["role"] == "system":
-            messages[0] = {
-                "role": "system",
-                "content": f"{messages[0]['content']}\n\n{schema_prompt}"
-            }
-        else:
-            messages.insert(0, {"role": "system", "content": schema_prompt})
-
-        return messages
 
     def _schema_to_tool(self, schema: Type[BaseModel]) -> Dict[str, Any]:
         """
