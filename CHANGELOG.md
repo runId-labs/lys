@@ -7,6 +7,20 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-05-05
+
+### Added
+- Add `NotificationSeverity` parametric entity (`INFO` / `SUCCESS` / `WARNING` / `ERROR`) with fixtures, GraphQL node and `allNotificationSeverities` query
+- Add `severity_id` FK on `NotificationType` (server_default `INFO`, indexed) and expose `severity` resolver on `NotificationTypeNode`
+- Add `is_read` and `severity_id` filters on the `allNotifications` query
+
+### Changed
+- BREAKING: `NotificationBatchNode.type_id` scalar replaced by a `type` resolver returning `NotificationTypeNode` (read severity via `type.severity` and id via `type.id`)
+- Set licensing notification fixtures' severity (`LICENSE_GRANTED`/`SUBSCRIPTION_PAYMENT_SUCCESS` → SUCCESS, `LICENSE_REVOKED`/`SUBSCRIPTION_CANCELED` → WARNING, `SUBSCRIPTION_PAYMENT_FAILED` → ERROR)
+
+### Fixed
+- Relay connection pagination: truncate Strawberry overfetch when its size exceeds `expected + 1` (observed overfetch=21 for expected=10) instead of only handling the `+1` case
+
 ## [0.9.1] - 2026-04-27
 
 ### Changed

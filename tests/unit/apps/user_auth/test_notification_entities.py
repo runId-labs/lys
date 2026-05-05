@@ -15,6 +15,23 @@ def _get_mapped_column(cls, name):
     return attr.column
 
 
+class TestNotificationSeverityEntity:
+    """Tests for NotificationSeverity entity."""
+
+    def test_entity_exists(self):
+        from lys.apps.user_auth.modules.notification.entities import NotificationSeverity
+        assert NotificationSeverity is not None
+
+    def test_entity_inherits_from_parametric_entity(self):
+        from lys.apps.user_auth.modules.notification.entities import NotificationSeverity
+        from lys.core.entities import ParametricEntity
+        assert issubclass(NotificationSeverity, ParametricEntity)
+
+    def test_entity_has_tablename(self):
+        from lys.apps.user_auth.modules.notification.entities import NotificationSeverity
+        assert NotificationSeverity.__tablename__ == "notification_severity"
+
+
 class TestNotificationTypeEntity:
     """Tests for NotificationType entity."""
 
@@ -33,6 +50,44 @@ class TestNotificationTypeEntity:
         """Test NotificationType has correct __tablename__."""
         from lys.apps.user_auth.modules.notification.entities import NotificationType
         assert NotificationType.__tablename__ == "notification_type"
+
+    def test_severity_id_is_mapped_column(self):
+        """Test severity_id is a MappedColumn on NotificationType."""
+        from lys.apps.user_auth.modules.notification.entities import NotificationType
+        _get_mapped_column(NotificationType, "severity_id")
+
+    def test_severity_id_column_is_not_nullable(self):
+        """Test severity_id is NOT NULL — every type must have a severity."""
+        from lys.apps.user_auth.modules.notification.entities import NotificationType
+        column = _get_mapped_column(NotificationType, "severity_id")
+        assert column.nullable is False
+
+    def test_severity_id_has_server_default_info(self):
+        """Test severity_id falls back to INFO at the DB level for legacy rows."""
+        from lys.apps.user_auth.modules.notification.consts import NOTIFICATION_SEVERITY_INFO
+        from lys.apps.user_auth.modules.notification.entities import NotificationType
+        column = _get_mapped_column(NotificationType, "severity_id")
+        assert column.server_default is not None
+        assert column.server_default.arg == NOTIFICATION_SEVERITY_INFO
+
+    def test_severity_id_is_indexed(self):
+        """Test severity_id has an index for filtering performance."""
+        from lys.apps.user_auth.modules.notification.entities import NotificationType
+        column = _get_mapped_column(NotificationType, "severity_id")
+        assert column.index is True
+
+    def test_severity_id_fk_targets_notification_severity(self):
+        """Test severity_id is a foreign key to notification_severity.id."""
+        from lys.apps.user_auth.modules.notification.entities import NotificationType
+        column = _get_mapped_column(NotificationType, "severity_id")
+        fks = list(column.foreign_keys)
+        assert len(fks) == 1
+        assert fks[0].target_fullname == "notification_severity.id"
+
+    def test_has_severity_relationship(self):
+        """Test NotificationType exposes a `severity` relationship."""
+        from lys.apps.user_auth.modules.notification.entities import NotificationType
+        assert hasattr(NotificationType, "severity")
 
 
 class TestNotificationBatchEntity:

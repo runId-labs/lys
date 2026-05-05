@@ -16,6 +16,7 @@ from strawberry import relay
 from lys.apps.user_auth.modules.notification.nodes import (
     NotificationNode,
     NotificationBatchNode,
+    NotificationSeverityNode,
     MarkNotificationsReadNode,
     UnreadNotificationsCountNode,
 )
@@ -43,16 +44,39 @@ class NotificationQuery(Query):
         is_licenced=False,
         description="Get all notifications for the current user, ordered by creation date (newest first)."
     )
-    async def all_notifications(self, info: Info) -> Select:
+    async def all_notifications(
+        self,
+        info: Info,
+        is_read: Optional[bool] = None,
+        severity_id: Optional[str] = None,
+    ) -> Select:
         """
         Get all notifications for the authenticated user.
 
         Returns notifications ordered by creation date (newest first).
         Only returns notifications owned by the current user (OWNER access level).
+
+        Args:
+            info: GraphQL context
+            is_read: If set, filter on read state (False → only unread, True → only read).
+            severity_id: If set, restrict to notifications whose type carries this
+                severity code (e.g. "ERROR"). Null → all severities.
         """
         notification_entity = info.context.app_manager.get_entity("notification")
 
         stmt = select(notification_entity).order_by(notification_entity.created_at.desc())
+
+        if is_read is not None:
+            stmt = stmt.where(notification_entity.is_read == is_read)
+
+        if severity_id:
+            batch_entity = info.context.app_manager.get_entity("notification_batch")
+            type_entity = info.context.app_manager.get_entity("notification_type")
+            stmt = (
+                stmt.join(batch_entity, notification_entity.batch_id == batch_entity.id)
+                    .join(type_entity, batch_entity.type_id == type_entity.id)
+                    .where(type_entity.severity_id == severity_id)
+            )
 
         return stmt
 
@@ -79,6 +103,24 @@ class NotificationQuery(Query):
         unread_count = await notification_service.count_unread(session, user["sub"])
 
         return UnreadNotificationsCountNode(unread_count=unread_count)
+
+
+@strawberry.type
+@register_query()
+class NotificationSeverityQuery(Query):
+    """GraphQL queries for notification severity (parametric entity)."""
+
+    @lys_connection(
+        NotificationSeverityNode,
+        is_public=True,
+        is_licenced=False,
+        description="List all notification severities (INFO, SUCCESS, WARNING, ERROR)."
+    )
+    async def all_notification_severities(self, info: Info) -> Select:
+        """List all notification severity codes."""
+        entity = info.context.app_manager.get_entity("notification_severity")
+        stmt = select(entity).order_by(entity.id.asc())
+        return stmt
 
 
 @strawberry.type

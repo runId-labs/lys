@@ -64,6 +64,43 @@ class TestPrepareReturningList:
         assert result.page_info.has_previous_page is False
         assert len(result.edges) == 3
 
+    def test_large_overfetch_trims_to_expected(self):
+        """Strawberry's overfetch can be much larger than expected+1
+        (observed overfetch=21 for expected=10 on the 2nd cursor page).
+        The connection must still truncate to `expected` and signal more rows."""
+        slice_metadata = MagicMock()
+        slice_metadata.start = 10
+        slice_metadata.expected = 10
+        slice_metadata.end = 20
+
+        edges = [_make_edge(f"cursor_{i}") for i in range(21)]
+
+        result = ConcreteConnection.prepare_returning_list(
+            slice_metadata, edges, last=None, total_count=100
+        )
+        assert len(result.edges) == 10
+        assert result.page_info.has_next_page is True
+        assert result.page_info.has_previous_page is True
+        # Truncation must keep the leading edges, not the trailing ones
+        assert result.edges[0].cursor == "cursor_0"
+        assert result.edges[-1].cursor == "cursor_9"
+
+    def test_exact_match_no_overflow_no_next_page(self):
+        """When len(edges) == expected (no extra row fetched), has_next_page
+        must be False — the truncation branch must not fire."""
+        slice_metadata = MagicMock()
+        slice_metadata.start = 0
+        slice_metadata.expected = 5
+        slice_metadata.end = 5
+
+        edges = [_make_edge(f"cursor_{i}") for i in range(5)]
+
+        result = ConcreteConnection.prepare_returning_list(
+            slice_metadata, edges, last=None, total_count=5
+        )
+        assert len(result.edges) == 5
+        assert result.page_info.has_next_page is False
+
     def test_has_previous_page_when_start_positive(self):
         slice_metadata = MagicMock()
         slice_metadata.start = 5

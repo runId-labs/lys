@@ -3,6 +3,7 @@ Notification system entities.
 
 This module defines the database models for the notification system:
 
+- NotificationSeverity: Parametric entity defining notification severity levels
 - NotificationType: Parametric entity defining types of notifications
 - NotificationBatch: Represents a single triggering event that generates notifications
 - Notification: Individual notification per user
@@ -23,8 +24,26 @@ from typing import List
 from sqlalchemy import ForeignKey, JSON, Boolean
 from sqlalchemy.orm import Mapped, mapped_column, declared_attr, relationship
 
+from lys.apps.user_auth.modules.notification.consts import NOTIFICATION_SEVERITY_INFO
 from lys.core.entities import Entity, ParametricEntity
 from lys.core.registries import register_entity
+
+
+@register_entity()
+class NotificationSeverity(ParametricEntity):
+    """
+    Parametric entity defining the severity level of a notification.
+
+    Used by the frontend to render notifications with the right visual cue
+    (icon + colour). Generic across all apps using the notification system.
+
+    Standard ids: INFO, SUCCESS, WARNING, ERROR.
+
+    Attributes:
+        id: Unique identifier (e.g., "INFO", "ERROR")
+        name: Human-readable name
+    """
+    __tablename__ = "notification_severity"
 
 
 @register_entity()
@@ -40,8 +59,23 @@ class NotificationType(ParametricEntity):
     Attributes:
         id: Unique identifier (e.g., "ORDER_CREATED")
         name: Human-readable name
+        severity_id: FK to NotificationSeverity — drives the visual rendering
+            of the notification on the frontend (icon + colour).
     """
     __tablename__ = "notification_type"
+
+    severity_id: Mapped[str] = mapped_column(
+        ForeignKey("notification_severity.id"),
+        nullable=False,
+        server_default=NOTIFICATION_SEVERITY_INFO,
+        index=True,
+        comment="FK to notification_severity (INFO / SUCCESS / WARNING / ERROR)"
+    )
+
+    @declared_attr
+    def severity(cls):
+        """Relationship to NotificationSeverity."""
+        return relationship("notification_severity", lazy="selectin")
 
 
 @register_entity()

@@ -54,3 +54,21 @@ class TestNotificationTypeServiceStructure:
         from lys.apps.user_auth.modules.notification.services import NotificationTypeService
         from lys.core.services import EntityService
         assert issubclass(NotificationTypeService, EntityService)
+
+
+class TestNotificationSeverityServiceStructure:
+    """Tests for NotificationSeverityService class structure."""
+
+    def test_service_exists(self):
+        from lys.apps.user_auth.modules.notification.services import NotificationSeverityService
+        assert NotificationSeverityService is not None
+
+    def test_inherits_from_entity_service(self):
+        from lys.apps.user_auth.modules.notification.services import NotificationSeverityService
+        from lys.core.services import EntityService
+        assert issubclass(NotificationSeverityService, EntityService)
+
+    def test_entity_class_is_notification_severity(self):
+        from lys.apps.user_auth.modules.notification.entities import NotificationSeverity
+        from lys.apps.user_auth.modules.notification.services import NotificationSeverityService
+        assert NotificationSeverityService.entity_class is NotificationSeverity

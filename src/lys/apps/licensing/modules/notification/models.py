@@ -11,5 +11,6 @@ class NotificationTypeFixturesModel(ParametricEntityFixturesModel):
 
     class AttributesModel(ParametricEntityFixturesModel.AttributesModel):
         roles: List[str]
+        severity_id: str
 
     attributes: AttributesModel

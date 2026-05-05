@@ -40,9 +40,11 @@ class AbstractListConnection:
     def prepare_returning_list(cls, slice_metadata: SliceMetadata,edges: list[Edge], last: Optional[int],
                                total_count: int):
         has_previous_page = slice_metadata.start > 0
-        if slice_metadata.expected is not None and len(edges) == slice_metadata.expected + 1:
-            # Remove the over fetched result
-            edges = edges[:-1]
+        if slice_metadata.expected is not None and len(edges) > slice_metadata.expected:
+            # Strawberry's overfetch can be larger than expected+1 (observed overfetch=21
+            # for expected=10 on the 2nd cursor page). Truncate to `expected` and signal
+            # that more rows exist.
+            edges = edges[:slice_metadata.expected]
             has_next_page = True
         elif slice_metadata.end == sys.maxsize:
             # Last was asked without any after/before

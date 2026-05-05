@@ -21,6 +21,7 @@ from lys.apps.base.mixins.recipient_resolution import RecipientResolutionMixin
 from lys.apps.user_auth.modules.notification.entities import (
     Notification,
     NotificationBatch,
+    NotificationSeverity,
     NotificationType,
 )
 from lys.core.registries import register_service
@@ -300,5 +301,16 @@ class NotificationTypeService(EntityService[NotificationType]):
 
     Used by fixtures to create and manage NotificationType entities
     with their associated NotificationTypeRole relations.
+    """
+    pass
+
+
+@register_service()
+class NotificationSeverityService(EntityService[NotificationSeverity]):
+    """
+    Service for managing notification severity levels.
+
+    Used by fixtures to create the standard severity levels
+    (INFO / SUCCESS / WARNING / ERROR) referenced by NotificationType.
     """
     pass

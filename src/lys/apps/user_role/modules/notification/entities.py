@@ -7,7 +7,7 @@ notification_type_role association table.
 from sqlalchemy import Table, Column, String, ForeignKey, DateTime, func
 from sqlalchemy.orm import declared_attr, relationship
 
-from lys.core.entities import ParametricEntity
+from lys.apps.user_auth.modules.notification.entities import NotificationType as BaseNotificationType
 from lys.core.managers.database import Base
 from lys.core.registries import register_entity
 
@@ -38,16 +38,20 @@ notification_type_role = Table(
 
 
 @register_entity()
-class NotificationType(ParametricEntity):
+class NotificationType(BaseNotificationType):
     """
     Extended NotificationType with roles relationship.
 
-    Overrides the base NotificationType from lys.apps.base to add:
+    Overrides the base NotificationType from lys.apps.user_auth to add:
     - roles: Many-to-many relationship to Role via notification_type_role table
+
+    Inherits from the base NotificationType so additional columns added there
+    (e.g. severity_id) propagate automatically without needing to be redeclared.
 
     Attributes:
         id: Unique identifier (e.g., "ORDER_CREATED")
         name: Human-readable name
+        severity_id: FK to NotificationSeverity (inherited from base)
         roles: Roles that should receive this notification type
     """
     __tablename__ = "notification_type"

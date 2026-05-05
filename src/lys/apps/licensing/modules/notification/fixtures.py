@@ -18,17 +18,22 @@ from lys.apps.licensing.modules.event.consts import (
     SUBSCRIPTION_CANCELED,
 )
 from lys.apps.licensing.modules.notification.models import NotificationTypeFixturesModel
+from lys.apps.user_auth.modules.notification.consts import (
+    NOTIFICATION_SEVERITY_SUCCESS,
+    NOTIFICATION_SEVERITY_WARNING,
+    NOTIFICATION_SEVERITY_ERROR,
+)
 from lys.apps.user_role.modules.notification.services import NotificationTypeService
 from lys.core.fixtures import EntityFixtures
 from lys.core.registries import register_fixture
 
 
-@register_fixture(depends_on=["RoleFixtures"])
+@register_fixture(depends_on=["RoleFixtures", "NotificationSeverityFixtures"])
 class NotificationTypeFixtures(EntityFixtures[NotificationTypeService]):
     """
     Fixtures for NotificationType entities.
 
-    Creates notification types with their associated roles.
+    Creates notification types with their associated roles and severity.
     """
     model = NotificationTypeFixturesModel
     delete_previous_data = False
@@ -39,7 +44,8 @@ class NotificationTypeFixtures(EntityFixtures[NotificationTypeService]):
             "attributes": {
                 "enabled": True,
                 "description": "Notification sent to the user when a license is granted.",
-                "roles": []
+                "roles": [],
+                "severity_id": NOTIFICATION_SEVERITY_SUCCESS,
             }
         },
         {
@@ -47,7 +53,8 @@ class NotificationTypeFixtures(EntityFixtures[NotificationTypeService]):
             "attributes": {
                 "enabled": True,
                 "description": "Notification sent to the user when a license is revoked.",
-                "roles": []
+                "roles": [],
+                "severity_id": NOTIFICATION_SEVERITY_WARNING,
             }
         },
         {
@@ -57,7 +64,8 @@ class NotificationTypeFixtures(EntityFixtures[NotificationTypeService]):
                 "description": "Notification sent when a subscription payment is successful.",
                 "roles": [
                     LICENSE_ADMIN_ROLE,
-                ]
+                ],
+                "severity_id": NOTIFICATION_SEVERITY_SUCCESS,
             }
         },
         {
@@ -67,7 +75,8 @@ class NotificationTypeFixtures(EntityFixtures[NotificationTypeService]):
                 "description": "Notification sent when a subscription payment fails.",
                 "roles": [
                     LICENSE_ADMIN_ROLE,
-                ]
+                ],
+                "severity_id": NOTIFICATION_SEVERITY_ERROR,
             }
         },
         {
@@ -77,7 +86,8 @@ class NotificationTypeFixtures(EntityFixtures[NotificationTypeService]):
                 "description": "Notification sent when a subscription is canceled.",
                 "roles": [
                     LICENSE_ADMIN_ROLE,
-                ]
+                ],
+                "severity_id": NOTIFICATION_SEVERITY_WARNING,
             }
         },
     ]
