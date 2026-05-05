@@ -2,42 +2,73 @@
 Authentication middleware for the user_auth app.
 
 This module provides:
-- UserAuthMiddleware: User JWT token validation and user context injection
+- UserAuthMiddleware: Opaque access token resolution and user context injection.
+
+The middleware looks up the access token (from the cookie or an
+``Authorization: Bearer`` header) in the server-side store
+(``AccessTokenStore``) instead of decoding a JWT. This keeps the cookie
+small (~36 bytes UUID) and avoids the RFC 6265 4096-byte cookie limit
+that broke logins for users with broad permissions when claims were
+embedded inline in a JWT.
+
+XSRF semantics are unchanged: the ``xsrf_token`` claim still lives in
+the claims dict (now stored server-side); the middleware compares it to
+the ``x-xsrf-token`` header on state-changing cookie requests.
 """
 import hmac
 import logging
 from typing import Union, Dict, Any
 
-from jwt import ExpiredSignatureError, InvalidTokenError, DecodeError
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 
 from lys.apps.user_auth.consts import ACCESS_COOKIE_KEY, AUTH_PLUGIN_CHECK_XSRF_TOKEN_KEY, REQUEST_HEADER_XSRF_TOKEN_KEY
 from lys.apps.user_auth.errors import INVALID_XSRF_TOKEN_ERROR
+from lys.apps.user_auth.modules.auth.store import AccessTokenStore
 from lys.apps.user_auth.utils import AuthUtils
 from lys.core.errors import LysError
 from lys.core.interfaces.middlewares import MiddlewareInterface
+from lys.core.utils.manager import AppManagerCallerMixin
 
 
-class UserAuthMiddleware(MiddlewareInterface, BaseHTTPMiddleware):
-    """User authentication middleware that validates JWT tokens and injects user context."""
+class UserAuthMiddleware(MiddlewareInterface, BaseHTTPMiddleware, AppManagerCallerMixin):
+    """User authentication middleware that resolves opaque access tokens and injects user context."""
 
-    REQUIRED_JWT_CLAIMS = ["sub", "exp", "xsrf_token"]
+    REQUIRED_CLAIMS = ["sub", "exp", "xsrf_token"]
 
     def __init__(self, app):
         BaseHTTPMiddleware.__init__(self, app)
+        # AuthUtils is kept for cookie/XSRF config access (cookie_secure,
+        # check_xsrf_token, …). It no longer encodes/decodes user JWTs.
         self.auth_utils = AuthUtils()
+
+    def _build_store(self) -> Union[AccessTokenStore, None]:
+        """
+        Build an AccessTokenStore bound to the current app_manager pubsub.
+
+        Returns None when pubsub is not initialised — the dispatch loop
+        treats this the same as "no token", which means unauthenticated.
+        Logged at warning level because in normal operation the lifespan
+        always initialises pubsub before requests are accepted.
+        """
+        pubsub = getattr(self.app_manager, "pubsub", None)
+        if pubsub is None:
+            logging.warning(
+                "UserAuthMiddleware: PubSubManager unavailable — treating request as anonymous. "
+                "Ensure the 'pubsub' plugin is configured."
+            )
+            return None
+        return AccessTokenStore(pubsub)
 
     async def dispatch(self, request: Request, call_next):
         # Initialize default user context
         connected_user: Union[Dict[str, Any], None] = None
 
-        # Extract access token from cookies (browser) or Authorization header (API calls)
-        # Priority: cookie first, then header fallback
+        # Extract opaque access token from cookies (browser) or Authorization header (API/service calls).
+        # Priority: cookie first, then header fallback.
         # Security note: The refresh token cookie is deliberately NOT extracted here
-        # even though it is sent with every request (path="/")
-        # Refresh token is only used in specific auth operations (login, logout, refresh)
-        # This provides defense-in-depth security
+        # even though it is sent with every request (path="/").
+        # Refresh token is only used in specific auth operations (login, logout, refresh).
         access_token = request.cookies.get(ACCESS_COOKIE_KEY)
         token_from_header = False
 
@@ -48,34 +79,37 @@ class UserAuthMiddleware(MiddlewareInterface, BaseHTTPMiddleware):
                 access_token = auth_header[7:]
                 token_from_header = True
 
+        claims: Union[Dict[str, Any], None] = None
+
         if access_token:
-            try:
-                # Use centralized JWT decoding logic
-                jwt_claims = await self.auth_utils.decode(access_token)
+            store = self._build_store()
+            if store is not None:
+                try:
+                    claims = await store.get(access_token)
+                except Exception as e:
+                    # Storage failure (Redis down, decode error). Treat as
+                    # anonymous to avoid leaking infra issues as auth errors.
+                    logging.error(f"AccessTokenStore lookup failed: {e}")
+                    claims = None
 
-                # Validate required JWT claims
-                missing_claims = [claim for claim in self.REQUIRED_JWT_CLAIMS if claim not in jwt_claims]
+            if claims is None:
+                # Token absent from the store: expired (TTL elapsed),
+                # revoked (logout/refresh), or never issued. Same outcome
+                # as a previously expired JWT.
+                logging.info("Access token not found in store (expired, revoked, or unknown)")
+            else:
+                missing_claims = [c for c in self.REQUIRED_CLAIMS if c not in claims]
                 if missing_claims:
-                    logging.error(f"Missing required JWT claims: {missing_claims}")
-                    jwt_claims = None
+                    logging.error(f"Stored access token claims missing required fields: {missing_claims}")
+                    claims = None
 
-            except ExpiredSignatureError as e:
-                logging.warning(f"JWT token expired: {e}")
-                jwt_claims = None
-            except (InvalidTokenError, DecodeError) as e:
-                logging.warning(f"JWT validation failed: {e}")
-                jwt_claims = None
-            except Exception as e:
-                logging.error(f"Unexpected JWT validation error: {e}")
-                jwt_claims = None
-
-            # Validate JWT and XSRF token if present
+            # Validate XSRF token if claims resolved.
             # Skip XSRF validation for:
             # - Bearer header auth (API/service calls)
             # - Safe HTTP methods (GET, HEAD, OPTIONS) per RFC 7231
-            #   CSRF targets state-changing requests; safe methods are read-only
-            #   This also allows EventSource/SSE which only supports GET with cookies
-            if jwt_claims:
+            #   CSRF targets state-changing requests; safe methods are read-only.
+            #   This also allows EventSource/SSE which only supports GET with cookies.
+            if claims:
                 try:
                     is_safe_method = request.method in ("GET", "HEAD", "OPTIONS")
                     if not token_from_header and not is_safe_method and self.auth_utils.config.get(AUTH_PLUGIN_CHECK_XSRF_TOKEN_KEY, True):
@@ -84,10 +118,10 @@ class UserAuthMiddleware(MiddlewareInterface, BaseHTTPMiddleware):
                             logging.error("XSRF token missing in request headers")
                             raise LysError(INVALID_XSRF_TOKEN_ERROR, "XSRF token missing")
 
-                        expected_xsrf = jwt_claims.get("xsrf_token")
+                        expected_xsrf = claims.get("xsrf_token")
                         if not expected_xsrf:
-                            logging.error("XSRF token missing in JWT claims")
-                            raise LysError(INVALID_XSRF_TOKEN_ERROR, "XSRF token not found in JWT")
+                            logging.error("XSRF token missing in stored claims")
+                            raise LysError(INVALID_XSRF_TOKEN_ERROR, "XSRF token not found in stored claims")
 
                         if not hmac.compare_digest(xsrf_token, expected_xsrf):
                             logging.error("XSRF token mismatch")
@@ -103,8 +137,8 @@ class UserAuthMiddleware(MiddlewareInterface, BaseHTTPMiddleware):
                     logging.error(f"XSRF validation error: {ex}")
                     raise LysError(INVALID_XSRF_TOKEN_ERROR, f"XSRF validation failed: {str(ex)}")
 
-                # Create an authenticated user context with all JWT claims at root level
-                connected_user = jwt_claims
+                # Surface the resolved claims as the connected user (same contract as before).
+                connected_user = claims
                 auth_source = "header" if token_from_header else "cookie"
                 logging.info(f"User {connected_user['sub']} authenticated via {auth_source}")
 
@@ -117,5 +151,6 @@ class UserAuthMiddleware(MiddlewareInterface, BaseHTTPMiddleware):
             response = await call_next(request)
             return response
         except Exception as e:
-            logging.error(f"Request processing failed for user {connected_user['sub']}: {e}")
+            user_id = connected_user["sub"] if connected_user else None
+            logging.error(f"Request processing failed for user {user_id}: {e}")
             raise

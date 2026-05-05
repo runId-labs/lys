@@ -9,12 +9,13 @@ Like integration tests, E2E tests run in forked subprocesses for
 LysAppRegistry singleton isolation.
 """
 
+import json
 import os
+import uuid
+from datetime import datetime, timedelta, timezone
 
-import jwt
 import pytest
 import pytest_asyncio
-from datetime import datetime, timedelta, timezone
 from httpx import AsyncClient, ASGITransport
 
 
@@ -83,8 +84,40 @@ SUPER_USER_EMAIL = "super_user@lys-test.fr"
 DEV_USER_PASSWORD = "password"
 
 
-def make_test_token(user_id, is_super_user=False, webservices=None, expire_minutes=30):
-    """Generate a valid JWT access token for E2E testing."""
+class _FakePubSubE2E:
+    """In-memory pubsub stand-in for E2E tests — same surface as PubSubManager.
+
+    Implements only the key/value subset that AccessTokenStore touches.
+    PubSub publish/subscribe semantics are not exercised by the auth flow,
+    so the stub is intentionally minimal.
+    """
+
+    def __init__(self):
+        self.store: dict[str, str] = {}
+
+    async def set_key(self, key, value, ttl_seconds=None) -> bool:
+        self.store[key] = value
+        return True
+
+    async def get_key(self, key):
+        return self.store.get(key)
+
+    async def delete_key(self, key) -> bool:
+        existed = key in self.store
+        self.store.pop(key, None)
+        return existed
+
+
+async def make_test_token(app_manager, user_id, is_super_user=False, webservices=None, expire_minutes=30):
+    """
+    Insert a fake access token directly into the AccessTokenStore and return its opaque id.
+
+    This is the E2E equivalent of going through ``AuthService.login`` but
+    skipping the password/refresh-token machinery — useful when the test
+    only cares that the middleware accepts a known token.
+    """
+    from lys.apps.user_auth.modules.auth.store import AccessTokenStore
+
     now = datetime.now(timezone.utc)
     claims = {
         "sub": str(user_id),
@@ -93,24 +126,27 @@ def make_test_token(user_id, is_super_user=False, webservices=None, expire_minut
         "is_super_user": is_super_user,
         "xsrf_token": "test-xsrf-token-e2e",
         "webservices": webservices or {},
-        "iss": "lys-auth",
-        "aud": "lys-api",
     }
-    return jwt.encode(claims, E2E_SECRET_KEY, algorithm=E2E_ALGORITHM)
+
+    token_id = str(uuid.uuid4())
+    store = AccessTokenStore(app_manager.pubsub)
+    # Bypass create() so we control the UUID — easier to assert against.
+    await app_manager.pubsub.set_key(
+        f"lys:access_token:{token_id}",
+        json.dumps(claims),
+        ttl_seconds=expire_minutes * 60,
+    )
+    return token_id
 
 
-def make_expired_token(user_id):
-    """Generate an expired JWT token for testing."""
-    now = datetime.now(timezone.utc)
-    claims = {
-        "sub": str(user_id),
-        "exp": int((now - timedelta(minutes=10)).timestamp()),
-        "iat": int((now - timedelta(minutes=40)).timestamp()),
-        "is_super_user": False,
-        "xsrf_token": "test-xsrf-expired",
-        "webservices": {},
-    }
-    return jwt.encode(claims, E2E_SECRET_KEY, algorithm=E2E_ALGORITHM)
+def make_unknown_token():
+    """
+    Return an opaque token id that is NOT registered in the store.
+
+    Equivalent semantically to a previously-expired JWT: the middleware
+    looks it up, finds nothing, and treats the request as anonymous.
+    """
+    return str(uuid.uuid4())
 
 
 @pytest_asyncio.fixture
@@ -180,6 +216,13 @@ async def e2e_app():
 
     # Manually run startup tasks (bypass ASGI lifespan)
     await create_all_tables(app_manager.database)
+
+    # Inject an in-memory pubsub stand-in so the AccessTokenStore can store
+    # and resolve opaque access tokens. The lifespan that normally
+    # initialises a real Redis-backed PubSubManager is bypassed in E2E,
+    # so we wire a fake here for the auth flow to function.
+    app_manager.pubsub = _FakePubSubE2E()
+
     await app_manager._load_fixtures_in_order()
 
     # Reset dev fixture passwords to known values for E2E testing.

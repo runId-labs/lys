@@ -6,13 +6,14 @@ Tests cover:
 - Phase 2.8: Login attempt tracking (3 tests)
 - Phase 2.9: Rate limiting logic (6 tests)
 - Phase 2.10: Authentication flow (7 tests)
+- Phase 2.11: Opaque access token (store roundtrip, revocation on logout/refresh)
 """
 import asyncio
+import json
 from datetime import timedelta
 from unittest.mock import MagicMock, patch
-from uuid import uuid4
+from uuid import UUID, uuid4
 
-import jwt
 import pytest
 import pytest_asyncio
 from sqlalchemy import select
@@ -28,12 +29,73 @@ from lys.apps.user_auth.modules.auth.consts import (
     SUCCEED_LOGIN_ATTEMPT_STATUS
 )
 from lys.apps.user_auth.modules.auth.models import LoginInputModel
+from lys.apps.user_auth.modules.auth.store import ACCESS_TOKEN_KEY_PREFIX
 from lys.apps.user_auth.modules.user.consts import ENABLED_USER_STATUS, DISABLED_USER_STATUS
 from lys.core.configs import LysAppSettings
 from lys.core.consts.component_types import AppComponentTypeEnum
 from lys.core.errors import LysError
 from lys.core.managers.app import AppManager
 from lys.core.utils.datetime import now_utc
+
+
+class FakePubSub:
+    """
+    In-memory stand-in for ``PubSubManager``'s key/value API.
+
+    Implements the three coroutine methods AccessTokenStore relies on
+    (``set_key``, ``get_key``, ``delete_key``) so we can exercise the full
+    auth flow against a deterministic store — no Redis required, no flaky
+    TTL waits. Stored values include the ttl that was passed in so tests
+    can assert it.
+    """
+
+    def __init__(self):
+        self.store: dict[str, str] = {}
+        self.ttls: dict[str, int] = {}
+
+    async def set_key(self, key: str, value: str, ttl_seconds: int = None) -> bool:
+        self.store[key] = value
+        if ttl_seconds is not None:
+            self.ttls[key] = ttl_seconds
+        return True
+
+    async def get_key(self, key: str):
+        return self.store.get(key)
+
+    async def delete_key(self, key: str) -> bool:
+        existed = key in self.store
+        self.store.pop(key, None)
+        self.ttls.pop(key, None)
+        return existed
+
+
+@pytest_asyncio.fixture
+async def fake_pubsub(user_auth_app_manager):
+    """
+    Inject a FakePubSub onto every AppManager that AuthService might consult.
+
+    AuthService.app_manager goes through ``AppManagerCallerMixin`` which
+    returns the ``LysAppManager`` singleton, distinct from the test's
+    ``user_auth_app_manager`` instance (which is a plain ``AppManager``).
+    Both share the registry singleton, but pubsub is per-instance — so the
+    fake must be attached to whichever instance the service actually reads.
+    We set it on both for safety and restore on teardown.
+    """
+    from lys.core.managers.app import LysAppManager
+
+    fake = FakePubSub()
+
+    lys_singleton = LysAppManager()
+    previous_singleton = lys_singleton.pubsub
+    previous_test = user_auth_app_manager.pubsub
+
+    lys_singleton.pubsub = fake
+    user_auth_app_manager.pubsub = fake
+    try:
+        yield fake
+    finally:
+        lys_singleton.pubsub = previous_singleton
+        user_auth_app_manager.pubsub = previous_test
 
 
 # Note: This module uses the user_auth_app_manager fixture from test_user_service.py
@@ -661,11 +723,15 @@ class TestGenerateAccessClaims:
 
 
 class TestGenerateAccessToken:
-    """Test AuthService.generate_access_token operations."""
+    """Test AuthService.generate_access_token operations.
+
+    The token returned is now an opaque UUID, not a JWT. Claims live
+    server-side in the AccessTokenStore (Redis in prod, FakePubSub here).
+    """
 
     @pytest.mark.asyncio
-    async def test_generate_access_token_returns_valid_jwt(self, user_auth_app_manager):
-        """Test that generate_access_token returns a valid JWT string and claims."""
+    async def test_generate_access_token_returns_opaque_uuid(self, user_auth_app_manager, fake_pubsub):
+        """Token must be a short opaque UUID, not a JWT — fixes the 4096-byte cookie issue."""
         user_service = user_auth_app_manager.get_service("user")
         auth_service = user_auth_app_manager.get_service("auth")
 
@@ -677,39 +743,30 @@ class TestGenerateAccessToken:
             )
             await session.commit()
 
-            # Patch auth_utils config for token generation
             original_config = auth_service.auth_utils.config
-            original_secret = auth_service.auth_utils.secret_key
             auth_service.auth_utils.config = _TEST_AUTH_CONFIG
-            auth_service.auth_utils.secret_key = _TEST_SECRET_KEY
             try:
                 token_str, claims = await auth_service.generate_access_token(user, session)
             finally:
                 auth_service.auth_utils.config = original_config
-                auth_service.auth_utils.secret_key = original_secret
 
-            # Token should be a non-empty string
             assert isinstance(token_str, str)
-            assert len(token_str) > 0
+            # UUID v4 string form: 36 chars, no dots (JWTs have two dots).
+            assert len(token_str) == 36
+            assert "." not in token_str
+            UUID(token_str)  # raises if not a valid UUID
 
-            # Claims should include standard JWT fields
+            # Cookie size guarantee: well under the 4096-byte browser limit.
+            assert len(token_str) < 50
+
+            # Claims still carry the same shape the override chain produces.
+            assert claims["sub"] == str(user.id)
             assert "exp" in claims
             assert "xsrf_token" in claims
-            assert "sub" in claims
-            assert claims["sub"] == str(user.id)
-
-            # Token should be decodable and contain iss/aud
-            decoded = jwt.decode(
-                token_str, _TEST_SECRET_KEY, algorithms=["HS256"],
-                audience="lys-api",
-            )
-            assert decoded["sub"] == str(user.id)
-            assert decoded["iss"] == "lys-auth"
-            assert decoded["aud"] == "lys-api"
 
     @pytest.mark.asyncio
-    async def test_generate_access_token_has_expiry(self, user_auth_app_manager):
-        """Test that generated token has a future expiry timestamp."""
+    async def test_generate_access_token_persists_claims_in_store(self, user_auth_app_manager, fake_pubsub):
+        """Claims must round-trip through the store under the lys:access_token: prefix."""
         user_service = user_auth_app_manager.get_service("user")
         auth_service = user_auth_app_manager.get_service("auth")
 
@@ -722,24 +779,84 @@ class TestGenerateAccessToken:
             await session.commit()
 
             original_config = auth_service.auth_utils.config
-            original_secret = auth_service.auth_utils.secret_key
             auth_service.auth_utils.config = _TEST_AUTH_CONFIG
-            auth_service.auth_utils.secret_key = _TEST_SECRET_KEY
+            try:
+                token_str, claims = await auth_service.generate_access_token(user, session)
+            finally:
+                auth_service.auth_utils.config = original_config
+
+        expected_key = f"{ACCESS_TOKEN_KEY_PREFIX}{token_str}"
+        assert expected_key in fake_pubsub.store
+
+        stored_claims = json.loads(fake_pubsub.store[expected_key])
+        assert stored_claims == claims  # exact roundtrip
+
+        # TTL must match access_token_expire_minutes (15 in test config) in seconds.
+        assert fake_pubsub.ttls[expected_key] == _TEST_AUTH_CONFIG["access_token_expire_minutes"] * 60
+
+    @pytest.mark.asyncio
+    async def test_generate_access_token_has_future_expiry(self, user_auth_app_manager, fake_pubsub):
+        """The exp claim is kept for the front-end to schedule a refresh."""
+        user_service = user_auth_app_manager.get_service("user")
+        auth_service = user_auth_app_manager.get_service("auth")
+
+        email = unique_email()
+        async with user_auth_app_manager.database.get_session() as session:
+            user = await user_service._create_user_internal(
+                session=session, email=email, password="Password123!",
+                language_id="en", is_super_user=False, send_verification_email=False
+            )
+            await session.commit()
+
+            original_config = auth_service.auth_utils.config
+            auth_service.auth_utils.config = _TEST_AUTH_CONFIG
             try:
                 _, claims = await auth_service.generate_access_token(user, session)
             finally:
                 auth_service.auth_utils.config = original_config
-                auth_service.auth_utils.secret_key = original_secret
 
-            # Expiry should be in the future
             assert claims["exp"] > int(now_utc().timestamp())
+
+    @pytest.mark.asyncio
+    async def test_generate_access_token_without_pubsub_raises(self, user_auth_app_manager):
+        """Login must fail loudly if pubsub is unavailable rather than issue an unstorable token."""
+        from lys.core.managers.app import LysAppManager
+
+        user_service = user_auth_app_manager.get_service("user")
+        auth_service = user_auth_app_manager.get_service("auth")
+
+        # Strip pubsub from both the test manager and the singleton AuthService reads from.
+        lys_singleton = LysAppManager()
+        previous_singleton = lys_singleton.pubsub
+        previous_test = user_auth_app_manager.pubsub
+        lys_singleton.pubsub = None
+        user_auth_app_manager.pubsub = None
+        try:
+            email = unique_email()
+            async with user_auth_app_manager.database.get_session() as session:
+                user = await user_service._create_user_internal(
+                    session=session, email=email, password="Password123!",
+                    language_id="en", is_super_user=False, send_verification_email=False
+                )
+                await session.commit()
+
+                original_config = auth_service.auth_utils.config
+                auth_service.auth_utils.config = _TEST_AUTH_CONFIG
+                try:
+                    with pytest.raises(RuntimeError, match="PubSubManager is not initialised"):
+                        await auth_service.generate_access_token(user, session)
+                finally:
+                    auth_service.auth_utils.config = original_config
+        finally:
+            lys_singleton.pubsub = previous_singleton
+            user_auth_app_manager.pubsub = previous_test
 
 
 class TestLogout:
     """Test AuthService.logout operations."""
 
     @pytest.mark.asyncio
-    async def test_logout_with_refresh_token(self, user_auth_app_manager):
+    async def test_logout_with_refresh_token(self, user_auth_app_manager, fake_pubsub):
         """Test logout revokes refresh token and clears cookies."""
         user_service = user_auth_app_manager.get_service("user")
         auth_service = user_auth_app_manager.get_service("auth")
@@ -778,7 +895,7 @@ class TestLogout:
             assert revoked.revoked_at is not None
 
     @pytest.mark.asyncio
-    async def test_logout_without_refresh_token(self, user_auth_app_manager):
+    async def test_logout_without_refresh_token(self, user_auth_app_manager, fake_pubsub):
         """Test logout without refresh token cookie does not crash."""
         auth_service = user_auth_app_manager.get_service("auth")
 
@@ -793,3 +910,232 @@ class TestLogout:
                 await auth_service.logout(request, response, session)
             finally:
                 auth_service.auth_utils.config = original_config
+
+    @pytest.mark.asyncio
+    async def test_logout_purges_access_token_from_store(self, user_auth_app_manager, fake_pubsub):
+        """
+        Logout must invalidate the opaque access token server-side so a leaked
+        cookie cannot be replayed until TTL expiry. This is the security gain
+        over the previous JWT model where revocation required a blacklist.
+        """
+        user_service = user_auth_app_manager.get_service("user")
+        auth_service = user_auth_app_manager.get_service("auth")
+
+        email = unique_email()
+        async with user_auth_app_manager.database.get_session() as session:
+            user = await user_service._create_user_internal(
+                session=session, email=email, password="Password123!",
+                language_id="en", is_super_user=False, send_verification_email=False
+            )
+            await session.commit()
+
+            original_config = auth_service.auth_utils.config
+            auth_service.auth_utils.config = _TEST_AUTH_CONFIG
+            try:
+                token_id, _ = await auth_service.generate_access_token(user, session)
+            finally:
+                auth_service.auth_utils.config = original_config
+
+            stored_key = f"{ACCESS_TOKEN_KEY_PREFIX}{token_id}"
+            assert stored_key in fake_pubsub.store  # sanity
+
+            request = MagicMock()
+            request.cookies = {ACCESS_COOKIE_KEY: token_id}
+            response = Response()
+
+            original_config = auth_service.auth_utils.config
+            auth_service.auth_utils.config = _TEST_AUTH_CONFIG
+            try:
+                await auth_service.logout(request, response, session)
+            finally:
+                auth_service.auth_utils.config = original_config
+
+        # The store entry is gone — any subsequent middleware lookup returns None.
+        assert stored_key not in fake_pubsub.store
+
+
+class TestResolveAccessToken:
+    """Public hook for resolving an opaque token to claims (mirror of revoke)."""
+
+    @pytest.mark.asyncio
+    async def test_resolve_existing_token_returns_claims(self, user_auth_app_manager, fake_pubsub):
+        user_service = user_auth_app_manager.get_service("user")
+        auth_service = user_auth_app_manager.get_service("auth")
+
+        email = unique_email()
+        async with user_auth_app_manager.database.get_session() as session:
+            user = await user_service._create_user_internal(
+                session=session, email=email, password="Password123!",
+                language_id="en", is_super_user=False, send_verification_email=False
+            )
+            await session.commit()
+
+            original_config = auth_service.auth_utils.config
+            auth_service.auth_utils.config = _TEST_AUTH_CONFIG
+            try:
+                token_id, claims = await auth_service.generate_access_token(user, session)
+            finally:
+                auth_service.auth_utils.config = original_config
+
+        resolved = await auth_service.resolve_access_token(token_id)
+        assert resolved == claims
+
+    @pytest.mark.asyncio
+    async def test_resolve_unknown_token_returns_none(self, fake_pubsub, user_auth_app_manager):
+        auth_service = user_auth_app_manager.get_service("auth")
+        assert await auth_service.resolve_access_token("not-a-real-uuid") is None
+
+    @pytest.mark.asyncio
+    async def test_resolve_empty_or_none_returns_none(self, fake_pubsub, user_auth_app_manager):
+        auth_service = user_auth_app_manager.get_service("auth")
+        assert await auth_service.resolve_access_token(None) is None
+        assert await auth_service.resolve_access_token("") is None
+
+
+class TestRevokeAccessToken:
+    """Public hook for invalidating an opaque token outside logout."""
+
+    @pytest.mark.asyncio
+    async def test_revoke_existing_token_returns_true(self, user_auth_app_manager, fake_pubsub):
+        user_service = user_auth_app_manager.get_service("user")
+        auth_service = user_auth_app_manager.get_service("auth")
+
+        email = unique_email()
+        async with user_auth_app_manager.database.get_session() as session:
+            user = await user_service._create_user_internal(
+                session=session, email=email, password="Password123!",
+                language_id="en", is_super_user=False, send_verification_email=False
+            )
+            await session.commit()
+
+            original_config = auth_service.auth_utils.config
+            auth_service.auth_utils.config = _TEST_AUTH_CONFIG
+            try:
+                token_id, _ = await auth_service.generate_access_token(user, session)
+            finally:
+                auth_service.auth_utils.config = original_config
+
+        assert await auth_service.revoke_access_token(token_id) is True
+        assert f"{ACCESS_TOKEN_KEY_PREFIX}{token_id}" not in fake_pubsub.store
+
+    @pytest.mark.asyncio
+    async def test_revoke_unknown_token_returns_false(self, fake_pubsub, user_auth_app_manager):
+        auth_service = user_auth_app_manager.get_service("auth")
+        assert await auth_service.revoke_access_token("not-a-real-uuid") is False
+
+    @pytest.mark.asyncio
+    async def test_revoke_empty_or_none_is_noop(self, fake_pubsub, user_auth_app_manager):
+        auth_service = user_auth_app_manager.get_service("auth")
+        assert await auth_service.revoke_access_token(None) is False
+        assert await auth_service.revoke_access_token("") is False
+
+
+class TestLoginPurgesPreviousToken:
+    """
+    Logging in with a stale access cookie must invalidate the previous
+    token server-side, mirroring the refresh flow. Prevents two valid
+    tokens from coexisting for the same user (latent session-fixation
+    window) and stops Redis orphan accumulation.
+    """
+
+    @pytest.mark.asyncio
+    async def test_login_with_stale_access_cookie_revokes_it(self, user_auth_app_manager, fake_pubsub):
+        user_service = user_auth_app_manager.get_service("user")
+        auth_service = user_auth_app_manager.get_service("auth")
+
+        email = unique_email()
+        async with user_auth_app_manager.database.get_session() as session:
+            user = await user_service._create_user_internal(
+                session=session, email=email, password="Password123!",
+                language_id="en", is_super_user=False, send_verification_email=False
+            )
+            await session.commit()
+
+            original_config = auth_service.auth_utils.config
+            auth_service.auth_utils.config = _TEST_AUTH_CONFIG
+            try:
+                # 1. Issue an initial access token (the "stale" one).
+                stale_token, _ = await auth_service.generate_access_token(user, session)
+                stale_key = f"{ACCESS_TOKEN_KEY_PREFIX}{stale_token}"
+                assert stale_key in fake_pubsub.store
+
+                # 2. Re-login with that cookie still attached.
+                request = MagicMock()
+                request.cookies = {ACCESS_COOKIE_KEY: stale_token}
+                response = Response()
+
+                # The refresh-token service builds its own AuthUtils — patch it
+                # so it picks up the test auth config (same pattern as TestLogout).
+                with patch("lys.apps.user_auth.modules.user.services.AuthUtils") as mock_auth:
+                    mock_auth.return_value.config = _TEST_AUTH_CONFIG
+                    _, claims = await auth_service.login(
+                        LoginInputModel(login=email, password="Password123!"),
+                        response,
+                        session,
+                        request=request,
+                    )
+                await session.commit()
+            finally:
+                auth_service.auth_utils.config = original_config
+
+        # The stale entry is gone; a fresh one exists for the new token.
+        assert stale_key not in fake_pubsub.store
+        # Find the new token id by looking for the remaining lys:access_token: key.
+        remaining = [k for k in fake_pubsub.store if k.startswith(ACCESS_TOKEN_KEY_PREFIX)]
+        assert len(remaining) == 1
+        assert remaining[0] != stale_key
+
+
+class TestAccessTokenStoreRoundtrip:
+    """Verify the middleware contract: a freshly issued token resolves back to its claims."""
+
+    @pytest.mark.asyncio
+    async def test_token_resolves_back_to_claims(self, user_auth_app_manager, fake_pubsub):
+        from lys.apps.user_auth.modules.auth.store import AccessTokenStore
+
+        user_service = user_auth_app_manager.get_service("user")
+        auth_service = user_auth_app_manager.get_service("auth")
+
+        email = unique_email()
+        async with user_auth_app_manager.database.get_session() as session:
+            user = await user_service._create_user_internal(
+                session=session, email=email, password="Password123!",
+                language_id="en", is_super_user=False, send_verification_email=False
+            )
+            await session.commit()
+
+            original_config = auth_service.auth_utils.config
+            auth_service.auth_utils.config = _TEST_AUTH_CONFIG
+            try:
+                token_id, generated_claims = await auth_service.generate_access_token(user, session)
+            finally:
+                auth_service.auth_utils.config = original_config
+
+        store = AccessTokenStore(fake_pubsub)
+        resolved = await store.get(token_id)
+
+        assert resolved == generated_claims
+        # Required claims for the middleware
+        assert resolved["sub"] == str(user.id)
+        assert "xsrf_token" in resolved
+        assert "exp" in resolved
+
+    @pytest.mark.asyncio
+    async def test_unknown_token_resolves_to_none(self, fake_pubsub):
+        """Equivalent to a previously-expired JWT: middleware sees None and treats as anonymous."""
+        from lys.apps.user_auth.modules.auth.store import AccessTokenStore
+
+        store = AccessTokenStore(fake_pubsub)
+        assert await store.get("not-a-real-uuid") is None
+
+    @pytest.mark.asyncio
+    async def test_corrupted_entry_is_purged(self, fake_pubsub):
+        """Defense-in-depth: a malformed JSON entry should be deleted, not raise."""
+        from lys.apps.user_auth.modules.auth.store import AccessTokenStore
+
+        store = AccessTokenStore(fake_pubsub)
+        bad_id = "corrupted-id"
+        await fake_pubsub.set_key(f"{ACCESS_TOKEN_KEY_PREFIX}{bad_id}", "{not json")
+
+        assert await store.get(bad_id) is None
+        assert f"{ACCESS_TOKEN_KEY_PREFIX}{bad_id}" not in fake_pubsub.store

@@ -1,7 +1,7 @@
 import strawberry
 from starlette.responses import Response
 
-from lys.apps.user_auth.consts import REFRESH_COOKIE_KEY
+from lys.apps.user_auth.consts import ACCESS_COOKIE_KEY, REFRESH_COOKIE_KEY
 from lys.apps.user_auth.errors import MISSING_REFRESH_TOKEN_ERROR, BLOCKED_USER_ERROR
 from lys.apps.user_auth.modules.auth.inputs import LoginInput
 from lys.apps.user_auth.modules.auth.nodes import LoginNode, LogoutNode
@@ -31,10 +31,11 @@ class AuthTokenMutation(Mutation):
         node: type[LoginNode] = LoginNode.get_effective_node()
         auth_service: type[AuthService] | None = node.service_class
 
+        request = info.context.request
         response: Response = info.context.response
         session = info.context.session
 
-        user, claims = await auth_service.login(inputs.to_pydantic(), response, session)
+        user, claims = await auth_service.login(inputs.to_pydantic(), response, session, request=request)
 
         return node(
             success=True,
@@ -95,6 +96,11 @@ class AuthTokenMutation(Mutation):
             await auth_service.clear_auth_cookies(response)
             raise
         # System errors are NOT caught - they will be logged by the middleware
+
+        # invalidate the previous opaque access token server-side before
+        # issuing a new one — prevents accumulation of orphan Redis entries
+        # and ensures a leaked previous cookie cannot still resolve.
+        await auth_service.revoke_access_token(request.cookies.get(ACCESS_COOKIE_KEY))
 
         # generate the user access token
         access_token, claims = await auth_service.generate_access_token(refresh_token.user, session)

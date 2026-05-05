@@ -1,11 +1,10 @@
 import bcrypt
-import bcrypt
 import logging
 import os
-from datetime import datetime, timedelta
+from datetime import timedelta
 from typing import Optional, Type
 
-from sqlalchemy import select, ColumnElement, or_, and_
+from sqlalchemy import select, ColumnElement, or_
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Relationship, ColumnProperty, InstrumentedAttribute
 from starlette.requests import Request
@@ -23,6 +22,7 @@ from lys.core.consts.webservices import (
 from lys.apps.user_auth.modules.auth.consts import FAILED_LOGIN_ATTEMPT_STATUS, SUCCEED_LOGIN_ATTEMPT_STATUS
 from lys.apps.user_auth.modules.auth.entities import UserLoginAttempt, LoginAttemptStatus
 from lys.apps.user_auth.modules.auth.models import LoginInputModel
+from lys.apps.user_auth.modules.auth.store import AccessTokenStore
 from lys.apps.user_auth.modules.user.consts import ENABLED_USER_STATUS
 from lys.apps.user_auth.modules.user.entities import User
 from lys.apps.user_auth.modules.user.models import GetUserRefreshTokenInputModel
@@ -241,7 +241,13 @@ class AuthService(Service):
         return user
 
     @classmethod
-    async def login(cls, data: LoginInputModel, response: Response, session: AsyncSession):
+    async def login(
+        cls,
+        data: LoginInputModel,
+        response: Response,
+        session: AsyncSession,
+        request: Optional[Request] = None,
+    ):
         refresh_token_service: Type[UserRefreshTokenService] = cls.app_manager.get_service("user_refresh_token")
 
         # find out the user based on his email address and his password
@@ -260,6 +266,15 @@ class AuthService(Service):
                 INVALID_CREDENTIALS_ERROR,
                 "wrong password for user '%s'" % data.login
             )
+
+        # If the caller already had an access cookie from a previous session,
+        # invalidate it server-side before issuing a new one. Without this
+        # purge the previous Redis entry would linger until TTL — same
+        # symmetry as refresh, prevents short-lived session-fixation windows
+        # where two valid tokens coexist for the same user.
+        if request is not None:
+            previous_token_id = request.cookies.get(ACCESS_COOKIE_KEY)
+            await cls.revoke_access_token(previous_token_id)
 
         # generate the user refresh token
         refresh_token = await refresh_token_service.generate(user, session=session)
@@ -284,6 +299,12 @@ class AuthService(Service):
                 GetUserRefreshTokenInputModel(refresh_token_id=refresh_token_id),
                 session=session
             )
+
+        # invalidate the opaque access token server-side so the cookie cannot
+        # be reused even if it leaked (defense-in-depth: cookie clearing alone
+        # is insufficient — a compromised cookie value would still resolve in
+        # Redis until TTL expiry without this delete).
+        await cls.revoke_access_token(request.cookies.get(ACCESS_COOKIE_KEY))
 
         # delete refresh and access cookie
         await cls.clear_auth_cookies(response)
@@ -423,28 +444,122 @@ class AuthService(Service):
     @classmethod
     async def generate_access_token(cls, user: User, session: AsyncSession = None) -> tuple[str, dict]:
         """
-        Generate a JWT access token for the user.
+        Generate an opaque access token for the user and store the claims server-side.
+
+        The browser only receives a UUID (~36 bytes) — the actual claims live in
+        Redis under ``lys:access_token:<uuid>`` and are looked up by
+        ``UserAuthMiddleware`` on every authenticated request. This avoids the
+        RFC 6265 4096-byte cookie limit that JWT-based access tokens hit for
+        users with broad permissions.
+
+        The override chain ``generate_access_claims`` (AuthService → RoleAuthService
+        → OrganizationAuthService) is unchanged: subclasses keep enriching the
+        claims dict via super(); only the storage backend differs.
 
         Args:
             user: The authenticated user entity
-            session: Database session for additional queries (optional for backward compatibility)
+            session: Database session used by ``generate_access_claims`` overrides
 
         Returns:
-            Tuple of (encoded_token, claims_dict)
+            Tuple of (opaque_token_id, claims_dict). ``claims_dict`` keeps the
+            same shape as before (sub, is_super_user, webservices, exp,
+            xsrf_token, plus subclass extensions) so callers — login/refresh
+            mutations, tests — continue to work as before.
         """
         access_token_expire_minutes = cls.auth_utils.config.get("access_token_expire_minutes")
 
         # Build claims from generate_access_claims (can be overridden by subclasses)
         claims = await cls.generate_access_claims(user, session)
 
-        # Add standard JWT claims
-        claims["exp"] = int(round((now_utc() + timedelta(minutes=access_token_expire_minutes)).timestamp()))
+        # Keep "exp" in the claims dict for two reasons:
+        # 1. The login/refresh GraphQL mutations expose it as access_token_expire_in
+        #    so the front-end can schedule a refresh before TTL.
+        # 2. Backwards compatibility: any caller that read claims["exp"] still works.
+        # The actual server-side enforcement is the Redis TTL, not this value.
+        access_token_expire_seconds = int(access_token_expire_minutes * 60)
+        claims["exp"] = int(round((now_utc() + timedelta(seconds=access_token_expire_seconds)).timestamp()))
         claims["xsrf_token"] = str(await cls.generate_xsrf_token())
 
-        # Debug: log generated claims
-        logger.debug(f"Generated JWT claims: {claims}")
+        store = cls._require_access_token_store()
+        token_id = await store.create(claims, ttl_seconds=access_token_expire_seconds)
 
-        return await cls.auth_utils.encode(claims), claims
+        return token_id, claims
+
+    @classmethod
+    async def resolve_access_token(cls, token_id: Optional[str]) -> Optional[dict]:
+        """
+        Public hook for resolving an opaque access token to its claims.
+
+        Symmetric to ``revoke_access_token``. Used by callers outside this
+        module that need to look up the user behind a cookie — e.g. the
+        SSO link flow, which has to know which user is connected before
+        attaching an external identity. Returns None when the token is
+        unknown (expired, revoked, never issued) or when the store is
+        unavailable, so callers can branch on a single falsy check.
+
+        Internal hot paths (the auth middleware) build their own
+        ``AccessTokenStore`` directly to avoid the extra indirection on
+        every authenticated request.
+        """
+        if not token_id:
+            return None
+        store = cls._get_access_token_store()
+        if store is None:
+            return None
+        return await store.get(token_id)
+
+    @classmethod
+    async def revoke_access_token(cls, token_id: Optional[str]) -> bool:
+        """
+        Public hook for invalidating an opaque access token server-side.
+
+        Used by callers that need to drop a token outside the regular logout
+        flow — notably:
+        - refresh: discard the previous token before minting a new one
+          (prevents Redis orphans + replay of the leaked cookie).
+        - login: a stale access cookie may already exist if the previous
+          session was abandoned without logout; purge it to avoid a
+          short-lived dangling claims entry.
+
+        Returns True if a stored entry was actually removed, False if the
+        token was missing/empty/already gone or if the store is unavailable.
+        Callers should not branch on the return value — a no-op is harmless.
+        """
+        if not token_id:
+            return False
+        store = cls._get_access_token_store()
+        if store is None:
+            return False
+        return await store.delete(token_id)
+
+    @classmethod
+    def _get_access_token_store(cls) -> Optional[AccessTokenStore]:
+        """
+        Build an AccessTokenStore bound to the current app_manager pubsub.
+
+        Internal: callers outside this class should go through
+        ``revoke_access_token`` or ``resolve_access_token`` instead — keeps
+        the store implementation encapsulated.
+        """
+        pubsub = getattr(cls.app_manager, "pubsub", None)
+        if pubsub is None:
+            return None
+        return AccessTokenStore(pubsub)
+
+    @classmethod
+    def _require_access_token_store(cls) -> AccessTokenStore:
+        """
+        Build an AccessTokenStore or raise — used by code paths that cannot
+        proceed without a working store (login, refresh).
+        """
+        store = cls._get_access_token_store()
+        if store is None:
+            raise RuntimeError(
+                "AccessTokenStore unavailable: PubSubManager is not initialised. "
+                "Ensure the 'pubsub' plugin is configured so user authentication "
+                "tokens can be stored server-side."
+            )
+        return store
 
     @classmethod
     async def clear_auth_cookies(cls, response: Response) -> None:

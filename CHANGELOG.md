@@ -7,6 +7,17 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+- BREAKING (operational): user `access_token` cookie is now an opaque UUID resolved server-side via Redis (`AccessTokenStore`) instead of a JWT carrying claims inline. Fixes silent cookie drop for users whose claims push the JWT past the RFC 6265 4096-byte browser limit. Existing access cookies become invalid on deploy; the refresh flow re-issues a new opaque cookie transparently.
+- `UserAuthMiddleware` resolves tokens through `AccessTokenStore` instead of decoding a JWT; XSRF semantics unchanged.
+- `AuthService.login` accepts an optional `request` and revokes any stale access token from the previous session before issuing a new one (symmetry with `refresh_access_token`).
+- SSO link flow resolves the connected user via `AuthService.resolve_access_token` instead of decoding the cookie inline.
+
+### Added
+- `AccessTokenStore` (`lys/apps/user_auth/modules/auth/store.py`): server-side opaque token store keyed under `lys:access_token:` with TTL aligned on `access_token_expire_minutes`.
+- `AuthService.resolve_access_token(token_id)` and `AuthService.revoke_access_token(token_id)` public hooks for callers outside the auth module.
+- Server-side revocation on logout and refresh: a leaked access cookie cannot be replayed until TTL — it is deleted immediately.
+
 ## [0.10.0] - 2026-05-05
 
 ### Added

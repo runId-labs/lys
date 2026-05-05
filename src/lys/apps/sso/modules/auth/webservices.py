@@ -6,7 +6,6 @@ from starlette.responses import RedirectResponse
 from lys.apps.sso.consts import SSO_MODE_LOGIN, SSO_MODE_SIGNUP, SSO_MODE_LINK, VALID_SSO_MODES
 from lys.apps.sso.errors import SSO_INVALID_MODE
 from lys.apps.user_auth.consts import ACCESS_COOKIE_KEY
-from lys.apps.user_auth.utils import AuthUtils
 from lys.core.errors import LysError
 from lys.core.managers.app import LysAppManager
 
@@ -100,13 +99,15 @@ async def sso_callback(provider: str, request: Request, code: str = "", state: s
             response = RedirectResponse(url=redirect_url, status_code=302)
 
         elif mode == SSO_MODE_LINK:
-            # For link mode, user must be authenticated
-            access_token = request.cookies.get(ACCESS_COOKIE_KEY)
-            if not access_token:
+            # For link mode the caller must already be authenticated.
+            # Resolve the opaque cookie through AuthService — public hook,
+            # avoids reaching into the auth implementation from this app.
+            auth_service = app_manager.get_service("auth")
+            claims = await auth_service.resolve_access_token(request.cookies.get(ACCESS_COOKIE_KEY))
+
+            if not claims:
                 response = RedirectResponse(url=f"{front_url}?error=SSO_NOT_AUTHENTICATED", status_code=302)
             else:
-                auth_utils = AuthUtils()
-                claims = await auth_utils.decode(access_token)
                 connected_user_id = claims.get("sub")
 
                 async with app_manager.database.get_session() as session:

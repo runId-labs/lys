@@ -193,6 +193,17 @@ class TestSSOCallbackEndpoint:
             "external_user_id": "ext-123",
         })
 
+        # Without a cookie, AuthService.resolve_access_token returns None.
+        mock_auth_service = MagicMock()
+        mock_auth_service.resolve_access_token = AsyncMock(return_value=None)
+
+        def _get_service(name):
+            if name == "auth":
+                return mock_auth_service
+            return mock_sso
+
+        mock_am.get_service.side_effect = _get_service
+
         with patch("lys.apps.sso.modules.auth.webservices.LysAppManager", return_value=mock_am):
             async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
                 resp = await client.get(
@@ -273,7 +284,11 @@ class TestSSOCallbackEndpoint:
 
     @pytest.mark.asyncio
     async def test_callback_link_mode_with_auth_success(self):
-        """Link mode with valid access token cookie creates link (lines 108-115)."""
+        """Link mode with valid access token cookie creates link.
+
+        The cookie now carries an opaque UUID resolved through
+        AuthService.resolve_access_token (public hook over AccessTokenStore).
+        """
         app = _create_test_app()
         mock_am, mock_sso = _mock_app_manager()
         mock_sso.handle_callback = AsyncMock(return_value={
@@ -286,20 +301,27 @@ class TestSSOCallbackEndpoint:
             return_value="https://app.example.com/settings?sso_linked=microsoft"
         )
 
-        with patch("lys.apps.sso.modules.auth.webservices.LysAppManager", return_value=mock_am), \
-             patch("lys.apps.sso.modules.auth.webservices.AuthUtils") as mock_auth_utils:
+        # mock_am.get_service is a MagicMock returning mock_sso for any name; tighten it
+        # so the SSO service and the auth service are distinct.
+        mock_auth_service = MagicMock()
+        mock_auth_service.resolve_access_token = AsyncMock(return_value={"sub": "user-456"})
 
-            mock_auth_instance = MagicMock()
-            mock_auth_instance.decode = AsyncMock(return_value={"sub": "user-456"})
-            mock_auth_utils.return_value = mock_auth_instance
+        def _get_service(name):
+            if name == "auth":
+                return mock_auth_service
+            return mock_sso
 
+        mock_am.get_service.side_effect = _get_service
+
+        with patch("lys.apps.sso.modules.auth.webservices.LysAppManager", return_value=mock_am):
             async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
                 resp = await client.get(
                     "/auth/sso/microsoft/callback?code=valid&state=valid",
                     follow_redirects=False,
-                    cookies={"access_token": "valid-jwt-token"},
+                    cookies={"access_token": "opaque-uuid"},
                 )
 
         assert resp.status_code == 302
         assert "sso_linked=microsoft" in resp.headers["location"]
         mock_sso.handle_link.assert_called_once()
+        mock_auth_service.resolve_access_token.assert_awaited_once_with("opaque-uuid")

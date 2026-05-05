@@ -153,7 +153,7 @@ class TestAuthenticatedOperations:
             user_id = str(user.id)
 
         # Use Bearer token for the update (simpler than cookies with XSRF)
-        token = make_test_token(user_id)
+        token = await make_test_token(e2e_app_manager, user_id)
 
         response = await client.post(
             "/graphql",

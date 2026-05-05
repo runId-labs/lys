@@ -2,16 +2,17 @@
 E2E tests for UserAuthMiddleware.
 
 Tests verify that the middleware correctly:
-- Extracts and validates JWT tokens from cookies and headers
+- Extracts opaque access tokens from cookies and headers
+- Resolves them against the AccessTokenStore
 - Sets request.state.connected_user for authenticated requests
-- Handles expired/invalid tokens gracefully
+- Treats unknown/missing tokens as anonymous
 """
 
 import pytest
 
 from tests.e2e.conftest import (
     make_test_token,
-    make_expired_token,
+    make_unknown_token,
     ENABLED_USER_EMAIL,
     DEV_USER_PASSWORD,
 )
@@ -37,13 +38,12 @@ CONNECTED_USER_QUERY = """
 
 
 class TestMiddlewareTokenExtraction:
-    """Test middleware JWT token extraction and validation."""
+    """Test middleware opaque access token extraction and resolution."""
 
     @pytest.mark.asyncio
     async def test_bearer_token_authenticates_request(self, client, e2e_app_manager):
         """Test valid Bearer token in Authorization header authenticates user."""
         # Create a real user and get their ID
-        user_service = e2e_app_manager.get_service("user")
         async with e2e_app_manager.database.get_session() as session:
             from sqlalchemy import select
             user_entity = e2e_app_manager.get_entity("user")
@@ -56,7 +56,7 @@ class TestMiddlewareTokenExtraction:
             user = result.scalar_one()
             user_id = user.id
 
-        token = make_test_token(user_id)
+        token = await make_test_token(e2e_app_manager, user_id)
 
         response = await client.post(
             "/graphql",
@@ -80,14 +80,13 @@ class TestMiddlewareTokenExtraction:
 
         assert response.status_code == 200
         data = response.json()
-        # Without a token, connectedUser returns None (public query, no user)
         connected_user = data.get("data", {}).get("connectedUser")
         assert connected_user is None
 
     @pytest.mark.asyncio
-    async def test_expired_token_unauthenticated(self, client):
-        """Test expired token results in unauthenticated context."""
-        token = make_expired_token("some-user-id")
+    async def test_unknown_token_unauthenticated(self, client):
+        """Token that has no entry in the store (expired/revoked/never issued) is anonymous."""
+        token = make_unknown_token()
 
         response = await client.post(
             "/graphql",
@@ -97,22 +96,20 @@ class TestMiddlewareTokenExtraction:
 
         assert response.status_code == 200
         data = response.json()
-        # Expired token → middleware sets connected_user=None → returns None
         connected_user = data.get("data", {}).get("connectedUser")
         assert connected_user is None
 
     @pytest.mark.asyncio
     async def test_invalid_token_unauthenticated(self, client):
-        """Test invalid/malformed token results in unauthenticated context."""
+        """Test malformed token results in unauthenticated context."""
         response = await client.post(
             "/graphql",
             json={"query": CONNECTED_USER_QUERY},
-            headers={"Authorization": "Bearer not-a-real-jwt-token"},
+            headers={"Authorization": "Bearer not-a-real-token"},
         )
 
         assert response.status_code == 200
         data = response.json()
-        # Invalid token → middleware sets connected_user=None → returns None
         connected_user = data.get("data", {}).get("connectedUser")
         assert connected_user is None
 
