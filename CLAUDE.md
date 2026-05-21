@@ -232,8 +232,13 @@ When the user validates code and asks to commit:
    - `feat:` → minor bump (e.g., 0.1.0 → 0.2.0)
    - `feat!:` or `BREAKING CHANGE` → major bump (e.g., 0.1.0 → 1.0.0)
    - `docs:`, `chore:`, `test:`, `style:` → no version bump
-6. **Commit** with conventional commit message (no signatures, no attribution).
-7. **If version was bumped**: create git tag `git tag v{new_version}` and tell the user to run `git push origin main --tags` to push code + tag and trigger PyPI publication.
+6. **If the version was bumped at step 5, archive `[Unreleased]` in the CHANGELOG** — MANDATORY, do NOT skip:
+   - Rename the current `## [Unreleased]` heading to `## [{new_version}] - {today YYYY-MM-DD}` so all the entries (including the one just added at step 4) end up in the new dated release section.
+   - Insert a fresh empty `## [Unreleased]` heading above it so the next contributor has a clean section to write into.
+   - Verify with `grep -n "^## " CHANGELOG.md | head -5` that the top now reads: `## [Unreleased]` then `## [{new_version}] - {date}` then the previous release.
+   - Why this exists: without this step, `[Unreleased]` accumulates entries across multiple releases and the CHANGELOG no longer maps to the git tags. This has happened before — do not skip.
+7. **Commit** with conventional commit message (no signatures, no attribution). The single commit must include code, tests, CHANGELOG (with `[Unreleased]` archived if step 6 applied), `pyproject.toml`, and `README.md` (if badge updated).
+8. **If version was bumped**: create git tag `git tag v{new_version}` and tell the user to run `git push origin main --tags` to push code + tag and trigger PyPI publication.
 
 Example of correct commit message:
 ```
