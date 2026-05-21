@@ -653,3 +653,62 @@ class TestGraphQLToolExecutorSpecialTools:
 
         # Should use the special tool handler, not the GraphQL path
         assert result["status"] == "navigation_scheduled"
+
+    def test_handle_navigate_continue_action_stores_tz_aware_datetimes(self, executor):
+        """Regression: pending navigation actions must store timezone-aware datetimes.
+
+        The store is shared with AIGuardrailService.confirm_action which compares
+        expires_at against datetime.now(UTC). A naive datetime here would raise
+        TypeError at confirmation time.
+        """
+        from lys.apps.ai.utils.guardrails import _pending_actions
+
+        _pending_actions.clear()
+        try:
+            info = MagicMock()
+            info.context.connected_user = {"sub": "user-123"}
+            executor._accessible_routes = [{"path": "/dashboard", "name": "Dashboard"}]
+
+            result = executor._handle_navigate(
+                {"path": "/dashboard", "continue_action": True},
+                {"info": info},
+            )
+
+            assert result["status"] == "confirmation_required"
+            action_id = result["action_id"]
+            stored = _pending_actions[action_id]
+
+            assert stored["created_at"].tzinfo is not None
+            assert stored["expires_at"].tzinfo is not None
+        finally:
+            _pending_actions.clear()
+
+    @pytest.mark.asyncio
+    async def test_handle_navigate_continue_action_round_trip_with_confirm(self, executor):
+        """Regression: a pending navigation must be confirmable without a TypeError
+        on datetime comparison (naive vs aware bug)."""
+        from lys.apps.ai.utils.guardrails import AIGuardrailService, _pending_actions
+
+        _pending_actions.clear()
+        try:
+            info = MagicMock()
+            info.context.connected_user = {"sub": "user-123"}
+            info.context.frontend_actions = []
+            executor._accessible_routes = [{"path": "/dashboard", "name": "Dashboard"}]
+
+            pending = executor._handle_navigate(
+                {"path": "/dashboard", "continue_action": True},
+                {"info": info},
+            )
+            action_id = pending["action_id"]
+
+            confirm_result = await AIGuardrailService.confirm_action(
+                action_id=action_id,
+                confirmed=True,
+                info=info,
+            )
+
+            assert confirm_result["status"] == "execute"
+            assert confirm_result["tool_name"] == "navigate"
+        finally:
+            _pending_actions.clear()

@@ -7,6 +7,11 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.12.1] - 2026-05-21
+
+### Fixed
+- `GraphQLToolExecutor._handle_navigate` stored `created_at` / `expires_at` with the deprecated naive `datetime.utcnow()`, while `AIGuardrailService.confirm_action` compares `expires_at` against `datetime.now(UTC)`. Confirming a pending navigation raised `TypeError: can't compare offset-naive and offset-aware datetimes`. Both fields are now stored as timezone-aware (`datetime.now(UTC)`), matching `guardrails.py`.
+
 ## [0.12.0] - 2026-05-21
 
 ### Changed

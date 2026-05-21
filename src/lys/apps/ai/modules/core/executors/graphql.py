@@ -490,7 +490,7 @@ class GraphQLToolExecutor(ToolExecutor):
     def _handle_navigate(self, arguments: Dict[str, Any], context: Dict[str, Any]) -> Dict[str, Any]:
         """Handle navigate frontend passthrough tool."""
         import uuid
-        from datetime import datetime, timedelta
+        from datetime import datetime, timedelta, UTC
 
         path = arguments.get("path", "")
         continue_action = arguments.get("continue_action", False)
@@ -531,8 +531,8 @@ class GraphQLToolExecutor(ToolExecutor):
                 "tool_data": {"is_navigate": True},
                 "tool_args": {"path": path, "continue_action": True},
                 "user_id": user_id,
-                "created_at": datetime.utcnow(),
-                "expires_at": datetime.utcnow() + timedelta(minutes=5),
+                "created_at": datetime.now(UTC),
+                "expires_at": datetime.now(UTC) + timedelta(minutes=5),
                 "preview": {"path": path, "page_name": route_name}
             }
 
