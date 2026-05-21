@@ -3,7 +3,7 @@ import uuid
 from datetime import datetime, timedelta, timezone
 
 import bcrypt
-from sqlalchemy import update, select, or_
+from sqlalchemy import update, select, or_, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from lys.apps.user_auth.modules.emailing.consts import (
@@ -145,6 +145,11 @@ class UserService(EntityService[User]):
         """
         Get user by email address.
 
+        Lookup is case-insensitive: RFC 5321 treats email addresses as
+        effectively case-insensitive, and all major providers do too.
+        Using func.lower() on the column also recovers legacy mixed-case
+        rows that may exist from before normalization on insert.
+
         Args:
             email: The email address to search for
             session: Database session
@@ -152,14 +157,16 @@ class UserService(EntityService[User]):
         Returns:
             User entity if found, None otherwise
         """
-        # Get UserEmailAddress service
-        email_address_service = cls.app_manager.get_service("user_email_address")
+        if email is None:
+            return None
 
-        # Query user by email address - join on user_id = User.id
+        email_address_service = cls.app_manager.get_service("user_email_address")
+        normalized = email.strip().lower()
+
         stmt = (
             select(cls.entity_class)
             .join(email_address_service.entity_class)
-            .where(email_address_service.entity_class.id == email)
+            .where(func.lower(email_address_service.entity_class.id) == normalized)
         )
         result = await session.execute(stmt)
         return result.scalar_one_or_none()
@@ -201,8 +208,8 @@ class UserService(EntityService[User]):
         # 3. Validate gender exists in database (if provided)
         await gender_service.validate_gender_exists(gender_id, session)
 
-        # 4. Create email address entity
-        email_address = user_email_address_service.entity_class(id=email)
+        # 4. Create email address entity (normalized to lowercase: RFC 5321 + consistent lookups)
+        email_address = user_email_address_service.entity_class(id=email.strip().lower())
 
         # 5. Hash the password (None for SSO-only users)
         hashed_password = AuthUtils.hash_password(password) if password is not None else None
@@ -817,10 +824,10 @@ class UserService(EntityService[User]):
         old_email = user.email_address
         await session.delete(old_email)
 
-        # 3. Create new email address entity (validated_at will be None by default)
+        # 3. Create new email address entity (normalized to lowercase: RFC 5321 + consistent lookups)
         await user_email_address_service.create(
             session,
-            id=new_email,
+            id=new_email.strip().lower(),
             user_id=user.id
         )
 

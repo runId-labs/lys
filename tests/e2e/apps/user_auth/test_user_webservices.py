@@ -29,7 +29,7 @@ LOGIN_MUTATION = """
 
 REQUEST_PASSWORD_RESET_MUTATION = """
     mutation RequestPasswordReset($email: String!) {
-        requestPasswordReset(email: $email) {
+        requestPasswordReset(inputs: {email: $email}) {
             succeed
         }
     }

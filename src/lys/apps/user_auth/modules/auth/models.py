@@ -26,7 +26,10 @@ class LoginInputModel(BaseModel):
                 "login cannot be empty"
             )
 
-        return login.strip()
+        # Lowercased to match the case-insensitive lookup performed by
+        # AuthService.get_user_from_login (RFC 5321 for email logins, and
+        # de-facto convention for usernames).
+        return login.strip().lower()
 
     @field_validator('password')
     @classmethod

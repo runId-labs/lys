@@ -168,15 +168,14 @@ class TestAuthServiceUserLookup:
             assert found_user is None
 
     @pytest.mark.asyncio
-    async def test_get_user_from_login_case_sensitive(self, user_auth_app_manager):
-        """Test that email lookup is case-sensitive."""
+    async def test_get_user_from_login_is_case_insensitive(self, user_auth_app_manager):
+        """Email lookups must match regardless of input casing (RFC 5321)."""
         user_service = user_auth_app_manager.get_service("user")
         auth_service = user_auth_app_manager.get_service("auth")
         email = "lowercase@example.com"
 
         async with user_auth_app_manager.database.get_session() as session:
-            # Create user with lowercase email
-            await user_service._create_user_internal(
+            created = await user_service._create_user_internal(
                 session=session,
                 email=email,
                 password="Password123!",
@@ -186,10 +185,21 @@ class TestAuthServiceUserLookup:
             )
             await session.commit()
 
-            # Try lookup with different case
-            found_user = await auth_service.get_user_from_login("LOWERCASE@example.com", session)
+            # Upper-case the local part and the domain, plus surrounding whitespace
+            found_user = await auth_service.get_user_from_login(
+                "  LOWERCASE@Example.COM  ", session
+            )
 
-            # Should not find user (email is case-sensitive)
+            assert found_user is not None
+            assert found_user.id == created.id
+
+    @pytest.mark.asyncio
+    async def test_get_user_from_login_handles_none(self, user_auth_app_manager):
+        """A None login must not blow up — it just resolves to no user."""
+        auth_service = user_auth_app_manager.get_service("auth")
+
+        async with user_auth_app_manager.database.get_session() as session:
+            found_user = await auth_service.get_user_from_login(None, session)
             assert found_user is None
 
 

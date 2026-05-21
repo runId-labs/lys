@@ -60,3 +60,13 @@ class TestLoginInputModel:
             password="password123"
         )
         assert model.login == "test@example.com"
+
+    def test_login_is_lowercased(self):
+        """Login must be lowercased to match case-insensitive DB lookup."""
+        from lys.apps.user_auth.modules.auth.models import LoginInputModel
+
+        model = LoginInputModel(
+            login="  MixedCase@Example.COM  ",
+            password="password123"
+        )
+        assert model.login == "mixedcase@example.com"

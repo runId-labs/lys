@@ -216,6 +216,32 @@ class TestUserFixturesModel:
         assert "password" in UserFixturesModel.AttributesModel.model_fields
 
 
+class TestRequestPasswordResetInputModel:
+    """Tests for RequestPasswordResetInputModel."""
+
+    def test_model_exists(self):
+        from lys.apps.user_auth.modules.user.models import RequestPasswordResetInputModel
+        assert RequestPasswordResetInputModel is not None
+
+    def test_has_email_field(self):
+        from lys.apps.user_auth.modules.user.models import RequestPasswordResetInputModel
+        assert "email" in RequestPasswordResetInputModel.model_fields
+
+    def test_email_is_normalized(self):
+        """Email must be stripped and lowercased to match the case-insensitive lookup."""
+        from lys.apps.user_auth.modules.user.models import RequestPasswordResetInputModel
+
+        model = RequestPasswordResetInputModel(email="  MixedCase@Example.COM  ")
+        assert model.email == "mixedcase@example.com"
+
+    def test_invalid_email_rejected(self):
+        from pydantic import ValidationError
+        from lys.apps.user_auth.modules.user.models import RequestPasswordResetInputModel
+
+        with pytest.raises(ValidationError):
+            RequestPasswordResetInputModel(email="not-an-email")
+
+
 class TestResetPasswordInputModel:
     """Tests for ResetPasswordInputModel."""
 

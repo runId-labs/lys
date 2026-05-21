@@ -176,9 +176,13 @@ class UserDevFixtures(EntityFixtures[UserService]):
         Creates the entity instance without persisting it yet.
         The user_id will be set automatically by SQLAlchemy relationship
         when the User entity is persisted.
+
+        The address is normalized (stripped + lowercased) so fixture-seeded
+        rows always match the case-insensitive lookups performed by
+        UserService.get_by_email and AuthService.get_user_from_login.
         """
         user_email_address_class = cls.app_manager.get_entity("user_email_address")
-        return user_email_address_class(id=email_address)
+        return user_email_address_class(id=email_address.strip().lower())
 
     @classmethod
     async def format_password(cls, password: str, attributes: dict) -> str:

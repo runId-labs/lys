@@ -12,11 +12,17 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - `UserAuthMiddleware` resolves tokens through `AccessTokenStore` instead of decoding a JWT; XSRF semantics unchanged.
 - `AuthService.login` accepts an optional `request` and revokes any stale access token from the previous session before issuing a new one (symmetry with `refresh_access_token`).
 - SSO link flow resolves the connected user via `AuthService.resolve_access_token` instead of decoding the cookie inline.
+- `UserService.get_by_email` and `AuthService.get_user_from_login` now perform case-insensitive lookups (`func.lower()` on the column compared against a lowercased, stripped input). Recovers legacy mixed-case rows and matches the RFC 5321 convention. Both accept `None` and resolve to no user instead of raising.
+- `UserService._validate_and_prepare_user_data` and `UserService.update_email` normalize the address (`strip().lower()`) before persisting, so newly written rows always match the case-insensitive lookup.
+- `LoginInputModel.validate_login` lowercases the login at the Pydantic boundary (was strip-only), keeping input normalization consistent with `CreateUserInputModel.validate_email` and `UpdateUserEmailInputModel.validate_email`.
+- `UserFixtures.format_email_address` normalizes the seeded address so fixture-loaded rows always match the case-insensitive lookup.
+- BREAKING (API): the `requestPasswordReset` GraphQL mutation now takes `inputs: RequestPasswordResetInput!` (with a normalized `EmailStr` field) instead of a bare `email: String!`. Clients must update their queries from `requestPasswordReset(email: $email)` to `requestPasswordReset(inputs: {email: $email})`.
 
 ### Added
 - `AccessTokenStore` (`lys/apps/user_auth/modules/auth/store.py`): server-side opaque token store keyed under `lys:access_token:` with TTL aligned on `access_token_expire_minutes`.
 - `AuthService.resolve_access_token(token_id)` and `AuthService.revoke_access_token(token_id)` public hooks for callers outside the auth module.
 - Server-side revocation on logout and refresh: a leaked access cookie cannot be replayed until TTL — it is deleted immediately.
+- `RequestPasswordResetInputModel` (Pydantic) and `RequestPasswordResetInput` (Strawberry): validate the email as `EmailStr` and normalize it at the boundary so the service-layer lookup matches existing rows regardless of input casing.
 
 ## [0.10.0] - 2026-05-05
 

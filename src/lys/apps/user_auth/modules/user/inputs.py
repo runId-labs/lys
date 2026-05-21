@@ -8,6 +8,7 @@ from lys.apps.user_auth.modules.user.models import (
     UpdateUserEmailInputModel,
     UpdatePasswordInputModel,
     ChangePasswordInputModel,
+    RequestPasswordResetInputModel,
     ResetPasswordInputModel,
     VerifyEmailInputModel,
     ActivateUserInputModel,
@@ -109,6 +110,13 @@ class ChangePasswordInput:
     )
     new_password: strawberry.auto = strawberry.field(
         description="New password (min 8 chars, must contain at least one letter and one digit)"
+    )
+
+
+@strawberry.experimental.pydantic.input(model=RequestPasswordResetInputModel)
+class RequestPasswordResetInput:
+    email: strawberry.auto = strawberry.field(
+        description="Email address of the account requesting a password reset (will be normalized to lowercase)"
     )
 
 

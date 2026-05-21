@@ -11,6 +11,7 @@ from lys.apps.user_auth.modules.user.entities import User, UserAuditLog
 from lys.apps.user_auth.modules.user.inputs import (
     CreateUserInput,
     CreateSuperUserInput,
+    RequestPasswordResetInput,
     ResetPasswordInput,
     VerifyEmailInput,
     ActivateUserInput,
@@ -304,12 +305,14 @@ class UserMutation(Mutation):
         description="Send a password reset email to the user.",
         options={"generate_tool": False}
     )
-    async def request_password_reset(self, email: str, info: Info) -> PasswordResetRequestNode:
+    async def request_password_reset(
+        self, inputs: RequestPasswordResetInput, info: Info
+    ) -> PasswordResetRequestNode:
         """
         Request a password reset email.
 
         Args:
-            email: User's email address
+            inputs: Email address (validated and lowercased by the input model)
             info: GraphQL context
 
         Returns:
@@ -318,8 +321,8 @@ class UserMutation(Mutation):
         node = PasswordResetRequestNode.get_effective_node()
         session = info.context.session
         user_service: type[UserService] = node.service_class
+        email = inputs.to_pydantic().email
 
-        # Delegate all business logic to the service
         await user_service.request_password_reset(
             email=email,
             session=session,

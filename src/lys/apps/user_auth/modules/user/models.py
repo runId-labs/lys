@@ -241,6 +241,26 @@ class ChangePasswordInputModel(BaseModel):
         return validate_password_for_creation(password)
 
 
+class RequestPasswordResetInputModel(BaseModel):
+    """
+    Input model for requesting a password reset email.
+
+    Normalizes the email at the boundary so the service-layer lookup
+    matches existing stored addresses regardless of input casing, and
+    so logs/audit records don't leak user-supplied casing variations.
+    """
+    email: EmailStr = Field(
+        description="Email address of the account requesting a password reset"
+    )
+
+    @field_validator('email')
+    @classmethod
+    def validate_email(cls, email: str | None, info: ValidationInfo) -> str | None:
+        if email:
+            return email.strip().lower()
+        return email
+
+
 class ResetPasswordInputModel(BaseModel):
     """
     Input model for resetting password using one-time token.

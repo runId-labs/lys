@@ -174,6 +174,39 @@ class TestUserServiceCRUD:
             assert found_user is None
 
     @pytest.mark.asyncio
+    async def test_get_by_email_is_case_insensitive(self, user_auth_app_manager):
+        """Lookups must match regardless of input casing or surrounding whitespace."""
+        user_service = user_auth_app_manager.get_service("user")
+
+        async with user_auth_app_manager.database.get_session() as session:
+            created = await user_service.create_user(
+                session=session,
+                email="mixedcase@example.com",
+                password="Password123!",
+                language_id="en",
+                send_verification_email=False
+            )
+
+        async with user_auth_app_manager.database.get_session() as session:
+            found_user = await user_service.get_by_email(
+                "  MixedCase@Example.COM  ", session
+            )
+
+            assert found_user is not None
+            assert found_user.id == created.id
+            # Stored value remains the canonical lowercase form
+            assert found_user.email_address.id == "mixedcase@example.com"
+
+    @pytest.mark.asyncio
+    async def test_get_by_email_handles_none(self, user_auth_app_manager):
+        """Passing None must resolve to no user rather than raising."""
+        user_service = user_auth_app_manager.get_service("user")
+
+        async with user_auth_app_manager.database.get_session() as session:
+            found_user = await user_service.get_by_email(None, session)
+            assert found_user is None
+
+    @pytest.mark.asyncio
     async def test_update_user_basic_fields(self, user_auth_app_manager):
         """Test updating user private data fields."""
         user_service = user_auth_app_manager.get_service("user")

@@ -4,7 +4,7 @@ import os
 from datetime import timedelta
 from typing import Optional, Type
 
-from sqlalchemy import select, ColumnElement, or_
+from sqlalchemy import select, ColumnElement, or_, func
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Relationship, ColumnProperty, InstrumentedAttribute
 from starlette.requests import Request
@@ -53,24 +53,36 @@ class AuthService(Service):
     async def get_user_from_login(cls, login: str, session: AsyncSession) \
             -> Optional[User]:
         """
-        Get user from login
+        Get user from login.
+
+        Lookup is case-insensitive on the login attribute, matching the
+        convention used by most identity providers (RFC 5321 for email,
+        and de-facto for usernames). Combined with normalization at
+        creation, this prevents auth failures for users who type their
+        login in a different casing than stored.
+
         :param login: username or email address etc...
         :param session: database session
         :return:
         """
+        if login is None:
+            return None
+
         user_class: Type[User] = cls.app_manager.get_entity("user")
+        normalized_login = login.strip().lower()
 
         user: User | None = None
         inner_clause: ColumnElement | None = None
         attribute: InstrumentedAttribute = getattr(user_class, user_class.login_name())
 
         if isinstance(attribute.property, Relationship):
-            # foreign key
-            inner_clause = attribute.has(id=login)
+            # foreign key — match on the related entity's id column case-insensitively
+            related_class = attribute.property.mapper.class_
+            inner_clause = attribute.has(func.lower(related_class.id) == normalized_login)
 
         elif isinstance(attribute, ColumnProperty):
             # entity attribute
-            inner_clause = attribute == login
+            inner_clause = func.lower(attribute) == normalized_login
 
         if inner_clause is not None:
             stmt = select(user_class).where(inner_clause).limit(1)
