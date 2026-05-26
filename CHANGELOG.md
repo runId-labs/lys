@@ -7,6 +7,15 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.12.2] - 2026-05-26
+
+### Fixed
+- `Entity.created_at` / `updated_at` previously used `server_default=func.now()`, which Postgres resolves to `transaction_timestamp()` (frozen at transaction start). Multiple rows inserted in the same transaction shared the same value, making `ORDER BY created_at` non-deterministic. Replaced with Python-side `default=lambda: datetime.now(UTC)`, evaluated per row at INSERT/UPDATE time. Cross-DB (works on Postgres and SQLite, the latter used by the test suite).
+- `AIConversationService._build_messages` now orders by `(created_at, id)` instead of `created_at` alone, providing a stable tiebreaker for rows with identical timestamps. Together with the per-row timestamp fix, this resolves the Mistral "Unexpected role 'tool' after role 'system'" error that surfaced when conversation history rows were replayed in a non-deterministic order.
+
+### Added
+- `lys.apps.ai.utils.message_sanitizer.sanitize_llm_messages`: provider-agnostic enforcer of the LLM message-ordering contract (Mistral/OpenAI/Anthropic). Keeps at most one `system` at index 0, reattaches each `tool` message immediately after the `assistant` whose `tool_calls[].id` matches, drops orphan `tool` messages, and injects a synthetic placeholder for any `assistant.tool_calls[]` entry left without a response. Applied as a defense-in-depth boundary in all `AIService.chat*` entry points.
+
 ## [0.12.1] - 2026-05-21
 
 ### Fixed

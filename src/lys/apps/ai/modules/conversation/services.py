@@ -232,7 +232,7 @@ class AIConversationService(EntityService[AIConversation]):
         result = await session.execute(
             select(message_entity)
             .where(message_entity.conversation_id == conversation.id)
-            .order_by(message_entity.created_at)
+            .order_by(message_entity.created_at, message_entity.id)
         )
         db_messages = result.scalars().all()
 

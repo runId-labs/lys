@@ -21,6 +21,7 @@ from lys.apps.ai.utils.providers.exceptions import (
     AIRateLimitError,
     AIProviderError,
 )
+from lys.apps.ai.utils.message_sanitizer import sanitize_llm_messages
 from lys.apps.ai.utils.providers.mistral import MistralProvider
 from lys.core.consts.ai import ToolRiskLevel
 from lys.core.graphql.client import GraphQLClient
@@ -229,6 +230,7 @@ class AIService(Service):
 
         if endpoint.system_prompt:
             messages = [{"role": "system", "content": endpoint.system_prompt}] + messages
+        messages = sanitize_llm_messages(messages)
 
         current_endpoint = endpoint
         while current_endpoint is not None:
@@ -273,6 +275,7 @@ class AIService(Service):
         # Add system prompt from config if present
         if config.system_prompt:
             messages = [{"role": "system", "content": config.system_prompt}] + messages
+        messages = sanitize_llm_messages(messages)
 
         return await cls._chat_with_fallback(messages, config, tools)
 
@@ -286,6 +289,7 @@ class AIService(Service):
         """Synchronous version for Celery workers."""
         if config.system_prompt:
             messages = [{"role": "system", "content": config.system_prompt}] + messages
+        messages = sanitize_llm_messages(messages)
 
         return cls._chat_with_fallback_sync(messages, config, tools)
 
@@ -315,6 +319,7 @@ class AIService(Service):
         """
         if config.system_prompt:
             messages = [{"role": "system", "content": config.system_prompt}] + messages
+        messages = sanitize_llm_messages(messages)
 
         return await cls._chat_json_with_fallback(messages, config, schema)
 
@@ -328,6 +333,7 @@ class AIService(Service):
         """Synchronous version for Celery workers."""
         if config.system_prompt:
             messages = [{"role": "system", "content": config.system_prompt}] + messages
+        messages = sanitize_llm_messages(messages)
 
         return cls._chat_json_with_fallback_sync(messages, config, schema)
 

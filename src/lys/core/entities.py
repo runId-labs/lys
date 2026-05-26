@@ -1,8 +1,8 @@
-from datetime import datetime
+from datetime import datetime, UTC
 from typing import Tuple, List, Dict, Union, Any
 from uuid import uuid4
 
-from sqlalchemy import Uuid, DateTime, func, Select, BinaryExpression
+from sqlalchemy import Uuid, DateTime, Select, BinaryExpression
 from sqlalchemy.orm import Mapped, mapped_column
 
 from lys.core.consts.permissions import ROLE_ACCESS_KEY, OWNER_ACCESS_KEY, ORGANIZATION_ROLE_ACCESS_KEY
@@ -32,9 +32,15 @@ class Entity(EntityInterface):
     # Primary key: Auto-generated UUID for technical identification
     id: Mapped[str] = mapped_column(Uuid(as_uuid=False), primary_key=True, default=lambda: str(uuid4()))
 
-    # Audit timestamps: Automatically managed by database
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True, onupdate=func.now())
+    # Audit timestamps. Evaluated per row at INSERT/UPDATE time (Python clock, not DB clock),
+    # so multiple rows inserted in the same transaction get distinct timestamps and
+    # `ORDER BY created_at` is deterministic.
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(UTC),
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=True, onupdate=lambda: datetime.now(UTC),
+    )
 
     @classmethod
     def get_tablename(cls):
