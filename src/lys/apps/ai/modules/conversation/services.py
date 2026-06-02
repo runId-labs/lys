@@ -291,11 +291,9 @@ class AIConversationService(EntityService[AIConversation]):
         """
         system_prompt_parts = []
 
-        # Add custom application system prompt if configured
-        custom_system_prompt = chatbot_config.get("system_prompt") if isinstance(chatbot_config, dict) else None
-        if custom_system_prompt:
-            system_prompt_parts.append(custom_system_prompt)
-            system_prompt_parts.append("")
+        # Note: the base chatbot prompt is injected by AIService entry points
+        # (endpoint.system_prompt). Don't add it again here — it would end up
+        # duplicated in the final merged system message.
 
         # Add page-specific prompt if available
         if page_behaviour and page_behaviour.get("prompt"):

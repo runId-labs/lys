@@ -22,7 +22,9 @@ class TestSystemPositioning:
         ]
         assert sanitize_llm_messages(messages) == messages
 
-    def test_duplicate_system_keeps_only_first(self):
+    def test_multiple_system_messages_are_merged_preserving_order(self):
+        # Real-world case: endpoint.system_prompt prepended on top of a
+        # conversation-built system prompt. Both contents must survive.
         messages = [
             {"role": "system", "content": "sys1"},
             {"role": "user", "content": "hi"},
@@ -30,7 +32,20 @@ class TestSystemPositioning:
         ]
         result = sanitize_llm_messages(messages)
         assert [m["role"] for m in result] == ["system", "user"]
-        assert result[0]["content"] == "sys1"
+        assert result[0]["content"] == "sys1\n\nsys2"
+
+    def test_system_with_empty_content_is_skipped_when_merging(self):
+        # Falsy system content must not introduce dangling "\n\n" separators
+        # or an empty leading system message.
+        messages = [
+            {"role": "system", "content": "sys1"},
+            {"role": "system", "content": ""},
+            {"role": "user", "content": "hi"},
+            {"role": "system", "content": "sys2"},
+        ]
+        result = sanitize_llm_messages(messages)
+        assert [m["role"] for m in result] == ["system", "user"]
+        assert result[0]["content"] == "sys1\n\nsys2"
 
     def test_system_not_first_is_moved_to_index_zero(self):
         messages = [

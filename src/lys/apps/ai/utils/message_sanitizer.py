@@ -6,7 +6,11 @@ Enforces the message-ordering contract shared by major LLM providers
 conversation history regardless of how it was reconstructed upstream.
 
 Rules enforced:
-- At most one `system` message, placed at index 0.
+- At most one `system` message, placed at index 0. When the input contains
+  multiple system messages (e.g. an endpoint-level base prompt prepended on
+  top of a conversation-level system prompt), their `content` is concatenated
+  with a blank line separator, preserving input order. No system content is
+  dropped silently.
 - Each `tool` message is reattached immediately after the `assistant` message
   whose `tool_calls[].id` matches its `tool_call_id`.
 - `tool` messages with no matching parent are dropped (orphans).
@@ -29,19 +33,24 @@ def sanitize_llm_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]
         return messages
 
     tool_responses_by_id: Dict[str, Dict[str, Any]] = {}
-    first_system: Dict[str, Any] | None = None
+    system_contents: List[str] = []
     for msg in messages:
         role = msg.get("role")
         if role == "tool":
             tcid = msg.get("tool_call_id")
             if tcid:
                 tool_responses_by_id[tcid] = msg
-        elif role == "system" and first_system is None:
-            first_system = msg
+        elif role == "system":
+            content = msg.get("content")
+            if content:
+                system_contents.append(content)
 
     result: List[Dict[str, Any]] = []
-    if first_system is not None:
-        result.append(first_system)
+    if system_contents:
+        result.append({
+            "role": "system",
+            "content": "\n\n".join(system_contents),
+        })
 
     for msg in messages:
         role = msg.get("role")

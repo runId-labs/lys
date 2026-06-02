@@ -7,6 +7,12 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.12.3] - 2026-06-02
+
+### Fixed
+- `sanitize_llm_messages` now merges multiple `system` messages into a single index-0 message (contents concatenated with a blank-line separator, input order preserved) instead of keeping the first and silently dropping the rest. This preserves the conversation-level system prompt when an endpoint-level base prompt is prepended on top of it. Empty/falsy system contents are skipped.
+- `AIConversationService._build_system_prompt` no longer re-injects `chatbot_config.system_prompt`: it is the same value as `endpoint.system_prompt`, which `AIService` entry points already prepend. With the sanitizer now merging system messages, re-injecting it here would duplicate the base prompt in the final merged system message.
+
 ## [0.12.2] - 2026-05-26
 
 ### Fixed

@@ -319,8 +319,12 @@ class TestAIConversationServiceBuildSystemPrompt:
         assert result == ""
 
     @pytest.mark.asyncio
-    async def test_build_system_prompt_with_custom_prompt(self, mock_session):
-        """Test that custom system prompt is included."""
+    async def test_build_system_prompt_ignores_chatbot_config_system_prompt(self, mock_session):
+        """`chatbot_config.system_prompt` is the same value as `endpoint.system_prompt`,
+        which `AIService` entry points already prepend. Including it here would
+        cause it to land twice in the final merged system message, so
+        `_build_system_prompt` deliberately ignores it.
+        """
         from lys.apps.ai.modules.conversation.services import AIConversationService
 
         connected_user = None
@@ -332,7 +336,8 @@ class TestAIConversationServiceBuildSystemPrompt:
             mock_session, connected_user, chatbot_config, tools_count=0
         )
 
-        assert "ACME Corp" in result
+        assert "ACME Corp" not in result
+        assert result == ""
 
     @pytest.mark.asyncio
     async def test_build_system_prompt_with_page_behaviour(self, mock_session):
