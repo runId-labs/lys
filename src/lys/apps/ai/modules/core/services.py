@@ -22,6 +22,7 @@ from lys.apps.ai.utils.providers.exceptions import (
     AIProviderError,
 )
 from lys.apps.ai.utils.message_sanitizer import sanitize_llm_messages
+from lys.apps.ai.utils.providers.anthropic import AnthropicProvider
 from lys.apps.ai.utils.providers.mistral import MistralProvider
 from lys.core.consts.ai import ToolRiskLevel
 from lys.core.graphql.client import GraphQLClient
@@ -93,6 +94,7 @@ class AIService(Service):
     # Provider registry - can be overridden via inheritance
     _providers: Dict[str, Type[AIProvider]] = {
         "mistral": MistralProvider,
+        "anthropic": AnthropicProvider,
     }
 
     # ========== Provider Registry ==========

@@ -7,6 +7,16 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.13.0] - 2026-06-09
+
+### Added
+- `lys.apps.ai.utils.providers.anthropic.AnthropicProvider`: full `AIProvider` implementation for Anthropic's Messages API (chat, chat_sync, streaming, structured JSON). Registered under `provider="anthropic"` in `AIService._providers`; the API key resolves automatically from `_keys["anthropic"]`. Translates the OpenAI/Mistral-shaped flat message list to Anthropic's `system` field + `tool_use`/`tool_result` content blocks in both directions, so no calling code changes when an endpoint switches providers. Structured output uses forced `tool_choice` (Anthropic has no native `response_format`). Known models: `claude-opus-4-8`, `claude-sonnet-4-6`, `claude-haiku-4-5`.
+
+### Fixed
+- `AnthropicProvider` drops `temperature`/`top_p`/`top_k` (with a warning) for models that reject them (Opus 4.7+), instead of forwarding them and triggering an HTTP 400; they are still forwarded for models that accept them (e.g. Sonnet 4.6).
+- `AnthropicProvider` streaming now carries `input_tokens` from the `message_start` event into the final usage chunk, so streamed responses report complete `prompt_tokens`/`completion_tokens`/`total_tokens` instead of only completion tokens.
+- `AnthropicProvider` concatenates multiple `system` messages (blank-line separated, input order preserved) rather than keeping only the last one, matching `sanitize_llm_messages` behavior.
+
 ## [0.12.3] - 2026-06-02
 
 ### Fixed

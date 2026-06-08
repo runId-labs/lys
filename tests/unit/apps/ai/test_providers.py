@@ -4,6 +4,7 @@ Unit tests for AI providers.
 Tests provider error handling with mocked HTTP responses.
 """
 
+import json
 import logging
 
 import pytest
@@ -12,7 +13,7 @@ from unittest.mock import patch, MagicMock, AsyncMock
 import httpx
 from pydantic import BaseModel
 
-from lys.apps.ai.utils.providers import MistralProvider
+from lys.apps.ai.utils.providers import MistralProvider, AnthropicProvider
 from lys.apps.ai.utils.providers.abstracts import AIResponse
 from lys.apps.ai.utils.providers.config import AIEndpointConfig
 from lys.apps.ai.utils.providers.exceptions import (
@@ -1010,3 +1011,465 @@ class TestMistralProviderHandleErrorStatus:
         response.status_code = 200
         # Should not raise
         provider._handle_error_status(response)
+
+
+# ========== AnthropicProvider ==========
+
+
+class TestAnthropicProviderTranslation:
+    """Tests for AnthropicProvider message/tool/payload translation."""
+
+    @pytest.fixture
+    def provider(self):
+        return AnthropicProvider()
+
+    def _config(self, model="claude-opus-4-8", options=None):
+        return AIEndpointConfig(
+            provider="anthropic",
+            model=model,
+            api_key="test-api-key",
+            timeout=30,
+            options=options or {},
+        )
+
+    def test_prepare_drops_sampling_params_on_opus(self, provider, caplog):
+        """temperature/top_p/top_k are dropped (400 on Opus 4.7+) with a warning."""
+        config = self._config(
+            "claude-opus-4-8",
+            {"temperature": 0.7, "top_p": 0.9, "top_k": 5, "max_tokens": 1000},
+        )
+        with caplog.at_level(logging.WARNING):
+            payload, _, _ = provider._prepare([{"role": "user", "content": "hi"}], config)
+        assert "temperature" not in payload
+        assert "top_p" not in payload
+        assert "top_k" not in payload
+        assert payload["max_tokens"] == 1000
+        assert "rejects sampling parameters" in caplog.text
+
+    def test_prepare_keeps_sampling_params_on_sonnet(self, provider):
+        """Sonnet 4.6 still accepts temperature, so it must be forwarded."""
+        config = self._config("claude-sonnet-4-6", {"temperature": 0.7})
+        payload, _, _ = provider._prepare([{"role": "user", "content": "hi"}], config)
+        assert payload["temperature"] == 0.7
+
+    def test_prepare_remaps_stop_to_stop_sequences(self, provider):
+        config = self._config("claude-sonnet-4-6", {"stop": ["END"]})
+        payload, _, _ = provider._prepare([{"role": "user", "content": "hi"}], config)
+        assert payload["stop_sequences"] == ["END"]
+        assert "stop" not in payload
+
+    def test_prepare_default_max_tokens(self, provider):
+        config = self._config("claude-sonnet-4-6")
+        payload, _, _ = provider._prepare([{"role": "user", "content": "hi"}], config)
+        assert payload["max_tokens"] == 8192
+
+    def test_prepare_headers(self, provider):
+        config = self._config("claude-sonnet-4-6")
+        _, headers, _ = provider._prepare([{"role": "user", "content": "hi"}], config)
+        assert headers["x-api-key"] == "test-api-key"
+        assert headers["anthropic-version"] == "2023-06-01"
+        assert headers["content-type"] == "application/json"
+
+    def test_translate_messages_merges_system(self, provider):
+        """Multiple system messages are concatenated, not dropped."""
+        system, msgs = AnthropicProvider._translate_messages([
+            {"role": "system", "content": "Base prompt."},
+            {"role": "system", "content": "Conversation prompt."},
+            {"role": "user", "content": "hello"},
+        ])
+        assert system == "Base prompt.\n\nConversation prompt."
+        assert msgs == [{"role": "user", "content": [{"type": "text", "text": "hello"}]}]
+
+    def test_translate_messages_no_system(self, provider):
+        system, _ = AnthropicProvider._translate_messages([{"role": "user", "content": "x"}])
+        assert system is None
+
+    def test_translate_messages_assistant_tool_calls(self, provider):
+        """Assistant tool_calls become tool_use blocks with parsed input."""
+        _, msgs = AnthropicProvider._translate_messages([
+            {"role": "user", "content": "do it"},
+            {"role": "assistant", "content": "sure", "tool_calls": [
+                {"id": "call-1", "function": {"name": "f", "arguments": '{"a": 1}'}},
+            ]},
+            {"role": "tool", "tool_call_id": "call-1", "content": "result"},
+        ])
+        assistant = msgs[1]
+        assert assistant["role"] == "assistant"
+        assert assistant["content"][0] == {"type": "text", "text": "sure"}
+        tool_use = assistant["content"][1]
+        assert tool_use == {"type": "tool_use", "id": "call-1", "name": "f", "input": {"a": 1}}
+        tool_result = msgs[2]["content"][0]
+        assert tool_result == {
+            "type": "tool_result", "tool_use_id": "call-1", "content": "result",
+        }
+
+    def test_translate_messages_merges_consecutive_tool_results(self, provider):
+        """Consecutive tool messages collapse into a single user turn."""
+        _, msgs = AnthropicProvider._translate_messages([
+            {"role": "assistant", "content": "", "tool_calls": [
+                {"id": "c1", "function": {"name": "f", "arguments": "{}"}},
+                {"id": "c2", "function": {"name": "g", "arguments": "{}"}},
+            ]},
+            {"role": "tool", "tool_call_id": "c1", "content": "r1"},
+            {"role": "tool", "tool_call_id": "c2", "content": "r2"},
+        ])
+        # One assistant turn, then one user turn holding both tool_results.
+        assert len(msgs) == 2
+        assert msgs[1]["role"] == "user"
+        assert len(msgs[1]["content"]) == 2
+
+    def test_translate_tools_openai_shape(self, provider):
+        tools = [{"type": "function", "function": {
+            "name": "f", "description": "d", "parameters": {"type": "object", "properties": {}},
+        }, "_graphql": "internal"}]
+        out = AnthropicProvider._translate_tools(tools)
+        assert out == [{
+            "name": "f", "description": "d",
+            "input_schema": {"type": "object", "properties": {}},
+        }]
+
+    def test_translate_tools_already_anthropic(self, provider):
+        tools = [{"name": "f", "input_schema": {"type": "object"}, "_x": 1}]
+        out = AnthropicProvider._translate_tools(tools)
+        assert out == [{"name": "f", "input_schema": {"type": "object"}}]
+
+    def test_safe_json_variants(self, provider):
+        assert AnthropicProvider._safe_json('{"a": 1}') == {"a": 1}
+        assert AnthropicProvider._safe_json({"a": 1}) == {"a": 1}
+        assert AnthropicProvider._safe_json("not json") == {}
+        assert AnthropicProvider._safe_json("[1, 2]") == {}
+
+    def test_map_finish_reason(self, provider):
+        assert AnthropicProvider._map_finish_reason("end_turn") == "stop"
+        assert AnthropicProvider._map_finish_reason("max_tokens") == "length"
+        assert AnthropicProvider._map_finish_reason("tool_use") == "tool_calls"
+        assert AnthropicProvider._map_finish_reason(None) is None
+        assert AnthropicProvider._map_finish_reason("other") == "other"
+
+    def test_normalize_usage(self, provider):
+        assert AnthropicProvider._normalize_usage(
+            {"input_tokens": 10, "output_tokens": 5}
+        ) == {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15}
+        assert AnthropicProvider._normalize_usage(None) is None
+        assert AnthropicProvider._normalize_usage({}) is None
+
+    def test_get_available_models(self, provider):
+        assert "claude-opus-4-8" in AnthropicProvider.get_available_models()
+
+    def test_rejects_sampling_params(self, provider):
+        assert AnthropicProvider._rejects_sampling_params("claude-opus-4-8") is True
+        assert AnthropicProvider._rejects_sampling_params("claude-opus-4-7") is True
+        assert AnthropicProvider._rejects_sampling_params("claude-sonnet-4-6") is False
+
+
+class TestAnthropicProviderChat:
+    """Tests for AnthropicProvider.chat / chat_sync response parsing and errors."""
+
+    @pytest.fixture
+    def provider(self):
+        return AnthropicProvider()
+
+    @pytest.fixture
+    def config(self):
+        return AIEndpointConfig(
+            provider="anthropic", model="claude-opus-4-8", api_key="k", timeout=30,
+        )
+
+    @pytest.fixture
+    def messages(self):
+        return [{"role": "user", "content": "Hello"}]
+
+    @staticmethod
+    def _mock_response(status_code, content_blocks=None, stop_reason="end_turn"):
+        response = MagicMock(spec=httpx.Response)
+        response.status_code = status_code
+        if status_code == 200:
+            response.json.return_value = {
+                "content": content_blocks or [{"type": "text", "text": "Hi"}],
+                "usage": {"input_tokens": 10, "output_tokens": 5},
+                "model": "claude-opus-4-8",
+                "stop_reason": stop_reason,
+            }
+        else:
+            response.text = f"Error {status_code}"
+        return response
+
+    @pytest.mark.asyncio
+    async def test_chat_success(self, provider, config, messages):
+        mock_response = self._mock_response(200, [{"type": "text", "text": "Hello there"}])
+        with patch("httpx.AsyncClient") as mock_client:
+            mock_instance = AsyncMock()
+            mock_instance.post.return_value = mock_response
+            mock_client.return_value.__aenter__.return_value = mock_instance
+            result = await provider.chat(messages, config)
+        assert isinstance(result, AIResponse)
+        assert result.content == "Hello there"
+        assert result.usage == {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15}
+        assert result.finish_reason == "stop"
+        assert result.provider == "anthropic"
+
+    @pytest.mark.asyncio
+    async def test_chat_parses_tool_use(self, provider, config, messages):
+        blocks = [
+            {"type": "text", "text": "calling"},
+            {"type": "tool_use", "id": "tu-1", "name": "f", "input": {"a": 1}},
+        ]
+        mock_response = self._mock_response(200, blocks, stop_reason="tool_use")
+        with patch("httpx.AsyncClient") as mock_client:
+            mock_instance = AsyncMock()
+            mock_instance.post.return_value = mock_response
+            mock_client.return_value.__aenter__.return_value = mock_instance
+            result = await provider.chat(messages, config)
+        assert result.content == "calling"
+        assert result.tool_calls[0]["id"] == "tu-1"
+        assert result.tool_calls[0]["function"]["name"] == "f"
+        assert json.loads(result.tool_calls[0]["function"]["arguments"]) == {"a": 1}
+        assert result.finish_reason == "tool_calls"
+
+    def test_chat_sync_success(self, provider, config, messages):
+        mock_response = self._mock_response(200, [{"type": "text", "text": "Sync hi"}])
+        with patch("httpx.Client") as mock_client:
+            mock_instance = MagicMock()
+            mock_instance.post.return_value = mock_response
+            mock_client.return_value.__enter__.return_value = mock_instance
+            result = provider.chat_sync(messages, config)
+        assert result.content == "Sync hi"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("status,exc", [
+        (401, AIAuthError), (429, AIRateLimitError),
+        (404, AIModelNotFoundError), (500, AIProviderError),
+    ])
+    async def test_chat_error_statuses(self, provider, config, messages, status, exc):
+        mock_response = self._mock_response(status)
+        with patch("httpx.AsyncClient") as mock_client:
+            mock_instance = AsyncMock()
+            mock_instance.post.return_value = mock_response
+            mock_client.return_value.__aenter__.return_value = mock_instance
+            with pytest.raises(exc):
+                await provider.chat(messages, config)
+
+    @pytest.mark.asyncio
+    async def test_chat_timeout(self, provider, config, messages):
+        with patch("httpx.AsyncClient") as mock_client:
+            mock_instance = AsyncMock()
+            mock_instance.post.side_effect = httpx.TimeoutException("Timeout")
+            mock_client.return_value.__aenter__.return_value = mock_instance
+            with pytest.raises(AITimeoutError):
+                await provider.chat(messages, config)
+
+
+class TestAnthropicProviderChatStream:
+    """Tests for AnthropicProvider.chat_stream SSE translation."""
+
+    @pytest.fixture
+    def provider(self):
+        return AnthropicProvider()
+
+    @pytest.fixture
+    def config(self):
+        return AIEndpointConfig(
+            provider="anthropic", model="claude-opus-4-8", api_key="k", timeout=30,
+        )
+
+    @pytest.fixture
+    def messages(self):
+        return [{"role": "user", "content": "Hello"}]
+
+    @staticmethod
+    def _make_stream_mock(lines, status_code=200):
+        async def aiter_lines():
+            for line in lines:
+                yield line
+
+        mock_response = MagicMock()
+        mock_response.status_code = status_code
+        mock_response.text = f"Error {status_code}"
+        mock_response.aread = AsyncMock()
+        mock_response.aiter_lines = aiter_lines
+
+        stream_cm = AsyncMock()
+        stream_cm.__aenter__.return_value = mock_response
+
+        mock_http_client = MagicMock()
+        mock_http_client.stream.return_value = stream_cm
+
+        client_cm = AsyncMock()
+        client_cm.__aenter__.return_value = mock_http_client
+        return client_cm, mock_http_client
+
+    @pytest.mark.asyncio
+    async def test_stream_text_and_usage(self, provider, config, messages):
+        """input_tokens from message_start merges into the final usage chunk."""
+        lines = [
+            'data: {"type":"message_start","message":{"usage":{"input_tokens":42}}}',
+            'data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Hi"}}',
+            'data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":13}}',
+            'data: {"type":"message_stop"}',
+        ]
+        client_cm, _ = self._make_stream_mock(lines)
+        with patch("httpx.AsyncClient", return_value=client_cm):
+            chunks = [c async for c in provider.chat_stream(messages, config)]
+        # message_start and message_stop forward nothing.
+        assert len(chunks) == 2
+        assert chunks[0].content == "Hi"
+        final = chunks[1]
+        assert final.finish_reason == "stop"
+        assert final.usage == {
+            "prompt_tokens": 42, "completion_tokens": 13, "total_tokens": 55,
+        }
+
+    @pytest.mark.asyncio
+    async def test_stream_tool_use(self, provider, config, messages):
+        lines = [
+            'data: {"type":"content_block_start","index":1,'
+            '"content_block":{"type":"tool_use","id":"tu-1","name":"f"}}',
+            'data: {"type":"content_block_delta","index":1,'
+            '"delta":{"type":"input_json_delta","partial_json":"{\\"a\\":1}"}}',
+            'data: {"type":"content_block_stop","index":1}',
+        ]
+        client_cm, _ = self._make_stream_mock(lines)
+        with patch("httpx.AsyncClient", return_value=client_cm):
+            chunks = [c async for c in provider.chat_stream(messages, config)]
+        assert chunks[0].tool_calls[0]["id"] == "tu-1"
+        assert chunks[0].tool_calls[0]["function"]["name"] == "f"
+        assert chunks[1].tool_calls[0]["function"]["arguments"] == '{"a":1}'
+        # content_block_stop forwards nothing because input was seen.
+        assert len(chunks) == 2
+
+    @pytest.mark.asyncio
+    async def test_stream_tool_use_empty_args_backfills(self, provider, config, messages):
+        """A tool_use with no input_json_delta backfills '{}' on content_block_stop."""
+        lines = [
+            'data: {"type":"content_block_start","index":0,'
+            '"content_block":{"type":"tool_use","id":"tu-1","name":"f"}}',
+            'data: {"type":"content_block_stop","index":0}',
+        ]
+        client_cm, _ = self._make_stream_mock(lines)
+        with patch("httpx.AsyncClient", return_value=client_cm):
+            chunks = [c async for c in provider.chat_stream(messages, config)]
+        assert len(chunks) == 2
+        assert chunks[1].tool_calls[0]["function"]["arguments"] == "{}"
+
+    @pytest.mark.asyncio
+    async def test_stream_skips_non_data_and_invalid_json(self, provider, config, messages):
+        lines = [
+            ": ping",
+            "data: {not json}",
+            'data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"ok"}}',
+        ]
+        client_cm, _ = self._make_stream_mock(lines)
+        with patch("httpx.AsyncClient", return_value=client_cm):
+            chunks = [c async for c in provider.chat_stream(messages, config)]
+        assert len(chunks) == 1
+        assert chunks[0].content == "ok"
+
+    @pytest.mark.asyncio
+    async def test_stream_auth_error(self, provider, config, messages):
+        client_cm, _ = self._make_stream_mock([], status_code=401)
+        with patch("httpx.AsyncClient", return_value=client_cm):
+            with pytest.raises(AIAuthError):
+                async for _ in provider.chat_stream(messages, config):
+                    pass  # pragma: no cover
+
+    @pytest.mark.asyncio
+    async def test_stream_timeout(self, provider, config, messages):
+        mock_http_client = MagicMock()
+        mock_http_client.stream.side_effect = httpx.TimeoutException("Timeout")
+        client_cm = AsyncMock()
+        client_cm.__aenter__.return_value = mock_http_client
+        with patch("httpx.AsyncClient", return_value=client_cm):
+            with pytest.raises(AITimeoutError):
+                async for _ in provider.chat_stream(messages, config):
+                    pass  # pragma: no cover
+
+
+class TestAnthropicProviderChatJson:
+    """Tests for AnthropicProvider.chat_json forced-tool structured output."""
+
+    @pytest.fixture
+    def provider(self):
+        return AnthropicProvider()
+
+    @pytest.fixture
+    def config(self):
+        return AIEndpointConfig(
+            provider="anthropic", model="claude-opus-4-8", api_key="k", timeout=30,
+        )
+
+    @pytest.fixture
+    def messages(self):
+        return [{"role": "user", "content": "Give me a person"}]
+
+    @staticmethod
+    def _mock_json_response(status_code, tool_input=None):
+        response = MagicMock(spec=httpx.Response)
+        response.status_code = status_code
+        if status_code == 200:
+            content = []
+            if tool_input is not None:
+                content = [{"type": "tool_use", "id": "tu-1",
+                            "name": "submit__sampleschema", "input": tool_input}]
+            response.json.return_value = {
+                "content": content,
+                "usage": {"input_tokens": 10, "output_tokens": 5},
+                "model": "claude-opus-4-8",
+                "stop_reason": "tool_use",
+            }
+        else:
+            response.text = f"Error {status_code}"
+        return response
+
+    @pytest.mark.asyncio
+    async def test_chat_json_success(self, provider, config, messages):
+        mock_response = self._mock_json_response(200, {"name": "Alice", "age": 30})
+        with patch("httpx.AsyncClient") as mock_client:
+            mock_instance = AsyncMock()
+            mock_instance.post.return_value = mock_response
+            mock_client.return_value.__aenter__.return_value = mock_instance
+            result = await provider.chat_json(messages, config, _SampleSchema)
+        assert isinstance(result, _SampleSchema)
+        assert result.name == "Alice"
+        assert result.age == 30
+
+    @pytest.mark.asyncio
+    async def test_chat_json_payload_forces_tool(self, provider, config, messages):
+        mock_response = self._mock_json_response(200, {"name": "Bob", "age": 5})
+        with patch("httpx.AsyncClient") as mock_client:
+            mock_instance = AsyncMock()
+            mock_instance.post.return_value = mock_response
+            mock_client.return_value.__aenter__.return_value = mock_instance
+            await provider.chat_json(messages, config, _SampleSchema)
+            payload = mock_instance.post.call_args[1]["json"]
+        assert payload["tool_choice"]["type"] == "tool"
+        assert payload["tools"][0]["name"] == payload["tool_choice"]["name"]
+        assert "input_schema" in payload["tools"][0]
+
+    @pytest.mark.asyncio
+    async def test_chat_json_no_tool_use_raises(self, provider, config, messages):
+        mock_response = self._mock_json_response(200, tool_input=None)
+        with patch("httpx.AsyncClient") as mock_client:
+            mock_instance = AsyncMock()
+            mock_instance.post.return_value = mock_response
+            mock_client.return_value.__aenter__.return_value = mock_instance
+            with pytest.raises(AIValidationError):
+                await provider.chat_json(messages, config, _SampleSchema)
+
+    @pytest.mark.asyncio
+    async def test_chat_json_invalid_input_raises(self, provider, config, messages):
+        mock_response = self._mock_json_response(200, {"name": "Alice"})  # missing age
+        with patch("httpx.AsyncClient") as mock_client:
+            mock_instance = AsyncMock()
+            mock_instance.post.return_value = mock_response
+            mock_client.return_value.__aenter__.return_value = mock_instance
+            with pytest.raises(AIValidationError):
+                await provider.chat_json(messages, config, _SampleSchema)
+
+    def test_chat_json_sync_success(self, provider, config, messages):
+        mock_response = self._mock_json_response(200, {"name": "Carol", "age": 22})
+        with patch("httpx.Client") as mock_client:
+            mock_instance = MagicMock()
+            mock_instance.post.return_value = mock_response
+            mock_client.return_value.__enter__.return_value = mock_instance
+            result = provider.chat_json_sync(messages, config, _SampleSchema)
+        assert result.name == "Carol"

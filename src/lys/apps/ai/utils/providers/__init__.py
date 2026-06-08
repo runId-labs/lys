@@ -17,6 +17,7 @@ from lys.apps.ai.utils.providers.exceptions import (
     AIPurposeNotFoundError,
     AIValidationError,
 )
+from lys.apps.ai.utils.providers.anthropic import AnthropicProvider
 from lys.apps.ai.utils.providers.mistral import MistralProvider
 
 
@@ -38,4 +39,5 @@ __all__ = [
     "AIValidationError",
     # Providers
     "MistralProvider",
+    "AnthropicProvider",
 ]
