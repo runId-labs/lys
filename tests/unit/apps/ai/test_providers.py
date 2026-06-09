@@ -1020,6 +1020,61 @@ class TestMistralProviderHandleErrorStatus:
         provider._handle_error_status(response)
 
 
+class TestMistralCacheKeyField:
+    """Tests for MistralProvider._cache_key_field (prompt_cache_key)."""
+
+    @pytest.fixture
+    def provider(self):
+        return MistralProvider()
+
+    def test_stable_key_from_system_prompt(self, provider):
+        msgs = [{"role": "system", "content": "You are helpful."},
+                {"role": "user", "content": "hi"}]
+        field = MistralProvider._cache_key_field(msgs)
+        assert list(field.keys()) == ["prompt_cache_key"]
+        assert field["prompt_cache_key"].startswith("sys-")
+        # Deterministic: same system prompt -> same key.
+        assert MistralProvider._cache_key_field(msgs) == field
+
+    def test_different_system_prompts_differ(self, provider):
+        a = MistralProvider._cache_key_field([{"role": "system", "content": "A"}])
+        b = MistralProvider._cache_key_field([{"role": "system", "content": "B"}])
+        assert a != b
+
+    def test_empty_without_system(self, provider):
+        assert MistralProvider._cache_key_field([{"role": "user", "content": "hi"}]) == {}
+
+    def test_empty_when_system_not_string(self, provider):
+        assert MistralProvider._cache_key_field(
+            [{"role": "system", "content": [{"type": "text", "text": "x"}]}]
+        ) == {}
+
+    def test_empty_when_system_blank(self, provider):
+        assert MistralProvider._cache_key_field([{"role": "system", "content": ""}]) == {}
+
+    @pytest.mark.asyncio
+    async def test_chat_payload_includes_cache_key(self, provider):
+        config = AIEndpointConfig(
+            provider="mistral", model="mistral-large-latest", api_key="k", timeout=30,
+        )
+        messages = [{"role": "system", "content": "You are helpful."},
+                    {"role": "user", "content": "hi"}]
+        response = MagicMock(spec=httpx.Response)
+        response.status_code = 200
+        response.json.return_value = {
+            "choices": [{"message": {"content": "ok", "tool_calls": []}}],
+            "usage": {"prompt_tokens": 1, "completion_tokens": 1},
+            "model": "mistral-large-latest",
+        }
+        with patch("httpx.AsyncClient") as mock_client:
+            mock_instance = AsyncMock()
+            mock_instance.post.return_value = response
+            mock_client.return_value.__aenter__.return_value = mock_instance
+            await provider.chat(messages, config)
+            payload = mock_instance.post.call_args[1]["json"]
+        assert payload["prompt_cache_key"].startswith("sys-")
+
+
 # ========== AnthropicProvider ==========
 
 

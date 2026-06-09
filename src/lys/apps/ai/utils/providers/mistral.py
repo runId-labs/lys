@@ -5,6 +5,7 @@ This module implements the AIProvider interface for Mistral AI,
 supporting both standard chat and structured JSON responses.
 """
 
+import hashlib
 import json
 import logging
 from typing import AsyncGenerator, List, Dict, Any, Optional, Type
@@ -46,6 +47,23 @@ class MistralProvider(AIProvider):
         "response_format", "presence_penalty", "frequency_penalty",
     }
 
+    @staticmethod
+    def _cache_key_field(messages: List[Dict[str, Any]]) -> Dict[str, str]:
+        """Stable ``prompt_cache_key`` derived from the system prompt.
+
+        Mistral caches on the shared request prefix; passing a stable key for
+        requests that share the same system prompt raises the cache-hit rate
+        (cached input tokens are billed at ~10%). Returns {} when there is no
+        string system message.
+        """
+        system = next(
+            (m.get("content") for m in messages if m.get("role") == "system"), None
+        )
+        if not isinstance(system, str) or not system:
+            return {}
+        digest = hashlib.sha1(system.encode("utf-8")).hexdigest()[:32]
+        return {"prompt_cache_key": f"sys-{digest}"}
+
     # ========== Standard Chat ==========
 
     async def chat(
@@ -63,6 +81,7 @@ class MistralProvider(AIProvider):
         payload = {
             "model": config.model,
             "messages": messages,
+            **self._cache_key_field(messages),
             **filtered_options,
         }
 
@@ -109,6 +128,7 @@ class MistralProvider(AIProvider):
         payload = {
             "model": config.model,
             "messages": messages,
+            **self._cache_key_field(messages),
             **filtered_options,
         }
 
@@ -157,6 +177,7 @@ class MistralProvider(AIProvider):
             "model": config.model,
             "messages": messages,
             "stream": True,
+            **self._cache_key_field(messages),
             **filtered_options,
         }
 
@@ -255,6 +276,7 @@ class MistralProvider(AIProvider):
             "model": config.model,
             "messages": messages,
             "response_format": self._build_json_schema_response_format(schema),
+            **self._cache_key_field(messages),
             **filtered_options,
         }
 
@@ -306,6 +328,7 @@ class MistralProvider(AIProvider):
             "model": config.model,
             "messages": messages,
             "response_format": self._build_json_schema_response_format(schema),
+            **self._cache_key_field(messages),
             **filtered_options,
         }
 

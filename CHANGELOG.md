@@ -7,6 +7,9 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+- `MistralProvider` now sends a stable `prompt_cache_key` (derived from a SHA-1 of the system prompt) on every chat/stream/JSON request. Requests sharing the same system prompt reuse Mistral's prompt cache, lowering cost (cached input billed at ~10%). Omitted when there is no string system message.
+
 ## [0.14.0] - 2026-06-09
 
 ### Added
