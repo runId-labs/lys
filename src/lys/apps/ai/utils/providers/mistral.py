@@ -5,6 +5,7 @@ This module implements the AIProvider interface for Mistral AI,
 supporting both standard chat and structured JSON responses.
 """
 
+import base64
 import hashlib
 import json
 import logging
@@ -359,6 +360,87 @@ class MistralProvider(AIProvider):
 
         except httpx.TimeoutException:
             raise AITimeoutError(f"Request timed out after {config.timeout}s")
+
+    # ========== OCR ==========
+
+    def ocr_sync(
+        self,
+        content: bytes,
+        mime_type: str,
+        config: AIEndpointConfig,
+    ) -> str:
+        """Synchronous OCR via Mistral's ``/ocr`` endpoint. Returns page markdown.
+
+        Mistral's chat models do not OCR; this calls the dedicated OCR endpoint,
+        reusing the resolved api_key + base_url. The model comes from the config
+        (e.g. ``mistral-ocr-latest``).
+        """
+        base_url = self.get_base_url(config)
+        payload = {
+            "model": config.model,
+            "document": self._ocr_document(content, mime_type),
+            "include_image_base64": False,
+        }
+        headers = {
+            "Authorization": f"Bearer {config.api_key}",
+            "Content-Type": "application/json",
+        }
+        try:
+            with httpx.Client() as client:
+                response = client.post(
+                    f"{base_url}/ocr",
+                    headers=headers,
+                    json=payload,
+                    timeout=config.timeout,
+                )
+            return self._parse_ocr_response(response)
+        except httpx.TimeoutException:
+            raise AITimeoutError(f"Request timed out after {config.timeout}s")
+
+    async def ocr(
+        self,
+        content: bytes,
+        mime_type: str,
+        config: AIEndpointConfig,
+    ) -> str:
+        """Async OCR via Mistral's ``/ocr`` endpoint. See :meth:`ocr_sync`."""
+        base_url = self.get_base_url(config)
+        payload = {
+            "model": config.model,
+            "document": self._ocr_document(content, mime_type),
+            "include_image_base64": False,
+        }
+        headers = {
+            "Authorization": f"Bearer {config.api_key}",
+            "Content-Type": "application/json",
+        }
+        try:
+            async with httpx.AsyncClient() as client:
+                response = await client.post(
+                    f"{base_url}/ocr",
+                    headers=headers,
+                    json=payload,
+                    timeout=config.timeout,
+                )
+            return self._parse_ocr_response(response)
+        except httpx.TimeoutException:
+            raise AITimeoutError(f"Request timed out after {config.timeout}s")
+
+    @staticmethod
+    def _ocr_document(content: bytes, mime_type: str) -> Dict[str, str]:
+        """Build the Mistral OCR ``document`` payload from raw bytes (data-uri)."""
+        mime = mime_type or "application/pdf"
+        uri = f"data:{mime};base64,{base64.b64encode(content).decode('ascii')}"
+        if mime.startswith("image/"):
+            return {"type": "image_url", "image_url": uri}
+        return {"type": "document_url", "document_url": uri}
+
+    def _parse_ocr_response(self, response: httpx.Response) -> str:
+        """Validate the OCR response and concatenate per-page markdown."""
+        self._handle_error_status(response)
+        data = response.json()
+        pages = data.get("pages", [])
+        return "\n\n".join(p.get("markdown", "") for p in pages).strip()
 
     # ========== Helpers ==========
 

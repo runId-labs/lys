@@ -7,7 +7,11 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.15.0] - 2026-06-09
+
 ### Added
+- Document OCR capability on the AI provider layer. `AIProvider.ocr` / `ocr_sync` are optional methods that default to raising `NotImplementedError`, and `AIService.ocr` / `ocr_sync` walk the endpoint fallback chain — skipping providers that don't support OCR (`NotImplementedError`) or error (`AIError`) — and raise `AIError` only when no provider in the chain succeeds. Takes raw document bytes + MIME type, returns concatenated per-page markdown.
+- `MistralProvider.ocr` / `ocr_sync`: OCR via Mistral's dedicated `/ocr` endpoint (model from config, e.g. `mistral-ocr-latest`). Builds a base64 data-URI `document_url` (or `image_url` for `image/*` MIME types) and concatenates the per-page markdown; `include_image_base64` is disabled to keep responses lean.
 - `MistralProvider` now sends a stable `prompt_cache_key` (derived from a SHA-1 of the system prompt) on every chat/stream/JSON request. Requests sharing the same system prompt reuse Mistral's prompt cache, lowering cost (cached input billed at ~10%). Omitted when there is no string system message.
 
 ## [0.14.0] - 2026-06-09

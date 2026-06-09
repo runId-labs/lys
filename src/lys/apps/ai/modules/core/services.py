@@ -339,6 +339,70 @@ class AIService(Service):
 
         return cls._chat_json_with_fallback_sync(messages, config, schema)
 
+    # ========== OCR ==========
+
+    @classmethod
+    async def ocr(
+        cls,
+        content: bytes,
+        mime_type: str,
+        config: AIEndpointConfig,
+    ) -> str:
+        """
+        Extract a document's textual content via OCR, returning markdown.
+
+        Walks the fallback chain: if a provider does not support OCR
+        (NotImplementedError) or errors, the next endpoint is tried.
+
+        Args:
+            content: Raw document bytes (PDF or image).
+            mime_type: MIME type of the document.
+            config: Endpoint configuration (e.g. from ``get_endpoint("ocr")``).
+
+        Returns:
+            Concatenated markdown of all pages.
+
+        Raises:
+            AIError: No provider in the chain succeeded.
+        """
+        current: Optional[AIEndpointConfig] = config
+        last_error: Optional[Exception] = None
+        while current is not None:
+            provider = cls.get_provider(current.provider)
+            try:
+                return await provider.ocr(content, mime_type, current)
+            except NotImplementedError as e:
+                last_error = e
+                logger.warning(f"Provider '{current.provider}' does not support OCR; trying fallback")
+            except AIError as e:
+                last_error = e
+                logger.error(f"OCR failed on '{current.provider}': {e}")
+            current = current.fallback
+        raise AIError(f"OCR failed: no provider in the chain succeeded ({last_error})")
+
+    @classmethod
+    def ocr_sync(
+        cls,
+        content: bytes,
+        mime_type: str,
+        config: AIEndpointConfig,
+    ) -> str:
+        """Synchronous version of :meth:`ocr` for Celery workers."""
+        current: Optional[AIEndpointConfig] = config
+        last_error: Optional[Exception] = None
+        while current is not None:
+            provider = cls.get_provider(current.provider)
+            try:
+                return provider.ocr_sync(content, mime_type, current)
+            except NotImplementedError as e:
+                last_error = e
+                logger.warning(f"Provider '{current.provider}' does not support OCR; trying fallback")
+            except AIError as e:
+                last_error = e
+                logger.error(f"OCR failed on '{current.provider}': {e}")
+            current = current.fallback
+        raise AIError(f"OCR failed: no provider in the chain succeeded ({last_error})")
+
     # ========== Fallback Logic ==========
 
     @classmethod

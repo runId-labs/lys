@@ -14,9 +14,10 @@ import httpx
 from pydantic import BaseModel
 
 from lys.apps.ai.utils.providers import MistralProvider, AnthropicProvider
-from lys.apps.ai.utils.providers.abstracts import AIResponse
+from lys.apps.ai.utils.providers.abstracts import AIResponse, AIProvider
 from lys.apps.ai.utils.providers.config import AIEndpointConfig
 from lys.apps.ai.utils.providers.exceptions import (
+    AIError,
     AIAuthError,
     AIRateLimitError,
     AIModelNotFoundError,
@@ -1570,3 +1571,213 @@ class TestAnthropicProviderChatJson:
             mock_client.return_value.__enter__.return_value = mock_instance
             result = provider.chat_json_sync(messages, config, _SampleSchema)
         assert result.name == "Carol"
+
+
+# ========== OCR ==========
+
+
+class TestMistralProviderOCR:
+    """Tests for MistralProvider OCR via the /ocr endpoint."""
+
+    @pytest.fixture
+    def provider(self):
+        return MistralProvider()
+
+    @pytest.fixture
+    def config(self):
+        return AIEndpointConfig(
+            provider="mistral", model="mistral-ocr-latest", api_key="k", timeout=30,
+        )
+
+    @staticmethod
+    def _mock_ocr_response(status_code, pages=None):
+        response = MagicMock(spec=httpx.Response)
+        response.status_code = status_code
+        if status_code == 200:
+            response.json.return_value = {"pages": pages if pages is not None else [
+                {"markdown": "# Page 1"}, {"markdown": "Page 2 body"},
+            ]}
+        else:
+            response.text = f"Error {status_code}"
+        return response
+
+    @pytest.mark.asyncio
+    async def test_ocr_success_concatenates_pages(self, provider, config):
+        mock_response = self._mock_ocr_response(200)
+        with patch("httpx.AsyncClient") as mock_client:
+            mock_instance = AsyncMock()
+            mock_instance.post.return_value = mock_response
+            mock_client.return_value.__aenter__.return_value = mock_instance
+            result = await provider.ocr(b"%PDF-1.4", "application/pdf", config)
+            payload = mock_instance.post.call_args[1]["json"]
+            url = mock_instance.post.call_args[0][0]
+        assert result == "# Page 1\n\nPage 2 body"
+        assert url.endswith("/ocr")
+        assert payload["model"] == "mistral-ocr-latest"
+        assert payload["include_image_base64"] is False
+        assert payload["document"]["type"] == "document_url"
+
+    def test_ocr_sync_success(self, provider, config):
+        mock_response = self._mock_ocr_response(200, pages=[{"markdown": "Hello"}])
+        with patch("httpx.Client") as mock_client:
+            mock_instance = MagicMock()
+            mock_instance.post.return_value = mock_response
+            mock_client.return_value.__enter__.return_value = mock_instance
+            result = provider.ocr_sync(b"data", "application/pdf", config)
+        assert result == "Hello"
+
+    @pytest.mark.asyncio
+    async def test_ocr_error_status_raises(self, provider, config):
+        mock_response = self._mock_ocr_response(401)
+        with patch("httpx.AsyncClient") as mock_client:
+            mock_instance = AsyncMock()
+            mock_instance.post.return_value = mock_response
+            mock_client.return_value.__aenter__.return_value = mock_instance
+            with pytest.raises(AIAuthError):
+                await provider.ocr(b"data", "application/pdf", config)
+
+    @pytest.mark.asyncio
+    async def test_ocr_timeout(self, provider, config):
+        with patch("httpx.AsyncClient") as mock_client:
+            mock_instance = AsyncMock()
+            mock_instance.post.side_effect = httpx.TimeoutException("Timeout")
+            mock_client.return_value.__aenter__.return_value = mock_instance
+            with pytest.raises(AITimeoutError):
+                await provider.ocr(b"data", "application/pdf", config)
+
+    def test_ocr_document_image_vs_document(self, provider):
+        img = MistralProvider._ocr_document(b"x", "image/png")
+        assert img["type"] == "image_url"
+        assert img["image_url"].startswith("data:image/png;base64,")
+        doc = MistralProvider._ocr_document(b"x", "application/pdf")
+        assert doc["type"] == "document_url"
+        assert doc["document_url"].startswith("data:application/pdf;base64,")
+
+    def test_ocr_document_defaults_to_pdf(self, provider):
+        out = MistralProvider._ocr_document(b"x", "")
+        assert out["type"] == "document_url"
+        assert "application/pdf" in out["document_url"]
+
+    def test_parse_ocr_response_empty_pages(self, provider):
+        response = MagicMock(spec=httpx.Response)
+        response.status_code = 200
+        response.json.return_value = {"pages": []}
+        assert provider._parse_ocr_response(response) == ""
+
+
+class TestProviderOCRDefault:
+    """The base AIProvider raises NotImplementedError for OCR (optional capability)."""
+
+    @pytest.fixture
+    def config(self):
+        return AIEndpointConfig(
+            provider="anthropic", model="claude-opus-4-8", api_key="k", timeout=30,
+        )
+
+    @pytest.mark.asyncio
+    async def test_anthropic_ocr_async_not_implemented(self, config):
+        with pytest.raises(NotImplementedError):
+            await AnthropicProvider().ocr(b"x", "application/pdf", config)
+
+    def test_anthropic_ocr_sync_not_implemented(self, config):
+        with pytest.raises(NotImplementedError):
+            AnthropicProvider().ocr_sync(b"x", "application/pdf", config)
+
+
+class _StubProvider(AIProvider):
+    """Minimal concrete provider for AIService OCR fallback tests."""
+
+    name = "stub"
+    default_base_url = "https://stub"
+
+    async def chat(self, messages, config, tools=None):  # pragma: no cover
+        pass
+
+    def chat_sync(self, messages, config, tools=None):  # pragma: no cover
+        pass
+
+    async def chat_json(self, messages, config, schema):  # pragma: no cover
+        pass
+
+    def chat_json_sync(self, messages, config, schema):  # pragma: no cover
+        pass
+
+
+class TestAIServiceOCR:
+    """Tests for AIService.ocr / ocr_sync fallback chain."""
+
+    def _config(self, provider_name, fallback=None):
+        return AIEndpointConfig(
+            provider=provider_name, model="m", api_key="k", timeout=30, fallback=fallback,
+        )
+
+    def test_ocr_sync_falls_back_on_not_implemented(self):
+        class _NoOcr(_StubProvider):
+            name = "noocr"
+
+        class _OkOcr(_StubProvider):
+            name = "okocr"
+
+            def ocr_sync(self, content, mime_type, config):
+                return "EXTRACTED"
+
+        AIService.register_provider("noocr", _NoOcr)
+        AIService.register_provider("okocr", _OkOcr)
+        try:
+            config = self._config("noocr", fallback=self._config("okocr"))
+            assert AIService.ocr_sync(b"x", "application/pdf", config) == "EXTRACTED"
+        finally:
+            del AIService._providers["noocr"]
+            del AIService._providers["okocr"]
+
+    def test_ocr_sync_falls_back_on_provider_error(self):
+        class _FailingOcr(_StubProvider):
+            name = "failocr"
+
+            def ocr_sync(self, content, mime_type, config):
+                raise AIProviderError("boom")
+
+        class _OkOcr(_StubProvider):
+            name = "okocr2"
+
+            def ocr_sync(self, content, mime_type, config):
+                return "OK"
+
+        AIService.register_provider("failocr", _FailingOcr)
+        AIService.register_provider("okocr2", _OkOcr)
+        try:
+            config = self._config("failocr", fallback=self._config("okocr2"))
+            assert AIService.ocr_sync(b"x", "application/pdf", config) == "OK"
+        finally:
+            del AIService._providers["failocr"]
+            del AIService._providers["okocr2"]
+
+    def test_ocr_sync_all_fail_raises_aierror(self):
+        AIService.register_provider("noocr3", type("_N", (_StubProvider,), {"name": "noocr3"}))
+        try:
+            config = self._config("noocr3")
+            with pytest.raises(AIError):
+                AIService.ocr_sync(b"x", "application/pdf", config)
+        finally:
+            del AIService._providers["noocr3"]
+
+    @pytest.mark.asyncio
+    async def test_ocr_async_falls_back(self):
+        class _NoOcr(_StubProvider):
+            name = "noocr_a"
+
+        class _OkOcr(_StubProvider):
+            name = "okocr_a"
+
+            async def ocr(self, content, mime_type, config):
+                return "ASYNC_OK"
+
+        AIService.register_provider("noocr_a", _NoOcr)
+        AIService.register_provider("okocr_a", _OkOcr)
+        try:
+            config = self._config("noocr_a", fallback=self._config("okocr_a"))
+            result = await AIService.ocr(b"x", "application/pdf", config)
+            assert result == "ASYNC_OK"
+        finally:
+            del AIService._providers["noocr_a"]
+            del AIService._providers["okocr_a"]

@@ -163,6 +163,42 @@ class AIProvider(ABC):
         # Make this an async generator
         yield  # pragma: no cover
 
+    # ========== OCR ==========
+
+    async def ocr(
+        self,
+        content: bytes,
+        mime_type: str,
+        config: AIEndpointConfig,
+    ) -> str:
+        """
+        Extract a document's textual content via OCR, returning markdown.
+
+        Optional capability: providers that do not support OCR raise
+        NotImplementedError so the service can fall back to another provider.
+
+        Args:
+            content: Raw document bytes (PDF or image).
+            mime_type: MIME type of the document (e.g. "application/pdf", "image/png").
+            config: Endpoint configuration (carries api_key, base_url, model).
+
+        Returns:
+            Concatenated markdown of all pages.
+
+        Raises:
+            NotImplementedError: If the provider does not support OCR.
+        """
+        raise NotImplementedError(f"{self.name} provider does not support OCR")
+
+    def ocr_sync(
+        self,
+        content: bytes,
+        mime_type: str,
+        config: AIEndpointConfig,
+    ) -> str:
+        """Synchronous version of :meth:`ocr` for Celery workers."""
+        raise NotImplementedError(f"{self.name} provider does not support OCR")
+
     # ========== Helpers ==========
 
     def get_base_url(self, config: AIEndpointConfig) -> str:
