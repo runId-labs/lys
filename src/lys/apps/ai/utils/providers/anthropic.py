@@ -54,7 +54,7 @@ class AnthropicProvider(AIProvider):
 
     # Options accepted by the Messages API. Mistral-specific keys (random_seed,
     # safe_prompt, response_format, ...) are filtered out. "stop" is remapped to
-    # "stop_sequences" by _build_payload.
+    # "stop_sequences" by _prepare.
     VALID_OPTIONS = {"temperature", "top_p", "top_k", "stop_sequences", "max_tokens"}
 
     # Sampling parameters were removed on Opus 4.7+ and return HTTP 400 if sent.
@@ -352,7 +352,12 @@ class AnthropicProvider(AIProvider):
             **filtered_options,
         }
         if system:
-            payload["system"] = system
+            # Prompt caching: send the system prompt as a cacheable block. Cached
+            # input tokens are billed at ~10%, and the system block (instructions /
+            # catalog / context) is identical across requests of a batch (5-min TTL).
+            payload["system"] = [
+                {"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}
+            ]
         if tools:
             payload["tools"] = self._translate_tools(tools)
             payload["tool_choice"] = tool_choice or {"type": "auto"}

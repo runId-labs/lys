@@ -7,6 +7,14 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.14.0] - 2026-06-09
+
+### Added
+- `AnthropicProvider` now sends the system prompt as a `cache_control: {"type": "ephemeral"}` text block, enabling Anthropic prompt caching. When the system block (instructions / catalog / context) is identical across a batch of requests within the 5-minute TTL, cached input tokens are billed at ~10% of the base rate. Sub-minimum prompts simply aren't cached (no error).
+
+### Changed
+- `AnthropicProvider` request payload sends `system` as a list of content blocks instead of a bare string (required to attach `cache_control`). No change for callers — the translation is internal.
+
 ## [0.13.0] - 2026-06-09
 
 ### Added

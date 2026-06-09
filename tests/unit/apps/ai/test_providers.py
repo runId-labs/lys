@@ -290,6 +290,12 @@ class TestProviderRegistry:
         assert isinstance(provider, MistralProvider)
         assert provider.name == "mistral"
 
+    def test_get_provider_anthropic(self):
+        """Test getting Anthropic provider via AIService."""
+        provider = AIService.get_provider("anthropic")
+        assert isinstance(provider, AnthropicProvider)
+        assert provider.name == "anthropic"
+
     def test_get_provider_unknown(self):
         """Test that unknown provider raises ValueError."""
         with pytest.raises(ValueError) as exc_info:
@@ -302,6 +308,7 @@ class TestProviderRegistry:
         """Test listing registered providers."""
         providers = AIService.list_providers()
         assert "mistral" in providers
+        assert "anthropic" in providers
 
     def test_register_custom_provider(self):
         """Test registering a custom provider via AIService."""
@@ -1069,6 +1076,41 @@ class TestAnthropicProviderTranslation:
         assert headers["x-api-key"] == "test-api-key"
         assert headers["anthropic-version"] == "2023-06-01"
         assert headers["content-type"] == "application/json"
+
+    def test_prepare_system_sent_as_cacheable_block(self, provider):
+        """The system prompt is sent as a cache_control: ephemeral text block."""
+        config = self._config("claude-sonnet-4-6")
+        payload, _, _ = provider._prepare(
+            [{"role": "system", "content": "You are helpful."},
+             {"role": "user", "content": "hi"}],
+            config,
+        )
+        assert payload["system"] == [{
+            "type": "text",
+            "text": "You are helpful.",
+            "cache_control": {"type": "ephemeral"},
+        }]
+
+    def test_prepare_no_system_key_without_system_message(self, provider):
+        config = self._config("claude-sonnet-4-6")
+        payload, _, _ = provider._prepare([{"role": "user", "content": "hi"}], config)
+        assert "system" not in payload
+
+    def test_prepare_tools_default_tool_choice_auto(self, provider):
+        config = self._config("claude-sonnet-4-6")
+        tools = [{"type": "function", "function": {"name": "f", "parameters": {"type": "object"}}}]
+        payload, _, _ = provider._prepare(
+            [{"role": "user", "content": "hi"}], config, tools=tools,
+        )
+        assert payload["tools"][0]["name"] == "f"
+        assert payload["tool_choice"] == {"type": "auto"}
+
+    def test_prepare_stream_flag(self, provider):
+        config = self._config("claude-sonnet-4-6")
+        payload, _, _ = provider._prepare(
+            [{"role": "user", "content": "hi"}], config, stream=True,
+        )
+        assert payload["stream"] is True
 
     def test_translate_messages_merges_system(self, provider):
         """Multiple system messages are concatenated, not dropped."""
