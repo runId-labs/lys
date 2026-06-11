@@ -3,10 +3,12 @@ File import services for processing CSV/Excel imports.
 """
 import abc
 import logging
+import zipfile
 from io import BytesIO
-from typing import Any, Type, Hashable
+from typing import Any, Callable, Optional, Type, Hashable
 
 from pandas import read_csv, read_excel, DataFrame
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Session
 
@@ -15,11 +17,13 @@ from lys.apps.file_management.modules.file_import.consts import (
     FILE_IMPORT_STATUS_PROCESSING,
     FILE_IMPORT_STATUS_COMPLETED,
     FILE_IMPORT_STATUS_FAILED,
+    FILE_IMPORT_STATUS_SKIPPED,
     REPORT_MESSAGE_NO_FILE,
     CSV_MIME_TYPE,
     XLS_MIME_TYPE,
     XLSX_MIME_TYPE,
 )
+from lys.core.utils.zip import extract_zip_files, ZipExtractionError
 from lys.apps.file_management.modules.file_import.entities import (
     FileImport,
     FileImportType,
@@ -52,6 +56,158 @@ class FileImportStatusService(EntityService[FileImportStatus]):
 @register_service()
 class FileImportService(EntityService[FileImport]):
     """Service for managing FileImport entities."""
+
+    @classmethod
+    def find_active_import(cls, session: Session, client_id: str, content_hash: str):
+        """Content-hash idempotency: an existing non-failed import of the same file.
+
+        Returns the most recent FileImport for this client whose StoredFile has the same
+        ``content_hash`` and whose status is PROCESSING or COMPLETED — i.e. the content is
+        already being imported or has been imported. FAILED/SKIPPED/CANCELLED imports are
+        ignored, so a re-import after a failure is always allowed.
+
+        Callers decide whether to apply this check (per import nature); the engine is generic.
+        Returns None when content_hash is falsy or no match exists.
+        """
+        if not content_hash:
+            return None
+        file_import = cls.entity_class
+        stored_file = cls.app_manager.get_entity("stored_file")
+        stmt = (
+            select(file_import)
+            .join(stored_file, stored_file.id == file_import.stored_file_id)
+            .where(
+                file_import.client_id == client_id,
+                stored_file.content_hash == content_hash,
+                file_import.status_id.in_([FILE_IMPORT_STATUS_PROCESSING, FILE_IMPORT_STATUS_COMPLETED]),
+            )
+            .order_by(file_import.created_at.desc())
+        )
+        return session.execute(stmt).scalars().first()
+
+    @classmethod
+    def stage_zip_documents(
+        cls,
+        stored_file_id: str,
+        *,
+        per_file_type_id: str,
+        import_type_id: str,
+        check_idempotency: bool = False,
+        max_files: Optional[int] = None,
+        mime_resolver: Optional[Callable[[str], str]] = None,
+        per_file_extra_data: Optional[Callable[[Any, str], dict]] = None,
+        stored_file_fields: Optional[Callable[[Any, str], dict]] = None,
+        file_import_fields: Optional[Callable[[Any, str], dict]] = None,
+    ) -> dict:
+        """Generic ZIP import staging: one StoredFile + FileImport per extracted document.
+
+        Shared skeleton for every ZIP-based import (DSN / FEC / juridical / ...): downloads
+        the ZIP, extracts it (path-traversal / zip-bomb safe), and for each document creates
+        a StoredFile (content hash computed by upload) + a PENDING FileImport. The CALLER
+        then schedules its per-document task for the returned ``staged`` ids and handles
+        notifications — that part (chord vs delay, notifs) is import-specific and stays out.
+
+        ``check_idempotency`` is the per-import-nature policy (NOT a user flag): when on, a
+        document whose content hash matches a non-failed import (existing or earlier in this
+        same ZIP) is NOT re-imported — a SKIPPED FileImport is recorded instead (pointing at
+        the original via ``extra_data["skipped_duplicate_of"]``), and no S3 upload happens.
+
+        Idempotency is BEST-EFFORT, not a hard guarantee: the check + insert is not atomic and
+        there is no unique constraint on (client_id, content_hash). Two imports of the same
+        content running concurrently can both pass and create two PROCESSING rows (the in-batch
+        ``seen`` map only deduplicates within a single ZIP). It covers the real case (sequential
+        re-imports); a hard guarantee would need a partial unique index + IntegrityError->SKIPPED.
+
+        Args:
+            stored_file_id: the ZIP StoredFile id.
+            per_file_type_id: StoredFile type for each extracted document.
+            import_type_id: FileImport type_id.
+            check_idempotency: apply content-hash idempotency (skip duplicates).
+            max_files: reject the whole batch if it holds more documents (no silent truncation).
+            mime_resolver: filename -> mime type (default application/octet-stream).
+            per_file_extra_data: (zip_stored_file, filename) -> extra_data dict for the document.
+            stored_file_fields: (zip_stored_file, filename) -> extra StoredFile columns (subclass
+                fields, forwarded opaque to the upload).
+            file_import_fields: (zip_stored_file, filename) -> extra FileImport columns (subclass
+                fields, forwarded opaque to the FileImport).
+
+        Returns:
+            {"zip_file_id", "staged": [file_import_id...], "skipped": [...], "errors": [...]}.
+        """
+        app_manager = cls.app_manager
+        stored_file_service = app_manager.get_service("stored_file")
+        result: dict = {"zip_file_id": stored_file_id, "staged": [], "skipped": [], "errors": []}
+        seen: dict = {}  # content_hash -> file_import_id staged earlier in THIS batch
+
+        try:
+            with app_manager.database.get_sync_session() as session:
+                zip_file = session.get(stored_file_service.entity_class, stored_file_id)
+                if not zip_file:
+                    result["errors"].append(f"StoredFile not found: {stored_file_id}")
+                    return result
+                client_id = zip_file.client_id
+
+                zip_content = stored_file_service.download_sync(zip_file)
+                # Enforce max_files DURING extraction (reject early, bound memory) — not
+                # post-hoc; None falls back to extract_zip_files' own default.
+                extract_kwargs = {} if max_files is None else {"max_files": max_files}
+                try:
+                    zip_files = list(extract_zip_files(zip_content, **extract_kwargs))
+                except (ZipExtractionError, zipfile.BadZipFile) as e:
+                    result["errors"].append(f"ZIP extraction failed: {e}")
+                    return result
+
+                for filename, file_content in zip_files:
+                    try:
+                        mime_type = mime_resolver(filename) if mime_resolver else "application/octet-stream"
+                        extra = per_file_extra_data(zip_file, filename) if per_file_extra_data else {}
+                        sf_fields = stored_file_fields(zip_file, filename) if stored_file_fields else {}
+                        fi_fields = file_import_fields(zip_file, filename) if file_import_fields else {}
+                        content_hash = stored_file_service.content_hash(file_content)
+
+                        if check_idempotency and content_hash:
+                            existing = cls.find_active_import(session, client_id, content_hash)
+                            # Prefer the in-batch original (id known) over the DB one.
+                            duplicate_of = seen.get(content_hash) or (str(existing.id) if existing else None)
+                            if duplicate_of:
+                                skipped = cls.entity_class(
+                                    client_id=client_id, stored_file_id=None, type_id=import_type_id,
+                                    status_id=FILE_IMPORT_STATUS_SKIPPED,
+                                    extra_data={**extra, "original_file_name": filename,
+                                                "content_hash": content_hash,
+                                                "skipped_duplicate_of": duplicate_of},
+                                    **fi_fields)
+                                session.add(skipped)
+                                session.flush()
+                                result["skipped"].append({"name": filename, "duplicate_of": duplicate_of})
+                                continue
+
+                        doc_file = stored_file_service.upload_sync(
+                            client_id=client_id, original_name=filename, size=len(file_content),
+                            mime_type=mime_type, type_id=per_file_type_id, data=file_content,
+                            extra_data=extra, **sf_fields)
+                        file_import = cls.entity_class(
+                            client_id=client_id, stored_file_id=str(doc_file.id), type_id=import_type_id,
+                            status_id=FILE_IMPORT_STATUS_PENDING, extra_data=extra, **fi_fields)
+                        session.add(file_import)
+                        session.flush()
+                        if content_hash:
+                            seen[content_hash] = str(file_import.id)
+                        result["staged"].append(str(file_import.id))
+                    except Exception as e:  # noqa: BLE001 — one bad doc must not abort the batch
+                        result["errors"].append(f"Failed to process {filename}: {e}")
+                        logger.error(f"stage_zip_documents: failed on {filename}: {e}")
+
+                # Delete the ZIP only when every document was staged without error.
+                if not result["errors"]:
+                    try:
+                        stored_file_service.delete_file_sync(zip_file)
+                    except Exception as e:  # noqa: BLE001
+                        logger.warning(f"Failed to delete ZIP {stored_file_id}: {e}")
+        except Exception as e:  # noqa: BLE001
+            result["errors"].append(f"Failed to process ZIP: {e}")
+            logger.error(f"stage_zip_documents: ZIP {stored_file_id} failed: {e}")
+        return result
 
     @classmethod
     async def create_import(

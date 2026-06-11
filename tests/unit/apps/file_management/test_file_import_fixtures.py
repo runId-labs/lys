@@ -80,7 +80,15 @@ class TestFileImportStatusFixtures:
         for item in FileImportStatusFixtures.data_list:
             assert item["attributes"]["enabled"] is True
 
-    def test_data_list_has_five_statuses(self):
-        """Test data_list has exactly five statuses."""
+    def test_data_list_contains_skipped_status(self):
+        """Test data_list contains SKIPPED status."""
         from lys.apps.file_management.modules.file_import.fixtures import FileImportStatusFixtures
-        assert len(FileImportStatusFixtures.data_list) == 5
+        from lys.apps.file_management.modules.file_import.consts import FILE_IMPORT_STATUS_SKIPPED
+
+        ids = [item["id"] for item in FileImportStatusFixtures.data_list]
+        assert FILE_IMPORT_STATUS_SKIPPED in ids
+
+    def test_data_list_has_six_statuses(self):
+        """Test data_list has exactly six statuses."""
+        from lys.apps.file_management.modules.file_import.fixtures import FileImportStatusFixtures
+        assert len(FileImportStatusFixtures.data_list) == 6

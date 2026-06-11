@@ -96,6 +96,55 @@ class TestStoredFileServiceUpload:
                     )
 
 
+class TestStoredFileServiceContentHash:
+    """Test that upload persists the SHA-256 content_hash for in-memory bytes."""
+
+    @pytest.mark.asyncio
+    async def test_upload_persists_content_hash(self, file_management_app_manager):
+        """Uploading bytes stores their SHA-256 hex digest on the record."""
+        import hashlib
+
+        stored_file_service = file_management_app_manager.get_service("stored_file")
+        mock_storage = AsyncMock()
+        data = b"hashable content"
+
+        with patch.object(stored_file_service, "get_storage_backend", return_value=mock_storage):
+            async with file_management_app_manager.database.get_session() as session:
+                stored_file = await stored_file_service.upload(
+                    session=session,
+                    client_id=str(uuid4()),
+                    data=data,
+                    original_name="hashed.csv",
+                    size=len(data),
+                    mime_type="text/csv",
+                    type_id="USER_IMPORT_FILE"
+                )
+
+                assert stored_file.content_hash == hashlib.sha256(data).hexdigest()
+
+    @pytest.mark.asyncio
+    async def test_upload_same_content_same_hash(self, file_management_app_manager):
+        """Two uploads of identical content produce the same content_hash."""
+        stored_file_service = file_management_app_manager.get_service("stored_file")
+        mock_storage = AsyncMock()
+        data = b"identical payload"
+
+        with patch.object(stored_file_service, "get_storage_backend", return_value=mock_storage):
+            async with file_management_app_manager.database.get_session() as session:
+                first = await stored_file_service.upload(
+                    session=session, client_id=str(uuid4()), data=data,
+                    original_name="a.csv", size=len(data), mime_type="text/csv",
+                    type_id="USER_IMPORT_FILE"
+                )
+                second = await stored_file_service.upload(
+                    session=session, client_id=str(uuid4()), data=data,
+                    original_name="b.csv", size=len(data), mime_type="text/csv",
+                    type_id="USER_IMPORT_FILE"
+                )
+
+                assert first.content_hash == second.content_hash
+
+
 class TestStoredFileServiceDelete:
     """Test StoredFileService.delete_file with mocked storage."""
 

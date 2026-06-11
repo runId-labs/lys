@@ -35,6 +35,11 @@ class TestFileImportStatusConstants:
         from lys.apps.file_management.modules.file_import.consts import FILE_IMPORT_STATUS_CANCELLED
         assert FILE_IMPORT_STATUS_CANCELLED == "CANCELLED"
 
+    def test_skipped_status(self):
+        """Test FILE_IMPORT_STATUS_SKIPPED is defined."""
+        from lys.apps.file_management.modules.file_import.consts import FILE_IMPORT_STATUS_SKIPPED
+        assert FILE_IMPORT_STATUS_SKIPPED == "SKIPPED"
+
 
 class TestReportStatusConstants:
     """Tests for report status constants."""
@@ -116,6 +121,7 @@ class TestConstantsConsistency:
             consts.FILE_IMPORT_STATUS_COMPLETED,
             consts.FILE_IMPORT_STATUS_FAILED,
             consts.FILE_IMPORT_STATUS_CANCELLED,
+            consts.FILE_IMPORT_STATUS_SKIPPED,
         ]
 
         for status in statuses:
@@ -131,6 +137,7 @@ class TestConstantsConsistency:
             consts.FILE_IMPORT_STATUS_COMPLETED,
             consts.FILE_IMPORT_STATUS_FAILED,
             consts.FILE_IMPORT_STATUS_CANCELLED,
+            consts.FILE_IMPORT_STATUS_SKIPPED,
         ]
 
         assert len(statuses) == len(set(statuses))

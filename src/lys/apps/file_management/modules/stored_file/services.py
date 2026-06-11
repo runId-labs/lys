@@ -1,3 +1,4 @@
+import hashlib
 import logging
 import uuid
 from datetime import datetime, timezone
@@ -44,6 +45,17 @@ class StoredFileService(EntityService[StoredFile]):
             cls._storage_backend = get_storage_backend(config)
         return cls._storage_backend
 
+    @staticmethod
+    def content_hash(data: Union[bytes, BinaryIO]) -> Optional[str]:
+        """SHA-256 (hex) of the content when it is in-memory bytes, else None.
+
+        A file-like stream is not consumed here (that would break the upload); for
+        those the hash stays None. Import flows pass bytes, so they get a hash.
+        """
+        if isinstance(data, (bytes, bytearray)):
+            return hashlib.sha256(data).hexdigest()
+        return None
+
     @classmethod
     def generate_object_key(
         cls,
@@ -86,6 +98,7 @@ class StoredFileService(EntityService[StoredFile]):
         type_id: str,
         extra_data: Optional[dict[str, Any]] = None,
         object_key: Optional[str] = None,
+        **entity_fields: Any,
     ) -> StoredFile:
         """
         Upload a file to S3 and create database record.
@@ -100,6 +113,8 @@ class StoredFileService(EntityService[StoredFile]):
             type_id: File type ID (e.g., "USER_IMPORT_FILE")
             extra_data: Additional metadata
             object_key: Optional pre-generated object key (for presigned URL flow)
+            entity_fields: Extra columns defined by subclass StoredFile entities,
+                forwarded to the entity unchanged.
 
         Returns:
             Created StoredFile entity
@@ -118,6 +133,8 @@ class StoredFileService(EntityService[StoredFile]):
             type_id=type_id,
             object_key=object_key,
             extra_data=extra_data,
+            content_hash=cls.content_hash(data),
+            **entity_fields,
         )
 
         # Upload to S3
@@ -291,6 +308,7 @@ class StoredFileService(EntityService[StoredFile]):
         data: Union[bytes, BinaryIO],
         extra_data: Optional[dict[str, Any]] = None,
         object_key: Optional[str] = None,
+        **entity_fields: Any,
     ) -> StoredFile:
         """
         Synchronous version of upload for Celery workers.
@@ -304,6 +322,8 @@ class StoredFileService(EntityService[StoredFile]):
             data: File content
             extra_data: Additional metadata
             object_key: Optional pre-generated object key
+            entity_fields: Extra columns defined by subclass StoredFile entities,
+                forwarded to the entity unchanged.
 
         Returns:
             Created StoredFile entity
@@ -323,6 +343,8 @@ class StoredFileService(EntityService[StoredFile]):
                 type_id=type_id,
                 object_key=object_key,
                 extra_data=extra_data,
+                content_hash=cls.content_hash(data),
+                **entity_fields,
             )
             session.add(stored_file)
             session.flush()

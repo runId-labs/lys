@@ -1,6 +1,8 @@
 """
 Unit tests for StoredFileService.generate_object_key() — pure logic.
 """
+import hashlib
+import io
 from unittest.mock import patch
 from datetime import datetime, timezone
 
@@ -54,3 +56,36 @@ class TestGenerateObjectKey:
         mock_uuid.return_value = "id"
         key = StoredFileService.generate_object_key("c", "T", "f.txt")
         assert "/01/05/" in key
+
+
+class TestContentHash:
+    """Tests for StoredFileService.content_hash() — SHA-256 of in-memory bytes only."""
+
+    def test_bytes_returns_sha256_hex(self):
+        data = b"hello world"
+        assert StoredFileService.content_hash(data) == hashlib.sha256(data).hexdigest()
+
+    def test_bytearray_is_hashed(self):
+        assert StoredFileService.content_hash(bytearray(b"abc")) == hashlib.sha256(b"abc").hexdigest()
+
+    def test_empty_bytes_is_hashed(self):
+        assert StoredFileService.content_hash(b"") == hashlib.sha256(b"").hexdigest()
+
+    def test_same_content_same_hash(self):
+        assert StoredFileService.content_hash(b"x") == StoredFileService.content_hash(b"x")
+
+    def test_different_content_different_hash(self):
+        assert StoredFileService.content_hash(b"a") != StoredFileService.content_hash(b"b")
+
+    def test_hash_is_64_hex_chars(self):
+        digest = StoredFileService.content_hash(b"anything")
+        assert len(digest) == 64
+        int(digest, 16)  # parses as hexadecimal
+
+    def test_stream_returns_none(self):
+        assert StoredFileService.content_hash(io.BytesIO(b"data")) is None
+
+    def test_stream_is_not_consumed(self):
+        stream = io.BytesIO(b"payload")
+        StoredFileService.content_hash(stream)
+        assert stream.read() == b"payload"

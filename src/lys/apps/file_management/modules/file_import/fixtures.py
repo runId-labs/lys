@@ -10,6 +10,7 @@ from lys.apps.file_management.modules.file_import.consts import (
     FILE_IMPORT_STATUS_COMPLETED,
     FILE_IMPORT_STATUS_FAILED,
     FILE_IMPORT_STATUS_CANCELLED,
+    FILE_IMPORT_STATUS_SKIPPED,
 )
 from lys.apps.file_management.modules.file_import.services import FileImportStatusService
 from lys.core.fixtures import EntityFixtures
@@ -66,6 +67,14 @@ class FileImportStatusFixtures(EntityFixtures[FileImportStatusService]):
             "attributes": {
                 "enabled": True,
                 "description": "Import job was cancelled."
+            }
+        },
+        {
+            "id": FILE_IMPORT_STATUS_SKIPPED,
+            "attributes": {
+                "enabled": True,
+                "description": "Skipped by content-hash idempotency: a non-failed import of "
+                               "the same file content already exists."
             }
         },
     ]

@@ -7,6 +7,16 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.16.0] - 2026-06-11
+
+### Added
+- `StoredFile.content_hash`: nullable, indexed `String(64)` column holding the SHA-256 hex digest of the file content (basis for import idempotency). Null when the content is not available server-side at creation (e.g. presigned-URL upload).
+- `StoredFileService.content_hash(data)`: returns the SHA-256 hex digest for in-memory bytes, and `None` for a file-like stream (which is not consumed, to avoid breaking the upload). `upload` / `upload_sync` now populate `content_hash` automatically.
+- `StoredFileService.upload` / `upload_sync` accept arbitrary `**entity_fields`, forwarded unchanged to the StoredFile entity (supports subclass-defined columns).
+- `FileImportService.find_active_import(session, client_id, content_hash)`: returns the most recent non-failed (PROCESSING/COMPLETED) FileImport for a client whose StoredFile shares the given content hash; returns `None` for a falsy hash. FAILED/SKIPPED/CANCELLED imports are ignored, so a re-import after a failure is always allowed.
+- `FileImportService.stage_zip_documents(...)`: generic ZIP import staging engine. Downloads and safely extracts a ZIP (path-traversal / zip-bomb protected), then creates one StoredFile + PENDING FileImport per document. Optional content-hash idempotency (`check_idempotency`) records a SKIPPED FileImport for duplicates (existing in DB or earlier in the same ZIP, the in-batch original taking precedence) instead of re-importing. `max_files` is enforced during extraction (early rejection, bounded memory); per-document errors are isolated so one bad document does not abort the batch; the source ZIP is deleted only on a fully clean run. Idempotency is best-effort (check + insert is not atomic and there is no unique constraint).
+- `FILE_IMPORT_STATUS_SKIPPED` file import status constant and fixture.
+
 ## [0.15.0] - 2026-06-09
 
 ### Added

@@ -1,6 +1,6 @@
 from typing import Any, Optional
 
-from sqlalchemy import BigInteger, ForeignKey, JSON, Uuid
+from sqlalchemy import BigInteger, ForeignKey, Index, JSON, String, Uuid
 from sqlalchemy.orm import Mapped, mapped_column, declared_attr, relationship
 
 from lys.core.entities import Entity, ParametricEntity
@@ -26,6 +26,10 @@ class StoredFile(Entity):
 
     mime_type: Mapped[str] = mapped_column(nullable=False)
 
+    # SHA-256 of the file content (hex). Basis for import idempotency. Null when the
+    # content was not available server-side at creation (e.g. presigned-URL upload).
+    content_hash: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+
     type_id: Mapped[str] = mapped_column(
         ForeignKey("stored_file_type.id", ondelete="RESTRICT"),
         nullable=False
@@ -39,6 +43,11 @@ class StoredFile(Entity):
         return relationship("stored_file_type", lazy="selectin")
 
     extra_data: Mapped[Optional[dict[str, Any]]] = mapped_column(JSON, nullable=True)
+
+    # Composite index matching the idempotency lookup (client_id + content_hash).
+    __table_args__ = (
+        Index("ix_stored_file_client_content_hash", "client_id", "content_hash"),
+    )
 
     @property
     def path(self) -> str:
