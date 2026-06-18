@@ -84,6 +84,10 @@ class AIMessage(Entity):
     model: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
     tokens_in: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     tokens_out: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    # Prompt-cache usage (provider-agnostic; Anthropic cache_read/cache_creation input
+    # tokens, currently dropped by the providers). Lets us measure cache effectiveness.
+    cache_read_tokens: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    cache_write_tokens: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     latency_ms: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
 
     @declared_attr

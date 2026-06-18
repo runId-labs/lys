@@ -171,6 +171,11 @@ class AnthropicProvider(AIProvider):
             usage = (event.get("message") or {}).get("usage") or {}
             if usage.get("input_tokens") is not None:
                 stream_state["input_tokens"] = usage["input_tokens"]
+            # Prompt-cache usage is only reported in message_start; carry it forward.
+            if usage.get("cache_creation_input_tokens") is not None:
+                stream_state["cache_write_tokens"] = usage["cache_creation_input_tokens"]
+            if usage.get("cache_read_input_tokens") is not None:
+                stream_state["cache_read_tokens"] = usage["cache_read_input_tokens"]
             return None
 
         if event_type == "content_block_start":
@@ -255,6 +260,12 @@ class AnthropicProvider(AIProvider):
             merged["completion_tokens"] = completion
         if prompt is not None and completion is not None:
             merged["total_tokens"] = prompt + completion
+        cache_read = stream_state.get("cache_read_tokens")
+        cache_write = stream_state.get("cache_write_tokens")
+        if cache_read is not None:
+            merged["cache_read_tokens"] = cache_read
+        if cache_write is not None:
+            merged["cache_write_tokens"] = cache_write
         return merged or None
 
     # ========== JSON Methods ==========
@@ -559,6 +570,12 @@ class AnthropicProvider(AIProvider):
             normalized["completion_tokens"] = completion
         if prompt is not None and completion is not None:
             normalized["total_tokens"] = prompt + completion
+        cache_write = usage.get("cache_creation_input_tokens")
+        cache_read = usage.get("cache_read_input_tokens")
+        if cache_write is not None:
+            normalized["cache_write_tokens"] = cache_write
+        if cache_read is not None:
+            normalized["cache_read_tokens"] = cache_read
         return normalized or None
 
     def _handle_error_status(self, response: httpx.Response) -> None:

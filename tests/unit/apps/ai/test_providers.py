@@ -1251,6 +1251,53 @@ class TestAnthropicProviderTranslation:
         assert AnthropicProvider._normalize_usage(None) is None
         assert AnthropicProvider._normalize_usage({}) is None
 
+    def test_normalize_usage_maps_cache_tokens(self, provider):
+        """cache_creation/cache_read input tokens map to cache_write/cache_read."""
+        assert AnthropicProvider._normalize_usage({
+            "input_tokens": 10,
+            "output_tokens": 5,
+            "cache_creation_input_tokens": 30,
+            "cache_read_input_tokens": 20,
+        }) == {
+            "prompt_tokens": 10,
+            "completion_tokens": 5,
+            "total_tokens": 15,
+            "cache_write_tokens": 30,
+            "cache_read_tokens": 20,
+        }
+
+    def test_normalize_usage_omits_absent_cache_tokens(self, provider):
+        """Without cache fields no cache keys are emitted; total excludes cache."""
+        normalized = AnthropicProvider._normalize_usage(
+            {"input_tokens": 10, "output_tokens": 5}
+        )
+        assert "cache_read_tokens" not in normalized
+        assert "cache_write_tokens" not in normalized
+
+    def test_normalize_usage_maps_cache_tokens(self, provider):
+        """cache_creation/cache_read input tokens map to cache_write/cache_read."""
+        normalized = AnthropicProvider._normalize_usage({
+            "input_tokens": 10,
+            "output_tokens": 5,
+            "cache_creation_input_tokens": 30,
+            "cache_read_input_tokens": 20,
+        })
+        assert normalized == {
+            "prompt_tokens": 10,
+            "completion_tokens": 5,
+            "total_tokens": 15,
+            "cache_write_tokens": 30,
+            "cache_read_tokens": 20,
+        }
+
+    def test_normalize_usage_omits_absent_cache_tokens(self, provider):
+        """Without cache fields, no cache keys are emitted; total excludes cache."""
+        normalized = AnthropicProvider._normalize_usage(
+            {"input_tokens": 10, "output_tokens": 5}
+        )
+        assert "cache_read_tokens" not in normalized
+        assert "cache_write_tokens" not in normalized
+
     def test_get_available_models(self, provider):
         assert "claude-opus-4-8" in AnthropicProvider.get_available_models()
 
@@ -1415,6 +1462,27 @@ class TestAnthropicProviderChatStream:
         assert final.finish_reason == "stop"
         assert final.usage == {
             "prompt_tokens": 42, "completion_tokens": 13, "total_tokens": 55,
+        }
+
+    @pytest.mark.asyncio
+    async def test_stream_carries_cache_tokens_from_message_start(self, provider, config, messages):
+        """Cache token counts reported only in message_start merge into final usage."""
+        lines = [
+            'data: {"type":"message_start","message":{"usage":'
+            '{"input_tokens":42,"cache_creation_input_tokens":30,"cache_read_input_tokens":20}}}',
+            'data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Hi"}}',
+            'data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":13}}',
+            'data: {"type":"message_stop"}',
+        ]
+        client_cm, _ = self._make_stream_mock(lines)
+        with patch("httpx.AsyncClient", return_value=client_cm):
+            chunks = [c async for c in provider.chat_stream(messages, config)]
+        assert chunks[-1].usage == {
+            "prompt_tokens": 42,
+            "completion_tokens": 13,
+            "total_tokens": 55,
+            "cache_read_tokens": 20,
+            "cache_write_tokens": 30,
         }
 
     @pytest.mark.asyncio

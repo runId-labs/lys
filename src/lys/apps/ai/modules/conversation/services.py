@@ -43,6 +43,17 @@ class AIConversationService(EntityService[AIConversation]):
 
     _routes_manifest_cache: Optional[Dict[str, Any]] = None
 
+    @staticmethod
+    def _usage_fields(usage: Optional[Dict[str, Any]]) -> Dict[str, Optional[int]]:
+        """Map a provider-normalized usage dict to AIMessage token columns."""
+        usage = usage or {}
+        return {
+            "tokens_in": usage.get("prompt_tokens"),
+            "tokens_out": usage.get("completion_tokens"),
+            "cache_read_tokens": usage.get("cache_read_tokens"),
+            "cache_write_tokens": usage.get("cache_write_tokens"),
+        }
+
     @classmethod
     def _get_routes_manifest(cls) -> Optional[Dict[str, Any]]:
         """
@@ -214,9 +225,8 @@ class AIConversationService(EntityService[AIConversation]):
             tool_calls=response.tool_calls or None,
             provider=response.provider,
             model=response.model,
-            tokens_in=response.usage.get("prompt_tokens") if response.usage else None,
-            tokens_out=response.usage.get("completion_tokens") if response.usage else None,
             latency_ms=latency_ms,
+            **cls._usage_fields(response.usage),
         )
 
         return assistant_message
@@ -675,9 +685,8 @@ class AIConversationService(EntityService[AIConversation]):
                     content=response.content,
                     provider=response.provider,
                     model=response.model,
-                    tokens_in=response.usage.get("prompt_tokens") if response.usage else None,
-                    tokens_out=response.usage.get("completion_tokens") if response.usage else None,
                     latency_ms=latency_ms,
+                    **cls._usage_fields(response.usage),
                 )
 
                 frontend_actions = list(getattr(info.context, "frontend_actions", []))
@@ -712,9 +721,8 @@ class AIConversationService(EntityService[AIConversation]):
                 tool_calls=tool_calls,
                 provider=response.provider,
                 model=response.model,
-                tokens_in=response.usage.get("prompt_tokens") if response.usage else None,
-                tokens_out=response.usage.get("completion_tokens") if response.usage else None,
                 latency_ms=latency_ms,
+                **cls._usage_fields(response.usage),
             )
 
             # Execute each tool and collect results
@@ -903,8 +911,7 @@ class AIConversationService(EntityService[AIConversation]):
                     content=accumulated_content,
                     provider=last_provider,
                     model=last_model,
-                    tokens_in=last_usage.get("prompt_tokens") if last_usage else None,
-                    tokens_out=last_usage.get("completion_tokens") if last_usage else None,
+                    **cls._usage_fields(last_usage),
                 )
 
                 frontend_actions = list(getattr(info.context, "frontend_actions", []))
@@ -943,8 +950,7 @@ class AIConversationService(EntityService[AIConversation]):
                 tool_calls=finalized_tool_calls,
                 provider=last_provider,
                 model=last_model,
-                tokens_in=last_usage.get("prompt_tokens") if last_usage else None,
-                tokens_out=last_usage.get("completion_tokens") if last_usage else None,
+                **cls._usage_fields(last_usage),
             )
 
             # Execute each tool

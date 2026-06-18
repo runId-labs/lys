@@ -1306,3 +1306,45 @@ class TestChatWithToolsStreaming:
         assert "event: error" in last_event
         error_data = json.loads(last_event.split("data: ")[1].strip())
         assert error_data["code"] == "MAX_ITERATIONS"
+
+
+class TestAIConversationServiceUsageFields:
+    """Tests for AIConversationService._usage_fields token-column mapping."""
+
+    def test_maps_all_usage_keys(self):
+        from lys.apps.ai.modules.conversation.services import AIConversationService
+
+        assert AIConversationService._usage_fields({
+            "prompt_tokens": 10,
+            "completion_tokens": 5,
+            "cache_read_tokens": 20,
+            "cache_write_tokens": 30,
+        }) == {
+            "tokens_in": 10,
+            "tokens_out": 5,
+            "cache_read_tokens": 20,
+            "cache_write_tokens": 30,
+        }
+
+    def test_none_usage_yields_all_none(self):
+        from lys.apps.ai.modules.conversation.services import AIConversationService
+
+        assert AIConversationService._usage_fields(None) == {
+            "tokens_in": None,
+            "tokens_out": None,
+            "cache_read_tokens": None,
+            "cache_write_tokens": None,
+        }
+
+    def test_missing_cache_keys_default_to_none(self):
+        from lys.apps.ai.modules.conversation.services import AIConversationService
+
+        assert AIConversationService._usage_fields({
+            "prompt_tokens": 7,
+            "completion_tokens": 3,
+        }) == {
+            "tokens_in": 7,
+            "tokens_out": 3,
+            "cache_read_tokens": None,
+            "cache_write_tokens": None,
+        }

@@ -7,6 +7,15 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.17.0] - 2026-06-18
+
+### Added
+- `AIMessage.cache_read_tokens` / `AIMessage.cache_write_tokens`: nullable `Integer` columns recording provider prompt-cache usage (Anthropic `cache_read_input_tokens` / `cache_creation_input_tokens`), enabling measurement of cache effectiveness. Provider-agnostic: providers that do not report cache usage leave them `None`.
+- `AnthropicProvider` now surfaces prompt-cache token counts in normalized usage (`cache_read_tokens` / `cache_write_tokens`) for both streaming (carried forward from `message_start`) and non-streaming responses. `total_tokens` continues to exclude cache tokens.
+
+### Changed
+- `AIConversationService` persists `cache_read_tokens` / `cache_write_tokens` on every assistant message across all chat paths (sync, tool-loop, streaming). Token-column mapping is centralized in the new `AIConversationService._usage_fields(usage)` helper, removing the previously duplicated extraction at each `AIMessage` creation site.
+
 ## [0.16.0] - 2026-06-11
 
 ### Added
