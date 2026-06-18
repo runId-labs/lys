@@ -7,6 +7,20 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.18.0] - 2026-06-18
+
+### Added
+- Segmented system prompt with provider prompt-cache breakpoints. `AIConversationService._build_system_prompt` now returns an ordered list of `{"content", "cache"}` segments: the page-specific prompt is stable per page (cacheable) and the dynamic per-request context (company / year / turn) is volatile (uncached), so the volatile tail no longer busts the cache of the stable prefix.
+- `sanitize_llm_messages` preserves system-segment boundaries when any segment carries a truthy `cache` flag (content becomes an ordered list of `{"text", "cache"}` blocks); without a cacheable segment it flattens to the historical single string.
+- `AnthropicProvider` places cache breakpoints for a structured system: one at the last cacheable system segment, one on the last tool, and a rolling breakpoint on the last message (multi-turn prefix caching). A one-shot string system keeps its single-breakpoint shape.
+- `MistralProvider._flatten_system`: flattens a segmented system message back to a single string (Mistral takes a plain string), applied across all chat entry points.
+
+### Removed
+- `AIConversationService._get_user_details` / `_get_user_roles_info`: the system prompt no longer injects the user's identity and roles. This removes two DB queries per message and keeps user PII out of cached prompt prefixes (intentional behaviour change).
+
+### Fixed
+- `AnthropicProvider.chat_stream` now carries the response model forward from `message_start` to the final chunk, so streamed assistant messages are persisted with their `model` (previously `None` for Anthropic streaming, unlike non-streaming and Mistral).
+
 ## [0.17.0] - 2026-06-18
 
 ### Added

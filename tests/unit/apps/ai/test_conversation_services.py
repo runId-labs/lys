@@ -302,80 +302,64 @@ class TestAIConversationServiceBuildSystemPrompt:
         return AsyncMock()
 
     @pytest.mark.asyncio
-    async def test_build_system_prompt_returns_empty_without_config(self, mock_session):
-        """Test building system prompt returns empty without configuration."""
+    async def test_build_system_prompt_returns_no_segments_without_inputs(self, mock_session):
+        """Without page behaviour or context data, no segments are produced."""
         from lys.apps.ai.modules.conversation.services import AIConversationService
 
-        connected_user = {
-            "sub": "user-123",
-            "is_super_user": False,
-        }
-        chatbot_config = {}
+        result = await AIConversationService._build_system_prompt()
 
-        result = await AIConversationService._build_system_prompt(
-            mock_session, connected_user, chatbot_config, tools_count=5
-        )
-
-        assert result == ""
+        assert result == []
 
     @pytest.mark.asyncio
-    async def test_build_system_prompt_ignores_chatbot_config_system_prompt(self, mock_session):
-        """`chatbot_config.system_prompt` is the same value as `endpoint.system_prompt`,
-        which `AIService` entry points already prepend. Including it here would
-        cause it to land twice in the final merged system message, so
-        `_build_system_prompt` deliberately ignores it.
-        """
+    async def test_build_system_prompt_page_segment_is_cacheable(self, mock_session):
+        """The page-specific prompt becomes a single cacheable segment."""
         from lys.apps.ai.modules.conversation.services import AIConversationService
 
-        connected_user = None
-        chatbot_config = {
-            "system_prompt": "You are a helpful assistant for ACME Corp."
-        }
-
-        result = await AIConversationService._build_system_prompt(
-            mock_session, connected_user, chatbot_config, tools_count=0
-        )
-
-        assert "ACME Corp" not in result
-        assert result == ""
-
-    @pytest.mark.asyncio
-    async def test_build_system_prompt_with_page_behaviour(self, mock_session):
-        """Test that page-specific prompt is included."""
-        from lys.apps.ai.modules.conversation.services import AIConversationService
-
-        connected_user = None
-        chatbot_config = {}
         page_behaviour = {
             "prompt": "Focus on helping with customer support tasks."
         }
 
         result = await AIConversationService._build_system_prompt(
-            mock_session, connected_user, chatbot_config, tools_count=0,
             page_behaviour=page_behaviour
         )
 
-        assert "customer support" in result
+        assert result == [
+            {"content": "Focus on helping with customer support tasks.", "cache": True}
+        ]
 
     @pytest.mark.asyncio
-    async def test_build_system_prompt_with_context_data(self, mock_session):
-        """Test that context data is included."""
+    async def test_build_system_prompt_context_segment_is_volatile(self, mock_session):
+        """Dynamic context becomes a single non-cacheable segment."""
         from lys.apps.ai.modules.conversation.services import AIConversationService
 
-        connected_user = None
-        chatbot_config = {}
         context_data = {
             "Current Order": "Order #12345 - Status: Pending"
         }
 
         result = await AIConversationService._build_system_prompt(
-            mock_session, connected_user, chatbot_config, tools_count=0,
             context_data=context_data
         )
 
-        assert "Contexte dynamique" in result
-        assert "Current Order" in result
-        assert "Order #12345" in result
+        assert len(result) == 1
+        segment = result[0]
+        assert segment["cache"] is False
+        assert "Contexte dynamique" in segment["content"]
+        assert "Current Order" in segment["content"]
+        assert "Order #12345" in segment["content"]
+
+    @pytest.mark.asyncio
+    async def test_build_system_prompt_orders_cacheable_before_volatile(self, mock_session):
+        """The stable page segment precedes the volatile context segment."""
+        from lys.apps.ai.modules.conversation.services import AIConversationService
+
+        result = await AIConversationService._build_system_prompt(
+            page_behaviour={"prompt": "Page prompt."},
+            context_data={"Order": "Order #12345"},
+        )
+
+        assert [seg["cache"] for seg in result] == [True, False]
+        assert result[0]["content"] == "Page prompt."
+        assert "Order #12345" in result[1]["content"]
 
 
 # ========== Streaming Helpers ==========
@@ -583,7 +567,8 @@ class TestPrepareChatContext:
 
         with patch.object(AIToolService, "get_accessible_tools", new_callable=AsyncMock) as mock_tools, \
              patch.object(AIConversationService, "_get_routes_manifest", return_value=None), \
-             patch.object(AIConversationService, "_build_system_prompt", new_callable=AsyncMock, return_value="sys prompt"), \
+             patch.object(AIConversationService, "_build_system_prompt", new_callable=AsyncMock,
+                          return_value=[{"content": "sys prompt", "cache": True}]), \
              patch.object(AIConversationService, "_get_tool_executor", new_callable=AsyncMock) as mock_executor, \
              patch.object(AIConversationService, "get_or_create", new_callable=AsyncMock, return_value=mock_conversation), \
              patch.object(AIConversationService, "_build_messages", new_callable=AsyncMock, return_value=[]), \
@@ -634,6 +619,8 @@ class TestPrepareChatContext:
         messages = ctx["messages"]
         assert messages[0]["role"] == "system"
         assert messages[0]["content"] == "sys prompt"
+        # The cache flag from the segment is carried onto the system message.
+        assert messages[0]["cache"] is True
         assert messages[-1]["role"] == "user"
         assert messages[-1]["content"] == "What can you do?"
 

@@ -56,6 +56,42 @@ class TestSystemPositioning:
         assert result[0]["role"] == "system"
         assert result[1]["role"] == "user"
 
+    def test_cache_flag_preserves_segment_boundaries(self):
+        # When any system message is marked cacheable, boundaries are kept as an
+        # ordered list of {"text", "cache"} blocks so a provider can place a
+        # prompt-cache breakpoint between the stable prefix and the volatile tail.
+        messages = [
+            {"role": "system", "content": "stable", "cache": True},
+            {"role": "system", "content": "volatile", "cache": False},
+            {"role": "user", "content": "hi"},
+        ]
+        result = sanitize_llm_messages(messages)
+        assert [m["role"] for m in result] == ["system", "user"]
+        assert result[0]["content"] == [
+            {"text": "stable", "cache": True},
+            {"text": "volatile", "cache": False},
+        ]
+
+    def test_no_cache_flag_flattens_to_string(self):
+        # Without any cacheable segment, the historical plain-string merge applies.
+        messages = [
+            {"role": "system", "content": "sys1", "cache": False},
+            {"role": "system", "content": "sys2"},
+            {"role": "user", "content": "hi"},
+        ]
+        result = sanitize_llm_messages(messages)
+        assert result[0]["content"] == "sys1\n\nsys2"
+
+    def test_cache_flag_skips_empty_segments(self):
+        # Falsy content is dropped before the cacheable segment list is built.
+        messages = [
+            {"role": "system", "content": "stable", "cache": True},
+            {"role": "system", "content": "", "cache": True},
+            {"role": "user", "content": "hi"},
+        ]
+        result = sanitize_llm_messages(messages)
+        assert result[0]["content"] == [{"text": "stable", "cache": True}]
+
 
 class TestToolReattachment:
     def test_tool_after_system_is_reattached_after_assistant(self):

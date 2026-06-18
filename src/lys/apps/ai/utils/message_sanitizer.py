@@ -10,7 +10,10 @@ Rules enforced:
   multiple system messages (e.g. an endpoint-level base prompt prepended on
   top of a conversation-level system prompt), their `content` is concatenated
   with a blank line separator, preserving input order. No system content is
-  dropped silently.
+  dropped silently. If any source system message carries a truthy ``cache``
+  flag, the segment boundaries are preserved instead (content becomes an ordered
+  list of ``{"text", "cache"}`` blocks) so a provider can place a prompt-cache
+  breakpoint between the stable prefix and the volatile tail.
 - Each `tool` message is reattached immediately after the `assistant` message
   whose `tool_calls[].id` matches its `tool_call_id`.
 - `tool` messages with no matching parent are dropped (orphans).
@@ -33,7 +36,7 @@ def sanitize_llm_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]
         return messages
 
     tool_responses_by_id: Dict[str, Dict[str, Any]] = {}
-    system_contents: List[str] = []
+    system_segments: List[tuple] = []  # (content, cache)
     for msg in messages:
         role = msg.get("role")
         if role == "tool":
@@ -43,14 +46,23 @@ def sanitize_llm_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]
         elif role == "system":
             content = msg.get("content")
             if content:
-                system_contents.append(content)
+                system_segments.append((content, bool(msg.get("cache", False))))
 
     result: List[Dict[str, Any]] = []
-    if system_contents:
-        result.append({
-            "role": "system",
-            "content": "\n\n".join(system_contents),
-        })
+    if system_segments:
+        if any(cache for _, cache in system_segments):
+            # At least one segment is marked cacheable: preserve the segment boundaries so
+            # a provider supporting prompt caching can place a breakpoint between the stable
+            # prefix and the volatile tail. Plain-string consumers flatten this back.
+            result.append({
+                "role": "system",
+                "content": [{"text": c, "cache": cache} for c, cache in system_segments],
+            })
+        else:
+            result.append({
+                "role": "system",
+                "content": "\n\n".join(c for c, _ in system_segments),
+            })
 
     for msg in messages:
         role = msg.get("role")

@@ -12,7 +12,6 @@ from typing import AsyncGenerator, Optional, List, Dict, Any
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import selectinload
 
 from lys.apps.ai.modules.conversation.consts import (
     AIFeedbackRating,
@@ -278,110 +277,39 @@ class AIConversationService(EntityService[AIConversation]):
     @classmethod
     async def _build_system_prompt(
         cls,
-        session: AsyncSession,
-        connected_user: Optional[Dict[str, Any]],
-        chatbot_config: Dict[str, Any],
-        tools_count: int,
         page_behaviour: Optional[Dict[str, Any]] = None,
         context_data: Optional[Dict[str, str]] = None,
-    ) -> str:
+    ) -> List[Dict[str, Any]]:
         """
-        Build system prompt with user context.
+        Build the system prompt as ordered cacheable / volatile segments.
 
         Args:
-            session: Database session
-            connected_user: Connected user from JWT
-            chatbot_config: Chatbot configuration from plugin
-            tools_count: Number of available tools
             page_behaviour: Optional page-specific chatbot behaviour from manifest
             context_data: Optional context data from executing context_tools
 
         Returns:
-            System prompt string
+            Ordered list of {"content", "cache"} segments. The base prompt is injected
+            separately by the AIService entry point (endpoint.system_prompt). The page
+            prompt is stable per page (cacheable); the dynamic context (per company /
+            year / turn) is volatile and marked uncached, so a provider can place the
+            cache breakpoint between them and stop the volatile tail from busting the
+            stable prefix.
         """
-        system_prompt_parts = []
+        segments: List[Dict[str, Any]] = []
 
-        # Note: the base chatbot prompt is injected by AIService entry points
-        # (endpoint.system_prompt). Don't add it again here — it would end up
-        # duplicated in the final merged system message.
-
-        # Add page-specific prompt if available
+        # Page-specific prompt — stable per page → cacheable.
         if page_behaviour and page_behaviour.get("prompt"):
-            system_prompt_parts.append(page_behaviour["prompt"])
-            system_prompt_parts.append("")
+            segments.append({"content": page_behaviour["prompt"], "cache": True})
 
-        # Add context data from context_tools if available
+        # Dynamic context from context_tools — volatile (company / year / turn) → not cached.
         if context_data:
-            system_prompt_parts.append("## Contexte dynamique")
+            parts = ["## Contexte dynamique"]
             for label, data in context_data.items():
-                system_prompt_parts.append(f"\n### {label}")
-                system_prompt_parts.append(data)
+                parts.append(f"\n### {label}")
+                parts.append(data)
+            segments.append({"content": "\n".join(parts), "cache": False})
 
-        return "\n".join(system_prompt_parts)
-
-    @classmethod
-    async def _get_user_details(cls, session: AsyncSession, user_id: str) -> Dict[str, Any]:
-        """Get user details from database."""
-        try:
-            user_entity = cls.app_manager.get_entity("user")
-
-            stmt = (
-                select(user_entity)
-                .where(user_entity.id == user_id)
-                .options(selectinload(user_entity.private_data))
-            )
-
-            result = await session.execute(stmt)
-            user = result.scalar_one_or_none()
-
-            if not user:
-                return {}
-
-            details = {
-                "email": getattr(user, "email", None),
-                "status": getattr(user, "status", None),
-            }
-
-            if hasattr(user, "private_data") and user.private_data:
-                details["first_name"] = getattr(user.private_data, "first_name", None)
-                details["last_name"] = getattr(user.private_data, "last_name", None)
-                details["language_code"] = getattr(user.private_data, "language_code", None)
-
-            if details["status"]:
-                if hasattr(details["status"], "code"):
-                    details["status"] = details["status"].code
-                elif hasattr(details["status"], "value"):
-                    details["status"] = details["status"].value
-
-            return details
-        except Exception:
-            return {}
-
-    @classmethod
-    async def _get_user_roles_info(cls, session: AsyncSession, user_id: str) -> List[Dict[str, Any]]:
-        """Get user roles with descriptions."""
-        try:
-            role_entity = cls.app_manager.get_entity("role")
-            user_entity = cls.app_manager.get_entity("user")
-
-            stmt = (
-                select(role_entity)
-                .where(role_entity.users.any(user_entity.id == user_id))
-                .where(role_entity.enabled == True)
-            )
-
-            result = await session.execute(stmt)
-            roles = result.scalars().all()
-
-            return [
-                {
-                    "code": role.code,
-                    "description": getattr(role, "description", None)
-                }
-                for role in roles
-            ]
-        except Exception:
-            return []
+        return segments
 
     @classmethod
     async def _get_tool_executor(
@@ -563,15 +491,12 @@ class AIConversationService(EntityService[AIConversation]):
                             f"[ContextTools] Fetched data for {len(context_data)} labels"
                         )
 
-        # Build system prompt
-        # TODO: Optimize - consider caching system prompt per conversation_id to avoid
-        # 2 DB queries (user details + roles) on every message
-        system_prompt = await cls._build_system_prompt(
-            session, connected_user, chatbot_config, len(tools),
+        # Build system prompt (cheap: no DB; page prompt + already-fetched context).
+        system_segments = await cls._build_system_prompt(
             page_behaviour=page_behaviour,
             context_data=context_data,
         )
-        logger.debug(f"[SystemPrompt] Built prompt:\n{system_prompt}")
+        logger.debug(f"[SystemPrompt] Built {len(system_segments)} segment(s)")
 
         # Get the appropriate executor based on config
         executor = await cls._get_tool_executor(tools, info, accessible_routes, page_context)
@@ -590,7 +515,13 @@ class AIConversationService(EntityService[AIConversation]):
         # TODO: Optimize - consider keeping messages in memory during conversation to avoid
         # reloading full history from DB on every message
         history = await cls._build_messages(conversation, session)
-        messages = [{"role": "system", "content": system_prompt}]
+        # One system message per segment, carrying its cache flag. The base prompt is
+        # prepended (uncached) by the AIService entry point; sitting before the cacheable
+        # page segment, it is still covered by the breakpoint placed after that segment.
+        messages = [
+            {"role": "system", "content": seg["content"], "cache": seg["cache"]}
+            for seg in system_segments
+        ]
 
         # Add conversation history (filter out system messages)
         for msg in history:

@@ -65,6 +65,23 @@ class MistralProvider(AIProvider):
         digest = hashlib.sha1(system.encode("utf-8")).hexdigest()[:32]
         return {"prompt_cache_key": f"sys-{digest}"}
 
+    @staticmethod
+    def _flatten_system(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Flatten structured (segmented) system content into a plain string.
+
+        The sanitizer may emit a system message whose content is an ordered list of
+        ``{"text", "cache"}`` segments (for providers that support prompt-cache
+        breakpoints). Mistral takes a single string, so join the segment texts.
+        """
+        flattened: List[Dict[str, Any]] = []
+        for msg in messages:
+            content = msg.get("content")
+            if (isinstance(content, list) and content
+                    and isinstance(content[0], dict) and "text" in content[0]):
+                msg = {**msg, "content": "\n\n".join(seg.get("text", "") for seg in content)}
+            flattened.append(msg)
+        return flattened
+
     # ========== Standard Chat ==========
 
     async def chat(
@@ -74,6 +91,7 @@ class MistralProvider(AIProvider):
         tools: Optional[List[Dict[str, Any]]] = None,
     ) -> AIResponse:
         """Send a chat request to Mistral API."""
+        messages = self._flatten_system(messages)
         base_url = self.get_base_url(config)
 
         # Filter options to only include valid Mistral API parameters
@@ -121,6 +139,7 @@ class MistralProvider(AIProvider):
         tools: Optional[List[Dict[str, Any]]] = None,
     ) -> AIResponse:
         """Synchronous version using httpx sync client."""
+        messages = self._flatten_system(messages)
         base_url = self.get_base_url(config)
 
         # Filter options to only include valid Mistral API parameters
@@ -170,6 +189,7 @@ class MistralProvider(AIProvider):
         tools: Optional[List[Dict[str, Any]]] = None,
     ) -> AsyncGenerator[AIStreamChunk, None]:
         """Stream a chat response from Mistral API, yielding chunks."""
+        messages = self._flatten_system(messages)
         base_url = self.get_base_url(config)
 
         filtered_options = {k: v for k, v in config.options.items() if k in self.VALID_OPTIONS}
@@ -268,6 +288,7 @@ class MistralProvider(AIProvider):
             AITimeoutError: Request exceeded ``config.timeout``.
             AIValidationError: Response could not be validated against ``schema``.
         """
+        messages = self._flatten_system(messages)
         base_url = self.get_base_url(config)
 
         # Filter options to only include valid Mistral API parameters
@@ -320,6 +341,7 @@ class MistralProvider(AIProvider):
         Uses Mistral's native ``response_format: {"type": "json_schema", ...}`` mode.
         See :meth:`chat_json` for details on parameters, return value, and exceptions.
         """
+        messages = self._flatten_system(messages)
         base_url = self.get_base_url(config)
 
         # Filter options to only include valid Mistral API parameters

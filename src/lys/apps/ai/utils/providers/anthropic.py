@@ -168,10 +168,13 @@ class AnthropicProvider(AIProvider):
         event_type = event.get("type")
 
         if event_type == "message_start":
-            usage = (event.get("message") or {}).get("usage") or {}
+            message = event.get("message") or {}
+            usage = message.get("usage") or {}
             if usage.get("input_tokens") is not None:
                 stream_state["input_tokens"] = usage["input_tokens"]
-            # Prompt-cache usage is only reported in message_start; carry it forward.
+            # Model and prompt-cache usage are only reported in message_start; carry forward.
+            if message.get("model"):
+                stream_state["model"] = message["model"]
             if usage.get("cache_creation_input_tokens") is not None:
                 stream_state["cache_write_tokens"] = usage["cache_creation_input_tokens"]
             if usage.get("cache_read_input_tokens") is not None:
@@ -226,6 +229,7 @@ class AnthropicProvider(AIProvider):
             return AIStreamChunk(
                 finish_reason=finish_reason,
                 usage=usage,
+                model=stream_state.get("model"),
                 provider=self.name,
             )
 
@@ -362,16 +366,46 @@ class AnthropicProvider(AIProvider):
             "messages": anthropic_messages,
             **filtered_options,
         }
-        if system:
-            # Prompt caching: send the system prompt as a cacheable block. Cached
-            # input tokens are billed at ~10%, and the system block (instructions /
-            # catalog / context) is identical across requests of a batch (5-min TTL).
+        structured = isinstance(system, list)
+        if isinstance(system, str):
+            # Single cacheable system block (one breakpoint) — historical shape. Cached
+            # input tokens are billed at ~10% (5-min TTL).
             payload["system"] = [
                 {"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}
             ]
+        elif structured:
+            # Cache the stable prefix: one breakpoint at the end of the last cacheable
+            # segment caches tools + every preceding block; volatile segments after it
+            # (per-company / per-turn context) stay uncached, so they no longer bust the
+            # cache of the stable prefix.
+            last_cacheable = max(
+                (i for i, seg in enumerate(system) if seg.get("cache")), default=-1
+            )
+            blocks: List[Dict[str, Any]] = []
+            for i, seg in enumerate(system):
+                block: Dict[str, Any] = {"type": "text", "text": seg["text"]}
+                if i == last_cacheable:
+                    block["cache_control"] = {"type": "ephemeral"}
+                blocks.append(block)
+            payload["system"] = blocks
         if tools:
-            payload["tools"] = self._translate_tools(tools)
+            translated_tools = self._translate_tools(tools)
+            if structured and translated_tools:
+                # Cache the tool block independently, so it survives a per-page system change.
+                translated_tools[-1] = {
+                    **translated_tools[-1], "cache_control": {"type": "ephemeral"}
+                }
+            payload["tools"] = translated_tools
             payload["tool_choice"] = tool_choice or {"type": "auto"}
+        if structured and anthropic_messages:
+            # Rolling breakpoint on the last message: caches the whole prefix (tools +
+            # system + history) up to the prior turn when it is byte-stable across turns
+            # (multi-turn chat). One-shot string-system calls don't set this.
+            last_content = anthropic_messages[-1].get("content")
+            if isinstance(last_content, list) and last_content:
+                last_content[-1] = {
+                    **last_content[-1], "cache_control": {"type": "ephemeral"}
+                }
         if stream:
             payload["stream"] = True
 
@@ -421,7 +455,7 @@ class AnthropicProvider(AIProvider):
         rather than dropped, matching ``sanitize_llm_messages``. Consecutive same-role
         turns are merged to satisfy Anthropic's strict alternation.
         """
-        system_parts: List[str] = []
+        system_parts: List[Dict[str, Any]] = []  # ordered {"text", "cache"} segments
         out: List[Dict[str, Any]] = []
 
         def append(role: str, blocks: List[Dict[str, Any]]) -> None:
@@ -443,11 +477,21 @@ class AnthropicProvider(AIProvider):
             content = msg.get("content")
 
             if role == "system":
-                if isinstance(content, str):
+                if isinstance(content, list):
+                    # Structured system: ordered cacheable/volatile segments.
+                    for seg in content:
+                        if isinstance(seg, dict):
+                            text, cache = seg.get("text") or "", bool(seg.get("cache"))
+                        else:
+                            text = seg if isinstance(seg, str) else json.dumps(seg)
+                            cache = True
+                        if text:
+                            system_parts.append({"text": text, "cache": cache})
+                elif isinstance(content, str):
                     if content:
-                        system_parts.append(content)
+                        system_parts.append({"text": content, "cache": True})
                 elif content:
-                    system_parts.append(json.dumps(content))
+                    system_parts.append({"text": json.dumps(content), "cache": True})
             elif role == "tool":
                 append("user", [{
                     "type": "tool_result",
@@ -471,7 +515,14 @@ class AnthropicProvider(AIProvider):
 
         # Drop any turn left empty after normalization (e.g. an empty assistant ack).
         out = [turn for turn in out if turn["content"]]
-        system = "\n\n".join(system_parts) if system_parts else None
+        # A single cacheable block collapses to a plain string (one cache_control — the
+        # historical shape); otherwise hand the ordered segments to _prepare.
+        if not system_parts:
+            system = None
+        elif len(system_parts) == 1 and system_parts[0]["cache"]:
+            system = system_parts[0]["text"]
+        else:
+            system = system_parts
         return system, out
 
     @staticmethod

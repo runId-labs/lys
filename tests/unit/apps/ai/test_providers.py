@@ -1076,6 +1076,37 @@ class TestMistralCacheKeyField:
         assert payload["prompt_cache_key"].startswith("sys-")
 
 
+class TestMistralFlattenSystem:
+    """Tests for MistralProvider._flatten_system (segmented system -> string)."""
+
+    def test_flattens_segmented_system_to_string(self):
+        messages = [
+            {"role": "system", "content": [
+                {"text": "Stable.", "cache": True},
+                {"text": "Volatile.", "cache": False},
+            ]},
+            {"role": "user", "content": "hi"},
+        ]
+        result = MistralProvider._flatten_system(messages)
+        assert result[0] == {"role": "system", "content": "Stable.\n\nVolatile."}
+        # User message is forwarded unchanged.
+        assert result[1] == {"role": "user", "content": "hi"}
+
+    def test_plain_string_system_is_untouched(self):
+        messages = [
+            {"role": "system", "content": "Plain prompt."},
+            {"role": "user", "content": "hi"},
+        ]
+        assert MistralProvider._flatten_system(messages) == messages
+
+    def test_does_not_mutate_input_messages(self):
+        original = {"role": "system", "content": [{"text": "A", "cache": True}]}
+        messages = [original, {"role": "user", "content": "hi"}]
+        MistralProvider._flatten_system(messages)
+        # The source segment list must be preserved (a shallow copy is returned).
+        assert original["content"] == [{"text": "A", "cache": True}]
+
+
 # ========== AnthropicProvider ==========
 
 
@@ -1152,6 +1183,64 @@ class TestAnthropicProviderTranslation:
         payload, _, _ = provider._prepare([{"role": "user", "content": "hi"}], config)
         assert "system" not in payload
 
+    def test_prepare_structured_system_caches_last_cacheable_segment(self, provider):
+        """One breakpoint at the last cacheable segment; volatile tail stays uncached."""
+        config = self._config("claude-sonnet-4-6")
+        messages = [
+            {"role": "system", "content": [
+                {"text": "Stable page prompt.", "cache": True},
+                {"text": "Volatile context.", "cache": False},
+            ]},
+            {"role": "user", "content": "hi"},
+        ]
+        payload, _, _ = provider._prepare(messages, config)
+        assert payload["system"] == [
+            {"type": "text", "text": "Stable page prompt.",
+             "cache_control": {"type": "ephemeral"}},
+            {"type": "text", "text": "Volatile context."},
+        ]
+
+    def test_prepare_structured_system_caches_last_tool(self, provider):
+        """With a structured system, the last tool gets its own cache breakpoint."""
+        config = self._config("claude-sonnet-4-6")
+        messages = [
+            {"role": "system", "content": [
+                {"text": "Stable.", "cache": True},
+                {"text": "Volatile.", "cache": False},
+            ]},
+            {"role": "user", "content": "hi"},
+        ]
+        tools = [
+            {"type": "function", "function": {"name": "a", "parameters": {"type": "object"}}},
+            {"type": "function", "function": {"name": "b", "parameters": {"type": "object"}}},
+        ]
+        payload, _, _ = provider._prepare(messages, config, tools=tools)
+        assert "cache_control" not in payload["tools"][0]
+        assert payload["tools"][-1]["cache_control"] == {"type": "ephemeral"}
+
+    def test_prepare_structured_system_sets_rolling_breakpoint_on_last_message(self, provider):
+        """The last message's last content block gets a rolling cache breakpoint."""
+        config = self._config("claude-sonnet-4-6")
+        messages = [
+            {"role": "system", "content": [
+                {"text": "Stable.", "cache": True},
+                {"text": "Volatile.", "cache": False},
+            ]},
+            {"role": "user", "content": "hi"},
+        ]
+        payload, _, _ = provider._prepare(messages, config)
+        assert payload["messages"][-1]["content"][-1]["cache_control"] == {"type": "ephemeral"}
+
+    def test_prepare_string_system_sets_no_rolling_breakpoint(self, provider):
+        """A one-shot string system stays single-breakpoint: no message-level caching."""
+        config = self._config("claude-sonnet-4-6")
+        payload, _, _ = provider._prepare(
+            [{"role": "system", "content": "You are helpful."},
+             {"role": "user", "content": "hi"}],
+            config,
+        )
+        assert "cache_control" not in payload["messages"][-1]["content"][-1]
+
     def test_prepare_tools_default_tool_choice_auto(self, provider):
         config = self._config("claude-sonnet-4-6")
         tools = [{"type": "function", "function": {"name": "f", "parameters": {"type": "object"}}}]
@@ -1168,15 +1257,41 @@ class TestAnthropicProviderTranslation:
         )
         assert payload["stream"] is True
 
-    def test_translate_messages_merges_system(self, provider):
-        """Multiple system messages are concatenated, not dropped."""
+    def test_translate_messages_single_system_collapses_to_string(self, provider):
+        """A lone cacheable system message keeps the historical plain-string shape."""
+        system, msgs = AnthropicProvider._translate_messages([
+            {"role": "system", "content": "Base prompt."},
+            {"role": "user", "content": "hello"},
+        ])
+        assert system == "Base prompt."
+        assert msgs == [{"role": "user", "content": [{"type": "text", "text": "hello"}]}]
+
+    def test_translate_messages_merges_system_into_segments(self, provider):
+        """Multiple system messages are preserved as ordered cacheable segments."""
         system, msgs = AnthropicProvider._translate_messages([
             {"role": "system", "content": "Base prompt."},
             {"role": "system", "content": "Conversation prompt."},
             {"role": "user", "content": "hello"},
         ])
-        assert system == "Base prompt.\n\nConversation prompt."
+        assert system == [
+            {"text": "Base prompt.", "cache": True},
+            {"text": "Conversation prompt.", "cache": True},
+        ]
         assert msgs == [{"role": "user", "content": [{"type": "text", "text": "hello"}]}]
+
+    def test_translate_messages_structured_system_preserves_cache_flags(self, provider):
+        """A segmented system message keeps each segment's cache flag and order."""
+        system, _ = AnthropicProvider._translate_messages([
+            {"role": "system", "content": [
+                {"text": "Stable page prompt.", "cache": True},
+                {"text": "Volatile context.", "cache": False},
+            ]},
+            {"role": "user", "content": "hello"},
+        ])
+        assert system == [
+            {"text": "Stable page prompt.", "cache": True},
+            {"text": "Volatile context.", "cache": False},
+        ]
 
     def test_translate_messages_no_system(self, provider):
         system, _ = AnthropicProvider._translate_messages([{"role": "user", "content": "x"}])
@@ -1484,6 +1599,21 @@ class TestAnthropicProviderChatStream:
             "cache_read_tokens": 20,
             "cache_write_tokens": 30,
         }
+
+    @pytest.mark.asyncio
+    async def test_stream_carries_model_from_message_start(self, provider, config, messages):
+        """The model is reported only in message_start; it must reach the final chunk."""
+        lines = [
+            'data: {"type":"message_start","message":{"model":"claude-opus-4-8","usage":{"input_tokens":5}}}',
+            'data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Hi"}}',
+            'data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":2}}',
+            'data: {"type":"message_stop"}',
+        ]
+        client_cm, _ = self._make_stream_mock(lines)
+        with patch("httpx.AsyncClient", return_value=client_cm):
+            chunks = [c async for c in provider.chat_stream(messages, config)]
+        # Text chunks carry no model; the final (message_delta) chunk does.
+        assert chunks[-1].model == "claude-opus-4-8"
 
     @pytest.mark.asyncio
     async def test_stream_tool_use(self, provider, config, messages):
