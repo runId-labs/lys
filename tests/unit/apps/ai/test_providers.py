@@ -1218,21 +1218,24 @@ class TestAnthropicProviderTranslation:
         assert "cache_control" not in payload["tools"][0]
         assert payload["tools"][-1]["cache_control"] == {"type": "ephemeral"}
 
-    def test_prepare_structured_system_sets_rolling_breakpoint_on_last_message(self, provider):
-        """The last message's last content block gets a rolling cache breakpoint."""
+    def test_prepare_sets_rolling_breakpoint_when_history_present(self, provider):
+        """With a prior assistant turn, the last message's last content block is cached.
+
+        Gated on the presence of history (a prior assistant turn), not on the system
+        shape — so any multi-turn consumer benefits.
+        """
         config = self._config("claude-sonnet-4-6")
         messages = [
-            {"role": "system", "content": [
-                {"text": "Stable.", "cache": True},
-                {"text": "Volatile.", "cache": False},
-            ]},
-            {"role": "user", "content": "hi"},
+            {"role": "system", "content": "You are helpful."},
+            {"role": "user", "content": "q1"},
+            {"role": "assistant", "content": "a1"},
+            {"role": "user", "content": "q2"},
         ]
         payload, _, _ = provider._prepare(messages, config)
         assert payload["messages"][-1]["content"][-1]["cache_control"] == {"type": "ephemeral"}
 
-    def test_prepare_string_system_sets_no_rolling_breakpoint(self, provider):
-        """A one-shot string system stays single-breakpoint: no message-level caching."""
+    def test_prepare_no_rolling_breakpoint_without_history(self, provider):
+        """A one-shot call (no prior assistant turn) sets no message-level cache breakpoint."""
         config = self._config("claude-sonnet-4-6")
         payload, _, _ = provider._prepare(
             [{"role": "system", "content": "You are helpful."},

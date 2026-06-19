@@ -7,6 +7,21 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.19.0] - 2026-06-19
+
+### Added
+- Conversation compaction: `AIConversationSummary` entity (`ai_conversation_summary`) holding a rolling summary of older messages, the boundary message it covers (`through_message_id`), the summarization call's cost (model + token/cache fields), and a `completed` flag that doubles as a concurrency guard. `AIConversation.summaries` relationship added.
+- `AIConversationService.maybe_enqueue_compaction`: best-effort, off-request-path trigger. When the last turn's real billed prompt size (input + cache read + cache write tokens) exceeds `chatbot.compaction.token_threshold`, a pending summary row is created and a Celery task enqueued. A recent pending row (within `compaction_pending_ttl`) blocks a second enqueue; it never raises so a failure cannot break the turn.
+- `AIConversationService.fill_summary` (+ `_load_current_summary`, `_compute_compaction_boundary`, `_render_summary_input`, `discard_pending_summary` / `_sync`): incremental summarization of the slice between the previous and current boundary, merged with the prior summary. `_build_messages` returns only the verbatim window after the current summary boundary; the summary is injected as a volatile (uncached) system segment.
+- `summarize_conversation` Celery task: fills a pending summary row off the request path and discards it on failure so the next turn re-enqueues.
+- Compaction configuration defaults (locale-neutral, overridable via the ai plugin config): `conversation_summary` endpoint, `chatbot.compaction.{token_threshold, window_messages}`, pending TTL, and a default summary prompt that preserves per-subject facts and writes in the conversation's language.
+
+### Changed
+- `AnthropicProvider` rolling cache breakpoint is now gated on the presence of conversation history (a prior assistant turn) rather than on the system-prompt shape, so any multi-turn consumer benefits while one-shot calls pay for no unused cache write.
+
+### Removed
+- `cleanup_old_ai_conversations` Celery task and `AIConversationService.delete_old_conversations`: conversation history is now bounded by compaction (summarization) instead of deletion.
+
 ## [0.18.0] - 2026-06-18
 
 ### Added

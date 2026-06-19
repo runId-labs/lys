@@ -7,16 +7,23 @@ Services for managing conversations and feedback.
 import json
 import logging
 import time
-from datetime import datetime, UTC
+from datetime import datetime, timedelta, UTC
 from typing import AsyncGenerator, Optional, List, Dict, Any
 
-from sqlalchemy import select
+from sqlalchemy import select, tuple_
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import Session
 
 from lys.apps.ai.modules.conversation.consts import (
     AIFeedbackRating,
     AIMessageRole,
     AI_PURPOSE_CHATBOT,
+    AI_PURPOSE_CONVERSATION_SUMMARY,
+    DEFAULT_COMPACTION_PENDING_TTL_SECONDS,
+    DEFAULT_COMPACTION_TOKEN_THRESHOLD,
+    DEFAULT_COMPACTION_WINDOW_MESSAGES,
+    DEFAULT_DYNAMIC_CONTEXT_HEADER,
+    DEFAULT_SUMMARY_HEADER,
 )
 from lys.apps.ai.modules.conversation.entities import (
     AIConversation,
@@ -26,6 +33,7 @@ from lys.apps.ai.modules.conversation.entities import (
 from lys.apps.ai.modules.conversation.models import PageContextModel
 from lys.apps.ai.modules.core.executors import GraphQLToolExecutor
 from lys.apps.ai.modules.core.services import AIToolService
+from lys.apps.ai.tasks import summarize_conversation
 from lys.apps.ai.utils.guardrails import CONFIRM_ACTION_TOOL
 from lys.apps.ai.utils.providers.config import parse_plugin_config
 from lys.core.registries import register_service
@@ -231,17 +239,272 @@ class AIConversationService(EntityService[AIConversation]):
         return assistant_message
 
     @classmethod
+    async def _load_current_summary(
+        cls,
+        conversation_id: str,
+        session: AsyncSession,
+    ) -> Optional[Any]:
+        """
+        Return the latest completed compaction summary for a conversation, or None.
+
+        The current summary is the most recent row with ``completed=True`` (an
+        uncompleted row is an in-flight background task, not yet usable). Ordered
+        by ``(created_at, id)`` descending — the id tie-break keeps ordering
+        deterministic when two rows share a created_at.
+        """
+        summary_entity = cls.app_manager.get_entity("ai_conversation_summary")
+        result = await session.execute(
+            select(summary_entity)
+            .where(
+                summary_entity.conversation_id == conversation_id,
+                summary_entity.completed.is_(True),
+            )
+            .order_by(summary_entity.created_at.desc(), summary_entity.id.desc())
+            .limit(1)
+        )
+        return result.scalar_one_or_none()
+
+    @staticmethod
+    def _render_summary_input(prev_summary: Optional[str], messages: List[Any]) -> str:
+        """
+        Render the previous summary + the new message slice into one prompt input.
+
+        Labels are English scaffolding; the model is instructed (by the endpoint's system
+        prompt) to write the summary in the conversation's own language. Tool results are
+        omitted (often large); the assistant's textual answers carry the conclusions.
+        """
+        lines: List[str] = []
+        if prev_summary:
+            lines.append("# Existing summary")
+            lines.append(prev_summary)
+            lines.append("")
+        lines.append("# New messages to fold in")
+        for m in messages:
+            if m.role == AIMessageRole.USER.value:
+                lines.append(f"User: {m.content or ''}")
+            elif m.role == AIMessageRole.ASSISTANT.value:
+                if m.content:
+                    lines.append(f"Assistant: {m.content}")
+                if m.tool_calls:
+                    names = ", ".join(
+                        tc.get("function", {}).get("name") or tc.get("name", "")
+                        for tc in m.tool_calls
+                    )
+                    if names:
+                        lines.append(f"Assistant [used tools: {names}]")
+        return "\n".join(lines)
+
+    @classmethod
+    def fill_summary(cls, session: Session, ai_service: Any, summary_id: str) -> None:
+        """
+        Fill a pending compaction summary row (background task body).
+
+        SYNCHRONOUS — runs in the Celery worker on a sync session
+        (``app_manager.database.get_sync_session``), the pattern used by the proven
+        worker tasks; an async-session-in-asyncio.run path is avoided for reliability.
+
+        Summarizes the messages from the previous summary boundary up to this row's
+        boundary, merged with the previous summary (incremental), and marks the row
+        completed. Does not commit — the caller owns the transaction.
+        """
+        summary_entity = cls.app_manager.get_entity("ai_conversation_summary")
+        message_entity = cls.app_manager.get_entity("ai_message")
+
+        row = session.get(summary_entity, summary_id)
+        if row is None or row.completed:
+            return
+
+        # Previous completed summary (incremental merge) and its boundary.
+        prev = session.execute(
+            select(summary_entity)
+            .where(
+                summary_entity.conversation_id == row.conversation_id,
+                summary_entity.completed.is_(True),
+            )
+            .order_by(summary_entity.created_at.desc(), summary_entity.id.desc())
+            .limit(1)
+        ).scalar_one_or_none()
+        prev_summary = prev.summary if prev else None
+        prev_boundary = session.get(message_entity, prev.through_message_id) if prev else None
+        boundary = session.get(message_entity, row.through_message_id)
+
+        # Slice: messages after the previous boundary, up to and including this one.
+        stmt = select(message_entity).where(message_entity.conversation_id == row.conversation_id)
+        if prev_boundary is not None:
+            stmt = stmt.where(
+                tuple_(message_entity.created_at, message_entity.id)
+                > (prev_boundary.created_at, prev_boundary.id)
+            )
+        if boundary is not None:
+            stmt = stmt.where(
+                tuple_(message_entity.created_at, message_entity.id)
+                <= (boundary.created_at, boundary.id)
+            )
+        slice_messages = session.execute(
+            stmt.order_by(message_entity.created_at, message_entity.id)
+        ).scalars().all()
+
+        if not slice_messages:
+            # Nothing new to fold in (should not happen) — keep the prior text, complete.
+            row.summary = prev_summary or ""
+            row.completed = True
+            session.add(row)
+            return
+
+        response = ai_service.chat_with_purpose_sync(
+            [{"role": "user", "content": cls._render_summary_input(prev_summary, slice_messages)}],
+            AI_PURPOSE_CONVERSATION_SUMMARY,
+        )
+
+        row.summary = response.content
+        row.model = response.model
+        row.completed = True
+        for field, value in cls._usage_fields(response.usage).items():
+            setattr(row, field, value)
+        session.add(row)
+
+    @classmethod
+    async def discard_pending_summary(cls, session: AsyncSession, summary_id: str) -> None:
+        """Delete an uncompleted summary row (async, request path) so a later turn re-enqueues."""
+        summary_entity = cls.app_manager.get_entity("ai_conversation_summary")
+        row = await session.get(summary_entity, summary_id)
+        if row is not None and not row.completed:
+            await session.delete(row)
+
+    @classmethod
+    def discard_pending_summary_sync(cls, session: Session, summary_id: str) -> None:
+        """Sync variant of :meth:`discard_pending_summary` for the Celery worker error path."""
+        summary_entity = cls.app_manager.get_entity("ai_conversation_summary")
+        row = session.get(summary_entity, summary_id)
+        if row is not None and not row.completed:
+            session.delete(row)
+
+    @staticmethod
+    def _compute_compaction_boundary(messages: List[Any], window: int) -> Optional[Any]:
+        """
+        Pick the boundary message (last message to summarize) so that about `window` recent
+        messages stay verbatim, snapped forward so the verbatim window begins on a user turn
+        (never splitting a user -> assistant -> tool sequence). Returns None when there is
+        nothing to compact (history within the window, or no clean frontier to snap to).
+        """
+        if len(messages) <= window:
+            return None
+        ideal_start = len(messages) - window
+        # Snap forward to the next user message so the window starts on a turn frontier.
+        for i in range(ideal_start, len(messages)):
+            if messages[i].role == AIMessageRole.USER.value:
+                return messages[i - 1] if i > 0 else None
+        return None
+
+    @classmethod
+    async def maybe_enqueue_compaction(cls, conversation: "AIConversation", session: AsyncSession, usage: Any) -> None:
+        """
+        Best-effort: enqueue a background compaction when the last turn's prompt has grown
+        past the configured token threshold and none is already pending. Never raises — a
+        failure here must not break the turn.
+
+        The trigger metric is the turn's real billed prompt size (input + cache read + cache
+        write tokens), not a message count which a single large tool output would defeat.
+        """
+        try:
+            fields = cls._usage_fields(usage)
+            prompt_tokens = (
+                (fields.get("tokens_in") or 0)
+                + (fields.get("cache_read_tokens") or 0)
+                + (fields.get("cache_write_tokens") or 0)
+            )
+
+            chatbot_config = (cls.app_manager.settings.get_plugin_config("ai") or {}).get("chatbot", {})
+            compaction = chatbot_config.get("compaction", {})
+            threshold = compaction.get("token_threshold", DEFAULT_COMPACTION_TOKEN_THRESHOLD)
+            if prompt_tokens <= threshold:
+                return
+
+            summary_entity = cls.app_manager.get_entity("ai_conversation_summary")
+            message_entity = cls.app_manager.get_entity("ai_message")
+
+            # Concurrency guard: a recent pending summary blocks a second enqueue. A pending
+            # row older than the TTL is treated as stale (worker died) and ignored.
+            stale_before = datetime.now(UTC) - timedelta(seconds=DEFAULT_COMPACTION_PENDING_TTL_SECONDS)
+            pending = (await session.execute(
+                select(summary_entity).where(
+                    summary_entity.conversation_id == conversation.id,
+                    summary_entity.completed.is_(False),
+                    summary_entity.created_at >= stale_before,
+                ).limit(1)
+            )).scalar_one_or_none()
+            if pending is not None:
+                return
+
+            window = compaction.get("window_messages", DEFAULT_COMPACTION_WINDOW_MESSAGES)
+            messages = (await session.execute(
+                select(message_entity)
+                .where(message_entity.conversation_id == conversation.id)
+                .order_by(message_entity.created_at, message_entity.id)
+            )).scalars().all()
+            boundary = cls._compute_compaction_boundary(messages, window)
+            if boundary is None:
+                return
+
+            # Skip if the boundary would not advance past the previous summary.
+            prev = await cls._load_current_summary(conversation.id, session)
+            if prev is not None:
+                prev_boundary = await session.get(message_entity, prev.through_message_id)
+                if prev_boundary is not None and (
+                    (boundary.created_at, boundary.id) <= (prev_boundary.created_at, prev_boundary.id)
+                ):
+                    return
+
+            row = summary_entity(
+                conversation_id=conversation.id,
+                through_message_id=boundary.id,
+                completed=False,
+            )
+            session.add(row)
+            # The worker runs in a separate session: the pending row must be committed before
+            # it is enqueued. A later request-end commit is then a harmless no-op.
+            await session.commit()
+
+            try:
+                summarize_conversation.delay(row.id)
+            except Exception:
+                # Broker enqueue failed: drop the lock so a later turn retries.
+                await cls.discard_pending_summary(session, row.id)
+                await session.commit()
+                raise
+        except Exception as e:
+            logger.warning(f"Compaction enqueue skipped for conversation {conversation.id}: {e}")
+
+    @classmethod
     async def _build_messages(
         cls,
         conversation: "AIConversation",
         session: AsyncSession,
+        current_summary: Optional[Any] = None,
     ) -> List[Dict[str, Any]]:
-        """Build messages list from conversation history."""
+        """
+        Build messages list from conversation history.
+
+        When a compaction summary exists, only the messages after its boundary
+        (``through_message_id``) are returned verbatim — the older messages are
+        represented by the summary, injected separately as a system segment by the
+        caller. A window edge that splits a tool_call/tool_result pair is harmless:
+        the sanitizer drops orphan tool results and pairs any unmatched tool_calls.
+        """
         message_entity = cls.app_manager.get_entity("ai_message")
+        stmt = select(message_entity).where(message_entity.conversation_id == conversation.id)
+
+        if current_summary is not None:
+            boundary = await session.get(message_entity, current_summary.through_message_id)
+            if boundary is not None:
+                # Strictly after the boundary, matching the (created_at, id) ordering.
+                stmt = stmt.where(
+                    tuple_(message_entity.created_at, message_entity.id)
+                    > (boundary.created_at, boundary.id)
+                )
+
         result = await session.execute(
-            select(message_entity)
-            .where(message_entity.conversation_id == conversation.id)
-            .order_by(message_entity.created_at, message_entity.id)
+            stmt.order_by(message_entity.created_at, message_entity.id)
         )
         db_messages = result.scalars().all()
 
@@ -279,6 +542,7 @@ class AIConversationService(EntityService[AIConversation]):
         cls,
         page_behaviour: Optional[Dict[str, Any]] = None,
         context_data: Optional[Dict[str, str]] = None,
+        conversation_summary: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
         """
         Build the system prompt as ordered cacheable / volatile segments.
@@ -290,20 +554,36 @@ class AIConversationService(EntityService[AIConversation]):
         Returns:
             Ordered list of {"content", "cache"} segments. The base prompt is injected
             separately by the AIService entry point (endpoint.system_prompt). The page
-            prompt is stable per page (cacheable); the dynamic context (per company /
-            year / turn) is volatile and marked uncached, so a provider can place the
-            cache breakpoint between them and stop the volatile tail from busting the
-            stable prefix.
+            prompt is stable per page (cacheable); the compaction summary and the per-turn
+            context are volatile and marked uncached, so a provider can place the cache
+            breakpoint between the stable prefix and the volatile tail and stop the tail
+            from busting the stable prefix. Segment headers default to English and are
+            overridable via the ai plugin config (chatbot.summary_header /
+            chatbot.dynamic_context_header).
         """
+        chatbot_config = (cls.app_manager.settings.get_plugin_config("ai") or {}).get("chatbot", {})
+        summary_header = chatbot_config.get("summary_header", DEFAULT_SUMMARY_HEADER)
+        dynamic_context_header = chatbot_config.get(
+            "dynamic_context_header", DEFAULT_DYNAMIC_CONTEXT_HEADER
+        )
+
         segments: List[Dict[str, Any]] = []
 
         # Page-specific prompt — stable per page → cacheable.
         if page_behaviour and page_behaviour.get("prompt"):
             segments.append({"content": page_behaviour["prompt"], "cache": True})
 
-        # Dynamic context from context_tools — volatile (company / year / turn) → not cached.
+        # Compaction summary of older turns — volatile (changes on each re-summary) →
+        # not cached. Placed after the cacheable page prefix, before the per-turn context.
+        if conversation_summary:
+            segments.append({
+                "content": f"{summary_header}\n{conversation_summary}",
+                "cache": False,
+            })
+
+        # Per-turn context from context_tools — volatile → not cached.
         if context_data:
-            parts = ["## Contexte dynamique"]
+            parts = [dynamic_context_header]
             for label, data in context_data.items():
                 parts.append(f"\n### {label}")
                 parts.append(data)
@@ -491,17 +771,23 @@ class AIConversationService(EntityService[AIConversation]):
                             f"[ContextTools] Fetched data for {len(context_data)} labels"
                         )
 
-        # Build system prompt (cheap: no DB; page prompt + already-fetched context).
+        # Conversation + its current compaction summary, loaded before the system prompt
+        # so the summary can be injected as a volatile system segment.
+        conversation = await cls.get_or_create(user_id, session, conversation_id)
+        current_summary = await cls._load_current_summary(conversation.id, session)
+
+        # Build system prompt (cheap: only the summary load hits the DB; page prompt +
+        # past-conversation summary + already-fetched context).
         system_segments = await cls._build_system_prompt(
             page_behaviour=page_behaviour,
             context_data=context_data,
+            conversation_summary=current_summary.summary if current_summary else None,
         )
         logger.debug(f"[SystemPrompt] Built {len(system_segments)} segment(s)")
 
         # Get the appropriate executor based on config
         executor = await cls._get_tool_executor(tools, info, accessible_routes, page_context)
 
-        conversation = await cls.get_or_create(user_id, session, conversation_id)
         message_service = app_manager.get_service("ai_message")
         ai_service = app_manager.get_service("ai")
 
@@ -511,10 +797,10 @@ class AIConversationService(EntityService[AIConversation]):
             for tool in tools
         ]
 
-        # Build messages with system prompt and history
-        # TODO: Optimize - consider keeping messages in memory during conversation to avoid
-        # reloading full history from DB on every message
-        history = await cls._build_messages(conversation, session)
+        # Build messages with system prompt and history. When a compaction summary exists,
+        # _build_messages returns only the verbatim window (messages after the summary
+        # boundary); the older turns are carried by the summary system segment above.
+        history = await cls._build_messages(conversation, session, current_summary=current_summary)
         # One system message per segment, carrying its cache flag. The base prompt is
         # prepended (uncached) by the AIService entry point; sitting before the cacheable
         # page segment, it is still covered by the breakpoint placed after that segment.
@@ -629,6 +915,7 @@ class AIConversationService(EntityService[AIConversation]):
                     "tool_results": tool_results,
                     "frontend_actions": frontend_actions if frontend_actions else None,
                 }
+                await cls.maybe_enqueue_compaction(conversation, session, response.usage)
                 cls._process_response(result)
                 return result
 
@@ -859,6 +1146,7 @@ class AIConversationService(EntityService[AIConversation]):
                     "tool_results": tool_results,
                     "frontend_actions": frontend_actions if frontend_actions else None,
                 })
+                await cls.maybe_enqueue_compaction(conversation, session, last_usage)
                 yield _format_sse("done", result)
                 return
 

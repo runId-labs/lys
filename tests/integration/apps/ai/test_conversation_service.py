@@ -7,8 +7,12 @@ Tests cover database-only operations:
 - _build_messages (empty, with user/assistant, with tool calls)
 """
 
-import pytest
+from datetime import datetime, timedelta, UTC
+from unittest.mock import patch
 from uuid import uuid4
+
+import pytest
+from sqlalchemy import select
 
 from lys.apps.ai.modules.conversation.consts import AI_PURPOSE_CHATBOT, AIMessageRole
 
@@ -201,3 +205,163 @@ class TestAIConversationServiceBuildMessages:
             # Tool message should include tool_call_id
             assert messages[1]["role"] == "tool"
             assert messages[1]["tool_call_id"] == "call_1"
+
+
+# ==============================================================================
+# Conversation compaction (summaries) — DB-backed paths
+# ==============================================================================
+
+
+class TestAIConversationServiceCompaction:
+    """Test compaction read/window/enqueue paths that build SQL over real columns."""
+
+    @staticmethod
+    def _alternating_role(i):
+        return AIMessageRole.USER.value if i % 2 == 0 else AIMessageRole.ASSISTANT.value
+
+    @pytest.mark.asyncio
+    async def test_load_current_summary_returns_latest_completed_ignoring_pending(self, ai_app_manager):
+        """_load_current_summary picks the most recent completed row, skipping pending ones."""
+        conversation_service = ai_app_manager.get_service("ai_conversation")
+        summary_entity = ai_app_manager.get_entity("ai_conversation_summary")
+        message_entity = ai_app_manager.get_entity("ai_message")
+        user_id = str(uuid4())
+
+        async with ai_app_manager.database.get_session() as session:
+            conv = await conversation_service.get_or_create(user_id, session)
+            boundary = message_entity(
+                conversation_id=conv.id, role=AIMessageRole.USER.value, content="b"
+            )
+            session.add(boundary)
+            await session.flush()
+
+            base = datetime(2026, 1, 1, tzinfo=UTC)
+            session.add_all([
+                summary_entity(conversation_id=conv.id, through_message_id=boundary.id,
+                               summary="old", completed=True, created_at=base),
+                summary_entity(conversation_id=conv.id, through_message_id=boundary.id,
+                               summary="latest", completed=True, created_at=base + timedelta(minutes=5)),
+                summary_entity(conversation_id=conv.id, through_message_id=boundary.id,
+                               summary=None, completed=False, created_at=base + timedelta(minutes=10)),
+            ])
+            await session.flush()
+
+            current = await conversation_service._load_current_summary(conv.id, session)
+            assert current is not None
+            assert current.summary == "latest"
+
+    @pytest.mark.asyncio
+    async def test_load_current_summary_none_when_only_pending(self, ai_app_manager):
+        conversation_service = ai_app_manager.get_service("ai_conversation")
+        summary_entity = ai_app_manager.get_entity("ai_conversation_summary")
+        message_entity = ai_app_manager.get_entity("ai_message")
+        user_id = str(uuid4())
+
+        async with ai_app_manager.database.get_session() as session:
+            conv = await conversation_service.get_or_create(user_id, session)
+            boundary = message_entity(
+                conversation_id=conv.id, role=AIMessageRole.USER.value, content="b"
+            )
+            session.add(boundary)
+            await session.flush()
+            session.add(summary_entity(
+                conversation_id=conv.id, through_message_id=boundary.id,
+                summary=None, completed=False,
+            ))
+            await session.flush()
+
+            assert await conversation_service._load_current_summary(conv.id, session) is None
+
+    @pytest.mark.asyncio
+    async def test_build_messages_returns_only_window_after_boundary(self, ai_app_manager):
+        """With a current summary, only messages strictly after its boundary are returned."""
+        conversation_service = ai_app_manager.get_service("ai_conversation")
+        summary_entity = ai_app_manager.get_entity("ai_conversation_summary")
+        message_entity = ai_app_manager.get_entity("ai_message")
+        user_id = str(uuid4())
+
+        async with ai_app_manager.database.get_session() as session:
+            conv = await conversation_service.get_or_create(user_id, session)
+            base = datetime(2026, 1, 1, tzinfo=UTC)
+            msgs = []
+            for i in range(6):
+                m = message_entity(
+                    conversation_id=conv.id, role=self._alternating_role(i),
+                    content=f"m{i}", created_at=base + timedelta(minutes=i),
+                )
+                session.add(m)
+                msgs.append(m)
+            await session.flush()
+
+            summary = summary_entity(
+                conversation_id=conv.id, through_message_id=msgs[2].id,
+                summary="...", completed=True, created_at=base + timedelta(hours=1),
+            )
+            session.add(summary)
+            await session.flush()
+
+            built = await conversation_service._build_messages(conv, session, current_summary=summary)
+            assert [b["content"] for b in built] == ["m3", "m4", "m5"]
+
+    @pytest.mark.asyncio
+    async def test_maybe_enqueue_compaction_creates_pending_and_dispatches(self, ai_app_manager):
+        """Over the token threshold, a pending summary row is created and the task dispatched."""
+        conversation_service = ai_app_manager.get_service("ai_conversation")
+        summary_entity = ai_app_manager.get_entity("ai_conversation_summary")
+        message_entity = ai_app_manager.get_entity("ai_message")
+        user_id = str(uuid4())
+
+        async with ai_app_manager.database.get_session() as session:
+            conv = await conversation_service.get_or_create(user_id, session)
+            base = datetime(2026, 1, 1, tzinfo=UTC)
+            for i in range(14):
+                session.add(message_entity(
+                    conversation_id=conv.id, role=self._alternating_role(i),
+                    content=f"m{i}", created_at=base + timedelta(minutes=i),
+                ))
+            await session.flush()
+
+            with patch(
+                "lys.apps.ai.modules.conversation.services.summarize_conversation"
+            ) as mock_task:
+                # prompt_tokens above the default threshold (120000).
+                await conversation_service.maybe_enqueue_compaction(
+                    conv, session, {"prompt_tokens": 200000}
+                )
+
+            rows = (await session.execute(
+                select(summary_entity).where(summary_entity.conversation_id == conv.id)
+            )).scalars().all()
+            assert len(rows) == 1
+            assert rows[0].completed is False
+            mock_task.delay.assert_called_once_with(rows[0].id)
+
+    @pytest.mark.asyncio
+    async def test_maybe_enqueue_compaction_noop_below_threshold(self, ai_app_manager):
+        conversation_service = ai_app_manager.get_service("ai_conversation")
+        summary_entity = ai_app_manager.get_entity("ai_conversation_summary")
+        message_entity = ai_app_manager.get_entity("ai_message")
+        user_id = str(uuid4())
+
+        async with ai_app_manager.database.get_session() as session:
+            conv = await conversation_service.get_or_create(user_id, session)
+            base = datetime(2026, 1, 1, tzinfo=UTC)
+            for i in range(14):
+                session.add(message_entity(
+                    conversation_id=conv.id, role=self._alternating_role(i),
+                    content=f"m{i}", created_at=base + timedelta(minutes=i),
+                ))
+            await session.flush()
+
+            with patch(
+                "lys.apps.ai.modules.conversation.services.summarize_conversation"
+            ) as mock_task:
+                await conversation_service.maybe_enqueue_compaction(
+                    conv, session, {"prompt_tokens": 10}
+                )
+
+            rows = (await session.execute(
+                select(summary_entity).where(summary_entity.conversation_id == conv.id)
+            )).scalars().all()
+            assert rows == []
+            mock_task.delay.assert_not_called()

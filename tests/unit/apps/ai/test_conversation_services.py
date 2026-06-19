@@ -343,7 +343,7 @@ class TestAIConversationServiceBuildSystemPrompt:
         assert len(result) == 1
         segment = result[0]
         assert segment["cache"] is False
-        assert "Contexte dynamique" in segment["content"]
+        assert "Dynamic context" in segment["content"]
         assert "Current Order" in segment["content"]
         assert "Order #12345" in segment["content"]
 
@@ -569,6 +569,7 @@ class TestPrepareChatContext:
              patch.object(AIConversationService, "_get_routes_manifest", return_value=None), \
              patch.object(AIConversationService, "_build_system_prompt", new_callable=AsyncMock,
                           return_value=[{"content": "sys prompt", "cache": True}]), \
+             patch.object(AIConversationService, "_load_current_summary", new_callable=AsyncMock, return_value=None), \
              patch.object(AIConversationService, "_get_tool_executor", new_callable=AsyncMock) as mock_executor, \
              patch.object(AIConversationService, "get_or_create", new_callable=AsyncMock, return_value=mock_conversation), \
              patch.object(AIConversationService, "_build_messages", new_callable=AsyncMock, return_value=[]), \
@@ -1335,3 +1336,254 @@ class TestAIConversationServiceUsageFields:
             "cache_read_tokens": None,
             "cache_write_tokens": None,
         }
+
+
+def _role_msg(role, content=None, tool_calls=None, mid="m"):
+    """Build a lightweight message stand-in with the attributes the service reads."""
+    m = MagicMock()
+    m.role = role
+    m.content = content
+    m.tool_calls = tool_calls
+    m.id = mid
+    return m
+
+
+class TestComputeCompactionBoundary:
+    """Tests for AIConversationService._compute_compaction_boundary."""
+
+    def test_returns_none_when_within_window(self):
+        from lys.apps.ai.modules.conversation.services import AIConversationService
+
+        msgs = [_role_msg(AIMessageRole.USER.value, mid=i) for i in range(5)]
+        assert AIConversationService._compute_compaction_boundary(msgs, window=12) is None
+
+    def test_boundary_is_message_before_window_start_on_user_frontier(self):
+        from lys.apps.ai.modules.conversation.services import AIConversationService
+
+        # 6 messages, window=2 -> ideal_start=4 which is a user turn -> boundary = msgs[3].
+        roles = [
+            AIMessageRole.USER.value, AIMessageRole.ASSISTANT.value,
+            AIMessageRole.USER.value, AIMessageRole.ASSISTANT.value,
+            AIMessageRole.USER.value, AIMessageRole.ASSISTANT.value,
+        ]
+        msgs = [_role_msg(r, mid=i) for i, r in enumerate(roles)]
+        boundary = AIConversationService._compute_compaction_boundary(msgs, window=2)
+        assert boundary is msgs[3]
+
+    def test_snaps_forward_past_non_user_messages(self):
+        from lys.apps.ai.modules.conversation.services import AIConversationService
+
+        # window=3 -> ideal_start=4 (assistant); snap forward to next user at idx 5 -> boundary msgs[4].
+        roles = [
+            AIMessageRole.USER.value, AIMessageRole.ASSISTANT.value,
+            AIMessageRole.USER.value, AIMessageRole.ASSISTANT.value,
+            AIMessageRole.ASSISTANT.value, AIMessageRole.USER.value,
+            AIMessageRole.ASSISTANT.value,
+        ]
+        msgs = [_role_msg(r, mid=i) for i, r in enumerate(roles)]
+        boundary = AIConversationService._compute_compaction_boundary(msgs, window=3)
+        assert boundary is msgs[4]
+
+    def test_returns_none_without_user_frontier_in_tail(self):
+        from lys.apps.ai.modules.conversation.services import AIConversationService
+
+        # No user message at/after ideal_start (=4) -> no clean frontier -> None.
+        roles = [
+            AIMessageRole.USER.value, AIMessageRole.USER.value,
+            AIMessageRole.USER.value, AIMessageRole.USER.value,
+            AIMessageRole.ASSISTANT.value, AIMessageRole.ASSISTANT.value,
+        ]
+        msgs = [_role_msg(r, mid=i) for i, r in enumerate(roles)]
+        assert AIConversationService._compute_compaction_boundary(msgs, window=2) is None
+
+
+class TestRenderSummaryInput:
+    """Tests for AIConversationService._render_summary_input."""
+
+    def test_includes_prev_summary_and_folds_messages(self):
+        from lys.apps.ai.modules.conversation.services import AIConversationService
+
+        msgs = [
+            _role_msg(AIMessageRole.USER.value, content="hello"),
+            _role_msg(AIMessageRole.ASSISTANT.value, content="hi there"),
+            _role_msg(AIMessageRole.ASSISTANT.value, tool_calls=[{"function": {"name": "search"}}]),
+            _role_msg(AIMessageRole.TOOL.value, content="big tool payload"),
+        ]
+        out = AIConversationService._render_summary_input("prior summary", msgs)
+        assert "# Existing summary" in out
+        assert "prior summary" in out
+        assert "# New messages to fold in" in out
+        assert "User: hello" in out
+        assert "Assistant: hi there" in out
+        assert "Assistant [used tools: search]" in out
+        # Tool results are omitted from the summary input.
+        assert "big tool payload" not in out
+
+    def test_omits_existing_summary_section_without_prev(self):
+        from lys.apps.ai.modules.conversation.services import AIConversationService
+
+        out = AIConversationService._render_summary_input(None, [_role_msg(AIMessageRole.USER.value, content="q")])
+        assert "# Existing summary" not in out
+        assert out.startswith("# New messages to fold in")
+
+
+class TestMaybeEnqueueCompaction:
+    """Tests for AIConversationService.maybe_enqueue_compaction (request-path trigger)."""
+
+    @pytest.mark.asyncio
+    async def test_below_threshold_is_noop(self):
+        from lys.apps.ai.modules.conversation.services import AIConversationService
+
+        app_manager = MagicMock()
+        app_manager.settings.get_plugin_config.return_value = {
+            "chatbot": {"compaction": {"token_threshold": 1000}}
+        }
+        session = AsyncMock()
+        conversation = MagicMock()
+        conversation.id = "c1"
+
+        with patch.object(AIConversationService, "app_manager", app_manager):
+            await AIConversationService.maybe_enqueue_compaction(
+                conversation, session, {"prompt_tokens": 100}
+            )
+
+        session.execute.assert_not_called()
+        session.commit.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_never_raises_on_internal_error(self):
+        from lys.apps.ai.modules.conversation.services import AIConversationService
+
+        app_manager = MagicMock()
+        app_manager.settings.get_plugin_config.side_effect = Exception("config boom")
+        session = AsyncMock()
+        conversation = MagicMock()
+        conversation.id = "c1"
+
+        with patch.object(AIConversationService, "app_manager", app_manager):
+            # Must not propagate — a compaction failure may never break the turn.
+            await AIConversationService.maybe_enqueue_compaction(
+                conversation, session, {"prompt_tokens": 999999}
+            )
+
+    # The over-threshold enqueue path and the pending-summary guard build SQL range
+    # predicates (created_at >= ...) over real columns; they are covered by integration
+    # tests (tests/integration/apps/ai/test_conversation_service.py).
+
+
+class TestFillSummary:
+    """Tests for AIConversationService.fill_summary (synchronous worker body)."""
+
+    def test_noop_when_row_missing_or_completed(self):
+        from lys.apps.ai.modules.conversation.services import AIConversationService
+
+        app_manager = MagicMock()
+        app_manager.get_entity.return_value = MagicMock()
+        session = MagicMock()
+        completed_row = MagicMock()
+        completed_row.completed = True
+        session.get.return_value = completed_row
+        ai_service = MagicMock()
+
+        with patch.object(AIConversationService, "app_manager", app_manager):
+            AIConversationService.fill_summary(session, ai_service, "sum-1")
+
+        ai_service.chat_with_purpose_sync.assert_not_called()
+
+    def test_fills_row_with_summary_model_and_usage(self):
+        from lys.apps.ai.modules.conversation import services as svc
+
+        app_manager = MagicMock()
+        summary_entity = MagicMock()
+        message_entity = MagicMock()
+        app_manager.get_entity.side_effect = lambda n: {
+            "ai_conversation_summary": summary_entity,
+            "ai_message": message_entity,
+        }[n]
+
+        row = MagicMock()
+        row.completed = False
+        row.conversation_id = "c1"
+        row.through_message_id = "b1"
+
+        session = MagicMock()
+        # Summary row resolves to `row`; boundary message lookups return None so the
+        # row-value range predicate (tuple_ comparison) is not built in this unit test —
+        # the boundary windowing SQL is covered by integration tests.
+        session.get.side_effect = lambda entity, ident: row if entity is summary_entity else None
+        prev_result = MagicMock()
+        prev_result.scalar_one_or_none.return_value = None  # no previous summary
+        slice_result = MagicMock()
+        slice_result.scalars.return_value.all.return_value = [
+            _role_msg(AIMessageRole.USER.value, content="q"),
+        ]
+        session.execute.side_effect = [prev_result, slice_result]
+
+        ai_service = MagicMock()
+        response = MagicMock()
+        response.content = "the summary"
+        response.model = "claude-x"
+        response.usage = {"prompt_tokens": 30, "completion_tokens": 8}
+        ai_service.chat_with_purpose_sync.return_value = response
+
+        with patch.object(svc.AIConversationService, "app_manager", app_manager), \
+             patch.object(svc, "select", MagicMock()):
+            svc.AIConversationService.fill_summary(session, ai_service, "sum-1")
+
+        assert row.summary == "the summary"
+        assert row.model == "claude-x"
+        assert row.completed is True
+        assert row.tokens_in == 30
+        assert row.tokens_out == 8
+        session.add.assert_called_with(row)
+
+
+class TestDiscardPendingSummary:
+    """Tests for discard_pending_summary / discard_pending_summary_sync."""
+
+    @pytest.mark.asyncio
+    async def test_async_deletes_uncompleted_row(self):
+        from lys.apps.ai.modules.conversation.services import AIConversationService
+
+        app_manager = MagicMock()
+        app_manager.get_entity.return_value = MagicMock()
+        row = MagicMock()
+        row.completed = False
+        session = AsyncMock()
+        session.get.return_value = row
+
+        with patch.object(AIConversationService, "app_manager", app_manager):
+            await AIConversationService.discard_pending_summary(session, "s1")
+
+        session.delete.assert_awaited_once_with(row)
+
+    @pytest.mark.asyncio
+    async def test_async_keeps_completed_row(self):
+        from lys.apps.ai.modules.conversation.services import AIConversationService
+
+        app_manager = MagicMock()
+        app_manager.get_entity.return_value = MagicMock()
+        row = MagicMock()
+        row.completed = True
+        session = AsyncMock()
+        session.get.return_value = row
+
+        with patch.object(AIConversationService, "app_manager", app_manager):
+            await AIConversationService.discard_pending_summary(session, "s1")
+
+        session.delete.assert_not_called()
+
+    def test_sync_deletes_uncompleted_row(self):
+        from lys.apps.ai.modules.conversation.services import AIConversationService
+
+        app_manager = MagicMock()
+        app_manager.get_entity.return_value = MagicMock()
+        row = MagicMock()
+        row.completed = False
+        session = MagicMock()
+        session.get.return_value = row
+
+        with patch.object(AIConversationService, "app_manager", app_manager):
+            AIConversationService.discard_pending_summary_sync(session, "s1")
+
+        session.delete.assert_called_once_with(row)

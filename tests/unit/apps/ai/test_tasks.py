@@ -4,83 +4,86 @@ Unit tests for AI app Celery tasks.
 Tests Celery tasks with mocked dependencies.
 """
 
+import ast
 import inspect
 
+from unittest.mock import MagicMock, patch
+
 import pytest
-from unittest.mock import MagicMock, patch, AsyncMock
 
-from lys.apps.ai.tasks import cleanup_old_ai_conversations
+from lys.apps.ai.tasks import summarize_conversation
 
 
-class TestCleanupOldAIConversationsTask:
-    """Tests for cleanup_old_ai_conversations task."""
+def _mock_current_app():
+    """Build a mock current_app whose app_manager exposes a sync-session context manager."""
+    current_app = MagicMock()
+    conversation_service = MagicMock()
+    ai_service = MagicMock()
+    current_app.app_manager.get_service.side_effect = lambda name: {
+        "ai_conversation": conversation_service,
+        "ai": ai_service,
+    }[name]
 
-    def test_cleanup_task_has_default_hours_parameter(self):
-        """Test that cleanup task has default hours=24."""
-        sig = inspect.signature(cleanup_old_ai_conversations)
-        assert "hours" in sig.parameters
-        assert sig.parameters["hours"].default == 24
+    session = MagicMock()
+    session_cm = MagicMock()
+    session_cm.__enter__.return_value = session
+    session_cm.__exit__.return_value = False
+    current_app.app_manager.database.get_sync_session.return_value = session_cm
 
-    def test_cleanup_task_accepts_custom_hours(self):
-        """Test that cleanup task accepts hours parameter."""
-        sig = inspect.signature(cleanup_old_ai_conversations)
-        hours_param = sig.parameters["hours"]
-        assert hours_param.annotation == int or hours_param.annotation == inspect.Parameter.empty
+    return current_app, conversation_service, ai_service, session
 
-    def test_cleanup_old_ai_conversations_is_shared_task(self):
-        """Test that cleanup_old_ai_conversations is decorated with @shared_task."""
-        assert hasattr(cleanup_old_ai_conversations, "delay")
-        assert hasattr(cleanup_old_ai_conversations, "apply_async")
 
-    def test_cleanup_success(self):
-        """Test successful cleanup returns deleted count."""
-        mock_celery_app = MagicMock()
-        mock_service = MagicMock()
-        mock_celery_app.app_manager.get_service.return_value = mock_service
+class TestSummarizeConversationTask:
+    """Tests for the summarize_conversation Celery task."""
 
-        mock_session = AsyncMock()
-        mock_session.__aenter__.return_value = mock_session
-        mock_session.__aexit__.return_value = None
-        mock_service.delete_old_conversations = AsyncMock(return_value=5)
+    def test_is_shared_task(self):
+        """The task is decorated with @shared_task (exposes delay / apply_async)."""
+        assert hasattr(summarize_conversation, "delay")
+        assert hasattr(summarize_conversation, "apply_async")
 
-        with patch("lys.apps.ai.tasks.current_app", mock_celery_app), \
-             patch("lys.core.managers.database.DatabaseManager") as MockDB:
-            MockDB.async_session.return_value = mock_session
-            result = cleanup_old_ai_conversations(hours=48)
+    def test_takes_summary_id_parameter(self):
+        sig = inspect.signature(summarize_conversation)
+        assert "summary_id" in sig.parameters
 
-        assert result == 5
-        mock_celery_app.app_manager.get_service.assert_called_once_with("ai_conversation")
+    def test_success_fills_summary_and_returns_true(self):
+        """On success the task calls fill_summary(session, ai_service, id) and returns True."""
+        current_app, conv_service, ai_service, session = _mock_current_app()
 
-    def test_cleanup_failure_returns_zero(self):
-        """Test that cleanup returns 0 on async failure."""
-        mock_celery_app = MagicMock()
-        mock_service = MagicMock()
-        mock_celery_app.app_manager.get_service.return_value = mock_service
-        mock_service.delete_old_conversations = AsyncMock(
-            side_effect=Exception("Database error")
-        )
+        with patch("lys.apps.ai.tasks.current_app", current_app):
+            result = summarize_conversation("sum-1")
 
-        mock_session = AsyncMock()
-        mock_session.__aenter__.return_value = mock_session
-        mock_session.__aexit__.return_value = None
+        assert result is True
+        conv_service.fill_summary.assert_called_once_with(session, ai_service, "sum-1")
+        conv_service.discard_pending_summary_sync.assert_not_called()
 
-        with patch("lys.apps.ai.tasks.current_app", mock_celery_app), \
-             patch("lys.core.managers.database.DatabaseManager") as MockDB:
-            MockDB.async_session.return_value = mock_session
-            result = cleanup_old_ai_conversations()
+    def test_failure_discards_pending_and_returns_false(self):
+        """If fill_summary raises, the pending row is discarded and the task returns False."""
+        current_app, conv_service, ai_service, session = _mock_current_app()
+        conv_service.fill_summary.side_effect = Exception("provider down")
 
-        assert result == 0
+        with patch("lys.apps.ai.tasks.current_app", current_app):
+            result = summarize_conversation("sum-1")
 
-    def test_cleanup_uses_logger_not_print(self):
-        """Test that cleanup uses logger instead of print."""
-        import ast
+        assert result is False
+        conv_service.discard_pending_summary_sync.assert_called_once_with(session, "sum-1")
+
+    def test_failure_swallows_discard_error_and_returns_false(self):
+        """A failure while discarding the pending row must not propagate."""
+        current_app, conv_service, ai_service, session = _mock_current_app()
+        conv_service.fill_summary.side_effect = Exception("provider down")
+        conv_service.discard_pending_summary_sync.side_effect = Exception("db gone")
+
+        with patch("lys.apps.ai.tasks.current_app", current_app):
+            result = summarize_conversation("sum-1")
+
+        assert result is False
+
+    def test_no_print_calls_in_module(self):
+        """The task module logs via logger, never print()."""
         import lys.apps.ai.tasks as tasks_module
-        source = inspect.getsource(tasks_module)
-        tree = ast.parse(source)
 
-        # Check no print() calls exist in the module
+        tree = ast.parse(inspect.getsource(tasks_module))
         for node in ast.walk(tree):
-            if isinstance(node, ast.Call):
-                func = node.func
-                if isinstance(func, ast.Name) and func.id == "print":
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
+                if node.func.id == "print":
                     pytest.fail("Found print() call in ai/tasks.py - should use logger")

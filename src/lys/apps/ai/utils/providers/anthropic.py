@@ -397,10 +397,13 @@ class AnthropicProvider(AIProvider):
                 }
             payload["tools"] = translated_tools
             payload["tool_choice"] = tool_choice or {"type": "auto"}
-        if structured and anthropic_messages:
+        has_history = any(m.get("role") == "assistant" for m in anthropic_messages)
+        if has_history:
             # Rolling breakpoint on the last message: caches the whole prefix (tools +
-            # system + history) up to the prior turn when it is byte-stable across turns
-            # (multi-turn chat). One-shot string-system calls don't set this.
+            # system + history) up to the prior turn when it is byte-stable across turns.
+            # Gated on the presence of a prior assistant turn — not on the system-prompt
+            # shape — so any multi-turn consumer benefits, while a one-shot call (no prior
+            # assistant message) never pays for a cache write it will not read back.
             last_content = anthropic_messages[-1].get("content")
             if isinstance(last_content, list) and last_content:
                 last_content[-1] = {

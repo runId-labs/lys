@@ -46,6 +46,16 @@ class AIConversation(Entity):
             lazy="selectin",
         )
 
+    @declared_attr
+    def summaries(cls):
+        # Not selectin-loaded: summaries are queried directly (latest completed row),
+        # never needed eagerly on every conversation fetch.
+        return relationship(
+            "ai_conversation_summary",
+            back_populates="conversation",
+            cascade="all, delete-orphan",
+        )
+
     def accessing_users(self) -> list[str]:
         return [self.user_id] if self.user_id else []
 
@@ -142,6 +152,57 @@ class AIMessageFeedback(Entity):
 
     def accessing_users(self) -> list[str]:
         return [self.user_id] if self.user_id else []
+
+    def accessing_organizations(self) -> dict[str, list[str]]:
+        return {}
+
+
+@register_entity()
+class AIConversationSummary(Entity):
+    """
+    A rolling compaction summary of older messages in a conversation.
+
+    When a conversation's reconstructed prompt grows past a token threshold, the
+    messages older than the verbatim window are condensed into a summary so the
+    prompt stays bounded. Each compaction event is one immutable row: it records
+    the boundary message it covers (`through_message_id` - the verbatim window is
+    the messages after it), the model used, and the token cost of the summarization
+    call itself. The current summary for a conversation is the latest row with
+    `completed=True`. The row is created uncompleted when a background task is
+    enqueued and filled when it finishes; `completed=False` therefore doubles as a
+    concurrency guard against enqueuing two summarizations for the same conversation.
+    """
+
+    __tablename__ = "ai_conversation_summary"
+
+    conversation_id: Mapped[str] = mapped_column(
+        ForeignKey("ai_conversation.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    through_message_id: Mapped[str] = mapped_column(
+        ForeignKey("ai_message.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    summary: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+
+    # Cost tracking of the summarization call itself (provider-agnostic).
+    model: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
+    tokens_in: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    tokens_out: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    cache_read_tokens: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    cache_write_tokens: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+
+    # False while the background task is in flight (concurrency guard); True once filled.
+    completed: Mapped[bool] = mapped_column(default=False, nullable=False)
+
+    @declared_attr
+    def conversation(cls):
+        return relationship("ai_conversation", back_populates="summaries")
+
+    def accessing_users(self) -> list[str]:
+        return []
 
     def accessing_organizations(self) -> dict[str, list[str]]:
         return {}
