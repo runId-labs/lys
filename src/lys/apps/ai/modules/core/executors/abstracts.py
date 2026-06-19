@@ -24,19 +24,26 @@ class ToolExecutor(ABC):
 
     _page_context: Optional[Any] = None
 
-    def _inject_page_params(self, arguments: Dict[str, Any]) -> Dict[str, Any]:
+    def _inject_page_params(self, arguments: Dict[str, Any], force_ids: bool = True) -> Dict[str, Any]:
         """
-        Inject page context params into tool arguments.
+        Inject page-context params as defaults into tool arguments.
 
-        Rules:
-        - Params ending with '_id': Always override (security-critical)
-        - Other params: Only inject if LLM didn't provide a value
+        Every param defaults to the page focus only when the LLM omitted it. ``*_id`` params
+        are additionally PINNED to the focus (overriding the LLM) when ``force_ids`` is True.
+        Pin them on the **service-auth** path — there the gateway applies no per-user access
+        filtering, so an LLM-chosen id must not be trusted. With a **user bearer**
+        (``force_ids=False``) ids may be overridden by the LLM to roam (e.g. a sister company
+        / another year): access is then enforced by the user token at the gateway, and writes
+        by a user review step. The pin is therefore a safeguard for the unfiltered path, not
+        the security boundary itself.
 
         Args:
             arguments: Tool arguments from LLM
+            force_ids: Pin ``*_id`` params to the focus (True for service auth — the safe
+                default; False for a user-authed executor where the gateway enforces access).
 
         Returns:
-            Arguments with injected/overridden params
+            Arguments with page-focus defaults filled in (and ids pinned when force_ids)
         """
         if not self._page_context:
             logger.debug("[ParamInjection] No page context, skipping injection")
@@ -60,23 +67,19 @@ class ToolExecutor(ABC):
             # Convert camelCase (frontend) to snake_case (backend)
             snake_key = to_snake_case(key)
 
-            if snake_key.endswith("_id"):
-                # IDs: always override (security)
-                if snake_key in result and result[snake_key] != value:
-                    logger.debug(
-                        f"[ParamInjection] Security override: {snake_key}={result[snake_key]} -> {value}"
-                    )
-                else:
-                    logger.debug(f"[ParamInjection] Setting ID param: {snake_key}={value}")
+            if snake_key.endswith("_id") and force_ids:
+                # Service-auth path: pin ids to the focus (no per-user gateway filtering).
+                logger.debug(f"[ParamInjection] Pinned id (service auth): {snake_key}={value}")
                 result[snake_key] = value
             elif snake_key not in result:
-                # Other params: inject only if absent
-                logger.debug(f"[ParamInjection] Injecting missing param: {snake_key}={value}")
+                # Default to the page focus only when the LLM omitted the param.
+                logger.debug(f"[ParamInjection] Defaulting missing param: {snake_key}={value}")
                 result[snake_key] = value
             else:
+                # The LLM provided a value — keep it (may be roaming to another entity/year).
                 logger.debug(
                     f"[ParamInjection] Keeping LLM value for '{snake_key}': {result[snake_key]} "
-                    f"(context had: {value})"
+                    f"(context default: {value})"
                 )
 
         logger.debug(f"[ParamInjection] Arguments after injection: {result}")

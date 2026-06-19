@@ -712,3 +712,76 @@ class TestGraphQLToolExecutorSpecialTools:
             assert confirm_result["tool_name"] == "navigate"
         finally:
             _pending_actions.clear()
+
+
+class TestGraphQLToolExecutorAuthMode:
+    """Tests for the _user_authed flag that drives id pinning."""
+
+    def _build(self, **kwargs):
+        with patch("lys.apps.ai.modules.core.executors.graphql.GraphQLClient"):
+            return GraphQLToolExecutor(gateway_url="http://gw:4000/graphql", timeout=30, **kwargs)
+
+    def test_user_authed_true_with_bearer_token(self):
+        executor = self._build(bearer_token="user-jwt")
+        assert executor._user_authed is True
+
+    def test_user_authed_false_with_service_auth(self):
+        executor = self._build(secret_key="k", service_name="svc")
+        assert executor._user_authed is False
+
+
+class TestToolExecutorInjectPageParams:
+    """Tests for ToolExecutor._inject_page_params id-pinning / defaulting behaviour."""
+
+    @pytest.fixture
+    def executor(self):
+        with patch("lys.apps.ai.modules.core.executors.graphql.GraphQLClient"):
+            return GraphQLToolExecutor(
+                gateway_url="http://gw:4000/graphql", secret_key="k", service_name="svc", timeout=30,
+            )
+
+    @staticmethod
+    def _ctx(params):
+        from lys.apps.ai.modules.conversation.models import PageContextModel
+        return PageContextModel(page_name="P", params=params)
+
+    def test_no_page_context_returns_arguments_unchanged(self, executor):
+        executor._page_context = None
+        assert executor._inject_page_params({"a": 1}) == {"a": 1}
+
+    def test_empty_params_returns_arguments_unchanged(self, executor):
+        executor._page_context = self._ctx(None)
+        assert executor._inject_page_params({"a": 1}) == {"a": 1}
+
+    def test_force_ids_pins_id_over_llm_value(self, executor):
+        """Service-auth path: an LLM-chosen *_id is overridden by the page focus."""
+        executor._page_context = self._ctx({"company_id": "focus-co", "year": 2024})
+        out = executor._inject_page_params({"company_id": "other-co"}, force_ids=True)
+        assert out["company_id"] == "focus-co"  # pinned
+        assert out["year"] == 2024              # defaulted (omitted by LLM)
+
+    def test_user_auth_lets_llm_override_id_to_roam(self, executor):
+        """User-bearer path: an LLM-chosen *_id is kept (roaming); gateway enforces access."""
+        executor._page_context = self._ctx({"company_id": "focus-co"})
+        out = executor._inject_page_params({"company_id": "sister-co"}, force_ids=False)
+        assert out["company_id"] == "sister-co"
+
+    def test_id_defaults_to_focus_when_omitted_even_without_force(self, executor):
+        executor._page_context = self._ctx({"company_id": "focus-co"})
+        out = executor._inject_page_params({}, force_ids=False)
+        assert out["company_id"] == "focus-co"
+
+    def test_non_id_param_keeps_llm_value_in_both_modes(self, executor):
+        executor._page_context = self._ctx({"year": 2024})
+        assert executor._inject_page_params({"year": 2020}, force_ids=True)["year"] == 2020
+        assert executor._inject_page_params({"year": 2020}, force_ids=False)["year"] == 2020
+
+    def test_camelcase_param_key_is_snake_cased(self, executor):
+        executor._page_context = self._ctx({"companyId": "focus-co"})
+        out = executor._inject_page_params({}, force_ids=True)
+        assert out["company_id"] == "focus-co"
+
+    def test_none_valued_param_is_skipped(self, executor):
+        executor._page_context = self._ctx({"company_id": None})
+        out = executor._inject_page_params({}, force_ids=True)
+        assert "company_id" not in out

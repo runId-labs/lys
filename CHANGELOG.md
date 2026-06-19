@@ -7,6 +7,17 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.21.0] - 2026-06-19
+
+### Added
+- `AIConversationService._get_focus_context`: overridable hook (returns `None` in the base framework) for a per-turn focus marker — a small, volatile layer-C anchor describing what the user is currently looking at. Injected as the first volatile system segment (after the cacheable layers, before the summary and per-turn context) so it frames the rest without busting the cache.
+
+### Changed
+- `ToolExecutor._inject_page_params` now takes `force_ids` (default `True`). `*_id` params are pinned to the page focus only on the service-auth path (no per-user gateway filtering); with a user bearer token (`force_ids=False`) the LLM may override ids to roam across entities, access then being enforced by the user token at the gateway and writes by the confirmation guardrail. `GraphQLToolExecutor` records `_user_authed` at construction and pins ids only when it has no user bearer. Non-id params remain page-focus defaults filled in only when omitted.
+
+### Fixed
+- `GraphQLToolExecutor.execute` docstring corrected: it authenticates with the user's bearer token when built with one (gateway applies per-user access filtering), falling back to the service JWT otherwise.
+
 ## [0.20.0] - 2026-06-19
 
 ### Added

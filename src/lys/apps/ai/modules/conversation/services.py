@@ -555,12 +555,30 @@ class AIConversationService(EntityService[AIConversation]):
         return None
 
     @classmethod
+    async def _get_focus_context(
+        cls,
+        session: AsyncSession,
+        connected_user: Optional[Dict[str, Any]],
+        page_context: Optional[PageContextModel],
+        info: Any,
+    ) -> Optional[str]:
+        """
+        Per-turn focus marker — the small, volatile layer-C anchor describing what the user
+        is currently looking at (e.g. the focus entity + period). It makes any focus change
+        loud and gives the model an explicit default. Base framework returns nothing; a
+        consumer overrides it. NOT cached (changes every turn); placed after the cacheable
+        layers so it never busts their cache.
+        """
+        return None
+
+    @classmethod
     async def _build_system_prompt(
         cls,
         page_behaviour: Optional[Dict[str, Any]] = None,
         context_data: Optional[Dict[str, str]] = None,
         conversation_summary: Optional[str] = None,
         stable_context: Optional[str] = None,
+        focus_context: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
         """
         Build the system prompt as ordered cacheable / volatile segments.
@@ -595,6 +613,11 @@ class AIConversationService(EntityService[AIConversation]):
         # Page-specific prompt — stable per page → cacheable.
         if page_behaviour and page_behaviour.get("prompt"):
             segments.append({"content": page_behaviour["prompt"], "cache": True})
+
+        # Layer C — per-turn focus marker (the current anchor). Volatile → not cached; placed
+        # first among the volatile segments so it frames the summary and the per-turn context.
+        if focus_context:
+            segments.append({"content": focus_context, "cache": False})
 
         # Compaction summary of older turns — volatile (changes on each re-summary) →
         # not cached. Placed after the cacheable page prefix, before the per-turn context.
@@ -799,14 +822,16 @@ class AIConversationService(EntityService[AIConversation]):
         conversation = await cls.get_or_create(user_id, session, conversation_id)
         current_summary = await cls._load_current_summary(conversation.id, session)
         stable_context = await cls._get_stable_context(session, connected_user, page_context, info)
+        focus_context = await cls._get_focus_context(session, connected_user, page_context, info)
 
         # Build system prompt (cheap: only the summary/stable-context loads hit the DB/cache;
-        # stable context layer + page prompt + past-conversation summary + already-fetched context).
+        # stable layer + page prompt + focus marker + past-conversation summary + fetched context).
         system_segments = await cls._build_system_prompt(
             page_behaviour=page_behaviour,
             context_data=context_data,
             conversation_summary=current_summary.summary if current_summary else None,
             stable_context=stable_context,
+            focus_context=focus_context,
         )
         logger.debug(f"[SystemPrompt] Built {len(system_segments)} segment(s)")
 

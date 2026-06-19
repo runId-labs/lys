@@ -379,15 +379,49 @@ class TestAIConversationServiceBuildSystemPrompt:
         assert [seg["cache"] for seg in result] == [True, True, False]
 
 
+    @pytest.mark.asyncio
+    async def test_build_system_prompt_focus_context_is_volatile_before_summary(self, mock_session):
+        """The focus marker is volatile and ordered ahead of summary and dynamic context."""
+        from lys.apps.ai.modules.conversation.services import AIConversationService
+
+        result = await AIConversationService._build_system_prompt(
+            page_behaviour={"prompt": "Page prompt."},
+            conversation_summary="Earlier summary.",
+            context_data={"Order": "Order #12345"},
+            stable_context="Stable map.",
+            focus_context="Focus: ACME / 2024.",
+        )
+
+        contents = [seg["content"] for seg in result]
+        caches = [seg["cache"] for seg in result]
+        # Layer A (stable) -> page (stable) -> focus (volatile) -> summary -> dynamic context.
+        assert contents[0] == "Stable map."
+        assert contents[1] == "Page prompt."
+        assert contents[2] == "Focus: ACME / 2024."
+        assert "Earlier summary." in contents[3]      # focus precedes the summary
+        assert "Order #12345" in contents[4]           # ... and the dynamic context
+        assert caches == [True, True, False, False, False]
+
+
 class TestAIConversationServiceGetStableContext:
-    """Tests for the _get_stable_context extension hook."""
+    """Tests for the _get_stable_context / _get_focus_context extension hooks."""
 
     @pytest.mark.asyncio
-    async def test_base_returns_none(self):
+    async def test_stable_context_base_returns_none(self):
         """The base framework injects no stable context; consumers override this hook."""
         from lys.apps.ai.modules.conversation.services import AIConversationService
 
         result = await AIConversationService._get_stable_context(
+            AsyncMock(), {"sub": "user-1"}, None, MagicMock()
+        )
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_focus_context_base_returns_none(self):
+        """The base framework injects no focus marker; consumers override this hook."""
+        from lys.apps.ai.modules.conversation.services import AIConversationService
+
+        result = await AIConversationService._get_focus_context(
             AsyncMock(), {"sub": "user-1"}, None, MagicMock()
         )
         assert result is None

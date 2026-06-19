@@ -57,6 +57,10 @@ class GraphQLToolExecutor(ToolExecutor):
         """
         self.gateway_url = gateway_url
         self.timeout = timeout
+        # Auth mode flag only (we don't retain the token — the GraphQLClient holds it). A user
+        # bearer means the gateway applies per-user access filtering, so the LLM may roam ids;
+        # without it (service auth) ids stay pinned to the focus.
+        self._user_authed = bearer_token is not None
         self._tools: Dict[str, Dict[str, Any]] = {}
         self._special_tools: Dict[str, Any] = {
             "navigate": self._handle_navigate,
@@ -157,7 +161,9 @@ class GraphQLToolExecutor(ToolExecutor):
         """
         Execute a tool via GraphQL call to the gateway.
 
-        Uses service JWT for authentication (user context is passed via arguments).
+        Authenticates with the user's bearer token when this executor was built with one
+        (user-authenticated calls — the gateway then applies the user's access filtering),
+        otherwise with the service JWT (inter-service calls).
 
         Args:
             tool_name: Name of the tool to execute
@@ -195,8 +201,11 @@ class GraphQLToolExecutor(ToolExecutor):
         parameters = definition.get("function", {}).get("parameters", {})
         properties = parameters.get("properties", {})
 
-        # Inject page context params into arguments
-        arguments = self._inject_page_params(arguments)
+        # Inject page-context params. Pin ids to the focus ONLY when this executor has no user
+        # bearer (service auth) — there the gateway applies no per-user filtering, so an
+        # LLM-chosen id must not be trusted. With a user bearer, ids default to the focus but
+        # the LLM may override them to roam (gateway enforces access; writes go through review).
+        arguments = self._inject_page_params(arguments, force_ids=not self._user_authed)
 
         # Filter arguments by those the tool accepts (ignore unknown params like dStack)
         filtered_out = {k: v for k, v in arguments.items() if k not in properties}
