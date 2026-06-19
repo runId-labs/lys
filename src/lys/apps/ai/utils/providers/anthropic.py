@@ -36,6 +36,9 @@ logger = logging.getLogger(__name__)
 # structured analysis payloads; override per-endpoint via options.max_tokens.
 DEFAULT_MAX_TOKENS = 8192
 
+# Anthropic allows at most 4 prompt-cache breakpoints (cache_control blocks) per request.
+_MAX_CACHE_BREAKPOINTS = 4
+
 # Anthropic API version pin (sent as the anthropic-version header).
 ANTHROPIC_VERSION = "2023-06-01"
 
@@ -367,6 +370,7 @@ class AnthropicProvider(AIProvider):
             **filtered_options,
         }
         structured = isinstance(system, list)
+        has_history = any(m.get("role") == "assistant" for m in anthropic_messages)
         if isinstance(system, str):
             # Single cacheable system block (one breakpoint) — historical shape. Cached
             # input tokens are billed at ~10% (5-min TTL).
@@ -374,17 +378,22 @@ class AnthropicProvider(AIProvider):
                 {"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}
             ]
         elif structured:
-            # Cache the stable prefix: one breakpoint at the end of the last cacheable
-            # segment caches tools + every preceding block; volatile segments after it
-            # (per-company / per-turn context) stay uncached, so they no longer bust the
-            # cache of the stable prefix.
-            last_cacheable = max(
-                (i for i, seg in enumerate(system) if seg.get("cache")), default=-1
-            )
+            # One breakpoint per cacheable layer, so a change in a later layer (e.g. the page
+            # prompt) does not bust the cache of an earlier, more stable one. Anthropic caps
+            # cache_control at 4 per request; the tools block and the rolling last-message
+            # breakpoint each reserve one, so the cacheable system segments share the remainder
+            # — the FIRST (most stable) ones kept: a breakpoint on an earlier layer survives a
+            # change in any later layer, whereas the rolling last-message breakpoint already
+            # caches the longest prefix when everything is stable (a tail breakpoint here would
+            # be redundant with it). Segments are ordered most-stable-first.
+            cacheable = [i for i, seg in enumerate(system) if seg.get("cache")]
+            reserved = (1 if tools else 0) + (1 if has_history else 0)
+            budget = max(0, _MAX_CACHE_BREAKPOINTS - reserved)
+            breakpoints = set(cacheable[:budget]) if budget else set()
             blocks: List[Dict[str, Any]] = []
             for i, seg in enumerate(system):
                 block: Dict[str, Any] = {"type": "text", "text": seg["text"]}
-                if i == last_cacheable:
+                if i in breakpoints:
                     block["cache_control"] = {"type": "ephemeral"}
                 blocks.append(block)
             payload["system"] = blocks
@@ -397,7 +406,6 @@ class AnthropicProvider(AIProvider):
                 }
             payload["tools"] = translated_tools
             payload["tool_choice"] = tool_choice or {"type": "auto"}
-        has_history = any(m.get("role") == "assistant" for m in anthropic_messages)
         if has_history:
             # Rolling breakpoint on the last message: caches the whole prefix (tools +
             # system + history) up to the prior turn when it is byte-stable across turns.

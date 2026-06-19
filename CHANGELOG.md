@@ -7,6 +7,14 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.20.0] - 2026-06-19
+
+### Added
+- `AIConversationService._get_stable_context`: overridable hook (returns `None` in the base framework) for a session-stable, cacheable context layer injected as the first system segment, before the page prompt. Consumers override it to push a byte-deterministic per-session map; ordered most-stable-first so a page change does not bust its cache.
+
+### Changed
+- `AnthropicProvider` now places one prompt-cache breakpoint per cacheable system layer instead of a single breakpoint on the last cacheable segment. Breakpoints are budgeted under Anthropic's 4-per-request cap (the tools block and the rolling last-message breakpoint each reserve one); when the cacheable layers exceed the remaining budget, the most-stable (earliest) layers keep their breakpoints, since the rolling last-message breakpoint already caches the longest fully-stable prefix.
+
 ## [0.19.0] - 2026-06-19
 
 ### Added

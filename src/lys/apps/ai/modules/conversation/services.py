@@ -538,11 +538,29 @@ class AIConversationService(EntityService[AIConversation]):
         return result is not None
 
     @classmethod
+    async def _get_stable_context(
+        cls,
+        session: AsyncSession,
+        connected_user: Optional[Dict[str, Any]],
+        page_context: Optional[PageContextModel],
+        info: Any,
+    ) -> Optional[str]:
+        """
+        Session-stable, cacheable layer-A context, injected before the page prompt.
+
+        Base framework returns nothing. A consumer overrides this to push a session-stable
+        context layer. Must be byte-deterministic so the downstream prompt cache hits, and
+        cheap/cached since it runs on every turn.
+        """
+        return None
+
+    @classmethod
     async def _build_system_prompt(
         cls,
         page_behaviour: Optional[Dict[str, Any]] = None,
         context_data: Optional[Dict[str, str]] = None,
         conversation_summary: Optional[str] = None,
+        stable_context: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
         """
         Build the system prompt as ordered cacheable / volatile segments.
@@ -568,6 +586,11 @@ class AIConversationService(EntityService[AIConversation]):
         )
 
         segments: List[Dict[str, Any]] = []
+
+        # Layer A — session-stable context layer. Most stable → cacheable, placed before the
+        # page so a page change does not bust it (per-layer breakpoints).
+        if stable_context:
+            segments.append({"content": stable_context, "cache": True})
 
         # Page-specific prompt — stable per page → cacheable.
         if page_behaviour and page_behaviour.get("prompt"):
@@ -775,13 +798,15 @@ class AIConversationService(EntityService[AIConversation]):
         # so the summary can be injected as a volatile system segment.
         conversation = await cls.get_or_create(user_id, session, conversation_id)
         current_summary = await cls._load_current_summary(conversation.id, session)
+        stable_context = await cls._get_stable_context(session, connected_user, page_context, info)
 
-        # Build system prompt (cheap: only the summary load hits the DB; page prompt +
-        # past-conversation summary + already-fetched context).
+        # Build system prompt (cheap: only the summary/stable-context loads hit the DB/cache;
+        # stable context layer + page prompt + past-conversation summary + already-fetched context).
         system_segments = await cls._build_system_prompt(
             page_behaviour=page_behaviour,
             context_data=context_data,
             conversation_summary=current_summary.summary if current_summary else None,
+            stable_context=stable_context,
         )
         logger.debug(f"[SystemPrompt] Built {len(system_segments)} segment(s)")
 

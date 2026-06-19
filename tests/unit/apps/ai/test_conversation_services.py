@@ -361,6 +361,37 @@ class TestAIConversationServiceBuildSystemPrompt:
         assert result[0]["content"] == "Page prompt."
         assert "Order #12345" in result[1]["content"]
 
+    @pytest.mark.asyncio
+    async def test_build_system_prompt_stable_context_is_cacheable_first_segment(self, mock_session):
+        """The stable context layer is cacheable and ordered before the page prompt."""
+        from lys.apps.ai.modules.conversation.services import AIConversationService
+
+        result = await AIConversationService._build_system_prompt(
+            page_behaviour={"prompt": "Page prompt."},
+            context_data={"Order": "Order #12345"},
+            stable_context="Stable session map.",
+        )
+
+        # Layer A (stable) -> page (stable) -> dynamic context (volatile).
+        assert result[0] == {"content": "Stable session map.", "cache": True}
+        assert result[1] == {"content": "Page prompt.", "cache": True}
+        assert result[2]["cache"] is False
+        assert [seg["cache"] for seg in result] == [True, True, False]
+
+
+class TestAIConversationServiceGetStableContext:
+    """Tests for the _get_stable_context extension hook."""
+
+    @pytest.mark.asyncio
+    async def test_base_returns_none(self):
+        """The base framework injects no stable context; consumers override this hook."""
+        from lys.apps.ai.modules.conversation.services import AIConversationService
+
+        result = await AIConversationService._get_stable_context(
+            AsyncMock(), {"sub": "user-1"}, None, MagicMock()
+        )
+        assert result is None
+
 
 # ========== Streaming Helpers ==========
 

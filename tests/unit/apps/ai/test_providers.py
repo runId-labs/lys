@@ -1218,6 +1218,55 @@ class TestAnthropicProviderTranslation:
         assert "cache_control" not in payload["tools"][0]
         assert payload["tools"][-1]["cache_control"] == {"type": "ephemeral"}
 
+    def test_prepare_breakpoints_one_per_cacheable_layer(self, provider):
+        """Each cacheable system layer gets its own breakpoint; volatile tail stays uncached."""
+        config = self._config("claude-sonnet-4-6")
+        messages = [
+            {"role": "system", "content": [
+                {"text": "Layer A (most stable).", "cache": True},
+                {"text": "Layer B (page).", "cache": True},
+                {"text": "Volatile context.", "cache": False},
+            ]},
+            {"role": "user", "content": "hi"},
+        ]
+        payload, _, _ = provider._prepare(messages, config)
+        cached = [b["text"] for b in payload["system"] if "cache_control" in b]
+        assert cached == ["Layer A (most stable).", "Layer B (page)."]
+        assert "cache_control" not in payload["system"][-1]
+
+    def test_prepare_breakpoint_budget_keeps_first_when_reservations_exceed_cap(self, provider):
+        """tools + history reserve 2 of 4 breakpoints; the 2 most-stable system layers are kept."""
+        config = self._config("claude-sonnet-4-6")
+        messages = [
+            {"role": "system", "content": [
+                {"text": "A", "cache": True},
+                {"text": "B", "cache": True},
+                {"text": "C", "cache": True},
+                {"text": "D", "cache": True},
+            ]},
+            {"role": "user", "content": "q1"},
+            {"role": "assistant", "content": "a1"},
+            {"role": "user", "content": "q2"},
+        ]
+        tools = [{"type": "function", "function": {"name": "f", "parameters": {"type": "object"}}}]
+        payload, _, _ = provider._prepare(messages, config, tools=tools)
+
+        cached = [b["text"] for b in payload["system"] if "cache_control" in b]
+        # budget = 4 - 1 (tools) - 1 (history) = 2 -> the first two (most stable) layers.
+        assert cached == ["A", "B"]
+
+        # Total cache_control blocks across the whole request must never exceed 4.
+        total = (
+            len(cached)
+            + sum(1 for t in payload["tools"] if "cache_control" in t)
+            + sum(
+                1 for m in payload["messages"]
+                for blk in (m["content"] if isinstance(m["content"], list) else [])
+                if isinstance(blk, dict) and "cache_control" in blk
+            )
+        )
+        assert total <= 4
+
     def test_prepare_sets_rolling_breakpoint_when_history_present(self, provider):
         """With a prior assistant turn, the last message's last content block is cached.
 
