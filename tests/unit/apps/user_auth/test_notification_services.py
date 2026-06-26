@@ -42,6 +42,18 @@ class TestNotificationServiceStructure:
         assert hasattr(NotificationService, "count_unread")
         assert inspect.iscoroutinefunction(NotificationService.count_unread)
 
+    def test_has_mark_all_as_read_method(self):
+        from lys.apps.user_auth.modules.notification.services import NotificationService
+        assert hasattr(NotificationService, "mark_all_as_read")
+        assert inspect.iscoroutinefunction(NotificationService.mark_all_as_read)
+
+    def test_mark_all_as_read_signature(self):
+        from lys.apps.user_auth.modules.notification.services import NotificationService
+        sig = inspect.signature(NotificationService.mark_all_as_read)
+        # Scoped per user: must accept a session and a user_id
+        assert "session" in sig.parameters
+        assert "user_id" in sig.parameters
+
 
 class TestNotificationTypeServiceStructure:
     """Tests for NotificationTypeService class structure."""

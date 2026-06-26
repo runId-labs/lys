@@ -73,6 +73,50 @@ class TestNotificationQueryStructure:
         assert hasattr(mod.NotificationQuery, "unread_notifications_count")
 
 
+class TestNotificationMutationStructure:
+    def test_class_exists(self):
+        mod = _get_mod()
+        assert hasattr(mod, "NotificationMutation")
+
+    def test_has_mark_notifications_as_read_method(self):
+        mod = _get_mod()
+        assert hasattr(mod.NotificationMutation, "mark_notifications_as_read")
+
+    def test_has_mark_all_notifications_as_read_method(self):
+        mod = _get_mod()
+        assert hasattr(mod.NotificationMutation, "mark_all_notifications_as_read")
+
+    def test_mark_all_takes_no_ids(self):
+        """The bulk-all mutation must not depend on a client-supplied id list."""
+        mod = _get_mod()
+        sig = inspect.signature(mod.NotificationMutation.mark_all_notifications_as_read)
+        assert "ids" not in sig.parameters
+
+
+class TestMarkAllNotificationsAsReadSource:
+    """Source-level invariants — guard against accidentally dropping the
+    per-user scoping that prevents one user clearing another user's
+    notifications. We read the file directly because @lys_field wraps the
+    function and inspect.getsource on the class attribute returns the wrapper."""
+
+    @classmethod
+    def _source(cls):
+        from lys.apps.user_auth.modules.notification import webservices
+        with open(webservices.__file__, "r") as f:
+            return f.read()
+
+    def test_uses_connected_user_sub(self):
+        """Scoping must derive from the authenticated identity, not an argument."""
+        src = self._source()
+        assert "mark_all_as_read(session, user[\"sub\"])" in src
+
+    def test_requires_connected_access_level(self):
+        src = self._source()
+        # The mutation block must declare the connected access level.
+        assert "mark_all_notifications_as_read" in src
+        assert "CONNECTED_ACCESS_LEVEL" in src
+
+
 class TestNotificationSeverityQueryStructure:
     def test_class_exists(self):
         mod = _get_mod()

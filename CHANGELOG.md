@@ -7,6 +7,12 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.22.0] - 2026-06-26
+
+### Added
+- `NotificationService.mark_all_as_read(session, user_id)`: clears every unread notification of a user in a single `UPDATE`, scoped to the user at the database level (independent of frontend pagination). Returns the remaining unread count.
+- `mark_all_notifications_as_read` GraphQL mutation (`NotificationMutation`): marks all of the connected user's unread notifications as read. Connected access level, scoped to `connected_user["sub"]`; returns the remaining unread count.
+
 ## [0.21.0] - 2026-06-19
 
 ### Added

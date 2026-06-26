@@ -178,6 +178,32 @@ class NotificationMutation(Mutation):
 
         return MarkNotificationsReadNode(unread_count=unread_count)
 
+    @lys_field(
+        ensure_type=MarkNotificationsReadNode,
+        is_public=False,
+        access_levels=[CONNECTED_ACCESS_LEVEL],
+        is_licenced=False,
+        description="Mark all of the current user's unread notifications as read. Returns remaining unread count (0)."
+    )
+    async def mark_all_notifications_as_read(self, info: Info) -> MarkNotificationsReadNode:
+        """
+        Mark every unread notification of the connected user as read.
+
+        Unlike mark_notifications_as_read, this is not bound to a list of IDs: it
+        clears all unread notifications server-side, independently of frontend
+        pagination. Scoped to the connected user at the database level.
+
+        Returns:
+            MarkNotificationsReadNode with remaining unread_count (0 on success)
+        """
+        notification_service = info.context.app_manager.get_service("notification")
+        user = info.context.connected_user
+        session = info.context.session
+
+        unread_count = await notification_service.mark_all_as_read(session, user["sub"])
+
+        return MarkNotificationsReadNode(unread_count=unread_count)
+
 
 @strawberry.type
 @register_mutation()

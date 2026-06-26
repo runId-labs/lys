@@ -13,7 +13,7 @@ from typing import List, Callable
 # Signal name for real-time notification delivery
 NEW_NOTIFICATION_SIGNAL = "NEW_NOTIFICATION"
 
-from sqlalchemy import select, func
+from sqlalchemy import select, func, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Session
 
@@ -292,6 +292,32 @@ class NotificationService(EntityService[Notification]):
         )
         result = await session.execute(stmt)
         return result.scalar() or 0
+
+    @classmethod
+    async def mark_all_as_read(cls, session: AsyncSession, user_id: str) -> int:
+        """
+        Mark every unread notification of a user as read in a single statement.
+
+        Scoped to the user at the database level, so only the caller's own
+        notifications are affected — independently of any frontend pagination.
+
+        Args:
+            session: Database session
+            user_id: User whose unread notifications are marked read
+
+        Returns:
+            Remaining unread notifications count (0 on success).
+        """
+        stmt = (
+            update(cls.entity_class)
+            .where(
+                cls.entity_class.user_id == user_id,
+                cls.entity_class.is_read == False
+            )
+            .values(is_read=True)
+        )
+        await session.execute(stmt)
+        return await cls.count_unread(session, user_id)
 
 
 @register_service()
