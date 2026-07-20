@@ -7,6 +7,13 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.23.0] - 2026-07-20
+
+### Added
+- `lys.core.utils.pdf`: stateless PDF rendering utility. `markdown_to_html` (Python-Markdown with `extra`/`toc`/`sane_lists`), `render_html_to_pdf` (WeasyPrint, optional `base_url` and extra `stylesheets`), `render_markdown_to_pdf` (Markdown → HTML body → Jinja2 layout → PDF), plus the `render_markdown_to_pdf_async` worker-thread wrapper for async callers. Raises `PdfRenderError` (a plain domain exception, not `LysError`) when the optional `pdf` extra is missing or rendering fails.
+- `PdfSettings` (`settings.pdf`) with `template_path` (default `/templates/pdf`), resolved like `EmailSettings.template_path`. PDF layout templates load via a Jinja2 `ChoiceLoader`: application templates first, then the lys built-in fallback (`pdf_templates/default.html` + `default.css`, a minimal A4 layout with a `{{ body }}` slot).
+- `pdf` optional-dependency extra (`weasyprint>=62`, `markdown>=3.6`), added to the `all` and `test` extras; built-in templates shipped via package data.
+
 ## [0.22.0] - 2026-06-26
 
 ### Added

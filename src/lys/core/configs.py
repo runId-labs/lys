@@ -219,6 +219,16 @@ class AISettings(BaseSettings):
             )
 
 
+class PdfSettings(BaseSettings):
+    """Configuration for PDF rendering."""
+
+    def __init__(self):
+        # Template configuration. Directory (relative to the app working directory)
+        # where the application's PDF layout templates live. Same resolution pattern
+        # as EmailSettings.template_path (leading slash absorbed by lstrip('/')).
+        self.template_path: str = "/templates/pdf"
+
+
 class AppSettings(BaseSettings):
     def __init__(self):
         # Environment configuration - drives other settings
@@ -237,6 +247,7 @@ class AppSettings(BaseSettings):
         self.celery: Optional[CelerySettings] = None  # Celery task queue (optional)
         self.email: EmailSettings = EmailSettings()  # Email configuration
         self.ai: AISettings = AISettings()  # AI/LLM configuration for tool generation
+        self.pdf: PdfSettings = PdfSettings()  # PDF rendering configuration
         self.log_format: str = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 
         # graphql configurations

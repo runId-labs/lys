@@ -1,0 +1,19 @@
+<!DOCTYPE html>
+<html lang="{{ lang | default('en') }}">
+<head>
+    <meta charset="utf-8">
+    <title>{{ title | default('') }}</title>
+    <style>{% include 'default.css' %}</style>
+</head>
+<body>
+    {% if title %}
+    <div class="pdf-title-block">
+        <h1>{{ title }}</h1>
+        {% if subtitle %}<div class="subtitle">{{ subtitle }}</div>{% endif %}
+    </div>
+    {% endif %}
+    <main>
+        {{ body | safe }}
+    </main>
+</body>
+</html>
