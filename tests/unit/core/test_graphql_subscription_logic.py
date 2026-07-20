@@ -10,6 +10,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from lys.core.contexts import Info
+
 
 class TestLysSubscriptionInnerResolver:
     """Tests for the inner_resolver created by lys_subscription wrapper."""
@@ -158,7 +160,7 @@ class TestLysSubscriptionDecorator:
                 access_levels=["ROLE"],
                 is_licenced=False
             )
-            async def my_sub(self, info):
+            async def my_sub(self, info: Info):
                 yield FakeNode()
 
             mock_reg.assert_called_once()

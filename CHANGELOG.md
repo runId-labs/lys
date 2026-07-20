@@ -7,6 +7,9 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+- `test_graphql_subscription_logic`: annotate the `info` parameter of the subscription test resolver (`info: Info`). Strawberry >= 0.3xx requires the reserved `info` context parameter to be annotated; the unannotated fixture raised `MissingArgumentsAnnotationsError`, breaking the suite on the declared strawberry floor (`>=0.287.0`, used in preprod).
+
 ## [0.23.0] - 2026-07-20
 
 ### Added
