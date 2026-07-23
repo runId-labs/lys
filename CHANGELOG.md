@@ -7,6 +7,19 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.24.0] - 2026-07-23
+
+### Added
+- `legal` app (`lys.apps.legal`): versioned legal documents with provable, version-bound consent.
+  - `LegalDocumentType` (parametric, with a `requires_acceptance` gating flag), `LegalDocumentVersion` (immutable append-only registry, content-hash idempotent publication), `LegalDocumentAcceptance` (append-only consent proof with a self-contained identity snapshot that survives anonymization).
+  - Publication at startup via the service `on_initialize` hook (fault-tolerant, per-document session), rendering Markdown to an immutable PDF through `lys.core.utils.pdf` and storing it via the shared storage backend. GDPR data minimization (IP truncation, user-agent capping) applied service-side for all callers.
+  - GraphQL: `currentLegalDocument` (public), `acceptLegalDocument` (connected, `lys_creation`), `outstandingLegalAcceptances` (connected). Public REST PDF routes (`/legal/{type}/{language}`, `/legal/versions/{id}`) auto-mounted like the Mollie webhook.
+  - Celery tasks: daily anonymization reconciliation (polls `user_auth` over an internal-service GraphQL feed) and retention purge (GDPR art. 17.3.e).
+  - `LegalSettings` (`settings.legal`): declared documents (`type → languages → source`), `retention_days`, reconciliation endpoint.
+- `user_auth`: internal `anonymizedUsers(since)` relay connection (gated `INTERNAL_SERVICE_ACCESS_LEVEL`) exposing `id` + `anonymized_at`, consumed by the legal reconciliation task.
+- `Context.client_ip` / `Context.user_agent`: reusable request-metadata accessors on the GraphQL context.
+- `core.utils.storage.get_configured_storage_backend`: shared, memoized backend resolver used by `file_management` and `legal` (removes per-service duplication without coupling the apps).
+
 ### Fixed
 - `test_graphql_subscription_logic`: annotate the `info` parameter of the subscription test resolver (`info: Info`). Strawberry >= 0.3xx requires the reserved `info` context parameter to be annotated; the unannotated fixture raised `MissingArgumentsAnnotationsError`, breaking the suite on the declared strawberry floor (`>=0.287.0`, used in preprod).
 

@@ -28,6 +28,22 @@ from lys.core.utils.manager import classproperty
 
 
 @register_node()
+class AnonymizedUserNode(EntityNode[UserService], relay.Node):
+    """Anonymized-user record for the internal reconciliation feed: id + anonymized_at.
+
+    Backed by the `user` entity (paginated via a relay connection); `anonymized_at` is read
+    from the eagerly-loaded `private_data` relationship.
+    """
+    id: relay.NodeID[str]
+    _entity: strawberry.Private[User]
+
+    @strawberry.field(description="When the user's private data was anonymized.")
+    def anonymized_at(self) -> Optional[datetime]:
+        private_data = self._entity.private_data
+        return private_data.anonymized_at if private_data else None
+
+
+@register_node()
 @parametric_node(UserStatusService)
 class UserStatusNode:
     pass

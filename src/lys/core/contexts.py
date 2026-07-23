@@ -71,6 +71,20 @@ class Context(BaseContext):
         """Original JWT access token from authenticated user."""
         return self.get_from_request_state("access_token", None)
 
+    @property
+    def client_ip(self) -> Union[str, None]:
+        """Client IP from the request connection (raw — callers minimize as needed)."""
+        if self.request is not None and self.request.client is not None:
+            return self.request.client.host
+        return None
+
+    @property
+    def user_agent(self) -> Union[str, None]:
+        """User-Agent header from the request, if present."""
+        if self.request is not None:
+            return self.request.headers.get("user-agent")
+        return None
+
 
 Info : TypeAlias = StrawberryInfo[Context, RootValueType]
 

@@ -16,7 +16,7 @@ from lys.apps.file_management.modules.stored_file.entities import (
 )
 from lys.core.registries import register_service
 from lys.core.services import EntityService
-from lys.core.utils.storage import get_storage_backend, StorageBackend
+from lys.core.utils.storage import get_configured_storage_backend, StorageBackend
 
 logger = logging.getLogger(__name__)
 
@@ -30,20 +30,10 @@ class StoredFileTypeService(EntityService[StoredFileType]):
 class StoredFileService(EntityService[StoredFile]):
     """Service for managing stored files with S3 backend."""
 
-    _storage_backend: Optional[StorageBackend] = None
-
     @classmethod
     def get_storage_backend(cls) -> StorageBackend:
-        """Get or create the storage backend instance."""
-        if cls._storage_backend is None:
-            config = cls.app_manager.settings.get_plugin_config(FILE_STORAGE_PLUGIN_KEY)
-            if not config:
-                raise ValueError(
-                    f"File storage plugin not configured. "
-                    f"Add '{FILE_STORAGE_PLUGIN_KEY}' to settings.plugins"
-                )
-            cls._storage_backend = get_storage_backend(config)
-        return cls._storage_backend
+        """Get the shared storage backend instance (resolved from the file_storage plugin)."""
+        return get_configured_storage_backend(cls.app_manager.settings, FILE_STORAGE_PLUGIN_KEY)
 
     @staticmethod
     def content_hash(data: Union[bytes, BinaryIO]) -> Optional[str]:

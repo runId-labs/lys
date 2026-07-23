@@ -73,6 +73,37 @@ class TestContextClass:
         from lys.core.contexts import Context
         assert hasattr(Context, "webservice_parameters")
 
+
+class TestClientMetadataProperties:
+    """Reusable request-metadata accessors: client_ip and user_agent."""
+
+    def _context_with_request(self, host=None, user_agent=None, request=True):
+        from types import SimpleNamespace
+        from lys.core.contexts import Context
+        context = Context()
+        if not request:
+            context.request = None
+            return context
+        client = SimpleNamespace(host=host) if host is not None else None
+        headers = {"user-agent": user_agent} if user_agent else {}
+        context.request = SimpleNamespace(client=client, headers=headers)
+        return context
+
+    def test_client_ip_from_request(self):
+        assert self._context_with_request(host="203.0.113.7").client_ip == "203.0.113.7"
+
+    def test_client_ip_none_without_client(self):
+        assert self._context_with_request(host=None).client_ip is None
+
+    def test_client_ip_none_without_request(self):
+        assert self._context_with_request(request=False).client_ip is None
+
+    def test_user_agent_from_request(self):
+        assert self._context_with_request(user_agent="Mozilla/5.0").user_agent == "Mozilla/5.0"
+
+    def test_user_agent_none_without_request(self):
+        assert self._context_with_request(request=False).user_agent is None
+
     def test_has_service_caller_property(self):
         """Test Context has service_caller property."""
         from lys.core.contexts import Context

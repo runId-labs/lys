@@ -34,10 +34,11 @@ from lys.apps.user_auth.modules.user.nodes import (
     UserOneTimeTokenNode,
     AnonymizeUserNode,
     UserAuditLogNode,
-    DeleteUserObservationNode
+    DeleteUserObservationNode,
+    AnonymizedUserNode,
 )
 from lys.apps.user_auth.modules.user.services import UserService
-from lys.core.consts.webservices import OWNER_ACCESS_LEVEL
+from lys.core.consts.webservices import INTERNAL_SERVICE_ACCESS_LEVEL, OWNER_ACCESS_LEVEL
 from lys.core.errors import LysError
 from lys.core.contexts import Info
 from lys.core.graphql.connection import lys_connection
@@ -217,6 +218,35 @@ class UserQuery(Query):
             )
 
         return stmt
+
+    @lys_connection(
+        AnonymizedUserNode,
+        is_public=False,
+        access_levels=[INTERNAL_SERVICE_ACCESS_LEVEL],
+        is_licenced=False,
+        description="Internal service-to-service feed: users anonymized since a timestamp "
+                    "(id + anonymized_at), paginated. Consumed by the legal app's "
+                    "reconciliation task.",
+    )
+    async def anonymized_users(self, info: Info, since: datetime) -> Select:
+        """List users whose private data was anonymized at or after `since`.
+
+        Returns a relay connection of users (id + anonymized_at) — the minimal contract
+        other services (e.g. `legal`) poll to reconcile their own user references. Gated at
+        INTERNAL_SERVICE_ACCESS_LEVEL: only a service caller reaches it.
+        """
+        user_entity = info.context.app_manager.get_entity("user")
+        private_data_entity = info.context.app_manager.get_entity("user_private_data")
+
+        return (
+            select(user_entity)
+            .join(private_data_entity)
+            .where(
+                private_data_entity.anonymized_at.isnot(None),
+                private_data_entity.anonymized_at >= since,
+            )
+            .order_by(private_data_entity.anonymized_at.asc())
+        )
 
 
 @register_query()

@@ -219,6 +219,41 @@ class AISettings(BaseSettings):
             )
 
 
+class LegalSettings(BaseSettings):
+    """Configuration for the legal documents app.
+
+    The document **text** is application content declared here (not part of lys); the
+    gating policy lives on `LegalDocumentType.requires_acceptance`, not here.
+
+    `documents` maps a type code to its per-language sources:
+
+        documents = {
+            "TERMS_OF_USE": {"languages": {
+                "fr": "legal/terms_of_use_fr.md",   # bare path, or ...
+                "en": {                              # ... an object with options
+                    "path": "legal/terms_of_use_en.md",
+                    "effective_date": datetime(...),  # optional; defaults to publish time
+                    "template": "legal.html",         # optional Jinja2 layout
+                    "context": {"company": "ACME"},   # optional template context
+                    "base_url": "...",                # optional asset base URL
+                },
+            }},
+            "PRIVACY_POLICY": {"languages": {"fr": "legal/privacy_policy_fr.md"}},
+        }
+    """
+
+    def __init__(self):
+        # Declared legal documents to publish at startup (see class docstring).
+        self.documents: dict = {}
+
+        # Proof retention after anonymization, in days. Prescription period for defending
+        # legal claims (GDPR art. 17.3.e). Default ~5 years.
+        self.retention_days: int = 5 * 365
+
+        # user_auth GraphQL endpoint used by the anonymization reconciliation task.
+        self.anonymized_users_endpoint: Optional[str] = None
+
+
 class PdfSettings(BaseSettings):
     """Configuration for PDF rendering."""
 
@@ -248,6 +283,7 @@ class AppSettings(BaseSettings):
         self.email: EmailSettings = EmailSettings()  # Email configuration
         self.ai: AISettings = AISettings()  # AI/LLM configuration for tool generation
         self.pdf: PdfSettings = PdfSettings()  # PDF rendering configuration
+        self.legal: LegalSettings = LegalSettings()  # Legal documents configuration
         self.log_format: str = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 
         # graphql configurations

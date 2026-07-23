@@ -518,3 +518,42 @@ def get_storage_backend(config: dict) -> StorageBackend:
         )
 
     return _BACKENDS[backend_type](config)
+
+
+# Process-wide cache of configured backends, keyed by plugin config key. Shared by every
+# service that needs object storage (file_management, legal, …) so a backend is built once
+# per plugin config and reused, without those services duplicating the resolve/cache logic
+# or coupling to one another.
+_configured_backends: dict = {}
+
+
+def get_configured_storage_backend(settings, plugin_key: str) -> StorageBackend:
+    """Resolve and memoize the storage backend declared under a settings plugin key.
+
+    Args:
+        settings: Application settings exposing `get_plugin_config(plugin_key)`.
+        plugin_key: Plugin config key holding the backend configuration
+                    (e.g. `file_storage`).
+
+    Returns:
+        The shared `StorageBackend` instance for that plugin key.
+
+    Raises:
+        ValueError: If the plugin is not configured.
+    """
+    backend = _configured_backends.get(plugin_key)
+    if backend is None:
+        config = settings.get_plugin_config(plugin_key)
+        if not config:
+            raise ValueError(
+                f"Storage plugin '{plugin_key}' is not configured. "
+                f"Add '{plugin_key}' to settings.plugins."
+            )
+        backend = get_storage_backend(config)
+        _configured_backends[plugin_key] = backend
+    return backend
+
+
+def clear_configured_storage_backends() -> None:
+    """Clear the memoized storage backends (reconfiguration / tests)."""
+    _configured_backends.clear()

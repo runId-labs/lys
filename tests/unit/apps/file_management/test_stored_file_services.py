@@ -40,10 +40,12 @@ class TestStoredFileService:
         from lys.core.services import EntityService
         assert issubclass(StoredFileService, EntityService)
 
-    def test_has_storage_backend_attribute(self):
-        """Test StoredFileService has _storage_backend class attribute."""
-        from lys.apps.file_management.modules.stored_file.services import StoredFileService
-        assert hasattr(StoredFileService, "_storage_backend")
+    def test_resolves_storage_backend_via_shared_helper(self):
+        """StoredFileService resolves the backend through the shared core helper."""
+        from lys.apps.file_management.modules.stored_file import services as sf_services
+        # The service delegates to the memoized core resolver rather than caching itself.
+        assert sf_services.get_configured_storage_backend is not None
+        assert hasattr(sf_services.StoredFileService, "get_storage_backend")
 
     def test_get_storage_backend_method_exists(self):
         """Test get_storage_backend method exists."""
