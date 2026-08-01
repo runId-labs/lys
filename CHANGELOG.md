@@ -7,6 +7,15 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.25.0] - 2026-08-01
+
+### Added
+- Mistral provider: `reasoning_effort` accepted in `VALID_OPTIONS`, so the option reaches the API instead of being filtered out of the payload. Reasoning models return `content` as a list of typed blocks mixing `thinking` and `text`; `MistralProvider._extract_text` keeps only the `text` blocks, so the reasoning trace never reaches the caller.
+
+### Fixed
+- Mistral streaming with reasoning models: a `delta.content` block list was forwarded as-is in `AIStreamChunk.content`, raising `TypeError: can only concatenate str (not "list") to str` in the SSE accumulator and leaking the reasoning trace into the stream. Deltas are now flattened to text; a thinking-only delta yields no content.
+- `MistralProvider._parse_response` returns `""` instead of `None` when a response carries no text block (reasoning-only answer, or explicit `content: null`). `AIResponse.content` is typed `str`, and the `len(content)` calls in the non-stop-finish and validation-failure loggers raised a `TypeError` that masked the real `AIValidationError` on truncated reasoning responses.
+
 ## [0.24.0] - 2026-07-23
 
 ### Added

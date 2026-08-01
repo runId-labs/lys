@@ -46,6 +46,7 @@ class MistralProvider(AIProvider):
         "temperature", "top_p", "max_tokens", "min_tokens",
         "stream", "stop", "random_seed", "safe_prompt",
         "response_format", "presence_penalty", "frequency_penalty",
+        "reasoning_effort",
     }
 
     @staticmethod
@@ -246,7 +247,7 @@ class MistralProvider(AIProvider):
                         delta = choice.get("delta", {})
                         finish_reason = choice.get("finish_reason")
 
-                        content = delta.get("content")
+                        content = self._extract_text(delta.get("content"))
                         tool_calls = delta.get("tool_calls")
 
                         yield AIStreamChunk(
@@ -536,6 +537,26 @@ class MistralProvider(AIProvider):
             logger.error(f"Mistral API error {response.status_code}: {response.text}")
             raise AIProviderError(f"Mistral error: {response.status_code}")
 
+    @staticmethod
+    def _extract_text(content: Any) -> Optional[str]:
+        """Return the user-facing text of a message or streaming delta content.
+
+        With ``reasoning_effort`` enabled the API returns a list of typed blocks
+        instead of a plain string, mixing ``thinking`` blocks with ``text`` ones.
+        Only the text blocks are user-facing: the reasoning trace must never reach
+        the caller. Returns ``None`` for a delta carrying no text (a pure thinking
+        chunk), so streaming consumers can skip it.
+        """
+        if not isinstance(content, list):
+            return content
+
+        texts = [
+            part.get("text", "")
+            for part in content
+            if isinstance(part, dict) and part.get("type") == "text"
+        ]
+        return "".join(texts) if texts else None
+
     def _parse_response(self, response: httpx.Response) -> AIResponse:
         """Parse Mistral API response."""
         self._handle_error_status(response)
@@ -544,11 +565,10 @@ class MistralProvider(AIProvider):
         choice = data.get("choices", [{}])[0]
         message = choice.get("message", {})
 
-        content = message.get("content", "")
-        if isinstance(content, list):
-            content = "".join(
-                part.get("text", "") for part in content if part.get("type") == "text"
-            )
+        # AIResponse.content is a plain string: a reasoning-only answer (no text block)
+        # or an explicit null content must degrade to "" and never to None, otherwise
+        # downstream length logging and schema validation break on a NoneType.
+        content = self._extract_text(message.get("content", "")) or ""
 
         return AIResponse(
             content=content,

@@ -645,6 +645,170 @@ class TestMistralProviderParseResponseFinishReason:
         assert result.finish_reason is None
 
 
+class TestMistralProviderReasoningContent:
+    """Tests for reasoning-model content handling (``reasoning_effort``).
+
+    When ``reasoning_effort`` is enabled, Mistral returns ``content`` as a list of typed
+    blocks mixing ``thinking`` and ``text`` instead of a plain string. Only the text blocks
+    are user-facing.
+    """
+
+    @pytest.fixture
+    def provider(self):
+        return MistralProvider()
+
+    @pytest.fixture
+    def config(self):
+        return AIEndpointConfig(
+            provider="mistral",
+            model="magistral-medium-latest",
+            api_key="test-api-key",
+            timeout=30,
+            options={"reasoning_effort": "high", "not_a_mistral_option": "x"},
+        )
+
+    @pytest.fixture
+    def messages(self):
+        return [{"role": "user", "content": "Hello"}]
+
+    @staticmethod
+    def _build_response(content, finish_reason="stop"):
+        data = {
+            "choices": [{
+                "message": {"content": content, "tool_calls": []},
+                "finish_reason": finish_reason,
+            }],
+            "usage": {"prompt_tokens": 5, "completion_tokens": 7},
+            "model": "magistral-medium-latest",
+        }
+        response = MagicMock(spec=httpx.Response)
+        response.status_code = 200
+        response.json.return_value = data
+        return response
+
+    # ---------- _extract_text ----------
+
+    def test_extract_text_passes_through_plain_string(self, provider):
+        assert provider._extract_text("Hello") == "Hello"
+
+    def test_extract_text_passes_through_none(self, provider):
+        assert provider._extract_text(None) is None
+
+    def test_extract_text_keeps_only_text_blocks(self, provider):
+        content = [
+            {"type": "thinking", "thinking": [{"type": "text", "text": "internal trace"}]},
+            {"type": "text", "text": "Hello "},
+            {"type": "text", "text": "World!"},
+        ]
+        assert provider._extract_text(content) == "Hello World!"
+
+    def test_extract_text_returns_none_for_thinking_only(self, provider):
+        content = [{"type": "thinking", "thinking": [{"type": "text", "text": "trace"}]}]
+        assert provider._extract_text(content) is None
+
+    def test_extract_text_ignores_non_dict_parts(self, provider):
+        content = ["unexpected", {"type": "text", "text": "ok"}]
+        assert provider._extract_text(content) == "ok"
+
+    # ---------- _parse_response ----------
+
+    def test_parse_response_strips_thinking_blocks(self, provider):
+        content = [
+            {"type": "thinking", "thinking": [{"type": "text", "text": "secret trace"}]},
+            {"type": "text", "text": "Final answer"},
+        ]
+        result = provider._parse_response(self._build_response(content))
+
+        assert result.content == "Final answer"
+        assert "secret trace" not in result.content
+
+    def test_parse_response_thinking_only_yields_empty_string(self, provider):
+        """AIResponse.content is typed str: a reasoning-only answer must not produce None."""
+        content = [{"type": "thinking", "thinking": [{"type": "text", "text": "trace"}]}]
+        result = provider._parse_response(self._build_response(content, finish_reason="length"))
+
+        assert result.content == ""
+
+    def test_parse_response_null_content_yields_empty_string(self, provider):
+        result = provider._parse_response(self._build_response(None))
+        assert result.content == ""
+
+    # ---------- chat_json ----------
+
+    @pytest.mark.asyncio
+    async def test_chat_json_thinking_only_raises_validation_error(self, provider, config, messages):
+        """A truncated reasoning-only answer must surface as AIValidationError, not TypeError.
+
+        ``_warn_if_non_stop_finish`` logs ``len(content)``, so a None content would raise a
+        TypeError outside the validation try/except and mask the real failure.
+        """
+        content = [{"type": "thinking", "thinking": [{"type": "text", "text": "trace"}]}]
+        mock_response = self._build_response(content, finish_reason="length")
+
+        with patch("httpx.AsyncClient") as mock_client:
+            mock_instance = AsyncMock()
+            mock_instance.post.return_value = mock_response
+            mock_client.return_value.__aenter__.return_value = mock_instance
+
+            with pytest.raises(AIValidationError):
+                await provider.chat_json(messages, config, _SampleSchema)
+
+    # ---------- chat ----------
+
+    @pytest.mark.asyncio
+    async def test_chat_forwards_reasoning_effort_and_filters_unknown_options(
+        self, provider, config, messages
+    ):
+        mock_response = self._build_response("ok")
+
+        with patch("httpx.AsyncClient") as mock_client:
+            mock_instance = AsyncMock()
+            mock_instance.post.return_value = mock_response
+            mock_client.return_value.__aenter__.return_value = mock_instance
+
+            await provider.chat(messages, config)
+
+            payload = mock_instance.post.call_args[1]["json"]
+            assert payload["reasoning_effort"] == "high"
+            assert "not_a_mistral_option" not in payload
+
+    # ---------- chat_stream ----------
+
+    @pytest.mark.asyncio
+    async def test_chat_stream_strips_thinking_deltas(self, provider, config, messages):
+        """Thinking deltas must yield no content; text blocks must be flattened to a string."""
+        lines = [
+            'data: {"choices":[{"delta":{"content":[{"type":"thinking",'
+            '"thinking":[{"type":"text","text":"trace"}]}]},"finish_reason":null}],"model":"m1"}',
+            'data: {"choices":[{"delta":{"content":[{"type":"text","text":"Hello"}]},'
+            '"finish_reason":null}],"model":"m1"}',
+            'data: {"choices":[{"delta":{"content":" world"},"finish_reason":"stop"}],"model":"m1"}',
+            "data: [DONE]",
+        ]
+
+        client_cm, _ = TestMistralProviderChatStream._make_stream_mock(lines)
+        with patch("httpx.AsyncClient", return_value=client_cm):
+            chunks = [chunk async for chunk in provider.chat_stream(messages, config)]
+
+        assert len(chunks) == 3
+        assert chunks[0].content is None
+        assert chunks[1].content == "Hello"
+        assert chunks[2].content == " world"
+        assert "".join(c.content for c in chunks if c.content) == "Hello world"
+
+    @pytest.mark.asyncio
+    async def test_chat_stream_forwards_reasoning_effort(self, provider, config, messages):
+        lines = ["data: [DONE]"]
+
+        client_cm, mock_http_client = TestMistralProviderChatStream._make_stream_mock(lines)
+        with patch("httpx.AsyncClient", return_value=client_cm):
+            [chunk async for chunk in provider.chat_stream(messages, config)]
+
+        payload = mock_http_client.stream.call_args[1]["json"]
+        assert payload["reasoning_effort"] == "high"
+        assert "not_a_mistral_option" not in payload
+
+
 class TestMistralProviderWarnIfNonStopFinish:
     """Tests for the static helper MistralProvider._warn_if_non_stop_finish."""
 
