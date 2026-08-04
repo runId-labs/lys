@@ -7,6 +7,19 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.26.0] - 2026-08-04
+
+### Added
+- `AIStreamChunk.reasoning`: reasoning trace of thinking models, carried apart from `content` so it never reaches the user by accident. `MistralProvider._extract_reasoning` reads the `thinking` blocks (both the nested-list and plain-string shapes returned by the API); `_extract_text` still keeps only the `text` blocks.
+- Chatbot SSE stream: `reasoning_progress` event carrying only `characters`, the running size of the reasoning trace for the current LLM call (restarts at 0 on each tool iteration). A reasoning model can spend tens of seconds before its first answer token, and the size is enough to prove liveness without publishing the trace. The trace itself is emitted as a `reasoning` event only when `chatbot.expose_reasoning` is set (default `False`): it is a draft naming internal tools and vocabulary a system prompt may forbid showing.
+- `MistralProvider._normalize_usage`: maps `usage.prompt_tokens_details.cached_tokens` to the provider-neutral `cache_read_tokens` key already used by the Anthropic provider, so cached-prompt activity is recorded instead of silently reading as zero.
+- Anthropic provider: `claude-opus-5`, `claude-sonnet-5` and `claude-fable-5` added to `MODELS`, and to `MODELS_REJECTING_SAMPLING` — the Claude 5 generation rejects `temperature`/`top_p`/`top_k`, which are dropped with a warning instead of forwarded.
+
+### Fixed
+- `MistralProvider._cache_key_field` derived `prompt_cache_key` from the whole system prompt, volatile segments included (focus marker, current date, conversation summary, per-turn tool context), so every turn landed in its own cache bucket. The key now hashes only the segments flagged cacheable, and is computed before `_flatten_system` (once flattened, stable and volatile segments cannot be told apart). Several segments with none flagged cacheable yield no key at all, rather than one derived from volatile content.
+- `sanitize_llm_messages` preserves system segment boundaries as soon as there are several messages, cacheable or not. Flattening is lossy: a consumer could no longer tell the stable prefix from the volatile tail.
+- Anthropic provider: a structured system prompt with no segment flagged cacheable received no `cache_control` breakpoint at all, dropping the system prompt out of the cache — where the single-string shape always caches it. The breakpoint now falls back to the last segment.
+
 ## [0.25.0] - 2026-08-01
 
 ### Added

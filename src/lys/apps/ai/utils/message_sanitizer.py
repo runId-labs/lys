@@ -50,7 +50,12 @@ def sanitize_llm_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]
 
     result: List[Dict[str, Any]] = []
     if system_segments:
-        if any(cache for _, cache in system_segments):
+        # Segment boundaries survive as soon as there are several, cacheable or not: flattening
+        # is lossy, and a consumer cannot then tell a stable prefix from a volatile tail. A
+        # provider deriving a prompt-cache key from the system content would hash the volatile
+        # part and send every turn to its own cache bucket. Providers wanting a plain string
+        # flatten it back themselves.
+        if any(cache for _, cache in system_segments) or len(system_segments) > 1:
             # At least one segment is marked cacheable: preserve the segment boundaries so
             # a provider supporting prompt caching can place a breakpoint between the stable
             # prefix and the volatile tail. Plain-string consumers flatten this back.

@@ -50,6 +50,9 @@ class AnthropicProvider(AIProvider):
     default_base_url = "https://api.anthropic.com/v1"
 
     MODELS = [
+        "claude-opus-5",
+        "claude-sonnet-5",
+        "claude-fable-5",
         "claude-opus-4-8",
         "claude-sonnet-4-6",
         "claude-haiku-4-5",
@@ -64,7 +67,13 @@ class AnthropicProvider(AIProvider):
     # For the affected models they are dropped (with a warning) instead of
     # forwarded; steer those models via prompting instead.
     SAMPLING_OPTIONS = {"temperature", "top_p", "top_k"}
-    MODELS_REJECTING_SAMPLING = ("claude-opus-4-8", "claude-opus-4-7")
+    # claude-sonnet-5 answers "`temperature` is deprecated for this model" (verified against
+    # the API); the other Claude 5 entries follow the same generation and are listed by
+    # prefix. Opus 4.7+ removed the same parameters.
+    MODELS_REJECTING_SAMPLING = (
+        "claude-opus-5", "claude-sonnet-5", "claude-fable-5",
+        "claude-opus-4-8", "claude-opus-4-7",
+    )
 
     # ========== Standard Chat ==========
 
@@ -387,6 +396,13 @@ class AnthropicProvider(AIProvider):
             # caches the longest prefix when everything is stable (a tail breakpoint here would
             # be redundant with it). Segments are ordered most-stable-first.
             cacheable = [i for i, seg in enumerate(system) if seg.get("cache")]
+            if not cacheable:
+                # No segment declared cacheable: the sanitizer keeps boundaries as soon as
+                # there are several system messages, flagged or not. Falling through with no
+                # breakpoint would drop the system prompt out of the cache entirely, which the
+                # single-string shape above never does. Cache the whole system block instead,
+                # by placing the breakpoint on the last segment.
+                cacheable = [len(system) - 1]
             reserved = (1 if tools else 0) + (1 if has_history else 0)
             budget = max(0, _MAX_CACHE_BREAKPOINTS - reserved)
             breakpoints = set(cacheable[:budget]) if budget else set()

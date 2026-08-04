@@ -51,17 +51,52 @@ class MistralProvider(AIProvider):
 
     @staticmethod
     def _cache_key_field(messages: List[Dict[str, Any]]) -> Dict[str, str]:
-        """Stable ``prompt_cache_key`` derived from the system prompt.
+        """Stable ``prompt_cache_key`` derived from the CACHEABLE system segments only.
 
-        Mistral caches on the shared request prefix; passing a stable key for
-        requests that share the same system prompt raises the cache-hit rate
-        (cached input tokens are billed at ~10%). Returns {} when there is no
-        string system message.
+        Mistral caches on the shared request prefix; the key groups requests that share
+        that prefix (cached input tokens are billed at ~10%). It must therefore ignore the
+        volatile segments — focus marker, current date, conversation summary, per-turn tool
+        context — otherwise every turn lands in its own cache bucket and nothing is ever
+        reused.
+
+        Call this BEFORE :meth:`_flatten_system`: once flattened, the stable and volatile
+        segments are one string and cannot be told apart.
+
+        Measured on the API: two identical prompts under the same key reuse 100% of the
+        prefix, under different keys 0%. The key must therefore stay identical across the
+        turns of a conversation — hashing anything volatile sends every turn to its own
+        cache bucket, which is what produced an alternating 0%/90% hit rate.
         """
-        system = next(
-            (m.get("content") for m in messages if m.get("role") == "system"), None
-        )
-        if not isinstance(system, str) or not system:
+        stable_parts: List[str] = []
+        for message in messages:
+            if message.get("role") != "system":
+                continue
+            content = message.get("content")
+            if isinstance(content, list):
+                # Segmented content: keep the segments flagged as cacheable.
+                stable_parts.extend(
+                    seg.get("text", "") for seg in content
+                    if isinstance(seg, dict) and seg.get("cache")
+                )
+            elif isinstance(content, str) and content:
+                # One message per segment, the flag sits on the message itself. The default
+                # matches the sanitizer's (False): an unflagged segment is volatile, and
+                # hashing it would defeat the whole point. The single unflagged system
+                # message — the historical unsegmented shape — is handled below.
+                if message.get("cache", False):
+                    stable_parts.append(content)
+
+        if not stable_parts:
+            # Nothing declared cacheable. A lone plain system prompt is the unsegmented shape
+            # and is stable by nature, so it still yields a key. Several unflagged segments
+            # reach here only if the caller declared none cacheable: no key at all beats one
+            # derived from volatile content.
+            plain = [m.get("content") for m in messages if m.get("role") == "system"]
+            if len(plain) == 1 and isinstance(plain[0], str) and plain[0]:
+                stable_parts = [plain[0]]
+
+        system = "\n\n".join(part for part in stable_parts if part)
+        if not system:
             return {}
         digest = hashlib.sha1(system.encode("utf-8")).hexdigest()[:32]
         return {"prompt_cache_key": f"sys-{digest}"}
@@ -92,6 +127,7 @@ class MistralProvider(AIProvider):
         tools: Optional[List[Dict[str, Any]]] = None,
     ) -> AIResponse:
         """Send a chat request to Mistral API."""
+        cache_field = self._cache_key_field(messages)
         messages = self._flatten_system(messages)
         base_url = self.get_base_url(config)
 
@@ -101,7 +137,7 @@ class MistralProvider(AIProvider):
         payload = {
             "model": config.model,
             "messages": messages,
-            **self._cache_key_field(messages),
+            **cache_field,
             **filtered_options,
         }
 
@@ -140,6 +176,7 @@ class MistralProvider(AIProvider):
         tools: Optional[List[Dict[str, Any]]] = None,
     ) -> AIResponse:
         """Synchronous version using httpx sync client."""
+        cache_field = self._cache_key_field(messages)
         messages = self._flatten_system(messages)
         base_url = self.get_base_url(config)
 
@@ -149,7 +186,7 @@ class MistralProvider(AIProvider):
         payload = {
             "model": config.model,
             "messages": messages,
-            **self._cache_key_field(messages),
+            **cache_field,
             **filtered_options,
         }
 
@@ -190,6 +227,7 @@ class MistralProvider(AIProvider):
         tools: Optional[List[Dict[str, Any]]] = None,
     ) -> AsyncGenerator[AIStreamChunk, None]:
         """Stream a chat response from Mistral API, yielding chunks."""
+        cache_field = self._cache_key_field(messages)
         messages = self._flatten_system(messages)
         base_url = self.get_base_url(config)
 
@@ -199,7 +237,7 @@ class MistralProvider(AIProvider):
             "model": config.model,
             "messages": messages,
             "stream": True,
-            **self._cache_key_field(messages),
+            **cache_field,
             **filtered_options,
         }
 
@@ -247,14 +285,17 @@ class MistralProvider(AIProvider):
                         delta = choice.get("delta", {})
                         finish_reason = choice.get("finish_reason")
 
-                        content = self._extract_text(delta.get("content"))
+                        raw_content = delta.get("content")
+                        content = self._extract_text(raw_content)
+                        reasoning = self._extract_reasoning(raw_content)
                         tool_calls = delta.get("tool_calls")
 
                         yield AIStreamChunk(
                             content=content,
+                            reasoning=reasoning,
                             tool_calls=tool_calls,
                             finish_reason=finish_reason,
-                            usage=data.get("usage"),
+                            usage=self._normalize_usage(data.get("usage")),
                             model=data.get("model"),
                             provider=self.name,
                         )
@@ -289,6 +330,7 @@ class MistralProvider(AIProvider):
             AITimeoutError: Request exceeded ``config.timeout``.
             AIValidationError: Response could not be validated against ``schema``.
         """
+        cache_field = self._cache_key_field(messages)
         messages = self._flatten_system(messages)
         base_url = self.get_base_url(config)
 
@@ -299,7 +341,7 @@ class MistralProvider(AIProvider):
             "model": config.model,
             "messages": messages,
             "response_format": self._build_json_schema_response_format(schema),
-            **self._cache_key_field(messages),
+            **cache_field,
             **filtered_options,
         }
 
@@ -342,6 +384,7 @@ class MistralProvider(AIProvider):
         Uses Mistral's native ``response_format: {"type": "json_schema", ...}`` mode.
         See :meth:`chat_json` for details on parameters, return value, and exceptions.
         """
+        cache_field = self._cache_key_field(messages)
         messages = self._flatten_system(messages)
         base_url = self.get_base_url(config)
 
@@ -352,7 +395,7 @@ class MistralProvider(AIProvider):
             "model": config.model,
             "messages": messages,
             "response_format": self._build_json_schema_response_format(schema),
-            **self._cache_key_field(messages),
+            **cache_field,
             **filtered_options,
         }
 
@@ -543,9 +586,10 @@ class MistralProvider(AIProvider):
 
         With ``reasoning_effort`` enabled the API returns a list of typed blocks
         instead of a plain string, mixing ``thinking`` blocks with ``text`` ones.
-        Only the text blocks are user-facing: the reasoning trace must never reach
-        the caller. Returns ``None`` for a delta carrying no text (a pure thinking
-        chunk), so streaming consumers can skip it.
+        Only the text blocks are user-facing. Returns ``None`` for a delta carrying no
+        text (a pure thinking chunk), so streaming consumers can skip it.
+
+        The reasoning is not dropped, only kept apart: see :meth:`_extract_reasoning`.
         """
         if not isinstance(content, list):
             return content
@@ -556,6 +600,53 @@ class MistralProvider(AIProvider):
             if isinstance(part, dict) and part.get("type") == "text"
         ]
         return "".join(texts) if texts else None
+
+    @staticmethod
+    def _extract_reasoning(content: Any) -> Optional[str]:
+        """Return the reasoning trace of a message or streaming delta content.
+
+        Companion to :meth:`_extract_text`. Reasoning nests its text one level deeper
+        (``{"type": "thinking", "thinking": [{"type": "text", "text": ...}]}``); a plain
+        string is also accepted, the API has used both shapes. Returns ``None`` when there
+        is no reasoning, so callers can pass the result through without branching.
+
+        Never merge this into the answer: it is a draft, it names internal tools and the
+        scoring vocabulary the system prompt forbids showing, and it is not written to be
+        read. Exposing it is a caller decision — its value is that it starts streaming
+        seconds after the request, long before the first answer token.
+        """
+        if not isinstance(content, list):
+            return None
+
+        chunks = []
+        for part in content:
+            if not isinstance(part, dict) or part.get("type") != "thinking":
+                continue
+            nested = part.get("thinking")
+            if isinstance(nested, list):
+                chunks.extend(
+                    item.get("text", "") for item in nested if isinstance(item, dict)
+                )
+            elif isinstance(nested, str):
+                chunks.append(nested)
+        text = "".join(chunks)
+        return text or None
+
+    @staticmethod
+    def _normalize_usage(usage: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+        """Expose Mistral's cached-prompt counter under the provider-neutral key.
+
+        Mistral reports reused prefix tokens as ``usage.prompt_tokens_details.cached_tokens``
+        (billed at ~10%). Without this mapping the caller stores nothing, and a session shows
+        zero cache activity whether or not the cache actually worked — which is not the same
+        thing.
+        """
+        if not usage:
+            return usage
+        cached = (usage.get("prompt_tokens_details") or {}).get("cached_tokens")
+        if cached is None:
+            return usage
+        return {**usage, "cache_read_tokens": cached}
 
     def _parse_response(self, response: httpx.Response) -> AIResponse:
         """Parse Mistral API response."""
@@ -573,7 +664,7 @@ class MistralProvider(AIProvider):
         return AIResponse(
             content=content,
             tool_calls=message.get("tool_calls", []),
-            usage=data.get("usage"),
+            usage=self._normalize_usage(data.get("usage")),
             model=data.get("model"),
             provider=self.name,
             finish_reason=choice.get("finish_reason"),

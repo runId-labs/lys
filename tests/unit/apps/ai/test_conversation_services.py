@@ -1063,6 +1063,73 @@ class TestChatWithToolsStreaming:
         create_call = mock_msg_service.create.call_args
         assert create_call.kwargs.get("provider") == "mistral" or create_call[1].get("provider") == "mistral"
 
+    @staticmethod
+    def _reasoning_ctx():
+        """Context whose stream mixes reasoning deltas with answer tokens."""
+        from lys.apps.ai.utils.providers.abstracts import AIStreamChunk
+
+        async def fake_stream(*args, **kwargs):
+            yield AIStreamChunk(reasoning="12345", model="m1", provider="mistral")
+            yield AIStreamChunk(reasoning="678", model="m1", provider="mistral")
+            yield AIStreamChunk(content="Answer", finish_reason="stop")
+
+        mock_ai_service = MagicMock()
+        mock_ai_service.chat_stream_with_purpose = fake_stream
+        return {
+            "executor": MagicMock(),
+            "conversation": MagicMock(id="conv-1"),
+            "message_service": AsyncMock(),
+            "ai_service": mock_ai_service,
+            "llm_tools": [],
+            "messages": [{"role": "system", "content": "sys"}],
+            "info": MagicMock(),
+            "user_message_id": "user-msg-1",
+        }
+
+    async def _stream_events(self, mock_session, connected_user, chatbot_config):
+        from lys.apps.ai.modules.conversation.services import AIConversationService
+
+        app_manager = MagicMock()
+        app_manager.settings.get_plugin_config.return_value = {"chatbot": chatbot_config}
+
+        events = []
+        with patch.object(AIConversationService, "_prepare_chat_context",
+                          new_callable=AsyncMock, return_value=self._reasoning_ctx()), \
+                patch.object(AIConversationService, "app_manager", app_manager):
+            async for event in AIConversationService.chat_with_tools_streaming(
+                user_id="user-123", content="Hi", session=mock_session,
+                connected_user=connected_user, access_token="tok",
+            ):
+                events.append(event)
+        return events
+
+    @pytest.mark.asyncio
+    async def test_reasoning_content_withheld_by_default(self, mock_session, connected_user):
+        """The trace names internal tools: only its size may leave without an opt-in."""
+        events = await self._stream_events(mock_session, connected_user, {})
+
+        assert not any("event: reasoning\n" in e for e in events)
+        assert not any("12345" in e or "678" in e for e in events)
+
+        # Size is published as a running total, so a client can prove liveness.
+        progress = [e for e in events if "event: reasoning_progress" in e]
+        assert len(progress) == 2
+        assert '"characters": 5' in progress[0]
+        assert '"characters": 8' in progress[1]
+
+    @pytest.mark.asyncio
+    async def test_reasoning_content_streamed_when_enabled(self, mock_session, connected_user):
+        events = await self._stream_events(
+            mock_session, connected_user, {"expose_reasoning": True}
+        )
+
+        reasoning = [e for e in events if "event: reasoning\n" in e]
+        assert len(reasoning) == 2
+        assert "12345" in reasoning[0]
+        # Progress is emitted either way, and the answer never carries the trace.
+        assert len([e for e in events if "event: reasoning_progress" in e]) == 2
+        assert all("12345" not in e for e in events if "event: token" in e)
+
     @pytest.mark.asyncio
     async def test_provider_error_sanitized(self, mock_session, connected_user):
         """Test that streaming provider errors yield sanitized message to client."""

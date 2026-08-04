@@ -498,6 +498,67 @@ class TestMistralProviderChatStream:
         assert chunks[1].finish_reason == "tool_calls"
 
     @pytest.mark.asyncio
+    async def test_chat_stream_separates_reasoning_from_content(self, provider, config, messages):
+        """A thinking delta surfaces on ``reasoning``, never on ``content``."""
+        lines = [
+            'data: {"choices":[{"delta":{"content":[{"type":"thinking","thinking":'
+            '[{"type":"text","text":"internal trace"}]}]},"finish_reason":null}],"model":"m1"}',
+            'data: {"choices":[{"delta":{"content":[{"type":"text","text":"Answer"}]},'
+            '"finish_reason":"stop"}],"model":"m1"}',
+            "data: [DONE]",
+        ]
+
+        client_cm, _ = self._make_stream_mock(lines)
+        with patch("httpx.AsyncClient", return_value=client_cm):
+            chunks = [c async for c in provider.chat_stream(messages, config)]
+
+        assert chunks[0].reasoning == "internal trace"
+        assert chunks[0].content is None
+        assert chunks[1].content == "Answer"
+        assert chunks[1].reasoning is None
+
+    @pytest.mark.asyncio
+    async def test_chat_stream_normalizes_cached_tokens(self, provider, config, messages):
+        lines = [
+            'data: {"choices":[{"delta":{"content":"Hi"},"finish_reason":"stop"}],"model":"m1",'
+            '"usage":{"prompt_tokens":10,"prompt_tokens_details":{"cached_tokens":9}}}',
+            "data: [DONE]",
+        ]
+
+        client_cm, _ = self._make_stream_mock(lines)
+        with patch("httpx.AsyncClient", return_value=client_cm):
+            chunks = [c async for c in provider.chat_stream(messages, config)]
+
+        assert chunks[0].usage["cache_read_tokens"] == 9
+
+    @pytest.mark.asyncio
+    async def test_chat_stream_cache_key_ignores_volatile_segment(self, provider, config):
+        """The key is derived before the system segments are flattened.
+
+        Flattening is lossy, so computing it afterwards would hash the volatile tail and send
+        every turn to its own cache bucket.
+        """
+        async def payload_for(volatile):
+            msgs = [
+                {"role": "system", "content": [
+                    {"text": "Stable base prompt.", "cache": True},
+                    {"text": volatile, "cache": False},
+                ]},
+                {"role": "user", "content": "hi"},
+            ]
+            client_cm, http_client = self._make_stream_mock(["data: [DONE]"])
+            with patch("httpx.AsyncClient", return_value=client_cm):
+                [c async for c in provider.chat_stream(msgs, config)]
+            return http_client.stream.call_args.kwargs["json"]
+
+        payload_a = await payload_for("turn 1 context")
+        payload_b = await payload_for("turn 2 context")
+
+        assert payload_a["prompt_cache_key"] == payload_b["prompt_cache_key"]
+        # The volatile segment is still sent to the model, only kept out of the key.
+        assert "turn 2 context" in payload_b["messages"][0]["content"]
+
+    @pytest.mark.asyncio
     async def test_chat_stream_skips_non_data_lines(self, provider, config, messages):
         """Test that non-data lines (comments, empty) are skipped."""
         lines = [
@@ -709,6 +770,76 @@ class TestMistralProviderReasoningContent:
     def test_extract_text_ignores_non_dict_parts(self, provider):
         content = ["unexpected", {"type": "text", "text": "ok"}]
         assert provider._extract_text(content) == "ok"
+
+    # ---------- _extract_reasoning ----------
+
+    def test_extract_reasoning_returns_none_for_plain_string(self, provider):
+        assert provider._extract_reasoning("Hello") is None
+
+    def test_extract_reasoning_returns_none_without_thinking_block(self, provider):
+        assert provider._extract_reasoning([{"type": "text", "text": "Hello"}]) is None
+
+    def test_extract_reasoning_reads_nested_text_blocks(self, provider):
+        content = [
+            {"type": "thinking", "thinking": [
+                {"type": "text", "text": "step 1 "},
+                {"type": "text", "text": "step 2"},
+            ]},
+            {"type": "text", "text": "Answer"},
+        ]
+        assert provider._extract_reasoning(content) == "step 1 step 2"
+
+    def test_extract_reasoning_accepts_plain_string_nesting(self, provider):
+        # The API has used both shapes for the ``thinking`` value.
+        content = [{"type": "thinking", "thinking": "raw trace"}]
+        assert provider._extract_reasoning(content) == "raw trace"
+
+    def test_extract_reasoning_ignores_non_dict_parts(self, provider):
+        content = ["unexpected", {"type": "thinking", "thinking": "trace"}]
+        assert provider._extract_reasoning(content) == "trace"
+
+    def test_extract_reasoning_returns_none_when_empty(self, provider):
+        assert provider._extract_reasoning([{"type": "thinking", "thinking": []}]) is None
+
+    def test_reasoning_never_leaks_into_extracted_text(self, provider):
+        content = [
+            {"type": "thinking", "thinking": [{"type": "text", "text": "secret trace"}]},
+            {"type": "text", "text": "Answer"},
+        ]
+        assert provider._extract_text(content) == "Answer"
+        assert provider._extract_reasoning(content) == "secret trace"
+
+    # ---------- _normalize_usage ----------
+
+    def test_normalize_usage_maps_cached_tokens(self, provider):
+        usage = {"prompt_tokens": 100, "prompt_tokens_details": {"cached_tokens": 90}}
+        assert provider._normalize_usage(usage)["cache_read_tokens"] == 90
+
+    def test_normalize_usage_keeps_original_fields(self, provider):
+        usage = {"prompt_tokens": 100, "prompt_tokens_details": {"cached_tokens": 90}}
+        normalized = provider._normalize_usage(usage)
+        assert normalized["prompt_tokens"] == 100
+        assert normalized["prompt_tokens_details"] == {"cached_tokens": 90}
+        # The input dict is not mutated.
+        assert "cache_read_tokens" not in usage
+
+    def test_normalize_usage_zero_cached_tokens_is_reported(self, provider):
+        # 0 is a measurement (cache miss), not an absence: it must not be dropped.
+        usage = {"prompt_tokens": 100, "prompt_tokens_details": {"cached_tokens": 0}}
+        assert provider._normalize_usage(usage)["cache_read_tokens"] == 0
+
+    def test_normalize_usage_passthrough_without_details(self, provider):
+        usage = {"prompt_tokens": 100}
+        assert provider._normalize_usage(usage) == usage
+
+    def test_normalize_usage_passthrough_when_none_or_empty(self, provider):
+        assert provider._normalize_usage(None) is None
+        assert provider._normalize_usage({}) == {}
+
+    def test_parse_response_normalizes_cached_tokens(self, provider):
+        response = self._build_response("ok")
+        response.json.return_value["usage"]["prompt_tokens_details"] = {"cached_tokens": 3}
+        assert provider._parse_response(response).usage["cache_read_tokens"] == 3
 
     # ---------- _parse_response ----------
 
@@ -1217,6 +1348,69 @@ class TestMistralCacheKeyField:
     def test_empty_when_system_blank(self, provider):
         assert MistralProvider._cache_key_field([{"role": "system", "content": ""}]) == {}
 
+    def test_segmented_key_ignores_volatile_segments(self, provider):
+        """Only the cacheable segments feed the key: a volatile change must not move it."""
+        def field(volatile):
+            return MistralProvider._cache_key_field([
+                {"role": "system", "content": [
+                    {"text": "Stable base prompt.", "cache": True},
+                    {"text": volatile, "cache": False},
+                ]},
+                {"role": "user", "content": "hi"},
+            ])
+
+        assert field("turn 1 context") == field("turn 2 context")
+        assert field("turn 1 context")["prompt_cache_key"].startswith("sys-")
+
+    def test_segmented_key_matches_stable_content_alone(self, provider):
+        segmented = MistralProvider._cache_key_field([
+            {"role": "system", "content": [
+                {"text": "Stable.", "cache": True},
+                {"text": "Volatile.", "cache": False},
+            ]},
+        ])
+        plain = MistralProvider._cache_key_field([{"role": "system", "content": "Stable."}])
+        assert segmented == plain
+
+    def test_segmented_key_changes_with_stable_content(self, provider):
+        def field(stable):
+            return MistralProvider._cache_key_field([
+                {"role": "system", "content": [{"text": stable, "cache": True}]},
+            ])
+
+        assert field("A") != field("B")
+
+    def test_per_message_cache_flag_is_honoured(self, provider):
+        """Unflattened shape: the flag sits on the message, unflagged means volatile."""
+        keyed = MistralProvider._cache_key_field([
+            {"role": "system", "content": "Stable.", "cache": True},
+            {"role": "system", "content": "Volatile.", "cache": False},
+        ])
+        assert keyed == MistralProvider._cache_key_field(
+            [{"role": "system", "content": "Stable."}]
+        )
+
+    def test_no_key_when_several_segments_and_none_cacheable(self, provider):
+        """A key derived from volatile content is worse than none: every turn would land in
+        its own cache bucket, so nothing is ever reused."""
+        assert MistralProvider._cache_key_field([
+            {"role": "system", "content": [
+                {"text": "Volatile A.", "cache": False},
+                {"text": "Volatile B.", "cache": False},
+            ]},
+        ]) == {}
+        assert MistralProvider._cache_key_field([
+            {"role": "system", "content": "Volatile A.", "cache": False},
+            {"role": "system", "content": "Volatile B.", "cache": False},
+        ]) == {}
+
+    def test_single_unflagged_system_message_still_keyed(self, provider):
+        """Historical unsegmented shape: one plain system prompt is stable by nature."""
+        assert MistralProvider._cache_key_field(
+            [{"role": "system", "content": "You are helpful."},
+             {"role": "user", "content": "hi"}]
+        ) != {}
+
     @pytest.mark.asyncio
     async def test_chat_payload_includes_cache_key(self, provider):
         config = AIEndpointConfig(
@@ -1397,6 +1591,26 @@ class TestAnthropicProviderTranslation:
         cached = [b["text"] for b in payload["system"] if "cache_control" in b]
         assert cached == ["Layer A (most stable).", "Layer B (page)."]
         assert "cache_control" not in payload["system"][-1]
+
+    def test_prepare_structured_system_without_any_cache_flag_still_caches(self, provider):
+        """No flagged segment must not mean no caching at all.
+
+        The sanitizer keeps segment boundaries as soon as there are several system messages,
+        flagged or not. Without a fallback the whole system prompt would silently drop out of
+        the cache, whereas the single-string shape always caches it.
+        """
+        config = self._config("claude-sonnet-4-6")
+        messages = [
+            {"role": "system", "content": [
+                {"text": "First.", "cache": False},
+                {"text": "Second.", "cache": False},
+            ]},
+            {"role": "user", "content": "hi"},
+        ]
+        payload, _, _ = provider._prepare(messages, config)
+        # Breakpoint on the last segment: the whole system block is cached.
+        assert "cache_control" not in payload["system"][0]
+        assert payload["system"][-1]["cache_control"] == {"type": "ephemeral"}
 
     def test_prepare_breakpoint_budget_keeps_first_when_reservations_exceed_cap(self, provider):
         """tools + history reserve 2 of 4 breakpoints; the 2 most-stable system layers are kept."""

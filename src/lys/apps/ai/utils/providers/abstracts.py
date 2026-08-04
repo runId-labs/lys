@@ -38,6 +38,12 @@ class AIStreamChunk:
     usage: Optional[Dict[str, int]] = None
     model: Optional[str] = None
     provider: Optional[str] = None
+    # Reasoning trace emitted by thinking models, kept apart from ``content`` so it never
+    # reaches the user by accident. Optional and unset by default: consumers that ignore it
+    # behave exactly as before. It arrives long before the answer (~1 s versus ~30 s on
+    # mistral-medium-3-5 with reasoning_effort=high), which makes it the only live signal
+    # available during that gap.
+    reasoning: Optional[str] = None
 
 
 class AIProvider(ABC):

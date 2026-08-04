@@ -32,7 +32,10 @@ class TestSystemPositioning:
         ]
         result = sanitize_llm_messages(messages)
         assert [m["role"] for m in result] == ["system", "user"]
-        assert result[0]["content"] == "sys1\n\nsys2"
+        assert result[0]["content"] == [
+            {"text": "sys1", "cache": False},
+            {"text": "sys2", "cache": False},
+        ]
 
     def test_system_with_empty_content_is_skipped_when_merging(self):
         # Falsy system content must not introduce dangling "\n\n" separators
@@ -45,7 +48,10 @@ class TestSystemPositioning:
         ]
         result = sanitize_llm_messages(messages)
         assert [m["role"] for m in result] == ["system", "user"]
-        assert result[0]["content"] == "sys1\n\nsys2"
+        assert result[0]["content"] == [
+            {"text": "sys1", "cache": False},
+            {"text": "sys2", "cache": False},
+        ]
 
     def test_system_not_first_is_moved_to_index_zero(self):
         messages = [
@@ -72,15 +78,29 @@ class TestSystemPositioning:
             {"text": "volatile", "cache": False},
         ]
 
-    def test_no_cache_flag_flattens_to_string(self):
-        # Without any cacheable segment, the historical plain-string merge applies.
+    def test_single_system_message_stays_a_plain_string(self):
+        # Nothing to delimit: the historical plain-string shape applies.
+        messages = [
+            {"role": "system", "content": "sys1"},
+            {"role": "user", "content": "hi"},
+        ]
+        result = sanitize_llm_messages(messages)
+        assert result[0]["content"] == "sys1"
+
+    def test_several_segments_keep_boundaries_even_without_cache_flag(self):
+        # Flattening is lossy: a consumer could no longer tell the stable prefix from the
+        # volatile tail, and a provider deriving a prompt-cache key from the system content
+        # would hash the volatile part, sending every turn to its own cache bucket.
         messages = [
             {"role": "system", "content": "sys1", "cache": False},
             {"role": "system", "content": "sys2"},
             {"role": "user", "content": "hi"},
         ]
         result = sanitize_llm_messages(messages)
-        assert result[0]["content"] == "sys1\n\nsys2"
+        assert result[0]["content"] == [
+            {"text": "sys1", "cache": False},
+            {"text": "sys2", "cache": False},
+        ]
 
     def test_cache_flag_skips_empty_segments(self):
         # Falsy content is dropped before the cacheable segment list is built.

@@ -1095,7 +1095,16 @@ class AIConversationService(EntityService[AIConversation]):
             max_tool_iterations: Maximum tool call iterations
 
         Yields:
-            SSE-formatted event strings
+            SSE-formatted event strings. Event names: ``token``, ``tool_start``,
+            ``tool_result``, ``reasoning_progress``, ``done``, ``error``, plus ``reasoning``
+            when the AI plugin sets ``chatbot.expose_reasoning`` (default ``False``).
+
+            ``reasoning_progress`` carries only ``characters``, the running size of the
+            reasoning trace for the current LLM call — it restarts at 0 on each tool
+            iteration. The trace itself is a draft that names internal tools and any
+            vocabulary the system prompt forbids showing, so it stays behind the flag; its
+            value is that it starts streaming seconds after the request, long before the
+            first answer token.
         """
         # Defensive guard: these values should already be validated by UserAuthMiddleware,
         # but we verify them here in case this method is called from a non-middleware context.
@@ -1121,10 +1130,16 @@ class AIConversationService(EntityService[AIConversation]):
 
         tool_results = []
         tool_calls_count = 0
+        expose_reasoning = bool(
+            (cls.app_manager.settings.get_plugin_config("ai") or {})
+            .get("chatbot", {})
+            .get("expose_reasoning", False)
+        )
 
         # Agent loop
         for iteration in range(max_tool_iterations):
             accumulated_content = ""
+            reasoning_characters = 0
             tool_calls_accumulator: Dict[int, Dict[str, Any]] = {}
             last_finish_reason = None
             last_usage = None
@@ -1135,7 +1150,20 @@ class AIConversationService(EntityService[AIConversation]):
                 async for chunk in ai_service.chat_stream_with_purpose(
                     messages, AI_PURPOSE_CHATBOT, llm_tools if llm_tools else None
                 ):
-                    # Yield token events for text content
+                    # A reasoning model can spend tens of seconds before its first answer
+                    # token, and the reasoning stream is the only thing moving meanwhile.
+                    # Its SIZE is safe to publish and enough for a client to prove liveness —
+                    # unlike elapsed time, it only grows when data actually arrives. The trace
+                    # ITSELF is a draft naming internal tools and scoring vocabulary a system
+                    # prompt may forbid showing, so it stays behind chatbot.expose_reasoning.
+                    if chunk.reasoning:
+                        reasoning_characters += len(chunk.reasoning)
+                        yield _format_sse(
+                            "reasoning_progress", {"characters": reasoning_characters}
+                        )
+                        if expose_reasoning:
+                            yield _format_sse("reasoning", {"content": chunk.reasoning})
+
                     if chunk.content:
                         accumulated_content += chunk.content
                         yield _format_sse("token", {"content": chunk.content})
