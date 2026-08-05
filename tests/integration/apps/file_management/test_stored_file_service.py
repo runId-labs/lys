@@ -173,6 +173,95 @@ class TestStoredFileServiceDelete:
                 mock_storage.delete.assert_called_once()
 
 
+class TestStoredFileServiceSoftDelete:
+    """Test StoredFileService.soft_delete_file: S3 bytes purged, row kept as a tombstone."""
+
+    async def _upload(self, service, session, data=b"purge me"):
+        return await service.upload(
+            session=session,
+            client_id=str(uuid4()),
+            data=data,
+            original_name="purge.csv",
+            size=len(data),
+            mime_type="text/csv",
+            type_id="USER_IMPORT_FILE",
+        )
+
+    @pytest.mark.asyncio
+    async def test_purges_bytes_and_keeps_the_row(self, file_management_app_manager):
+        """The S3 object is deleted, the row survives with deleted_at set."""
+        stored_file_service = file_management_app_manager.get_service("stored_file")
+        mock_storage = AsyncMock()
+
+        with patch.object(stored_file_service, "get_storage_backend", return_value=mock_storage):
+            async with file_management_app_manager.database.get_session() as session:
+                stored_file = await self._upload(stored_file_service, session)
+                file_id = stored_file.id
+                original_hash = stored_file.content_hash
+
+                await stored_file_service.soft_delete_file(session, stored_file)
+                await session.commit()
+
+                mock_storage.delete.assert_called_once()
+
+                # The row is still readable, flagged, and keeps its dedup hash.
+                tombstone = await session.get(stored_file_service.entity_class, file_id)
+                assert tombstone is not None
+                assert tombstone.deleted_at is not None
+                assert tombstone.content_hash == original_hash
+
+    @pytest.mark.asyncio
+    async def test_is_a_no_op_on_an_existing_tombstone(self, file_management_app_manager):
+        """Soft deleting twice does not re-purge nor refresh the timestamp."""
+        stored_file_service = file_management_app_manager.get_service("stored_file")
+        mock_storage = AsyncMock()
+
+        with patch.object(stored_file_service, "get_storage_backend", return_value=mock_storage):
+            async with file_management_app_manager.database.get_session() as session:
+                stored_file = await self._upload(stored_file_service, session, data=b"purge twice")
+
+                await stored_file_service.soft_delete_file(session, stored_file)
+                await session.commit()
+                first_timestamp = stored_file.deleted_at
+
+                await stored_file_service.soft_delete_file(session, stored_file)
+                await session.commit()
+
+                mock_storage.delete.assert_called_once()
+                assert stored_file.deleted_at == first_timestamp
+
+    @pytest.mark.asyncio
+    async def test_tombstone_still_matches_the_idempotency_lookup(self, file_management_app_manager):
+        """A purged file keeps feeding content-hash dedup: same hash still queryable."""
+        from sqlalchemy import select
+
+        stored_file_service = file_management_app_manager.get_service("stored_file")
+        entity = stored_file_service.entity_class
+        mock_storage = AsyncMock()
+        data = b"deduplicated payload"
+
+        with patch.object(stored_file_service, "get_storage_backend", return_value=mock_storage):
+            async with file_management_app_manager.database.get_session() as session:
+                stored_file = await self._upload(stored_file_service, session, data=data)
+                client_id = stored_file.client_id
+                content_hash = stored_file.content_hash
+
+                await stored_file_service.soft_delete_file(session, stored_file)
+                await session.commit()
+
+                # The (client_id, content_hash) lookup used by find_active_import
+                # deliberately does not filter tombstones.
+                result = await session.execute(
+                    select(entity).where(
+                        entity.client_id == client_id,
+                        entity.content_hash == content_hash,
+                    )
+                )
+                match = result.scalars().first()
+                assert match is not None
+                assert match.deleted_at is not None
+
+
 class TestStoredFileServiceCreateFromUploaded:
     """Test StoredFileService.create_from_uploaded with mocked storage."""
 

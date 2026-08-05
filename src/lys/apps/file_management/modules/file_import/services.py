@@ -663,11 +663,20 @@ class AbstractImportService(abc.ABC):
                 self._process_dataframe(file_import, df, report, session)
                 session.commit()
 
-                # Delete file after successful import if enabled
+                # Purge the source file after successful import if enabled.
+                # Soft delete: the S3 bytes are removed, the row is kept as a tombstone
+                # (content hash for dedup, plus audit trail).
+                # The import data is already committed at this point, so a purge failure
+                # must NOT flip the import to FAILED: it is logged and swallowed. Marking a
+                # committed import FAILED would also let a re-import bypass the content-hash
+                # idempotency check (FAILED imports are ignored there) and duplicate the data.
                 if self.delete_file_after_import and file_import.status_id == FILE_IMPORT_STATUS_COMPLETED:
                     if file_import.stored_file:
-                        stored_file_service.delete_file_sync(file_import.stored_file)
-                        logger.info(f"Deleted file after import: {file_import_id}")
+                        try:
+                            stored_file_service.soft_delete_file_sync(file_import.stored_file)
+                            logger.info(f"Purged source file after import (soft delete): {file_import_id}")
+                        except Exception as ex:
+                            logger.error(f"Failed to purge source file after import {file_import_id}: {ex}")
 
             except Exception as ex:
                 logger.error(f"Import error for {file_import_id}: {ex}")

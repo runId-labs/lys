@@ -1,6 +1,7 @@
+from datetime import datetime
 from typing import Any, Optional
 
-from sqlalchemy import BigInteger, ForeignKey, Index, JSON, String, Uuid
+from sqlalchemy import BigInteger, DateTime, ForeignKey, Index, JSON, String, Uuid
 from sqlalchemy.orm import Mapped, mapped_column, declared_attr, relationship
 
 from lys.core.entities import Entity, ParametricEntity
@@ -43,6 +44,15 @@ class StoredFile(Entity):
         return relationship("stored_file_type", lazy="selectin")
 
     extra_data: Mapped[Optional[dict[str, Any]]] = mapped_column(JSON, nullable=True)
+
+    deleted_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+        comment="Soft delete timestamp. When set, the S3 bytes are purged but the row is "
+                "kept as a tombstone (content hash for dedup, plus audit). Still matched by "
+                "the content-hash idempotency lookup; no global read filter is applied, so "
+                "callers serving or listing live files must exclude it.",
+    )
 
     # Composite index matching the idempotency lookup (client_id + content_hash).
     __table_args__ = (

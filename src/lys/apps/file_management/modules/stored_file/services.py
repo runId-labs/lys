@@ -16,6 +16,7 @@ from lys.apps.file_management.modules.stored_file.entities import (
 )
 from lys.core.registries import register_service
 from lys.core.services import EntityService
+from lys.core.utils.datetime import now_utc
 from lys.core.utils.storage import get_configured_storage_backend, StorageBackend
 
 logger = logging.getLogger(__name__)
@@ -178,6 +179,40 @@ class StoredFileService(EntityService[StoredFile]):
 
         # Delete from DB
         await session.delete(stored_file)
+
+    @classmethod
+    async def soft_delete_file(cls, session: AsyncSession, stored_file: StoredFile) -> None:
+        """
+        Soft delete: purge the stored bytes from S3 but keep the row as a tombstone.
+
+        The S3 object is removed (the actual content), the DB row is preserved with
+        ``deleted_at`` set — keeping the content hash for dedup and an audit trail.
+
+        Args:
+            session: Database session
+            stored_file: StoredFile entity to soft delete
+        """
+        db_file = await session.get(cls.entity_class, stored_file.id)
+        if db_file is not None and db_file.deleted_at is not None:
+            return  # already a tombstone: idempotent no-op
+
+        storage = cls.get_storage_backend()
+
+        # The row may already be gone (deleted through another path): still purge the
+        # bytes, using the detached entity's path, and skip the tombstone update.
+        path = db_file.path if db_file is not None else stored_file.path
+
+        # Purge the bytes from S3 first
+        try:
+            await storage.delete(path)
+            logger.info(f"File bytes purged from S3 (soft delete): {path}")
+        except Exception as ex:
+            logger.error(f"Failed to purge file from S3: {ex}")
+            raise
+
+        # Keep the row, mark it as a tombstone
+        if db_file is not None:
+            db_file.deleted_at = now_utc()
 
     @classmethod
     async def get_presigned_url(
@@ -361,23 +396,60 @@ class StoredFileService(EntityService[StoredFile]):
         return storage.download_sync(stored_file.path)
 
     @classmethod
-    def delete_file_sync(cls, stored_file: StoredFile) -> None:
-        """Synchronous version of delete_file for Celery workers."""
+    def _remove_file_sync(cls, stored_file: StoredFile, *, soft: bool) -> None:
+        """Shared sync deletion: purge the S3 bytes, then drop the row (hard) or mark it
+        as a tombstone via ``deleted_at`` (soft). Soft is idempotent on tombstoned rows.
+
+        Ordering is deliberate: the S3 purge runs BEFORE the commit. If the commit then
+        fails, the bytes are already gone while the row is not yet marked — the content was
+        meant to be purged, and the dedup lookup still matches the COMPLETED import. The row
+        stays unmarked: nothing re-marks it automatically, so that state is only corrected
+        by calling this method again. The reverse order (mark + commit, then purge) would,
+        on a purge failure, leave the bytes present while the row claims deletion, and the
+        idempotency guard would block a retry from ever clearing them — worse for a method
+        whose purpose is to remove the bytes.
+        """
         storage = cls.get_storage_backend()
 
         with cls.app_manager.database.get_sync_session() as session:
             try:
-                storage.delete_sync(stored_file.path)
-                logger.info(f"File deleted from S3 (sync): {stored_file.path}")
-
                 db_file = session.get(cls.entity_class, stored_file.id)
-                if db_file:
+                if soft and db_file is not None and db_file.deleted_at is not None:
+                    return  # already a tombstone: idempotent no-op
+
+                # The row may already be gone (deleted through another path): still purge
+                # the bytes, using the detached entity's path, and skip the row update.
+                path = db_file.path if db_file is not None else stored_file.path
+                storage.delete_sync(path)
+
+                if db_file is None:
+                    logger.info(f"File bytes purged from S3 (sync, row already gone): {path}")
+                    return
+
+                if soft:
+                    db_file.deleted_at = now_utc()
+                    logger.info(f"File bytes purged from S3 (soft delete, sync): {path}")
+                else:
                     session.delete(db_file)
-                    session.commit()
+                    logger.info(f"File deleted from S3 (sync): {path}")
+                session.commit()
             except Exception as ex:
-                logger.error(f"Failed to delete file (sync): {ex}")
+                logger.error(f"Failed to {'soft ' if soft else ''}delete file (sync): {ex}")
                 session.rollback()
                 raise
+
+    @classmethod
+    def delete_file_sync(cls, stored_file: StoredFile) -> None:
+        """Synchronous version of delete_file for Celery workers."""
+        cls._remove_file_sync(stored_file, soft=False)
+
+    @classmethod
+    def soft_delete_file_sync(cls, stored_file: StoredFile) -> None:
+        """Synchronous version of soft_delete_file for Celery workers.
+
+        Purges the S3 bytes but keeps the row with ``deleted_at`` set (tombstone).
+        """
+        cls._remove_file_sync(stored_file, soft=True)
 
     @classmethod
     def get_presigned_url_sync(

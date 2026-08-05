@@ -7,6 +7,19 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.27.0] - 2026-08-05
+
+### Added
+- `StoredFile.deleted_at`: soft delete timestamp. A soft-deleted file has its S3 bytes purged but keeps its row as a tombstone, so the `content_hash` still feeds the import idempotency lookup and the audit trail survives. No global read filter is applied — callers serving or listing live files must exclude tombstones, and the schema migration belongs to the consuming application.
+- `StoredFileService.soft_delete_file` / `soft_delete_file_sync`: purge the stored bytes and mark the row instead of deleting it. Idempotent on an already tombstoned row. The S3 purge deliberately runs before the commit: on a commit failure the bytes are gone while the row stays unmarked, which is preferable to a row claiming deletion while the bytes remain and the idempotency guard blocks any retry from clearing them.
+
+### Changed
+- `AbstractImportService.perform_import` soft deletes the source file after a successful import instead of hard deleting it. The hard delete destroyed the `content_hash`, so `find_active_import` could never match a COMPLETED import and re-imports of the same file were never deduplicated; it also left `FileImport.stored_file_id` dangling.
+- The post-import purge no longer runs inside the import's `try` block: the import data is already committed at that point, so a purge failure is logged and swallowed instead of flipping the import to FAILED. A committed import marked FAILED would let a re-import bypass the content-hash idempotency check (FAILED imports are ignored there) and duplicate the data.
+
+### Fixed
+- `StoredFileService.delete_file_sync` skipped the S3 purge when the row was already gone, leaving orphaned bytes in the bucket. Both deletion modes now purge the bytes using the detached entity's path when the row cannot be found.
+
 ## [0.26.0] - 2026-08-04
 
 ### Added

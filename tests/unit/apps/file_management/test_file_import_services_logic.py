@@ -142,3 +142,92 @@ class TestPerformImportReRaises:
         call_args = mock_file_import_service.update_progress.call_args
         assert call_args[0][1] == "FAILED"
         mock_session.commit.assert_called_once()
+
+
+class TestPerformImportPurgesSourceFile:
+    """Tests the post-import purge in perform_import (delete_file_after_import)."""
+
+    def _run(self, *, delete_after_import, purge_error=None, status="COMPLETED"):
+        """Drive perform_import over a successful import; return the mocked collaborators."""
+        from lys.apps.file_management.modules.file_import.services import AbstractImportService
+
+        stored_file = Mock()
+        mock_file_import = Mock()
+        mock_file_import.stored_file = stored_file
+        mock_file_import.config = None
+        mock_file_import.status_id = status
+
+        mock_session = Mock()
+        mock_session.get.return_value = mock_file_import
+        mock_session.__enter__ = Mock(return_value=mock_session)
+        mock_session.__exit__ = Mock(return_value=False)
+
+        mock_file_import_service = Mock()
+        mock_file_import_service.entity_class = Mock
+
+        mock_stored_file_service = Mock()
+        mock_stored_file_service.download_sync.return_value = b"col\nvalue\n"
+        if purge_error is not None:
+            mock_stored_file_service.soft_delete_file_sync.side_effect = purge_error
+
+        mock_app_manager = Mock()
+        mock_app_manager.database.get_sync_session.return_value = mock_session
+        mock_app_manager.get_service.side_effect = lambda name: {
+            "file_import": mock_file_import_service,
+            "stored_file": mock_stored_file_service,
+        }[name]
+
+        class ConcreteImportService(AbstractImportService):
+            import_type = "TEST"
+            unique_column = "id"
+            delete_file_after_import = delete_after_import
+
+            def get_column_mapping(self):
+                return {}
+
+            def init_entity(self, unique_value, session):
+                return Mock()
+
+            def parse_file(self, file_import, raw_content, config):
+                return Mock()
+
+            def prepare_import(self, file_import, df, session):
+                return df
+
+            def _process_dataframe(self, file_import, df, report, session):
+                return None
+
+        ConcreteImportService(mock_app_manager).perform_import("test-id")
+        return mock_stored_file_service, mock_file_import_service, mock_session
+
+    def test_soft_deletes_the_source_file(self):
+        """The source file is soft deleted (tombstone), not hard deleted."""
+        stored_file_service, _, _ = self._run(delete_after_import=True)
+
+        stored_file_service.soft_delete_file_sync.assert_called_once()
+        stored_file_service.delete_file_sync.assert_not_called()
+
+    def test_no_purge_when_disabled(self):
+        stored_file_service, _, _ = self._run(delete_after_import=False)
+
+        stored_file_service.soft_delete_file_sync.assert_not_called()
+
+    def test_no_purge_when_import_did_not_complete(self):
+        stored_file_service, _, _ = self._run(delete_after_import=True, status="FAILED")
+
+        stored_file_service.soft_delete_file_sync.assert_not_called()
+
+    def test_purge_failure_does_not_fail_the_committed_import(self):
+        """A purge failure is swallowed: the import data is already committed.
+
+        Flipping it to FAILED would also let a re-import bypass the content-hash
+        idempotency check (find_active_import ignores FAILED) and duplicate the data.
+        """
+        stored_file_service, file_import_service, _ = self._run(
+            delete_after_import=True,
+            purge_error=RuntimeError("S3 unreachable"),
+        )
+
+        stored_file_service.soft_delete_file_sync.assert_called_once()
+        # No status update at all: the import stays COMPLETED.
+        file_import_service.update_progress.assert_not_called()
