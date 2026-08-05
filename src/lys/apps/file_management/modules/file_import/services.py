@@ -4,6 +4,7 @@ File import services for processing CSV/Excel imports.
 import abc
 import logging
 import zipfile
+from dataclasses import dataclass
 from io import BytesIO
 from typing import Any, Callable, Optional, Type, Hashable
 
@@ -43,6 +44,20 @@ from lys.core.utils.datetime import now_utc
 logger = logging.getLogger(__name__)
 
 
+@dataclass
+class StagedDocument:
+    """Outcome of staging one document (see FileImportService.stage_document)."""
+
+    file_import_id: str
+    stored_file_id: Optional[str] = None
+    # Id of the FileImport this document duplicates; set only when it was skipped.
+    duplicate_of: Optional[str] = None
+
+    @property
+    def is_duplicate(self) -> bool:
+        return self.duplicate_of is not None
+
+
 @register_service()
 class FileImportTypeService(EntityService[FileImportType]):
     pass
@@ -56,6 +71,24 @@ class FileImportStatusService(EntityService[FileImportStatus]):
 @register_service()
 class FileImportService(EntityService[FileImport]):
     """Service for managing FileImport entities."""
+
+    # Columns stage_document sets itself; a caller passing one of these through the
+    # extra-field dicts is a programming error, reported as such rather than as a
+    # "multiple values for keyword argument" TypeError.
+    RESERVED_STAGING_FIELDS = frozenset({
+        "client_id",
+        "object_key",
+        "original_name",
+        "size",
+        "mime_type",
+        "type_id",
+        "extra_data",
+        "content_hash",
+        "stored_file_id",
+        "status_id",
+        "validate_zip",
+        "max_size",
+    })
 
     @classmethod
     def find_active_import(cls, session: Session, client_id: str, content_hash: str):
@@ -71,9 +104,14 @@ class FileImportService(EntityService[FileImport]):
         """
         if not content_hash:
             return None
+        return session.execute(cls._active_import_stmt(client_id, content_hash)).scalars().first()
+
+    @classmethod
+    def _active_import_stmt(cls, client_id: str, content_hash: str):
+        """Statement behind the content-hash idempotency lookup (see find_active_import)."""
         file_import = cls.entity_class
         stored_file = cls.app_manager.get_entity("stored_file")
-        stmt = (
+        return (
             select(file_import)
             .join(stored_file, stored_file.id == file_import.stored_file_id)
             .where(
@@ -83,7 +121,162 @@ class FileImportService(EntityService[FileImport]):
             )
             .order_by(file_import.created_at.desc())
         )
-        return session.execute(stmt).scalars().first()
+
+    @classmethod
+    async def find_active_import_async(cls, session: AsyncSession, client_id: str, content_hash: str):
+        """Async counterpart of ``find_active_import``, for callers holding an AsyncSession.
+
+        Same rule: the most recent PROCESSING/COMPLETED import of this content for this
+        client, so a re-import after a failure is always allowed. Returns None when
+        content_hash is falsy or no match exists.
+        """
+        if not content_hash:
+            return None
+        result = await session.execute(cls._active_import_stmt(client_id, content_hash))
+        return result.scalars().first()
+
+    @classmethod
+    async def stage_document(
+        cls,
+        session: AsyncSession,
+        *,
+        client_id: str,
+        object_key: str,
+        original_name: str,
+        size: int,
+        content: bytes,
+        mime_type: str,
+        stored_file_type_id: str,
+        import_type_id: str,
+        check_idempotency: bool = True,
+        extra_data: Optional[dict[str, Any]] = None,
+        validate_zip: bool = False,
+        max_size: Optional[int] = None,
+        stored_file_fields: Optional[dict[str, Any]] = None,
+        file_import_fields: Optional[dict[str, Any]] = None,
+        **entity_fields: Any,
+    ) -> StagedDocument:
+        """Stage one already-uploaded document: StoredFile + PENDING FileImport.
+
+        Single-document counterpart of ``stage_zip_documents``, for entry points that
+        receive files one by one rather than as an archive. The file is expected to be
+        in storage already (presigned upload); ``content`` is what the caller read from
+        it, reused to hash the file rather than downloading it a second time. That hash
+        is DECLARATIVE (see ``StoredFileService.create_from_uploaded``): pass the bytes
+        that were actually uploaded, never a client-supplied digest.
+
+        With ``check_idempotency`` on, content already being imported (or imported)
+        creates nothing but a SKIPPED FileImport pointing at the original — same rule as
+        ``stage_zip_documents``, and best-effort in the same way. The already-uploaded
+        object is then purged: no record will ever reference it.
+
+        Args:
+            session: Database session.
+            client_id: Client the file belongs to.
+            object_key: Object key the file was uploaded to. Untrusted input — it is
+                checked against client_id before anything acts on it.
+            original_name: Original filename.
+            size: File size in bytes, checked against the stored object.
+            content: File content, used for the content hash.
+            mime_type: MIME type.
+            stored_file_type_id: StoredFile type for this document.
+            import_type_id: FileImport type for this document.
+            check_idempotency: Skip the document when its content was already imported.
+            extra_data: Additional metadata, stored on both records.
+            validate_zip: Require the upload to be a ZIP archive.
+            max_size: Reject the upload above this size in bytes; None for no limit.
+            stored_file_fields: Extra columns for the StoredFile record only.
+            file_import_fields: Extra columns for the FileImport record only.
+            entity_fields: Extra columns defined by subclass entities (e.g. an
+                organization hierarchy), forwarded to BOTH records — so every field
+                passed here must exist on both. Use the two dicts above otherwise.
+                None of the three may carry a column this method sets itself
+                (``RESERVED_STAGING_FIELDS``).
+
+        Returns:
+            StagedDocument — the created FileImport, or the SKIPPED one on a duplicate.
+
+        Raises:
+            ValueError: If object_key does not belong to client_id, if an extra field
+                collides with a reserved column, if no file exists at object_key, or if
+                it fails the size / ZIP validation.
+        """
+        stored_file_service = cls.app_manager.get_service("stored_file")
+        extra = extra_data or {}
+        sf_fields = {**entity_fields, **(stored_file_fields or {})}
+        fi_fields = {**entity_fields, **(file_import_fields or {})}
+
+        reserved = cls.RESERVED_STAGING_FIELDS.intersection(sf_fields).union(
+            cls.RESERVED_STAGING_FIELDS.intersection(fi_fields)
+        )
+        if reserved:
+            raise ValueError(
+                f"Extra fields cannot override staging columns: {', '.join(sorted(reserved))}"
+            )
+
+        # Untrusted input: the key travelled through the client during the presigned
+        # upload. Checked before the skip path below, which purges the object.
+        stored_file_service.check_object_key_ownership(client_id, object_key)
+
+        content_hash = stored_file_service.content_hash(content)
+
+        if check_idempotency and content_hash:
+            existing = await cls.find_active_import_async(session, client_id, content_hash)
+            if existing is not None:
+                duplicate_of = str(existing.id)
+                skipped = await cls.create(
+                    session,
+                    client_id=client_id,
+                    stored_file_id=None,
+                    type_id=import_type_id,
+                    status_id=FILE_IMPORT_STATUS_SKIPPED,
+                    extra_data={
+                        **extra,
+                        "original_file_name": original_name,
+                        "content_hash": content_hash,
+                        "skipped_duplicate_of": duplicate_of,
+                    },
+                    **fi_fields,
+                )
+                # Unlike stage_zip_documents, where the skip happens before the upload,
+                # the object is already in storage here and no record will point at it.
+                await stored_file_service.purge_object(object_key)
+                logger.info(
+                    f"Document already imported, skipped: {original_name} "
+                    f"(duplicate of {duplicate_of})"
+                )
+                return StagedDocument(file_import_id=str(skipped.id), duplicate_of=duplicate_of)
+
+        stored_file = await stored_file_service.create_from_uploaded(
+            session=session,
+            client_id=client_id,
+            object_key=object_key,
+            original_name=original_name,
+            size=size,
+            mime_type=mime_type,
+            type_id=stored_file_type_id,
+            extra_data=extra,
+            content_hash=content_hash,
+            validate_zip=validate_zip,
+            max_size=max_size,
+            **sf_fields,
+        )
+
+        file_import = await cls.create(
+            session,
+            client_id=client_id,
+            stored_file_id=str(stored_file.id),
+            type_id=import_type_id,
+            status_id=FILE_IMPORT_STATUS_PENDING,
+            extra_data={**extra, "original_file_name": original_name},
+            **fi_fields,
+        )
+
+        logger.info(f"Document staged: {original_name} -> file_import {file_import.id}")
+        return StagedDocument(
+            file_import_id=str(file_import.id),
+            stored_file_id=str(stored_file.id),
+        )
 
     @classmethod
     def stage_zip_documents(

@@ -12,6 +12,16 @@ import pytest
 from uuid import uuid4
 from unittest.mock import AsyncMock, patch, MagicMock
 
+from lys.apps.file_management.modules.stored_file.consts import ZIP_MAGIC_BYTES
+from lys.core.utils.storage import StorageError
+
+
+def _s3_error(code: str) -> StorageError:
+    """StorageError wrapping a botocore-shaped error, as the S3 backend raises it."""
+    original = Exception("boom")
+    original.response = {"Error": {"Code": code}}
+    return StorageError("boom", "head_object", original)
+
 
 class TestStoredFileServiceObjectKey:
     """Test StoredFileService.generate_object_key."""
@@ -270,7 +280,7 @@ class TestStoredFileServiceCreateFromUploaded:
         """Test creating record for a file uploaded via presigned URL."""
         stored_file_service = file_management_app_manager.get_service("stored_file")
         mock_storage = AsyncMock()
-        mock_storage.exists.return_value = True
+        mock_storage.head_object.return_value = {"size": 1024, "content_type": "application/pdf"}
 
         with patch.object(stored_file_service, "get_storage_backend", return_value=mock_storage):
             async with file_management_app_manager.database.get_session() as session:
@@ -289,24 +299,200 @@ class TestStoredFileServiceCreateFromUploaded:
 
                 assert stored_file.object_key == object_key
                 assert stored_file.original_name == "report.pdf"
-                mock_storage.exists.assert_called_once_with(object_key)
+                mock_storage.head_object.assert_called_once_with(object_key)
+                mock_storage.delete.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_create_from_uploaded_file_not_found(self, file_management_app_manager):
         """Test that create_from_uploaded raises when file doesn't exist."""
         stored_file_service = file_management_app_manager.get_service("stored_file")
+        client_id = str(uuid4())
         mock_storage = AsyncMock()
-        mock_storage.exists.return_value = False
+        mock_storage.head_object.side_effect = _s3_error("404")
 
         with patch.object(stored_file_service, "get_storage_backend", return_value=mock_storage):
             async with file_management_app_manager.database.get_session() as session:
                 with pytest.raises(ValueError, match="File not found"):
                     await stored_file_service.create_from_uploaded(
                         session=session,
-                        client_id=str(uuid4()),
-                        object_key="nonexistent/path",
+                        client_id=client_id,
+                        object_key=f"{client_id}/DOCUMENT/missing.pdf",
                         original_name="missing.pdf",
                         size=0,
+                        mime_type="application/pdf",
+                        type_id="DOCUMENT"
+                    )
+
+                # A missing object was never created: nothing to purge.
+                mock_storage.delete.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_backend_failure_is_not_reported_as_not_found(self, file_management_app_manager):
+        """A storage outage propagates instead of masquerading as a missing file."""
+        stored_file_service = file_management_app_manager.get_service("stored_file")
+        client_id = str(uuid4())
+        mock_storage = AsyncMock()
+        mock_storage.head_object.side_effect = _s3_error("500")
+
+        with patch.object(stored_file_service, "get_storage_backend", return_value=mock_storage):
+            async with file_management_app_manager.database.get_session() as session:
+                with pytest.raises(StorageError):
+                    await stored_file_service.create_from_uploaded(
+                        session=session,
+                        client_id=client_id,
+                        object_key=f"{client_id}/DOCUMENT/unreachable.pdf",
+                        original_name="unreachable.pdf",
+                        size=10,
+                        mime_type="application/pdf",
+                        type_id="DOCUMENT"
+                    )
+
+    @pytest.mark.asyncio
+    async def test_rejects_an_object_key_owned_by_another_client(self, file_management_app_manager):
+        """The key is client input: another tenant's key is refused before any purge."""
+        stored_file_service = file_management_app_manager.get_service("stored_file")
+        mock_storage = AsyncMock()
+        victim_key = f"{uuid4()}/DOCUMENT/2024/01/01/{uuid4()}.pdf"
+
+        with patch.object(stored_file_service, "get_storage_backend", return_value=mock_storage):
+            async with file_management_app_manager.database.get_session() as session:
+                with pytest.raises(ValueError, match="does not belong to this client"):
+                    await stored_file_service.create_from_uploaded(
+                        session=session,
+                        client_id=str(uuid4()),  # attacker's own client
+                        object_key=victim_key,
+                        original_name="steal.pdf",
+                        size=1,  # wrong size: would trigger the purge branch
+                        mime_type="application/pdf",
+                        type_id="DOCUMENT"
+                    )
+
+                # The victim's object must not be touched, read or deleted.
+                mock_storage.head_object.assert_not_called()
+                mock_storage.delete.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_size_mismatch_rejects_and_purges(self, file_management_app_manager):
+        """The declared size is a claim: a mismatch rejects the upload and purges it."""
+        stored_file_service = file_management_app_manager.get_service("stored_file")
+        client_id = str(uuid4())
+        object_key = f"{client_id}/DOCUMENT/2024/01/01/{uuid4()}.pdf"
+        mock_storage = AsyncMock()
+        mock_storage.head_object.return_value = {"size": 9_999, "content_type": "application/pdf"}
+
+        with patch.object(stored_file_service, "get_storage_backend", return_value=mock_storage):
+            async with file_management_app_manager.database.get_session() as session:
+                with pytest.raises(ValueError, match="File size mismatch"):
+                    await stored_file_service.create_from_uploaded(
+                        session=session,
+                        client_id=client_id,
+                        object_key=object_key,
+                        original_name="lying.pdf",
+                        size=10,
+                        mime_type="application/pdf",
+                        type_id="DOCUMENT"
+                    )
+
+                mock_storage.delete.assert_called_once_with(object_key)
+
+    @pytest.mark.asyncio
+    async def test_max_size_rejects_and_purges(self, file_management_app_manager):
+        """An oversized upload is rejected on its actual size, not the declared one."""
+        stored_file_service = file_management_app_manager.get_service("stored_file")
+        client_id = str(uuid4())
+        object_key = f"{client_id}/DOCUMENT/2024/01/01/{uuid4()}.pdf"
+        mock_storage = AsyncMock()
+        mock_storage.head_object.return_value = {"size": 5_000, "content_type": "application/pdf"}
+
+        with patch.object(stored_file_service, "get_storage_backend", return_value=mock_storage):
+            async with file_management_app_manager.database.get_session() as session:
+                with pytest.raises(ValueError, match="exceeds maximum size"):
+                    await stored_file_service.create_from_uploaded(
+                        session=session,
+                        client_id=client_id,
+                        object_key=object_key,
+                        original_name="huge.pdf",
+                        size=5_000,
+                        mime_type="application/pdf",
+                        type_id="DOCUMENT",
+                        max_size=1_000,
+                    )
+
+                mock_storage.delete.assert_called_once_with(object_key)
+
+    @pytest.mark.asyncio
+    async def test_validate_zip_rejects_a_non_archive(self, file_management_app_manager):
+        """With validate_zip on, the stored bytes must start with the ZIP magic."""
+        stored_file_service = file_management_app_manager.get_service("stored_file")
+        client_id = str(uuid4())
+        object_key = f"{client_id}/DOCUMENT/2024/01/01/{uuid4()}.zip"
+        mock_storage = AsyncMock()
+        mock_storage.head_object.return_value = {"size": 4, "content_type": "application/zip"}
+        mock_storage.download_range.return_value = b"%PDF"
+
+        with patch.object(stored_file_service, "get_storage_backend", return_value=mock_storage):
+            async with file_management_app_manager.database.get_session() as session:
+                with pytest.raises(ValueError, match="not a valid ZIP archive"):
+                    await stored_file_service.create_from_uploaded(
+                        session=session,
+                        client_id=client_id,
+                        object_key=object_key,
+                        original_name="fake.zip",
+                        size=4,
+                        mime_type="application/zip",
+                        type_id="DOCUMENT",
+                        validate_zip=True,
+                    )
+
+                mock_storage.download_range.assert_called_once_with(object_key, 0, 3)
+                mock_storage.delete.assert_called_once_with(object_key)
+
+    @pytest.mark.asyncio
+    async def test_validate_zip_accepts_an_archive(self, file_management_app_manager):
+        """A real ZIP header passes the check."""
+        stored_file_service = file_management_app_manager.get_service("stored_file")
+        client_id = str(uuid4())
+        object_key = f"{client_id}/DOCUMENT/2024/01/01/{uuid4()}.zip"
+        mock_storage = AsyncMock()
+        mock_storage.head_object.return_value = {"size": 4, "content_type": "application/zip"}
+        mock_storage.download_range.return_value = ZIP_MAGIC_BYTES
+
+        with patch.object(stored_file_service, "get_storage_backend", return_value=mock_storage):
+            async with file_management_app_manager.database.get_session() as session:
+                stored_file = await stored_file_service.create_from_uploaded(
+                    session=session,
+                    client_id=client_id,
+                    object_key=object_key,
+                    original_name="real.zip",
+                    size=4,
+                    mime_type="application/zip",
+                    type_id="DOCUMENT",
+                    validate_zip=True,
+                    content_hash="a" * 64,
+                )
+
+                assert stored_file.content_hash == "a" * 64
+                mock_storage.delete.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_purge_failure_does_not_mask_the_validation_error(self, file_management_app_manager):
+        """A failing purge is logged; the caller still sees why the upload was rejected."""
+        stored_file_service = file_management_app_manager.get_service("stored_file")
+        client_id = str(uuid4())
+        object_key = f"{client_id}/DOCUMENT/2024/01/01/{uuid4()}.pdf"
+        mock_storage = AsyncMock()
+        mock_storage.head_object.return_value = {"size": 9_999, "content_type": "application/pdf"}
+        mock_storage.delete.side_effect = RuntimeError("S3 unreachable")
+
+        with patch.object(stored_file_service, "get_storage_backend", return_value=mock_storage):
+            async with file_management_app_manager.database.get_session() as session:
+                with pytest.raises(ValueError, match="File size mismatch"):
+                    await stored_file_service.create_from_uploaded(
+                        session=session,
+                        client_id=client_id,
+                        object_key=object_key,
+                        original_name="lying.pdf",
+                        size=10,
                         mime_type="application/pdf",
                         type_id="DOCUMENT"
                     )

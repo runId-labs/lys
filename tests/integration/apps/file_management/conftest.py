@@ -53,7 +53,8 @@ async def file_management_app_manager():
         # FileImportStatus
         from lys.apps.file_management.modules.file_import.consts import (
             FILE_IMPORT_STATUS_PENDING, FILE_IMPORT_STATUS_PROCESSING,
-            FILE_IMPORT_STATUS_COMPLETED, FILE_IMPORT_STATUS_FAILED
+            FILE_IMPORT_STATUS_COMPLETED, FILE_IMPORT_STATUS_FAILED,
+            FILE_IMPORT_STATUS_SKIPPED
         )
         file_import_status_service = app_manager.get_service("file_import_status")
         await file_import_status_service.create(
@@ -67,6 +68,9 @@ async def file_management_app_manager():
         )
         await file_import_status_service.create(
             session=session, id=FILE_IMPORT_STATUS_FAILED, enabled=True
+        )
+        await file_import_status_service.create(
+            session=session, id=FILE_IMPORT_STATUS_SKIPPED, enabled=True
         )
 
         await session.commit()

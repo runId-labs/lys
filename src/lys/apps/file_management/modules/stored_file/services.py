@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from lys.apps.file_management.modules.stored_file.consts import (
     FILE_STORAGE_PLUGIN_KEY,
     DEFAULT_PRESIGNED_URL_EXPIRES,
+    ZIP_MAGIC_BYTES,
 )
 from lys.apps.file_management.modules.stored_file.entities import (
     StoredFile,
@@ -35,6 +36,51 @@ class StoredFileService(EntityService[StoredFile]):
     def get_storage_backend(cls) -> StorageBackend:
         """Get the shared storage backend instance (resolved from the file_storage plugin)."""
         return get_configured_storage_backend(cls.app_manager.settings, FILE_STORAGE_PLUGIN_KEY)
+
+    @classmethod
+    def check_object_key_ownership(cls, client_id: str, object_key: str) -> None:
+        """Ensure an object key belongs to the given client.
+
+        Keys are generated as ``{client_id}/{type_id}/...`` (see ``generate_object_key``)
+        and are handed to the client during the presigned upload flow, so they come back
+        as untrusted input. Any operation acting on a key on a client's behalf checks it
+        first: without this, a client could name another tenant's key and have this
+        service reject the upload AND purge that tenant's bytes.
+
+        Raises:
+            ValueError: If the key does not belong to client_id.
+        """
+        if not client_id or not object_key.startswith(f"{client_id}/"):
+            raise ValueError("Object key does not belong to this client")
+
+    @staticmethod
+    def _is_not_found_error(error: Exception) -> bool:
+        """True when a storage error means "no such object", not a backend failure.
+
+        Distinguishes a missing key from an outage or a denied call, which must not be
+        reported to the caller as a missing file.
+        """
+        for candidate in (error, getattr(error, "original_error", None)):
+            response = getattr(candidate, "response", None)
+            if isinstance(response, dict):
+                code = response.get("Error", {}).get("Code")
+                if code in ("404", "NoSuchKey", "NotFound"):
+                    return True
+        return False
+
+    @classmethod
+    async def purge_object(cls, object_key: str) -> None:
+        """Best-effort removal of a stored object no record will ever reference.
+
+        Used for uploads rejected by validation and for orphans left behind by a skipped
+        staging. Failures are logged, never raised, so the caller's own outcome (the
+        validation error, the SKIPPED import) is what surfaces.
+        """
+        try:
+            await cls.get_storage_backend().delete(object_key)
+            logger.info(f"Purged unreferenced upload: {object_key}")
+        except Exception as ex:
+            logger.error(f"Failed to purge unreferenced upload {object_key}: {ex}")
 
     @staticmethod
     def content_hash(data: Union[bytes, BinaryIO]) -> Optional[str]:
@@ -278,6 +324,10 @@ class StoredFileService(EntityService[StoredFile]):
         mime_type: str,
         type_id: str,
         extra_data: Optional[dict[str, Any]] = None,
+        validate_zip: bool = False,
+        content_hash: Optional[str] = None,
+        max_size: Optional[int] = None,
+        **entity_fields: Any,
     ) -> StoredFile:
         """
         Create a StoredFile record for a file already uploaded via presigned URL.
@@ -291,19 +341,62 @@ class StoredFileService(EntityService[StoredFile]):
             mime_type: MIME type
             type_id: File type ID
             extra_data: Additional metadata
+            validate_zip: Reject the upload when it is not a ZIP archive. For callers
+                whose import only makes sense on an archive; off by default, since an
+                upload is not a ZIP in the general case.
+            content_hash: Hash of the content when the caller already read it (the file
+                is not downloaded here); None when the content was never in hand. It is
+                DECLARATIVE — nothing here re-reads the stored bytes to check it, so it
+                must be derived from the bytes that were actually uploaded and never from
+                a client-supplied value: the import idempotency lookup keys on it, and a
+                wrong hash silently skips a legitimate import or lets a duplicate through.
+            max_size: Reject the upload above this size in bytes; None for no limit.
+            entity_fields: Extra columns defined by subclass StoredFile entities,
+                forwarded to the record unchanged.
 
         Returns:
             Created StoredFile entity
 
         Raises:
-            ValueError: If file does not exist at object_key
+            ValueError: If object_key does not belong to client_id, if no file exists at
+                object_key, if its actual size does not match the declared one or exceeds
+                max_size, or if a ZIP was required
         """
+        # Untrusted input: the key travelled through the client during the presigned
+        # upload. Checked before anything else — the failure paths below purge the object.
+        cls.check_object_key_ownership(client_id, object_key)
+
         storage = cls.get_storage_backend()
 
-        # Verify file exists
-        exists = await storage.exists(object_key)
-        if not exists:
-            raise ValueError(f"File not found at {object_key}")
+        # Read the stored object's own metadata: with a presigned upload the client
+        # uploads out of band, so the declared size is a claim until checked here.
+        try:
+            metadata = await storage.head_object(object_key)
+        except Exception as ex:
+            if cls._is_not_found_error(ex):
+                raise ValueError(f"File not found at {object_key}") from ex
+            logger.error(f"Failed to read object metadata for {object_key}: {ex}")
+            raise
+
+        actual_size = metadata["size"]
+
+        if max_size is not None and actual_size > max_size:
+            await cls.purge_object(object_key)
+            raise ValueError(
+                f"File exceeds maximum size: {actual_size} bytes (max: {max_size})"
+            )
+
+        if actual_size != size:
+            await cls.purge_object(object_key)
+            raise ValueError(
+                f"File size mismatch: declared {size} bytes, actual {actual_size} bytes"
+            )
+
+        if validate_zip:
+            header = await storage.download_range(object_key, 0, 3)
+            if header != ZIP_MAGIC_BYTES:
+                await cls.purge_object(object_key)
+                raise ValueError("Invalid file: not a valid ZIP archive")
 
         # Create DB record
         stored_file = await cls.create(
@@ -315,6 +408,8 @@ class StoredFileService(EntityService[StoredFile]):
             type_id=type_id,
             object_key=object_key,
             extra_data=extra_data,
+            content_hash=content_hash,
+            **entity_fields,
         )
 
         logger.info(f"Created StoredFile from uploaded: {object_key}")

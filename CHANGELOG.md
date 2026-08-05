@@ -7,6 +7,18 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.28.0] - 2026-08-05
+
+### Added
+- `FileImportService.stage_document`: single-document counterpart of `stage_zip_documents`, for entry points receiving files one by one through the presigned upload flow. Creates a StoredFile plus a PENDING FileImport, or a SKIPPED FileImport pointing at the original on a content-hash duplicate — in which case the already-uploaded object is purged, since no record will ever reference it. Returns a `StagedDocument`. Extra columns can be routed per record (`stored_file_fields` / `file_import_fields`) or to both (`**entity_fields`); a field colliding with a column the method sets itself (`RESERVED_STAGING_FIELDS`) raises a readable `ValueError`.
+- `FileImportService.find_active_import_async`: async counterpart of `find_active_import`, same rule and same best-effort guarantee. Both now share `_active_import_stmt`.
+- `StoredFileService.create_from_uploaded` validates the stored object instead of trusting the caller: actual size read via `head_object` and checked against the declared one, optional `max_size`, and optional `validate_zip` checking the ZIP magic bytes on the stored bytes (`ZIP_MAGIC_BYTES`, local file header only — an empty or spanned archive is rejected). A rejected upload is purged. Also accepts a declarative `content_hash` and subclass `entity_fields`.
+- `StoredFileService.check_object_key_ownership`: object keys travel through the client during the presigned upload flow, so they come back as untrusted input. Every operation acting on a key on a client's behalf now checks it against `client_id` first.
+- `StoredFileService.purge_object`: best-effort removal of an object no record will reference (rejected upload, orphan left by a skipped staging). Failures are logged, never raised, so the caller's own error surfaces.
+
+### Fixed
+- `create_from_uploaded` reported every storage failure as "File not found", masking outages, denied calls and credential errors. A missing object is now told apart from a backend failure (`_is_not_found_error`), which is logged and propagated.
+
 ## [0.27.0] - 2026-08-05
 
 ### Added
