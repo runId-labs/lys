@@ -7,6 +7,11 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.28.1] - 2026-08-10
+
+### Fixed
+- `check_access_to_object` raised `MissingGreenlet` when an entity's `check_permission` (or the `accessing_users` / `accessing_organizations` chain it calls) walked an unloaded relationship. The check now runs inside `session.run_sync` when the entity is still attached to a session, so implicit lazy loads resolve; detached entities keep the direct call.
+
 ## [0.28.0] - 2026-08-05
 
 ### Added
