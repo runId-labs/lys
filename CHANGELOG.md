@@ -7,6 +7,11 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.29.0] - 2026-08-11
+
+### Added
+- `lys.core.utils.ingest.extract_text`: stateless document-to-text extraction (bytes + MIME type -> text), with OCR used only when a free extraction path is unavailable. A PDF's embedded text layer is read locally with `pdftotext` (poppler); a text layer shorter than `min_text_chars` means a scanned document and falls back to OCR, as do images. Any other MIME type raises `UnsupportedDocumentError`. The OCR service is injected through an `OcrService` Protocol rather than resolved via `app_manager`, so the module stays usable without the `ai` app loaded. Every `pdftotext` failure mode (missing binary, timeout, non-zero exit) is non-fatal, logged at WARNING, and degrades to OCR; partial output from a failed run is discarded so it cannot skip an OCR pass the document needed. `pdftotext` output is decoded as UTF-8 explicitly, since the process locale would raise on accented text under the `C` locale. Requires the `poppler-utils` OS package in the consuming image — see `docs/FRS/_core/ingest.md`.
+
 ## [0.28.1] - 2026-08-10
 
 ### Fixed
