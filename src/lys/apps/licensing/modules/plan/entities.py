@@ -312,10 +312,18 @@ class LicensePlanVersionPrice(Entity):
     )
 
     @property
+    def major_unit_value(self) -> str:
+        """
+        Amount in major units, as the decimal string payment providers expect
+        (e.g., '49.00' for EUR, '4900' for JPY).
+        """
+        minor_unit = self.currency.minor_unit
+        return f"{self.currency.to_major_unit(self.amount):.{minor_unit}f}"
+
+    @property
     def formatted(self) -> str:
         """Human-readable amount (e.g., '49.00 EUR')."""
-        minor_unit = self.currency.minor_unit
-        return f"{self.currency.to_major_unit(self.amount):.{minor_unit}f} {self.currency_id}"
+        return f"{self.major_unit_value} {self.currency_id}"
 
     def accessing_users(self) -> list[str]:
         """Users who can access this price."""

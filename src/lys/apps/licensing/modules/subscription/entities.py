@@ -41,6 +41,10 @@ class Subscription(Entity):
     Attributes:
         client_id: The subscribing client
         plan_version_id: The plan version subscribed to
+        plan_version_price_id: The exact price subscribed to, which carries the
+                               periodicity, the currency and the amount agreed
+                               upon. NULL on free subscriptions, which have no
+                               price at all
         provider_subscription_id: Payment provider subscription ID (NULL for free plans)
         pending_plan_version_id: Plan version to switch to at period end (for scheduled downgrades)
     """
@@ -55,6 +59,12 @@ class Subscription(Entity):
     plan_version_id: Mapped[str] = mapped_column(
         ForeignKey("license_plan_version.id", ondelete="RESTRICT"),
         index=True
+    )
+    plan_version_price_id: Mapped[str | None] = mapped_column(
+        ForeignKey("license_plan_version_price.id", ondelete="RESTRICT"),
+        nullable=True,
+        index=True,
+        comment="Price subscribed to; NULL on free subscriptions"
     )
 
     # Payment provider field
@@ -73,12 +83,6 @@ class Subscription(Entity):
     )
 
     # Billing period tracking
-    billing_period: Mapped[str | None] = mapped_column(
-        ForeignKey("license_price_period.id", ondelete="RESTRICT"),
-        nullable=True,
-        index=True,
-        comment="Billing periodicity subscribed to (license_price_period reference)"
-    )
     current_period_start: Mapped[DateTime | None] = mapped_column(
         DateTime(timezone=True),
         nullable=True,
@@ -110,9 +114,9 @@ class Subscription(Entity):
         )
 
     @declared_attr
-    def period(self):
-        """Billing periodicity subscribed to."""
-        return relationship("license_price_period", lazy="selectin")
+    def plan_version_price(self):
+        """Price subscribed to, or None on a free subscription."""
+        return relationship("license_plan_version_price", lazy="selectin")
 
     @declared_attr
     def pending_plan_version(self):

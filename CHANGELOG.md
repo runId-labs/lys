@@ -7,6 +7,24 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.31.0] - 2026-08-13
+
+### Added
+- `MollieCheckoutService.update_subscription_amount` and `cancel_provider_subscription`, aligning or stopping a recurring collection without database access, so they can be called from services and background tasks alike
+- `major_unit_value` on plan version prices, giving the decimal string payment providers expect and honouring currencies without decimals
+
+### Changed
+- `Subscription` references the exact price subscribed to through `plan_version_price_id`, which carries the periodicity, the currency and the amount agreed upon, replacing the `billing_period` column
+- `SubscriptionService.change_plan` realigns the subscribed price on the new version when the change is immediate, instead of leaving a price belonging to another version
+- `apply_pending_plan_changes` resolves the new price on the terms subscribed to, and skips the change with an error when a paid target carries no such price, rather than granting a plan that cannot be billed
+
+### Fixed
+- An upgrade no longer leaves the payment provider charging the previous, lower amount; the recurring collection is realigned when the plan actually changes, including when no prorata payment is needed
+- A downgrade to a cheaper plan realigns the recurring collection when the change takes effect, instead of keeping the previous amount
+- A downgrade to a free plan stops the recurring collection, instead of charging the client indefinitely for a plan they no longer hold
+- `SubscriptionService.cancel` now goes through the downgrade path, so cancelling and downgrading to a free plan can no longer diverge, and it reports a failure when the collection could not be stopped
+- Changing the periodicity or the currency of a running subscription returns `BILLING_TERMS_CHANGE_ERROR` instead of computing a prorata between two different cadences
+
 ## [0.30.0] - 2026-08-13
 
 ### Added

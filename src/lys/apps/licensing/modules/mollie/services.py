@@ -207,20 +207,24 @@ class MollieWebhookService(Service):
             )
             return
 
-        # Calculate billing period dates
-        period = await cls.app_manager.get_service("license_price_period").get_by_id(
-            billing_period, session
-        )
-        if not period:
+        # Resolve the exact price that was paid for; it carries the periodicity,
+        # the currency and the amount the client agreed to
+        currency_id = metadata.get("currency_id", DEFAULT_CURRENCY)
+        plan_version_entity = cls.app_manager.get_entity("license_plan_version")
+        version = await session.get(plan_version_entity, plan_version_id)
+        price = version.price_for(billing_period, currency_id) if version else None
+
+        if not price:
             logger.critical(
-                f"Payment {payment.id} for client {client_id} carries unknown billing period "
-                f"{billing_period!r}. Manual intervention required."
+                f"Payment {payment.id} for client {client_id} refers to plan version "
+                f"{plan_version_id} with no price for {billing_period}/{currency_id}. "
+                f"Manual intervention required."
             )
             return
 
         now = datetime.now(timezone.utc)
         period_start = now
-        period_end = calculate_period_end(now, period.interval_months)
+        period_end = calculate_period_end(now, price.period.interval_months)
 
         # Update client's provider customer ID first
         client = None
@@ -239,8 +243,20 @@ class MollieWebhookService(Service):
                 subscription.pending_plan_version_id = None
                 logger.info(f"Updated subscription {subscription.id} to plan version {plan_version_id}")
 
+                # Align the recurring collection with the plan now granted,
+                # otherwise Mollie keeps charging the previous amount
+                if subscription.provider_subscription_id and client and client.provider_customer_id:
+                    checkout_service = cls.app_manager.get_service("mollie_checkout")
+                    checkout_service.update_subscription_amount(
+                        customer_id=client.provider_customer_id,
+                        provider_subscription_id=subscription.provider_subscription_id,
+                        currency_id=price.currency_id,
+                        value=price.major_unit_value,
+                        interval_months=price.period.interval_months
+                    )
+
             # Update billing period tracking
-            subscription.billing_period = billing_period
+            subscription.plan_version_price_id = price.id
             subscription.current_period_start = period_start
             subscription.current_period_end = period_end
 
@@ -252,8 +268,8 @@ class MollieWebhookService(Service):
             subscription = subscription_entity(
                 client_id=client_id,
                 plan_version_id=plan_version_id,
+                plan_version_price_id=price.id,
                 provider_subscription_id=payment.subscription_id,
-                billing_period=billing_period,
                 current_period_start=period_start,
                 current_period_end=period_end
             )
@@ -527,7 +543,7 @@ class MollieCheckoutService(Service):
             payment_data = {
                 "amount": {
                     "currency": price.currency_id,
-                    "value": f"{price.currency.to_major_unit(price.amount):.{price.currency.minor_unit}f}"
+                    "value": price.major_unit_value
                 },
                 "description": f"{version.plan_id} - {billing_period}",
                 "redirectUrl": redirect_url,
@@ -602,7 +618,7 @@ class MollieCheckoutService(Service):
             subscription = customer.subscriptions.create(data={
                 "amount": {
                     "currency": price.currency_id,
-                    "value": f"{price.currency.to_major_unit(price.amount):.{price.currency.minor_unit}f}"
+                    "value": price.major_unit_value
                 },
                 "interval": f"{price.period.interval_months} months",
                 "description": f"{version.plan_id} subscription",
@@ -618,3 +634,91 @@ class MollieCheckoutService(Service):
         except MollieError as e:
             logger.error(f"Error creating Mollie subscription: {e}")
             return None
+
+    @classmethod
+    def update_subscription_amount(
+        cls,
+        customer_id: str,
+        provider_subscription_id: str,
+        currency_id: str,
+        value: str,
+        interval_months: int
+    ) -> bool:
+        """
+        Align a recurring Mollie subscription with new billing terms.
+
+        Called whenever the plan a client pays for changes, so that the amount
+        collected matches the plan actually granted. Mollie refuses to update a
+        canceled subscription, so this must run before any cancellation.
+
+        Takes plain values rather than a price entity, so that callers holding a
+        detached or expired entity cannot trigger a lazy load here. It performs
+        no database access and is safe to call from both async services and
+        synchronous background tasks.
+
+        Args:
+            customer_id: Mollie customer ID
+            provider_subscription_id: Mollie subscription ID
+            currency_id: ISO 4217 currency code
+            value: Amount in major units, as a decimal string
+            interval_months: Length of the billing period in months
+
+        Returns:
+            True if the subscription was updated
+        """
+        mollie = get_mollie_client()
+        if not mollie:
+            logger.error("Mollie not configured, cannot update subscription")
+            return False
+
+        try:
+            customer = mollie.customers.get(customer_id)
+            customer.subscriptions.update(provider_subscription_id, data={
+                "amount": {
+                    "currency": currency_id,
+                    "value": value
+                },
+                "interval": f"{interval_months} months"
+            })
+            return True
+
+        except MollieError as e:
+            logger.error(
+                f"Error updating Mollie subscription {provider_subscription_id}: {e}"
+            )
+            return False
+
+    @classmethod
+    def cancel_provider_subscription(
+        cls,
+        customer_id: str,
+        provider_subscription_id: str
+    ) -> bool:
+        """
+        Stop a recurring Mollie subscription.
+
+        This method performs no database access and is safe to call from both
+        async services and synchronous background tasks.
+
+        Args:
+            customer_id: Mollie customer ID
+            provider_subscription_id: Mollie subscription ID
+
+        Returns:
+            True if the subscription was canceled
+        """
+        mollie = get_mollie_client()
+        if not mollie:
+            logger.error("Mollie not configured, cannot cancel subscription")
+            return False
+
+        try:
+            customer = mollie.customers.get(customer_id)
+            customer.subscriptions.delete(provider_subscription_id)
+            return True
+
+        except MollieError as e:
+            logger.error(
+                f"Error canceling Mollie subscription {provider_subscription_id}: {e}"
+            )
+            return False

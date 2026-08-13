@@ -16,6 +16,7 @@ import pytest
 from uuid import uuid4
 
 from lys.apps.licensing.consts import (
+    BILLING_TERMS_CHANGE_ERROR,
     DEFAULT_APPLICATION,
     FREE_PLAN,
     MONTHLY_PERIOD,
@@ -542,3 +543,135 @@ class TestSubscribeToPlanPricingGuard:
 
             assert result.success is False
             assert result.error == PLAN_NOT_PRICED_ERROR
+
+
+class TestSubscribeToPlanBillingTerms:
+    """Changing periodicity or currency mid-subscription is refused."""
+
+    @pytest.mark.asyncio
+    async def test_period_change_is_rejected(self, licensing_app_manager):
+        """
+        Prorata assumes both prices share a cadence, so a monthly to yearly
+        switch would bill a meaningless amount. It must be refused, not guessed.
+        """
+        subscription_service = licensing_app_manager.get_service("subscription")
+        version_service = licensing_app_manager.get_service("license_plan_version")
+        price_service = licensing_app_manager.get_service("license_plan_version_price")
+        client_service = licensing_app_manager.get_service("client")
+
+        async with licensing_app_manager.database.get_session() as session:
+            client = await client_service.create_client_with_owner(
+                session=session,
+                client_name=f"Terms-Corp-{uuid4().hex[:8]}",
+                email=f"terms-{uuid4().hex[:8]}@example.com",
+                password="Password123!",
+                language_id="en",
+                send_verification_email=False
+            )
+
+        # Put the client on a paid monthly subscription
+        async with licensing_app_manager.database.get_session() as session:
+            starter_version = await version_service.get_current_version(STARTER_PLAN, session)
+            monthly_price = starter_version.price_for(MONTHLY_PERIOD)
+
+            subscription = await subscription_service.get_client_subscription(client.id, session)
+            subscription.plan_version_id = starter_version.id
+            subscription.plan_version_price_id = monthly_price.id
+            subscription.provider_subscription_id = f"sub_{uuid4().hex[:8]}"
+            await session.commit()
+
+        # Asking for the same plan family on a yearly cadence must be refused
+        async with licensing_app_manager.database.get_session() as session:
+            pro_version = await version_service.get_current_version(PRO_PLAN, session)
+
+            result = await subscription_service.subscribe_to_plan(
+                client_id=client.id,
+                plan_version_id=pro_version.id,
+                billing_period=YEARLY_PERIOD,
+                success_url="https://example.com/success",
+                webhook_url="https://example.com/webhooks/mollie",
+                session=session
+            )
+
+            assert result.success is False
+            assert result.error == BILLING_TERMS_CHANGE_ERROR
+
+
+class TestChangePlanKeepsPriceCoherent:
+    """An immediate plan change must not leave a price from another version."""
+
+    @pytest.mark.asyncio
+    async def test_immediate_change_realigns_the_price(self, licensing_app_manager):
+        subscription_service = licensing_app_manager.get_service("subscription")
+        version_service = licensing_app_manager.get_service("license_plan_version")
+        client_service = licensing_app_manager.get_service("client")
+
+        async with licensing_app_manager.database.get_session() as session:
+            client = await client_service.create_client_with_owner(
+                session=session,
+                client_name=f"Realign-Corp-{uuid4().hex[:8]}",
+                email=f"realign-{uuid4().hex[:8]}@example.com",
+                password="Password123!",
+                language_id="en",
+                send_verification_email=False
+            )
+
+        async with licensing_app_manager.database.get_session() as session:
+            starter = await version_service.get_current_version(STARTER_PLAN, session)
+            subscription = await subscription_service.get_client_subscription(client.id, session)
+            subscription.plan_version_id = starter.id
+            subscription.plan_version_price_id = starter.price_for(MONTHLY_PERIOD).id
+            await session.commit()
+
+        async with licensing_app_manager.database.get_session() as session:
+            pro = await version_service.get_current_version(PRO_PLAN, session)
+
+            subscription = await subscription_service.change_plan(
+                client_id=client.id,
+                new_plan_version_id=pro.id,
+                session=session,
+                immediate=True
+            )
+
+            assert subscription.plan_version_id == pro.id
+            # The price now belongs to the plan actually subscribed to
+            assert subscription.plan_version_price_id == pro.price_for(MONTHLY_PERIOD).id
+
+    @pytest.mark.asyncio
+    async def test_target_without_matching_price_raises(self, licensing_app_manager):
+        subscription_service = licensing_app_manager.get_service("subscription")
+        plan_service = licensing_app_manager.get_service("license_plan")
+        version_service = licensing_app_manager.get_service("license_plan_version")
+        client_service = licensing_app_manager.get_service("client")
+
+        plan_id = f"YEARLY_ONLY_{uuid4().hex[:6]}"
+        async with licensing_app_manager.database.get_session() as session:
+            client = await client_service.create_client_with_owner(
+                session=session,
+                client_name=f"Yearly-Corp-{uuid4().hex[:8]}",
+                email=f"yearly-{uuid4().hex[:8]}@example.com",
+                password="Password123!",
+                language_id="en",
+                send_verification_email=False
+            )
+            await plan_service.create(
+                session=session, id=plan_id, enabled=True, app_id=DEFAULT_APPLICATION
+            )
+            yearly_only = await version_service.create_new_version(
+                plan_id, session, prices=[{"period_id": YEARLY_PERIOD, "amount": 30000}]
+            )
+
+            starter = await version_service.get_current_version(STARTER_PLAN, session)
+            subscription = await subscription_service.get_client_subscription(client.id, session)
+            subscription.plan_version_id = starter.id
+            subscription.plan_version_price_id = starter.price_for(MONTHLY_PERIOD).id
+            await session.commit()
+
+        async with licensing_app_manager.database.get_session() as session:
+            with pytest.raises(LysError, match="PLAN_VERSION_NOT_PRICED"):
+                await subscription_service.change_plan(
+                    client_id=client.id,
+                    new_plan_version_id=yearly_only.id,
+                    session=session,
+                    immediate=True
+                )

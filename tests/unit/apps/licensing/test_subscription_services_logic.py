@@ -170,22 +170,76 @@ class TestChangePlan:
 class TestHandleDowngrade:
     """Tests for SubscriptionService._handle_downgrade() — pure sync logic."""
 
-    def test_sets_pending_plan_version(self):
+    @pytest.mark.asyncio
+    async def test_sets_pending_plan_version(self):
+        """Downgrading to a cheaper paid plan only schedules the change."""
         from lys.apps.licensing.modules.subscription.services import SubscriptionService
         from datetime import datetime
 
         mock_sub = Mock()
         mock_sub.pending_plan_version_id = None
         mock_sub.current_period_end = datetime(2025, 2, 1)
+        mock_sub.provider_subscription_id = "sub_123"
 
-        result = SubscriptionService._handle_downgrade(
-            subscription=mock_sub,
-            plan_version_id="pv-new"
-        )
+        paid_target = Mock()
+        paid_target.is_free = False
 
-        assert result.success is True
-        assert mock_sub.pending_plan_version_id == "pv-new"
-        assert result.effective_date == datetime(2025, 2, 1)
+        mock_session = AsyncMock()
+        mock_session.get = AsyncMock(return_value=paid_target)
+
+        with patch.object(SubscriptionService, "app_manager", create=True) as mock_am:
+            result = await SubscriptionService._handle_downgrade(
+                subscription=mock_sub,
+                plan_version_id="pv-new",
+                session=mock_session
+            )
+
+            assert result.success is True
+            assert mock_sub.pending_plan_version_id == "pv-new"
+            assert result.effective_date == datetime(2025, 2, 1)
+            # The provider subscription is left alone until the change applies
+            mock_am.get_service.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_downgrade_to_free_stops_the_provider_subscription(self):
+        """Nothing else would stop collection, so it must happen right away."""
+        from lys.apps.licensing.modules.subscription.services import SubscriptionService
+        from datetime import datetime
+
+        mock_sub = Mock()
+        mock_sub.pending_plan_version_id = None
+        mock_sub.canceled_at = None
+        mock_sub.current_period_end = datetime(2025, 2, 1)
+        mock_sub.provider_subscription_id = "sub_123"
+        mock_sub.client_id = "client-1"
+
+        free_target = Mock()
+        free_target.is_free = True
+
+        client = Mock()
+        client.provider_customer_id = "cst_123"
+
+        mock_session = AsyncMock()
+        mock_session.get = AsyncMock(side_effect=[free_target, client])
+
+        checkout_service = Mock()
+        checkout_service.cancel_provider_subscription = Mock(return_value=True)
+
+        with patch.object(SubscriptionService, "app_manager", create=True) as mock_am:
+            mock_am.get_service.return_value = checkout_service
+
+            result = await SubscriptionService._handle_downgrade(
+                subscription=mock_sub,
+                plan_version_id="pv-free",
+                session=mock_session
+            )
+
+            assert result.success is True
+            checkout_service.cancel_provider_subscription.assert_called_once_with(
+                customer_id="cst_123",
+                provider_subscription_id="sub_123"
+            )
+            assert mock_sub.canceled_at is not None
 
 
 class TestApplyPendingChange:
@@ -238,3 +292,55 @@ class TestApplyPendingChange:
         assert result is mock_sub
         assert mock_sub.plan_version_id == "pv-new"
         assert mock_sub.pending_plan_version_id is None
+
+
+class TestApplyPendingPlanChangesGuards:
+    """Guards on the task applying pending plan changes."""
+
+    def test_paid_target_without_matching_price_is_not_applied(self):
+        """
+        Applying it would grant a paid plan we cannot bill, while the provider
+        keeps collecting the previous amount. The change stays pending instead.
+        """
+        from lys.apps.licensing.tasks import apply_pending_plan_changes
+
+        current_price = Mock(period_id="MONTHLY", currency_id="EUR")
+
+        subscription = Mock()
+        subscription.id = "sub-1"
+        subscription.plan_version_id = "pv-current"
+        subscription.pending_plan_version_id = "pv-target"
+        subscription.plan_version_price = current_price
+        subscription.canceled_at = None
+        subscription.provider_subscription_id = "sub_mollie"
+
+        # Target is paid but carries no price on the subscribed terms
+        target_version = Mock()
+        target_version.is_free = False
+        target_version.price_for = Mock(return_value=None)
+
+        session = Mock()
+        session.get = Mock(return_value=target_version)
+        session.execute = Mock(
+            return_value=Mock(scalars=Mock(return_value=Mock(all=Mock(return_value=[subscription]))))
+        )
+        session.__enter__ = Mock(return_value=session)
+        session.__exit__ = Mock(return_value=False)
+
+        subscription_entity = Mock()
+        subscription_entity.current_period_end = Mock(__le__=Mock(return_value=Mock()))
+
+        app_manager = Mock()
+        app_manager.get_entity = Mock(return_value=subscription_entity)
+        app_manager.database.get_sync_session = Mock(return_value=session)
+
+        with patch("lys.apps.licensing.tasks.current_app") as mock_current_app:
+            mock_current_app.app_manager = app_manager
+            # The entity registry is mocked, so the query cannot be built for real
+            with patch("lys.apps.licensing.tasks.select"):
+                applied = apply_pending_plan_changes()
+
+        assert applied == 0
+        # The change is still pending, and the plan was not switched
+        assert subscription.pending_plan_version_id == "pv-target"
+        assert subscription.plan_version_id == "pv-current"

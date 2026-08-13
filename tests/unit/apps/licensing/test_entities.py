@@ -333,10 +333,16 @@ class TestSubscriptionEntity:
         attr = inspect.getattr_static(Subscription, "pending_plan_version_id")
         assert isinstance(attr, MappedColumn)
 
-    def test_has_billing_period_column(self):
+    def test_has_plan_version_price_column(self):
+        """The subscribed price carries the periodicity, currency and amount agreed upon."""
         from lys.apps.licensing.modules.subscription.entities import Subscription
-        attr = inspect.getattr_static(Subscription, "billing_period")
+        attr = inspect.getattr_static(Subscription, "plan_version_price_id")
         assert isinstance(attr, MappedColumn)
+
+    def test_has_no_billing_period_column(self):
+        """Periodicity is reached through the subscribed price, not duplicated here."""
+        from lys.apps.licensing.modules.subscription.entities import Subscription
+        assert not hasattr(Subscription, "billing_period")
 
     def test_has_current_period_start_column(self):
         from lys.apps.licensing.modules.subscription.entities import Subscription
