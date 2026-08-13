@@ -6,6 +6,8 @@ Provides functions to calculate prorated amounts for:
 - Downgrades: No prorata (keeps access until period end)
 """
 
+import calendar
+
 from datetime import datetime, timezone
 
 
@@ -64,39 +66,28 @@ def calculate_prorata(
 
 def calculate_period_end(
     period_start: datetime,
-    billing_period: str
+    interval_months: int
 ) -> datetime:
     """
     Calculate the end of a billing period.
 
     Args:
         period_start: Start of the billing period
-        billing_period: "monthly" or "yearly"
+        interval_months: Length of the billing period in months, as carried by
+                         the LicensePricePeriod entity (1 for monthly, 12 for
+                         yearly, 3 for quarterly...)
 
     Returns:
-        End of the billing period (same day next month/year)
+        End of the billing period, same day of month, clamped to the last day
+        of the target month when it is shorter (e.g., Jan 31 -> Feb 28)
     """
-    if billing_period == "yearly":
-        # Add 1 year
-        try:
-            return period_start.replace(year=period_start.year + 1)
-        except ValueError:
-            # Handle Feb 29 -> Feb 28
-            return period_start.replace(year=period_start.year + 1, day=28)
-    else:
-        # Add 1 month (default to monthly)
-        month = period_start.month + 1
-        year = period_start.year
-        if month > 12:
-            month = 1
-            year += 1
-        try:
-            return period_start.replace(year=year, month=month)
-        except ValueError:
-            # Handle day overflow (e.g., Jan 31 -> Feb 28)
-            import calendar
-            last_day = calendar.monthrange(year, month)[1]
-            return period_start.replace(year=year, month=month, day=last_day)
+    total_months = period_start.month - 1 + interval_months
+    year = period_start.year + total_months // 12
+    month = total_months % 12 + 1
+
+    last_day = calendar.monthrange(year, month)[1]
+
+    return period_start.replace(year=year, month=month, day=min(period_start.day, last_day))
 
 
 def is_upgrade(old_price: int, new_price: int) -> bool:

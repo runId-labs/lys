@@ -14,10 +14,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from lys.apps.licensing.consts import (
     CANCEL_SUBSCRIPTION_FAILED_ERROR,
     CHECKOUT_SESSION_FAILED_ERROR,
+    DEFAULT_CURRENCY,
     FREE_PLAN,
     NO_ACTIVE_SUBSCRIPTION_ERROR,
     NO_PROVIDER_SUBSCRIPTION_ERROR,
     PLAN_NOT_FOUND_ERROR,
+    PLAN_NOT_PRICED_ERROR,
     SAME_PLAN_ERROR,
 )
 from lys.apps.licensing.errors import (
@@ -339,7 +341,8 @@ class SubscriptionService(EntityService[Subscription]):
         billing_period: str,
         success_url: str,
         webhook_url: str,
-        session: AsyncSession
+        session: AsyncSession,
+        currency_id: str = DEFAULT_CURRENCY
     ) -> SubscribeToPlanResult:
         """
         Subscribe a client to a plan, handling all cases automatically.
@@ -353,10 +356,11 @@ class SubscriptionService(EntityService[Subscription]):
         Args:
             client_id: Client ID
             plan_version_id: Target plan version ID
-            billing_period: "monthly" or "yearly"
+            billing_period: Price period ID (e.g., "MONTHLY")
             success_url: URL to redirect after payment
             webhook_url: URL for payment provider webhooks
             session: Database session
+            currency_id: Currency the subscription is billed in
 
         Returns:
             SubscribeToPlanResult with checkout_url or effective_date
@@ -377,11 +381,19 @@ class SubscriptionService(EntityService[Subscription]):
         # Get current subscription
         subscription = await cls.get_client_subscription(client_id, session)
 
-        # Determine new plan price
-        if billing_period == "yearly":
-            new_price = new_version.price_yearly or 0
-        else:
-            new_price = new_version.price_monthly or 0
+        # Determine new plan price. A paid version that carries no price for the
+        # requested terms must be rejected here: leaving it at 0 would make both
+        # sides of the comparison below equal, route the request to the downgrade
+        # branch, and schedule the plan change without any payment.
+        new_price_entity = new_version.price_for(billing_period, currency_id)
+        if new_price_entity is None and not new_version.is_free:
+            logger.warning(
+                f"Client {client_id} requested plan version {plan_version_id} "
+                f"for {billing_period}/{currency_id}, which is not priced"
+            )
+            return SubscribeToPlanResult(success=False, error=PLAN_NOT_PRICED_ERROR)
+
+        new_price = new_price_entity.amount if new_price_entity else 0
 
         # Case 1: No subscription or FREE plan (no provider_subscription_id)
         if not subscription or not subscription.provider_subscription_id:
@@ -391,15 +403,14 @@ class SubscriptionService(EntityService[Subscription]):
                 billing_period=billing_period,
                 success_url=success_url,
                 webhook_url=webhook_url,
-                session=session
+                session=session,
+                currency_id=currency_id
             )
 
         # Get current plan version and price
         current_version = await session.get(plan_version_entity, subscription.plan_version_id)
-        if billing_period == "yearly":
-            current_price = current_version.price_yearly or 0
-        else:
-            current_price = current_version.price_monthly or 0
+        current_price_entity = current_version.price_for(billing_period, currency_id)
+        current_price = current_price_entity.amount if current_price_entity else 0
 
         # Case 2: Same plan
         if subscription.plan_version_id == plan_version_id:
@@ -416,7 +427,8 @@ class SubscriptionService(EntityService[Subscription]):
                 billing_period=billing_period,
                 success_url=success_url,
                 webhook_url=webhook_url,
-                session=session
+                session=session,
+                currency_id=currency_id
             )
 
         # Case 4: Downgrade
@@ -433,7 +445,8 @@ class SubscriptionService(EntityService[Subscription]):
         billing_period: str,
         success_url: str,
         webhook_url: str,
-        session: AsyncSession
+        session: AsyncSession,
+        currency_id: str = DEFAULT_CURRENCY
     ) -> SubscribeToPlanResult:
         """Handle new subscription or upgrade from FREE plan."""
         checkout_service = cls.app_manager.get_service("mollie_checkout")
@@ -443,7 +456,8 @@ class SubscriptionService(EntityService[Subscription]):
             billing_period=billing_period,
             redirect_url=success_url,
             webhook_url=webhook_url,
-            session=session
+            session=session,
+            currency_id=currency_id
         )
 
         if not checkout_url:
@@ -462,7 +476,8 @@ class SubscriptionService(EntityService[Subscription]):
         billing_period: str,
         success_url: str,
         webhook_url: str,
-        session: AsyncSession
+        session: AsyncSession,
+        currency_id: str = DEFAULT_CURRENCY
     ) -> SubscribeToPlanResult:
         """Handle upgrade with prorata calculation."""
         # No billing period info - treat as new subscription
@@ -473,7 +488,8 @@ class SubscriptionService(EntityService[Subscription]):
                 billing_period=billing_period,
                 success_url=success_url,
                 webhook_url=webhook_url,
-                session=session
+                session=session,
+                currency_id=currency_id
             )
 
         # Calculate prorata
@@ -495,11 +511,15 @@ class SubscriptionService(EntityService[Subscription]):
         if not mollie:
             return SubscribeToPlanResult(success=False, error=CHECKOUT_SESSION_FAILED_ERROR)
 
+        currency = await cls.app_manager.get_service("license_currency").get_by_id(
+            currency_id, session
+        )
+
         try:
             payment_data = {
                 "amount": {
-                    "currency": new_version.currency.upper(),
-                    "value": f"{prorata_amount / 100:.2f}"
+                    "currency": currency_id,
+                    "value": f"{currency.to_major_unit(prorata_amount):.{currency.minor_unit}f}"
                 },
                 "description": f"Upgrade to {new_version.plan_id} (prorata)",
                 "redirectUrl": success_url,
@@ -508,6 +528,7 @@ class SubscriptionService(EntityService[Subscription]):
                     "client_id": client.id,
                     "plan_version_id": new_version.id,
                     "billing_period": billing_period,
+                    "currency_id": currency_id,
                     "is_prorata": True
                 }
             }

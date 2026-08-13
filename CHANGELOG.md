@@ -7,6 +7,27 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.30.0] - 2026-08-13
+
+### Added
+- `LicenseCurrency` and `LicensePricePeriod` parametric entities, with their services, nodes and fixtures
+- `LicensePlanVersionPrice` entity holding one price per (plan version, period, currency)
+- `currencyId` argument on the `subscribeToPlan` mutation
+
+### Changed
+- Plan version pricing moved out of `LicensePlanVersion` into `license_plan_version_price`, so a new periodicity or currency no longer requires a schema migration
+- `LicensePlanVersionService.create_new_version` takes a `prices` list and creates version and prices in the same transaction, rejecting duplicate (period, currency) pairs, non-positive amounts and unknown periods or currencies
+- `calculate_period_end` takes a number of months instead of a period name, computing any cadence in a single code path
+- `subscription.billing_period` is now a foreign key to `license_price_period`
+- `BillingPeriod` values are uppercase to match the parametric entity IDs
+
+### Fixed
+- `subscribe_to_plan` rejects a paid plan version that carries no price for the requested period and currency; the request previously fell through to the downgrade branch and scheduled the plan change without any payment
+
+### Removed
+- `price_monthly`, `price_yearly`, `currency` and `provider_product_id` columns on `LicensePlanVersion`
+- Payment provider synchronization hook in the plan version fixtures, which called a service that was never implemented; the Mollie API exposes no product catalog to synchronize
+
 ## [0.29.0] - 2026-08-11
 
 ### Added

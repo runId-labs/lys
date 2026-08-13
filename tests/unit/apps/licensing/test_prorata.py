@@ -161,21 +161,21 @@ class TestCalculatePeriodEnd:
         from lys.apps.licensing.modules.subscription.prorata import calculate_period_end
 
         start = datetime(2025, 1, 15, tzinfo=timezone.utc)
-        end = calculate_period_end(start, "monthly")
+        end = calculate_period_end(start, 1)
         assert end == datetime(2025, 2, 15, tzinfo=timezone.utc)
 
     def test_yearly_period(self):
         from lys.apps.licensing.modules.subscription.prorata import calculate_period_end
 
         start = datetime(2025, 1, 15, tzinfo=timezone.utc)
-        end = calculate_period_end(start, "yearly")
+        end = calculate_period_end(start, 12)
         assert end == datetime(2026, 1, 15, tzinfo=timezone.utc)
 
     def test_monthly_december_to_january(self):
         from lys.apps.licensing.modules.subscription.prorata import calculate_period_end
 
         start = datetime(2025, 12, 15, tzinfo=timezone.utc)
-        end = calculate_period_end(start, "monthly")
+        end = calculate_period_end(start, 1)
         assert end == datetime(2026, 1, 15, tzinfo=timezone.utc)
 
     def test_monthly_jan31_to_feb28(self):
@@ -183,7 +183,7 @@ class TestCalculatePeriodEnd:
         from lys.apps.licensing.modules.subscription.prorata import calculate_period_end
 
         start = datetime(2025, 1, 31, tzinfo=timezone.utc)
-        end = calculate_period_end(start, "monthly")
+        end = calculate_period_end(start, 1)
         assert end.month == 2
         assert end.day == 28
 
@@ -192,15 +192,16 @@ class TestCalculatePeriodEnd:
         from lys.apps.licensing.modules.subscription.prorata import calculate_period_end
 
         start = datetime(2024, 2, 29, tzinfo=timezone.utc)
-        end = calculate_period_end(start, "yearly")
+        end = calculate_period_end(start, 12)
         assert end == datetime(2025, 2, 28, tzinfo=timezone.utc)
 
-    def test_unknown_period_defaults_to_monthly(self):
+    def test_quarterly_period(self):
+        """Any interval expressed in months is supported, not just 1 and 12."""
         from lys.apps.licensing.modules.subscription.prorata import calculate_period_end
 
-        start = datetime(2025, 1, 15, tzinfo=timezone.utc)
-        end = calculate_period_end(start, "unknown")
-        assert end == datetime(2025, 2, 15, tzinfo=timezone.utc)
+        start = datetime(2025, 11, 30, tzinfo=timezone.utc)
+        end = calculate_period_end(start, 3)
+        assert end == datetime(2026, 2, 28, tzinfo=timezone.utc)
 
 
 class TestIsUpgrade:

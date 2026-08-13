@@ -88,33 +88,33 @@ class TestCalculatePeriodEnd:
 
     def test_monthly_normal(self):
         start = datetime(2024, 1, 15, tzinfo=timezone.utc)
-        end = calculate_period_end(start, "monthly")
+        end = calculate_period_end(start, 1)
         assert end.month == 2
         assert end.day == 15
         assert end.year == 2024
 
     def test_monthly_december_wraps_to_january(self):
         start = datetime(2024, 12, 15, tzinfo=timezone.utc)
-        end = calculate_period_end(start, "monthly")
+        end = calculate_period_end(start, 1)
         assert end.month == 1
         assert end.year == 2025
 
     def test_monthly_jan31_to_feb28(self):
         start = datetime(2024, 1, 31, tzinfo=timezone.utc)
-        end = calculate_period_end(start, "monthly")
+        end = calculate_period_end(start, 1)
         assert end.month == 2
         assert end.day == 29  # 2024 is a leap year
 
     def test_yearly_normal(self):
         start = datetime(2024, 3, 15, tzinfo=timezone.utc)
-        end = calculate_period_end(start, "yearly")
+        end = calculate_period_end(start, 12)
         assert end.year == 2025
         assert end.month == 3
         assert end.day == 15
 
     def test_yearly_feb29_to_feb28(self):
         start = datetime(2024, 2, 29, tzinfo=timezone.utc)
-        end = calculate_period_end(start, "yearly")
+        end = calculate_period_end(start, 12)
         assert end.year == 2025
         assert end.month == 2
         assert end.day == 28

@@ -74,9 +74,10 @@ class Subscription(Entity):
 
     # Billing period tracking
     billing_period: Mapped[str | None] = mapped_column(
-        String(20),
+        ForeignKey("license_price_period.id", ondelete="RESTRICT"),
         nullable=True,
-        comment="Billing period: monthly or yearly"
+        index=True,
+        comment="Billing periodicity subscribed to (license_price_period reference)"
     )
     current_period_start: Mapped[DateTime | None] = mapped_column(
         DateTime(timezone=True),
@@ -107,6 +108,11 @@ class Subscription(Entity):
             foreign_keys=[self.plan_version_id],
             lazy="selectin"
         )
+
+    @declared_attr
+    def period(self):
+        """Billing periodicity subscribed to."""
+        return relationship("license_price_period", lazy="selectin")
 
     @declared_attr
     def pending_plan_version(self):

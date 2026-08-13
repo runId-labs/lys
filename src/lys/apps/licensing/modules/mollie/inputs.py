@@ -18,8 +18,11 @@ class SubscribeToPlanInput:
         description="Plan version ID to subscribe to"
     )
     billing_period: strawberry.auto = strawberry.field(
-        description="Billing period (monthly or yearly)"
+        description="Billing periodicity to subscribe to"
     )
     success_url: strawberry.auto = strawberry.field(
         description="URL to redirect to after payment"
+    )
+    currency_id: strawberry.auto = strawberry.field(
+        description="Currency to be billed in (ISO 4217 code, defaults to EUR)"
     )

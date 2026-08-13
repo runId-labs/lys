@@ -10,7 +10,7 @@ from pydantic import BaseModel, field_validator
 from pydantic_core.core_schema import ValidationInfo
 from strawberry import relay
 
-from lys.apps.licensing.consts import BillingPeriod
+from lys.apps.licensing.consts import BillingPeriod, DEFAULT_CURRENCY
 
 
 @dataclass
@@ -36,6 +36,7 @@ class SubscribeToPlanInputModel(BaseModel):
     plan_version_id: str
     billing_period: BillingPeriod
     success_url: str
+    currency_id: str = DEFAULT_CURRENCY
 
     @field_validator("plan_version_id", mode="before")
     @classmethod

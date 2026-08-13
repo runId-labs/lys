@@ -9,11 +9,21 @@ import strawberry
 from strawberry import relay
 from strawberry.types import Info
 
-from lys.apps.licensing.modules.plan.entities import LicensePlan, LicensePlanVersion, LicensePlanVersionRule
+from lys.apps.licensing.modules.plan.entities import (
+    LicenseCurrency,
+    LicensePlan,
+    LicensePlanVersion,
+    LicensePlanVersionPrice,
+    LicensePlanVersionRule,
+    LicensePricePeriod,
+)
 from lys.apps.licensing.modules.plan.services import (
+    LicenseCurrencyService,
     LicensePlanService,
     LicensePlanVersionService,
+    LicensePlanVersionPriceService,
     LicensePlanVersionRuleService,
+    LicensePricePeriodService,
 )
 from lys.core.graphql.nodes import EntityNode
 from lys.core.registries import register_node
@@ -55,6 +65,66 @@ class LicensePlanVersionRuleNode(EntityNode[LicensePlanVersionRuleService], rela
 
 
 @register_node()
+class LicenseCurrencyNode(EntityNode[LicenseCurrencyService], relay.Node):
+    """
+    GraphQL node for LicenseCurrency entity.
+
+    Represents a currency available for pricing.
+    """
+    id: relay.NodeID[str]
+    code: str
+    description: Optional[str]
+    enabled: bool
+    minor_unit: int
+    created_at: datetime
+    updated_at: Optional[datetime]
+    _entity: strawberry.Private[LicenseCurrency]
+
+
+@register_node()
+class LicensePricePeriodNode(EntityNode[LicensePricePeriodService], relay.Node):
+    """
+    GraphQL node for LicensePricePeriod entity.
+
+    Represents a billing periodicity available for pricing.
+    """
+    id: relay.NodeID[str]
+    code: str
+    description: Optional[str]
+    enabled: bool
+    interval_months: int
+    created_at: datetime
+    updated_at: Optional[datetime]
+    _entity: strawberry.Private[LicensePricePeriod]
+
+
+@register_node()
+class LicensePlanVersionPriceNode(EntityNode[LicensePlanVersionPriceService], relay.Node):
+    """
+    GraphQL node for LicensePlanVersionPrice entity.
+
+    Represents the price of a plan version for one periodicity and currency.
+    """
+    id: relay.NodeID[str]
+    amount: int
+    created_at: datetime
+    updated_at: Optional[datetime]
+    _entity: strawberry.Private[LicensePlanVersionPrice]
+
+    @strawberry.field(description="The billing periodicity this price applies to")
+    async def period(self, info: Info) -> LicensePricePeriodNode:
+        return LicensePricePeriodNode.from_obj(self._entity.period)
+
+    @strawberry.field(description="The currency this price is expressed in")
+    async def currency(self, info: Info) -> LicenseCurrencyNode:
+        return LicenseCurrencyNode.from_obj(self._entity.currency)
+
+    @strawberry.field(description="Human-readable amount (e.g., '49.00 EUR')")
+    def formatted(self) -> str:
+        return self._entity.formatted
+
+
+@register_node()
 class LicensePlanVersionNode(EntityNode[LicensePlanVersionService], relay.Node):
     """
     GraphQL node for LicensePlanVersion entity.
@@ -64,10 +134,6 @@ class LicensePlanVersionNode(EntityNode[LicensePlanVersionService], relay.Node):
     id: relay.NodeID[str]
     version: int
     enabled: bool
-    price_monthly: Optional[int]
-    price_yearly: Optional[int]
-    currency: str
-    provider_product_id: Optional[str]
     created_at: datetime
     updated_at: Optional[datetime]
     _entity: strawberry.Private[LicensePlanVersion]
@@ -88,19 +154,9 @@ class LicensePlanVersionNode(EntityNode[LicensePlanVersionService], relay.Node):
     async def rules(self, info: Info) -> List[LicensePlanVersionRuleNode]:
         return [LicensePlanVersionRuleNode.from_obj(rule) for rule in self._entity.rules]
 
-    @strawberry.field(description="Monthly price formatted (e.g., '49.00 EUR')")
-    def price_monthly_formatted(self) -> Optional[str]:
-        if self._entity.price_monthly is None:
-            return None
-        amount = self._entity.price_monthly / 100
-        return f"{amount:.2f} {self._entity.currency.upper()}"
-
-    @strawberry.field(description="Yearly price formatted (e.g., '490.00 EUR')")
-    def price_yearly_formatted(self) -> Optional[str]:
-        if self._entity.price_yearly is None:
-            return None
-        amount = self._entity.price_yearly / 100
-        return f"{amount:.2f} {self._entity.currency.upper()}"
+    @strawberry.field(description="Prices of this version, one per periodicity and currency")
+    async def prices(self, info: Info) -> List[LicensePlanVersionPriceNode]:
+        return [LicensePlanVersionPriceNode.from_obj(price) for price in self._entity.prices]
 
 
 @register_node()

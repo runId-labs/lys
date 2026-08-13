@@ -370,7 +370,7 @@ class PubSubManager:
             Async context manager yielding True if lock acquired, False otherwise
 
         Usage:
-            async with pubsub.distributed_lock("mollie_sync:all") as acquired:
+            async with pubsub.distributed_lock("job:daily_cleanup") as acquired:
                 if acquired:
                     # Do exclusive work
         """

@@ -10,7 +10,13 @@ Tests cover:
 import pytest
 from uuid import uuid4
 
-from lys.apps.licensing.consts import FREE_PLAN, STARTER_PLAN, PRO_PLAN, DEFAULT_APPLICATION
+from lys.apps.licensing.consts import (
+    DEFAULT_APPLICATION,
+    FREE_PLAN,
+    MONTHLY_PERIOD,
+    PRO_PLAN,
+    STARTER_PLAN,
+)
 
 
 class TestLicensePlanServiceAvailablePlans:
@@ -120,7 +126,7 @@ class TestLicensePlanVersionService:
             )
             # Create first version
             v1 = await version_service.create_new_version(
-                plan_id, session, price_monthly=1000
+                plan_id, session, prices=[{"period_id": MONTHLY_PERIOD, "amount": 1000}]
             )
             assert v1.version == 1
             assert v1.enabled is True
@@ -129,17 +135,17 @@ class TestLicensePlanVersionService:
         # Create second version
         async with licensing_app_manager.database.get_session() as session:
             v2 = await version_service.create_new_version(
-                plan_id, session, price_monthly=1500
+                plan_id, session, prices=[{"period_id": MONTHLY_PERIOD, "amount": 1500}]
             )
             assert v2.version == 2
             assert v2.enabled is True
             await session.commit()
 
-        # Verify first version is now disabled
+        # Verify first version is now disabled and the new price applies
         async with licensing_app_manager.database.get_session() as session:
             current = await version_service.get_current_version(plan_id, session)
             assert current.version == 2
-            assert current.price_monthly == 1500
+            assert current.price_for(MONTHLY_PERIOD).amount == 1500
 
     @pytest.mark.asyncio
     async def test_plan_version_is_free_property(self, licensing_app_manager):

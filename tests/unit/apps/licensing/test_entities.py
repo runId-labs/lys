@@ -149,29 +149,110 @@ class TestLicensePlanVersionEntity:
         attr = inspect.getattr_static(LicensePlanVersion, "enabled")
         assert isinstance(attr, MappedColumn)
 
-    def test_has_price_monthly_column(self):
+    def test_has_no_price_column(self):
+        """Pricing lives in LicensePlanVersionPrice, not on the version itself."""
         from lys.apps.licensing.modules.plan.entities import LicensePlanVersion
-        attr = inspect.getattr_static(LicensePlanVersion, "price_monthly")
-        assert isinstance(attr, MappedColumn)
-
-    def test_has_price_yearly_column(self):
-        from lys.apps.licensing.modules.plan.entities import LicensePlanVersion
-        attr = inspect.getattr_static(LicensePlanVersion, "price_yearly")
-        assert isinstance(attr, MappedColumn)
-
-    def test_has_currency_column(self):
-        from lys.apps.licensing.modules.plan.entities import LicensePlanVersion
-        attr = inspect.getattr_static(LicensePlanVersion, "currency")
-        assert isinstance(attr, MappedColumn)
-
-    def test_has_provider_product_id_column(self):
-        from lys.apps.licensing.modules.plan.entities import LicensePlanVersion
-        attr = inspect.getattr_static(LicensePlanVersion, "provider_product_id")
-        assert isinstance(attr, MappedColumn)
+        for removed in ("price_monthly", "price_yearly", "currency", "provider_product_id"):
+            assert not hasattr(LicensePlanVersion, removed)
 
     def test_is_free_property_exists(self):
         from lys.apps.licensing.modules.plan.entities import LicensePlanVersion
         assert isinstance(inspect.getattr_static(LicensePlanVersion, "is_free"), property)
+
+    def test_price_for_method_exists(self):
+        from lys.apps.licensing.modules.plan.entities import LicensePlanVersion
+        assert callable(inspect.getattr_static(LicensePlanVersion, "price_for"))
+
+
+class TestLicenseCurrencyEntity:
+    """Tests for LicenseCurrency entity."""
+
+    def test_entity_exists(self):
+        from lys.apps.licensing.modules.plan.entities import LicenseCurrency
+        assert LicenseCurrency is not None
+
+    def test_tablename(self):
+        from lys.apps.licensing.modules.plan.entities import LicenseCurrency
+        assert LicenseCurrency.__tablename__ == "license_currency"
+
+    def test_inherits_from_parametric_entity(self):
+        from lys.apps.licensing.modules.plan.entities import LicenseCurrency
+        from lys.core.entities import ParametricEntity
+        assert issubclass(LicenseCurrency, ParametricEntity)
+
+    def test_has_minor_unit_column(self):
+        from lys.apps.licensing.modules.plan.entities import LicenseCurrency
+        attr = inspect.getattr_static(LicenseCurrency, "minor_unit")
+        assert isinstance(attr, MappedColumn)
+
+    def test_to_major_unit_uses_minor_unit(self):
+        from lys.apps.licensing.modules.plan.entities import LicenseCurrency
+        currency = LicenseCurrency.__new__(LicenseCurrency)
+        currency.minor_unit = 2
+        assert currency.to_major_unit(4900) == 49.0
+
+    def test_to_major_unit_with_zero_decimal_currency(self):
+        """Currencies without decimals (JPY, KRW) must not be divided by 100."""
+        from lys.apps.licensing.modules.plan.entities import LicenseCurrency
+        currency = LicenseCurrency.__new__(LicenseCurrency)
+        currency.minor_unit = 0
+        assert currency.to_major_unit(4900) == 4900
+
+
+class TestLicensePricePeriodEntity:
+    """Tests for LicensePricePeriod entity."""
+
+    def test_entity_exists(self):
+        from lys.apps.licensing.modules.plan.entities import LicensePricePeriod
+        assert LicensePricePeriod is not None
+
+    def test_tablename(self):
+        from lys.apps.licensing.modules.plan.entities import LicensePricePeriod
+        assert LicensePricePeriod.__tablename__ == "license_price_period"
+
+    def test_inherits_from_parametric_entity(self):
+        from lys.apps.licensing.modules.plan.entities import LicensePricePeriod
+        from lys.core.entities import ParametricEntity
+        assert issubclass(LicensePricePeriod, ParametricEntity)
+
+    def test_has_interval_months_column(self):
+        from lys.apps.licensing.modules.plan.entities import LicensePricePeriod
+        attr = inspect.getattr_static(LicensePricePeriod, "interval_months")
+        assert isinstance(attr, MappedColumn)
+
+
+class TestLicensePlanVersionPriceEntity:
+    """Tests for LicensePlanVersionPrice entity."""
+
+    def test_entity_exists(self):
+        from lys.apps.licensing.modules.plan.entities import LicensePlanVersionPrice
+        assert LicensePlanVersionPrice is not None
+
+    def test_tablename(self):
+        from lys.apps.licensing.modules.plan.entities import LicensePlanVersionPrice
+        assert LicensePlanVersionPrice.__tablename__ == "license_plan_version_price"
+
+    def test_inherits_from_entity(self):
+        from lys.apps.licensing.modules.plan.entities import LicensePlanVersionPrice
+        from lys.core.entities import Entity
+        assert issubclass(LicensePlanVersionPrice, Entity)
+
+    def test_has_expected_columns(self):
+        from lys.apps.licensing.modules.plan.entities import LicensePlanVersionPrice
+        for column in ("plan_version_id", "period_id", "currency_id", "amount"):
+            attr = inspect.getattr_static(LicensePlanVersionPrice, column)
+            assert isinstance(attr, MappedColumn)
+
+    def test_unique_constraint_on_version_period_currency(self):
+        from sqlalchemy import UniqueConstraint
+        from lys.apps.licensing.modules.plan.entities import LicensePlanVersionPrice
+        constraints = [
+            arg for arg in LicensePlanVersionPrice.__table_args__
+            if isinstance(arg, UniqueConstraint)
+        ]
+        assert len(constraints) == 1
+        # Columns are still pending until the entity is mapped at app startup
+        assert constraints[0]._pending_colargs == ["plan_version_id", "period_id", "currency_id"]
 
 
 class TestLicensePlanVersionRuleEntity:

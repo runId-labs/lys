@@ -11,13 +11,27 @@ from enum import Enum
 
 
 class BillingPeriod(str, Enum):
-    """Billing period for subscriptions."""
-    MONTHLY = "monthly"
-    YEARLY = "yearly"
+    """
+    Billing period for subscriptions.
+
+    Values match the license_price_period parametric entity IDs.
+    """
+    MONTHLY = "MONTHLY"
+    YEARLY = "YEARLY"
 
 
 # License Application IDs
 DEFAULT_APPLICATION = "DEFAULT"
+
+# License Price Period IDs
+MONTHLY_PERIOD = BillingPeriod.MONTHLY.value
+YEARLY_PERIOD = BillingPeriod.YEARLY.value
+
+# License Currency IDs (ISO 4217, uppercase)
+EUR_CURRENCY = "EUR"
+
+# Default currency used when none is specified
+DEFAULT_CURRENCY = EUR_CURRENCY
 
 # License Plan IDs
 FREE_PLAN = "FREE"
@@ -39,5 +53,6 @@ CHECKOUT_SESSION_FAILED_ERROR = "CHECKOUT_SESSION_FAILED_ERROR"
 NO_ACTIVE_SUBSCRIPTION_ERROR = "NO_ACTIVE_SUBSCRIPTION_ERROR"
 SAME_PLAN_ERROR = "SAME_PLAN_ERROR"
 PLAN_NOT_FOUND_ERROR = "PLAN_NOT_FOUND_ERROR"
+PLAN_NOT_PRICED_ERROR = "PLAN_NOT_PRICED_ERROR"
 CANCEL_SUBSCRIPTION_FAILED_ERROR = "CANCEL_SUBSCRIPTION_FAILED_ERROR"
 NO_PROVIDER_SUBSCRIPTION_ERROR = "NO_PROVIDER_SUBSCRIPTION_ERROR"

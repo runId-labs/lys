@@ -15,7 +15,15 @@ via the licensing ClientService extension.
 import pytest
 from uuid import uuid4
 
-from lys.apps.licensing.consts import FREE_PLAN, STARTER_PLAN, PRO_PLAN
+from lys.apps.licensing.consts import (
+    DEFAULT_APPLICATION,
+    FREE_PLAN,
+    MONTHLY_PERIOD,
+    PLAN_NOT_PRICED_ERROR,
+    PRO_PLAN,
+    STARTER_PLAN,
+    YEARLY_PERIOD,
+)
 from lys.core.errors import LysError
 
 
@@ -447,3 +455,90 @@ class TestSubscriptionServiceUserManagement:
                 await subscription_service.add_user_to_subscription(sub.id, user.id, session)
 
             assert await subscription_service.get_subscription_user_count(sub.id, session) == 3
+
+
+class TestSubscribeToPlanPricingGuard:
+    """Test that subscribe_to_plan refuses terms the target version is not priced for."""
+
+    @pytest.mark.asyncio
+    async def test_unknown_currency_is_rejected(self, licensing_app_manager):
+        """
+        An unpriced (period, currency) must not resolve to a free plan change.
+
+        Without the guard, both the current and the target price resolve to 0,
+        the request falls through to the downgrade branch, and the client is
+        granted the paid plan at period end without paying.
+        """
+        subscription_service = licensing_app_manager.get_service("subscription")
+        version_service = licensing_app_manager.get_service("license_plan_version")
+        client_service = licensing_app_manager.get_service("client")
+
+        async with licensing_app_manager.database.get_session() as session:
+            client = await client_service.create_client_with_owner(
+                session=session,
+                client_name=f"Guard-Corp-{uuid4().hex[:8]}",
+                email=f"guard-{uuid4().hex[:8]}@example.com",
+                password="Password123!",
+                language_id="en",
+                send_verification_email=False
+            )
+
+        async with licensing_app_manager.database.get_session() as session:
+            pro_version = await version_service.get_current_version(PRO_PLAN, session)
+
+            result = await subscription_service.subscribe_to_plan(
+                client_id=client.id,
+                plan_version_id=pro_version.id,
+                billing_period=MONTHLY_PERIOD,
+                success_url="https://example.com/success",
+                webhook_url="https://example.com/webhooks/mollie",
+                session=session,
+                currency_id="XXX"
+            )
+
+            assert result.success is False
+            assert result.error == PLAN_NOT_PRICED_ERROR
+
+            # No plan change was scheduled
+            subscription = await subscription_service.get_client_subscription(client.id, session)
+            assert subscription.pending_plan_version_id is None
+
+    @pytest.mark.asyncio
+    async def test_unpriced_period_is_rejected(self, licensing_app_manager):
+        """Same guard applies when the version carries no price for the period."""
+        subscription_service = licensing_app_manager.get_service("subscription")
+        plan_service = licensing_app_manager.get_service("license_plan")
+        version_service = licensing_app_manager.get_service("license_plan_version")
+        client_service = licensing_app_manager.get_service("client")
+
+        plan_id = f"MONTHLY_ONLY_{uuid4().hex[:6]}"
+        async with licensing_app_manager.database.get_session() as session:
+            client = await client_service.create_client_with_owner(
+                session=session,
+                client_name=f"Period-Corp-{uuid4().hex[:8]}",
+                email=f"period-{uuid4().hex[:8]}@example.com",
+                password="Password123!",
+                language_id="en",
+                send_verification_email=False
+            )
+            await plan_service.create(
+                session=session, id=plan_id, enabled=True, app_id=DEFAULT_APPLICATION
+            )
+            # Priced monthly only
+            version = await version_service.create_new_version(
+                plan_id, session, prices=[{"period_id": MONTHLY_PERIOD, "amount": 2500}]
+            )
+            await session.commit()
+
+        async with licensing_app_manager.database.get_session() as session:
+            result = await subscription_service.subscribe_to_plan(
+                client_id=client.id,
+                plan_version_id=version.id,
+                billing_period=YEARLY_PERIOD,
+                success_url="https://example.com/success",
+                webhook_url="https://example.com/webhooks/mollie",
+                session=session
+            )
+
+            assert result.success is False
+            assert result.error == PLAN_NOT_PRICED_ERROR

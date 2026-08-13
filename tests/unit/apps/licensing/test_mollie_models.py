@@ -94,7 +94,7 @@ class TestSubscribeToPlanInputModel:
         from lys.apps.licensing.modules.mollie.models import SubscribeToPlanInputModel
         model = SubscribeToPlanInputModel(
             plan_version_id="some-uuid",
-            billing_period="monthly",
+            billing_period="MONTHLY",
             success_url="https://example.com/success"
         )
         assert model.plan_version_id == "some-uuid"
@@ -104,7 +104,7 @@ class TestSubscribeToPlanInputModel:
         from lys.apps.licensing.modules.mollie.models import SubscribeToPlanInputModel
         model = SubscribeToPlanInputModel(
             plan_version_id="test-id",
-            billing_period="monthly",
+            billing_period="MONTHLY",
             success_url="https://example.com"
         )
         assert model.plan_version_id == "test-id"
@@ -113,7 +113,7 @@ class TestSubscribeToPlanInputModel:
         from lys.apps.licensing.modules.mollie.models import SubscribeToPlanInputModel
         model = SubscribeToPlanInputModel(
             plan_version_id={"node_id": "extracted-id"},
-            billing_period="monthly",
+            billing_period="MONTHLY",
             success_url="https://example.com"
         )
         assert model.plan_version_id == "extracted-id"
@@ -123,7 +123,7 @@ class TestSubscribeToPlanInputModel:
         from lys.apps.licensing.consts import BillingPeriod
         model = SubscribeToPlanInputModel(
             plan_version_id="id",
-            billing_period="monthly",
+            billing_period="MONTHLY",
             success_url="https://example.com"
         )
         assert model.billing_period == BillingPeriod.MONTHLY
@@ -133,7 +133,7 @@ class TestSubscribeToPlanInputModel:
         from lys.apps.licensing.consts import BillingPeriod
         model = SubscribeToPlanInputModel(
             plan_version_id="id",
-            billing_period="yearly",
+            billing_period="YEARLY",
             success_url="https://example.com"
         )
         assert model.billing_period == BillingPeriod.YEARLY

@@ -12,11 +12,11 @@ class TestBillingPeriodEnum:
 
     def test_monthly_value(self):
         from lys.apps.licensing.consts import BillingPeriod
-        assert BillingPeriod.MONTHLY == "monthly"
+        assert BillingPeriod.MONTHLY == "MONTHLY"
 
     def test_yearly_value(self):
         from lys.apps.licensing.consts import BillingPeriod
-        assert BillingPeriod.YEARLY == "yearly"
+        assert BillingPeriod.YEARLY == "YEARLY"
 
     def test_is_string_enum(self):
         from lys.apps.licensing.consts import BillingPeriod

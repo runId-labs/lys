@@ -249,7 +249,8 @@ class MollieMutation(Mutation):
             billing_period=data.billing_period.value,
             success_url=data.success_url,
             webhook_url=webhook_url,
-            session=info.context.session
+            session=info.context.session,
+            currency_id=data.currency_id
         )
 
         return SubscribeToPlanResultNode(

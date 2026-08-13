@@ -20,6 +20,7 @@ from mollie.api.error import Error as MollieError
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from lys.apps.licensing.consts import DEFAULT_CURRENCY, MONTHLY_PERIOD
 from lys.apps.licensing.modules.event.consts import (
     SUBSCRIPTION_PAYMENT_SUCCESS,
     SUBSCRIPTION_PAYMENT_FAILED,
@@ -182,7 +183,7 @@ class MollieWebhookService(Service):
         metadata = payment.metadata or {}
         client_id = metadata.get("client_id")
         plan_version_id = metadata.get("plan_version_id")
-        billing_period = metadata.get("billing_period", "monthly")
+        billing_period = metadata.get("billing_period", MONTHLY_PERIOD)
 
         if not client_id:
             logger.warning(f"Payment {payment.id} missing client_id in metadata")
@@ -207,9 +208,19 @@ class MollieWebhookService(Service):
             return
 
         # Calculate billing period dates
+        period = await cls.app_manager.get_service("license_price_period").get_by_id(
+            billing_period, session
+        )
+        if not period:
+            logger.critical(
+                f"Payment {payment.id} for client {client_id} carries unknown billing period "
+                f"{billing_period!r}. Manual intervention required."
+            )
+            return
+
         now = datetime.now(timezone.utc)
         period_start = now
-        period_end = calculate_period_end(now, billing_period)
+        period_end = calculate_period_end(now, period.interval_months)
 
         # Update client's provider customer ID first
         client = None
@@ -264,7 +275,8 @@ class MollieWebhookService(Service):
                     plan_version_id=plan_version_id,
                     billing_period=billing_period,
                     webhook_url=webhook_url,
-                    session=session
+                    session=session,
+                    currency_id=metadata.get("currency_id", DEFAULT_CURRENCY)
                 )
 
                 if mollie_sub_id:
@@ -449,7 +461,8 @@ class MollieCheckoutService(Service):
         redirect_url: str,
         webhook_url: str,
         session: AsyncSession,
-        cancel_url: Optional[str] = None
+        cancel_url: Optional[str] = None,
+        currency_id: str = DEFAULT_CURRENCY
     ) -> Optional[str]:
         """
         Create a Mollie payment for subscription.
@@ -457,11 +470,12 @@ class MollieCheckoutService(Service):
         Args:
             client_id: Client ID
             plan_version_id: Plan version to subscribe to
-            billing_period: "monthly" or "yearly"
+            billing_period: Price period ID (e.g., "MONTHLY")
             redirect_url: URL to redirect after payment (success/pending/failed)
             webhook_url: URL for Mollie webhooks
             session: Database session
             cancel_url: URL to redirect if user cancels (optional)
+            currency_id: Currency to charge in
 
         Returns:
             Checkout URL or None on failure
@@ -479,14 +493,13 @@ class MollieCheckoutService(Service):
             logger.error(f"Plan version {plan_version_id} not found")
             return None
 
-        # Get price based on billing period
-        if billing_period == "yearly":
-            amount = version.price_yearly
-        else:
-            amount = version.price_monthly
+        # Get price for the requested period and currency
+        price = version.price_for(billing_period, currency_id)
 
-        if not amount:
-            logger.error(f"No price for {billing_period} billing")
+        if not price or not price.amount:
+            logger.error(
+                f"Plan version {plan_version_id} has no price for {billing_period}/{currency_id}"
+            )
             return None
 
         # Get or create Mollie customer
@@ -513,8 +526,8 @@ class MollieCheckoutService(Service):
         try:
             payment_data = {
                 "amount": {
-                    "currency": version.currency.upper(),
-                    "value": f"{amount / 100:.2f}"
+                    "currency": price.currency_id,
+                    "value": f"{price.currency.to_major_unit(price.amount):.{price.currency.minor_unit}f}"
                 },
                 "description": f"{version.plan_id} - {billing_period}",
                 "redirectUrl": redirect_url,
@@ -522,7 +535,8 @@ class MollieCheckoutService(Service):
                 "metadata": {
                     "client_id": client_id,
                     "plan_version_id": plan_version_id,
-                    "billing_period": billing_period
+                    "billing_period": billing_period,
+                    "currency_id": price.currency_id
                 }
             }
 
@@ -545,12 +559,21 @@ class MollieCheckoutService(Service):
         plan_version_id: str,
         billing_period: str,
         webhook_url: str,
-        session: AsyncSession
+        session: AsyncSession,
+        currency_id: str = DEFAULT_CURRENCY
     ) -> Optional[str]:
         """
         Create a recurring Mollie subscription.
 
         Called after first payment is successful and mandate is created.
+
+        Args:
+            customer_id: Mollie customer ID
+            plan_version_id: Plan version to subscribe to
+            billing_period: Price period ID (e.g., "MONTHLY")
+            webhook_url: URL for Mollie webhooks
+            session: Database session
+            currency_id: Currency to charge in
 
         Returns:
             Mollie subscription ID or None on failure
@@ -566,28 +589,27 @@ class MollieCheckoutService(Service):
         if not version:
             return None
 
-        if billing_period == "yearly":
-            amount = version.price_yearly
-            interval = "12 months"
-        else:
-            amount = version.price_monthly
-            interval = "1 month"
+        price = version.price_for(billing_period, currency_id)
 
-        if not amount:
+        if not price or not price.amount:
+            logger.error(
+                f"Plan version {plan_version_id} has no price for {billing_period}/{currency_id}"
+            )
             return None
 
         try:
             customer = mollie.customers.get(customer_id)
             subscription = customer.subscriptions.create(data={
                 "amount": {
-                    "currency": version.currency.upper(),
-                    "value": f"{amount / 100:.2f}"
+                    "currency": price.currency_id,
+                    "value": f"{price.currency.to_major_unit(price.amount):.{price.currency.minor_unit}f}"
                 },
-                "interval": interval,
+                "interval": f"{price.period.interval_months} months",
                 "description": f"{version.plan_id} subscription",
                 "webhookUrl": webhook_url,
                 "metadata": {
-                    "plan_version_id": plan_version_id
+                    "plan_version_id": plan_version_id,
+                    "currency_id": price.currency_id
                 }
             })
 

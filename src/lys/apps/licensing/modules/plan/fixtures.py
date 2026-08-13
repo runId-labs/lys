@@ -2,10 +2,10 @@
 Fixtures for license plans and plan versions.
 
 This module provides:
+- LicenseCurrencyFixtures: Currencies available for pricing
+- LicensePricePeriodFixtures: Billing periodicities
 - LicensePlanDevFixtures: Default plans (FREE, STARTER, PRO)
 - LicensePlanVersionDevFixtures: Plan versions with pricing and rule associations
-
-After loading plan versions, automatically syncs paid plans to payment provider if configured.
 """
 import logging
 
@@ -16,23 +16,85 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from lys.apps.licensing.consts import (
     DEFAULT_APPLICATION,
+    DEFAULT_CURRENCY,
+    EUR_CURRENCY,
     FREE_PLAN,
     STARTER_PLAN,
     PRO_PLAN,
     MAX_USERS,
     MAX_PROJECTS_PER_MONTH,
+    MONTHLY_PERIOD,
+    YEARLY_PERIOD,
 )
-from lys.apps.licensing.modules.mollie.services import is_payment_configured
+from lys.apps.licensing.modules.plan.models import (
+    LicenseCurrencyFixturesModel,
+    LicensePlanVersionFixturesModel,
+    LicensePricePeriodFixturesModel,
+)
 from lys.apps.licensing.modules.plan.services import (
+    LicenseCurrencyService,
     LicensePlanService,
     LicensePlanVersionService,
+    LicensePricePeriodService,
 )
 from lys.core.consts.environments import EnvironmentEnum
 from lys.core.fixtures import EntityFixtures
-from lys.core.models.fixtures import EntityFixturesModel, ParametricEntityFixturesModel
+from lys.core.models.fixtures import ParametricEntityFixturesModel
 from lys.core.registries import register_fixture
 
 logger = logging.getLogger(__name__)
+
+
+@register_fixture()
+class LicenseCurrencyFixtures(EntityFixtures[LicenseCurrencyService]):
+    """
+    Fixtures for pricing currencies.
+
+    Reference data loaded in every environment. Business applications selling
+    in other currencies register their own fixture listing the full set.
+    """
+    model = LicenseCurrencyFixturesModel
+
+    data_list = [
+        {
+            "id": EUR_CURRENCY,
+            "attributes": {
+                "enabled": True,
+                "minor_unit": 2,
+                "description": "Euro"
+            }
+        },
+    ]
+
+
+@register_fixture()
+class LicensePricePeriodFixtures(EntityFixtures[LicensePricePeriodService]):
+    """
+    Fixtures for billing periodicities.
+
+    Reference data loaded in every environment. Additional cadences (quarterly,
+    half-yearly...) only require a new entry with its interval in months.
+    """
+    model = LicensePricePeriodFixturesModel
+
+    data_list = [
+        {
+            "id": MONTHLY_PERIOD,
+            "attributes": {
+                "enabled": True,
+                "interval_months": 1,
+                "description": "Monthly billing"
+            }
+        },
+        {
+            "id": YEARLY_PERIOD,
+            "attributes": {
+                "enabled": True,
+                "interval_months": 12,
+                "description": "Yearly billing"
+            }
+        },
+    ]
 
 
 @register_fixture(depends_on=["LicenseApplicationDevFixtures", "LicenseRuleFixtures"])
@@ -73,32 +135,23 @@ class LicensePlanDevFixtures(EntityFixtures[LicensePlanService]):
     ]
 
 
-class LicensePlanVersionFixturesModel(EntityFixturesModel):
-    """Model for plan version fixtures with rules."""
-
-    class AttributesModel(EntityFixturesModel.AttributesModel):
-        plan_id: str
-        version: int
-        price_monthly: int | None = None
-        price_yearly: int | None = None
-        currency: str = "eur"
-        enabled: bool = True
-        rules: List[Dict[str, Any]] = []
-
-    attributes: AttributesModel
-
-
-@register_fixture(depends_on=["LicensePlanDevFixtures"])
+@register_fixture(depends_on=[
+    "LicensePlanDevFixtures",
+    "LicenseCurrencyFixtures",
+    "LicensePricePeriodFixtures",
+])
 class LicensePlanVersionDevFixtures(EntityFixtures[LicensePlanVersionService]):
     """
     Fixtures for license plan versions with pricing and rules.
 
     Each version defines:
-    - Pricing (monthly/yearly in cents, None = free)
+    - Prices, one per (period, currency), in currency minor units.
+      No price entry means the version is free.
     - Rules with limit values (quotas and feature toggles)
 
-    Note: provider_product_id is NOT set here - it will be auto-filled
-    by the payment provider sync service if configured.
+    Prices are immutable once created: changing a price in this fixture has no
+    effect on an already loaded version. Publish a new version entry instead,
+    so that existing subscribers keep the terms they subscribed to.
     """
     model = LicensePlanVersionFixturesModel
     _allowed_envs = [EnvironmentEnum.DEV, ]
@@ -110,10 +163,8 @@ class LicensePlanVersionDevFixtures(EntityFixtures[LicensePlanVersionService]):
             "attributes": {
                 "plan_id": FREE_PLAN,
                 "version": 1,
-                "price_monthly": None,
-                "price_yearly": None,
-                "currency": "eur",
                 "enabled": True,
+                "prices": [],
                 "rules": [
                     {"rule_id": MAX_USERS, "limit_value": 5},
                     {"rule_id": MAX_PROJECTS_PER_MONTH, "limit_value": 3},
@@ -125,10 +176,11 @@ class LicensePlanVersionDevFixtures(EntityFixtures[LicensePlanVersionService]):
             "attributes": {
                 "plan_id": STARTER_PLAN,
                 "version": 1,
-                "price_monthly": 1900,
-                "price_yearly": 19000,
-                "currency": "eur",
                 "enabled": True,
+                "prices": [
+                    {"period_id": MONTHLY_PERIOD, "amount": 1900},
+                    {"period_id": YEARLY_PERIOD, "amount": 19000},
+                ],
                 "rules": [
                     {"rule_id": MAX_USERS, "limit_value": 25},
                     {"rule_id": MAX_PROJECTS_PER_MONTH, "limit_value": 20},
@@ -140,10 +192,11 @@ class LicensePlanVersionDevFixtures(EntityFixtures[LicensePlanVersionService]):
             "attributes": {
                 "plan_id": PRO_PLAN,
                 "version": 1,
-                "price_monthly": 4900,
-                "price_yearly": 49000,
-                "currency": "eur",
                 "enabled": True,
+                "prices": [
+                    {"period_id": MONTHLY_PERIOD, "amount": 4900},
+                    {"period_id": YEARLY_PERIOD, "amount": 49000},
+                ],
                 "rules": [
                     {"rule_id": MAX_USERS, "limit_value": 100},
                     {"rule_id": MAX_PROJECTS_PER_MONTH, "limit_value": None},  # Unlimited
@@ -151,6 +204,71 @@ class LicensePlanVersionDevFixtures(EntityFixtures[LicensePlanVersionService]):
             }
         },
     ]
+
+    @classmethod
+    async def format_prices(
+        cls,
+        prices_data: List[Dict[str, Any]],
+        session: AsyncSession,
+        extra_data: Dict[str, Any] | None = None
+    ) -> List:
+        """
+        Convert price definitions to LicensePlanVersionPrice objects.
+
+        For new entities, SQLAlchemy sets plan_version_id automatically when the
+        version is added to the session via the relationship.
+
+        For existing entities (upsert), prices already stored are returned
+        unchanged: a published price is immutable, so a price change must go
+        through a new plan version. A mismatch is logged to make the discarded
+        fixture change visible.
+
+        Args:
+            prices_data: List of {"period_id": str, "amount": int, "currency_id": str}
+            session: Database session
+            extra_data: Optional context with parent_id for upsert
+
+        Returns:
+            List of LicensePlanVersionPrice objects
+        """
+        price_class = cls.app_manager.get_entity("license_plan_version_price")
+        parent_id = extra_data.get("parent_id") if extra_data else None
+
+        prices = []
+        for price_data in prices_data:
+            period_id = price_data["period_id"]
+            currency_id = price_data.get("currency_id", DEFAULT_CURRENCY)
+            amount = price_data["amount"]
+
+            if parent_id:
+                # Upsert mode: an existing price is never modified
+                stmt = select(price_class).where(
+                    and_(
+                        price_class.plan_version_id == parent_id,
+                        price_class.period_id == period_id,
+                        price_class.currency_id == currency_id
+                    )
+                ).limit(1)
+                result = await session.execute(stmt)
+                existing_price = result.scalars().one_or_none()
+
+                if existing_price:
+                    if existing_price.amount != amount:
+                        logger.warning(
+                            f"Ignoring price change for plan version {parent_id} "
+                            f"({period_id}/{currency_id}): stored {existing_price.amount}, "
+                            f"fixture {amount}. Publish a new plan version instead."
+                        )
+                    prices.append(existing_price)
+                    continue
+
+            prices.append(price_class(
+                period_id=period_id,
+                currency_id=currency_id,
+                amount=amount
+            ))
+
+        return prices
 
     @classmethod
     async def format_rules(
@@ -209,36 +327,3 @@ class LicensePlanVersionDevFixtures(EntityFixtures[LicensePlanVersionService]):
 
         return version_rules
 
-    @classmethod
-    async def load(cls):
-        """
-        Load fixtures and sync to payment provider.
-
-        Overrides parent to add payment provider synchronization after fixture loading.
-        """
-        await super().load()
-        await cls._sync_to_payment_provider()
-
-    @classmethod
-    async def _sync_to_payment_provider(cls) -> None:
-        """
-        Synchronize paid plan versions to payment provider.
-
-        Only runs if payment provider is configured. Validates plan versions
-        for the configured payment provider (Mollie, etc.).
-        """
-        if not is_payment_configured():
-            logger.debug("Payment provider not configured, skipping sync")
-            return
-
-        try:
-            mollie_sync_service = cls.app_manager.get_service("mollie_sync")
-        except KeyError:
-            logger.debug("MollieSyncService not registered, skipping sync")
-            return
-
-        db_manager = cls.app_manager.database
-        async with db_manager.get_session() as session:
-            validated = await mollie_sync_service.sync_all_enabled_versions(session)
-            if validated:
-                logger.info(f"Validated {len(validated)} plan versions for payment provider")

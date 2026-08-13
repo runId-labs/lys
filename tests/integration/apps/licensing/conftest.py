@@ -138,21 +138,51 @@ async def licensing_app_manager():
             session=session, id=PRO_PLAN, enabled=True, app_id=DEFAULT_APPLICATION
         )
 
+        # Pricing reference data
+        from lys.apps.licensing.consts import (
+            EUR_CURRENCY,
+            MONTHLY_PERIOD,
+            YEARLY_PERIOD,
+        )
+        currency_service = app_manager.get_service("license_currency")
+        await currency_service.create(
+            session=session, id=EUR_CURRENCY, enabled=True, minor_unit=2
+        )
+        period_service = app_manager.get_service("license_price_period")
+        await period_service.create(
+            session=session, id=MONTHLY_PERIOD, enabled=True, interval_months=1
+        )
+        await period_service.create(
+            session=session, id=YEARLY_PERIOD, enabled=True, interval_months=12
+        )
+
         # Plan Versions
         plan_version_service = app_manager.get_service("license_plan_version")
 
         free_version = await plan_version_service.create(
-            session=session, plan_id=FREE_PLAN, version=1, enabled=True,
-            price_monthly=None, price_yearly=None, currency="eur"
+            session=session, plan_id=FREE_PLAN, version=1, enabled=True
         )
         starter_version = await plan_version_service.create(
-            session=session, plan_id=STARTER_PLAN, version=1, enabled=True,
-            price_monthly=1900, price_yearly=19000, currency="eur"
+            session=session, plan_id=STARTER_PLAN, version=1, enabled=True
         )
         pro_version = await plan_version_service.create(
-            session=session, plan_id=PRO_PLAN, version=1, enabled=True,
-            price_monthly=4900, price_yearly=49000, currency="eur"
+            session=session, plan_id=PRO_PLAN, version=1, enabled=True
         )
+
+        # Plan Version Prices (FREE has none, which is what makes it free)
+        price_service = app_manager.get_service("license_plan_version_price")
+        for version, monthly, yearly in (
+            (starter_version, 1900, 19000),
+            (pro_version, 4900, 49000),
+        ):
+            await price_service.create(
+                session=session, plan_version_id=version.id,
+                period_id=MONTHLY_PERIOD, currency_id=EUR_CURRENCY, amount=monthly
+            )
+            await price_service.create(
+                session=session, plan_version_id=version.id,
+                period_id=YEARLY_PERIOD, currency_id=EUR_CURRENCY, amount=yearly
+            )
 
         # Version Rules
         version_rule_service = app_manager.get_service("license_plan_version_rule")
