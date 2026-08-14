@@ -4,6 +4,7 @@ Pydantic models for the license plan module.
 This module provides the fixture validation models used to load:
 - LicenseCurrency: currencies available for pricing
 - LicensePricePeriod: billing periodicities
+- LicenseCommitment: contractual commitments
 - LicensePlanVersion: plan versions with their prices and rules
 """
 
@@ -26,6 +27,17 @@ class LicensePricePeriodFixturesModel(ParametricEntityFixturesModel):
 
     class AttributesModel(ParametricEntityFixturesModel.AttributesModel):
         interval_months: int = 1
+
+    attributes: AttributesModel
+
+
+class LicenseCommitmentFixturesModel(ParametricEntityFixturesModel):
+    """Model for contractual commitment fixtures."""
+
+    class AttributesModel(ParametricEntityFixturesModel.AttributesModel):
+        duration_months: int = 0
+        renewal_months: int = 0
+        notice_months: int = 0
 
     attributes: AttributesModel
 

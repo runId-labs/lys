@@ -10,6 +10,7 @@ from strawberry import relay
 from strawberry.types import Info
 
 from lys.apps.licensing.modules.plan.entities import (
+    LicenseCommitment,
     LicenseCurrency,
     LicensePlan,
     LicensePlanVersion,
@@ -18,6 +19,7 @@ from lys.apps.licensing.modules.plan.entities import (
     LicensePricePeriod,
 )
 from lys.apps.licensing.modules.plan.services import (
+    LicenseCommitmentService,
     LicenseCurrencyService,
     LicensePlanService,
     LicensePlanVersionService,
@@ -99,11 +101,39 @@ class LicensePricePeriodNode(EntityNode[LicensePricePeriodService], relay.Node):
 
 
 @register_node()
+class LicenseCommitmentNode(EntityNode[LicenseCommitmentService], relay.Node):
+    """
+    GraphQL node for LicenseCommitment entity.
+
+    Represents how long a client is bound when subscribing at a given price.
+    """
+    id: relay.NodeID[str]
+    code: str
+    description: Optional[str]
+    enabled: bool
+    duration_months: int
+    renewal_months: int
+    notice_months: int
+    created_at: datetime
+    updated_at: Optional[datetime]
+    _entity: strawberry.Private[LicenseCommitment]
+
+    @strawberry.field(description="Whether this commitment binds the client for a duration")
+    def is_binding(self) -> bool:
+        return self._entity.is_binding
+
+    @strawberry.field(description="Whether this commitment is tacitly renewed at its term")
+    def is_renewable(self) -> bool:
+        return self._entity.is_renewable
+
+
+@register_node()
 class LicensePlanVersionPriceNode(EntityNode[LicensePlanVersionPriceService], relay.Node):
     """
     GraphQL node for LicensePlanVersionPrice entity.
 
-    Represents the price of a plan version for one periodicity and currency.
+    Represents the price of a plan version for one periodicity, currency and
+    commitment.
     """
     id: relay.NodeID[str]
     amount: int
@@ -118,6 +148,10 @@ class LicensePlanVersionPriceNode(EntityNode[LicensePlanVersionPriceService], re
     @strawberry.field(description="The currency this price is expressed in")
     async def currency(self, info: Info) -> LicenseCurrencyNode:
         return LicenseCurrencyNode.from_obj(self._entity.currency)
+
+    @strawberry.field(description="The commitment this price is offered against")
+    async def commitment(self, info: Info) -> LicenseCommitmentNode:
+        return LicenseCommitmentNode.from_obj(self._entity.commitment)
 
     @strawberry.field(description="Human-readable amount (e.g., '49.00 EUR')")
     def formatted(self) -> str:

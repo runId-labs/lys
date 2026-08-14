@@ -7,6 +7,7 @@ This module defines:
 - LicensePlanVersionRule: Association between a version and a rule with its limit value
 - LicensePricePeriod: Billing periodicities (MONTHLY, YEARLY, ...)
 - LicenseCurrency: Currencies available for pricing (EUR, USD, ...)
+- LicenseCommitment: Contractual commitments a price can be offered against
 - LicensePlanVersionPrice: Price of a version for a given periodicity and currency
 """
 
@@ -15,7 +16,7 @@ from typing import Optional
 from sqlalchemy import ForeignKey, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, declared_attr, relationship
 
-from lys.apps.licensing.consts import DEFAULT_CURRENCY
+from lys.apps.licensing.consts import DEFAULT_CURRENCY, NO_COMMITMENT
 from lys.core.entities import Entity, ParametricEntity
 from lys.core.registries import register_entity
 
@@ -156,6 +157,67 @@ class LicenseCurrency(ParametricEntity):
 
 
 @register_entity()
+class LicenseCommitment(ParametricEntity):
+    """
+    Contractual commitment attached to a price.
+
+    A commitment is how long the client is bound, which is independent from how
+    often they are billed: a yearly billed subscription can carry a three year
+    commitment, usually in exchange for a lower price.
+
+    Attributes:
+        id: Commitment identifier (e.g., "NO_COMMITMENT", "TWO_YEARS")
+        duration_months: How long the client is bound, in months. Zero means the
+                         client is free to leave at the end of any billing period
+        renewal_months: How long the commitment is renewed for when it reaches
+                        its term without being denounced. Business practice
+                        rarely renews for the initial duration: a 36 month
+                        commitment usually renews by 12 month periods. Zero ends
+                        the commitment at term instead of renewing it
+        notice_months: How long before the term a denunciation must be received.
+                       Past that deadline the commitment renews, and the change
+                       can only be requested during the next notice window
+        description: Human-readable name, shown when selecting an offer
+        enabled: If False, the commitment cannot be used for new prices
+    """
+    __tablename__ = "license_commitment"
+
+    duration_months: Mapped[int] = mapped_column(
+        default=0,
+        nullable=False,
+        comment="How long the client is bound, in months (0 = no commitment)"
+    )
+    renewal_months: Mapped[int] = mapped_column(
+        default=0,
+        nullable=False,
+        comment="Months the commitment is renewed for at term (0 = no renewal)"
+    )
+    notice_months: Mapped[int] = mapped_column(
+        default=0,
+        nullable=False,
+        comment="Months of notice required before the term (0 = until the term)"
+    )
+
+    @property
+    def is_binding(self) -> bool:
+        """Returns True if this commitment binds the client for a duration."""
+        return self.duration_months > 0
+
+    @property
+    def is_renewable(self) -> bool:
+        """Returns True if this commitment is tacitly renewed at its term."""
+        return self.renewal_months > 0
+
+    def accessing_users(self) -> list[str]:
+        """Users who can access this commitment."""
+        return []
+
+    def accessing_organizations(self) -> dict[str, list[str]]:
+        """Organizations that can access this commitment."""
+        return {}
+
+
+@register_entity()
 class LicensePlanVersion(Entity):
     """
     Version of a license plan.
@@ -221,21 +283,27 @@ class LicensePlanVersion(Entity):
     def price_for(
         self,
         period_id: str,
-        currency_id: str = DEFAULT_CURRENCY
+        currency_id: str = DEFAULT_CURRENCY,
+        commitment_id: str = NO_COMMITMENT
     ) -> "Optional[LicensePlanVersionPrice]":
         """
-        Get the price of this version for a periodicity and currency.
+        Get the price of this version for given billing terms.
 
         Args:
             period_id: Price period ID (e.g., "MONTHLY")
             currency_id: Currency ID (e.g., "EUR")
+            commitment_id: Commitment ID (e.g., "NO_COMMITMENT")
 
         Returns:
             The matching LicensePlanVersionPrice, or None if the version is not
             priced for this combination
         """
         for price in self.prices:
-            if price.period_id == period_id and price.currency_id == currency_id:
+            if (
+                price.period_id == period_id
+                and price.currency_id == currency_id
+                and price.commitment_id == commitment_id
+            ):
                 return price
         return None
 
@@ -262,6 +330,7 @@ class LicensePlanVersionPrice(Entity):
         plan_version_id: Reference to the priced plan version
         period_id: Reference to the billing periodicity
         currency_id: Reference to the currency
+        commitment_id: Reference to the contractual commitment
         amount: Price in currency minor units for one billing period
                 (e.g., 4900 = 49.00 EUR)
     """
@@ -278,6 +347,11 @@ class LicensePlanVersionPrice(Entity):
     currency_id: Mapped[str] = mapped_column(
         ForeignKey("license_currency.id", ondelete="RESTRICT"),
         default=DEFAULT_CURRENCY,
+        index=True
+    )
+    commitment_id: Mapped[str] = mapped_column(
+        ForeignKey("license_commitment.id", ondelete="RESTRICT"),
+        default=NO_COMMITMENT,
         index=True
     )
     amount: Mapped[int] = mapped_column(
@@ -304,9 +378,14 @@ class LicensePlanVersionPrice(Entity):
         """Currency this price is expressed in."""
         return relationship("license_currency", lazy="selectin")
 
+    @declared_attr
+    def commitment(self):
+        """Contractual commitment this price is offered against."""
+        return relationship("license_commitment", lazy="selectin")
+
     __table_args__ = (
         UniqueConstraint(
-            "plan_version_id", "period_id", "currency_id",
+            "plan_version_id", "period_id", "currency_id", "commitment_id",
             name="uq_license_plan_version_price"
         ),
     )

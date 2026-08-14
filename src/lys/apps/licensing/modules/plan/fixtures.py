@@ -3,6 +3,7 @@ Fixtures for license plans and plan versions.
 
 This module provides:
 - LicenseCurrencyFixtures: Currencies available for pricing
+- LicenseCommitmentFixtures: Contractual commitments
 - LicensePricePeriodFixtures: Billing periodicities
 - LicensePlanDevFixtures: Default plans (FREE, STARTER, PRO)
 - LicensePlanVersionDevFixtures: Plan versions with pricing and rule associations
@@ -24,14 +25,17 @@ from lys.apps.licensing.consts import (
     MAX_USERS,
     MAX_PROJECTS_PER_MONTH,
     MONTHLY_PERIOD,
+    NO_COMMITMENT,
     YEARLY_PERIOD,
 )
 from lys.apps.licensing.modules.plan.models import (
+    LicenseCommitmentFixturesModel,
     LicenseCurrencyFixturesModel,
     LicensePlanVersionFixturesModel,
     LicensePricePeriodFixturesModel,
 )
 from lys.apps.licensing.modules.plan.services import (
+    LicenseCommitmentService,
     LicenseCurrencyService,
     LicensePlanService,
     LicensePlanVersionService,
@@ -135,17 +139,43 @@ class LicensePlanDevFixtures(EntityFixtures[LicensePlanService]):
     ]
 
 
+@register_fixture()
+class LicenseCommitmentFixtures(EntityFixtures[LicenseCommitmentService]):
+    """
+    Fixtures for contractual commitments.
+
+    Reference data loaded in every environment. Only the absence of commitment
+    is shipped: binding tiers belong to each application's commercial offer, and
+    are added by registering a fixture listing the full set.
+    """
+    model = LicenseCommitmentFixturesModel
+
+    data_list = [
+        {
+            "id": NO_COMMITMENT,
+            "attributes": {
+                "enabled": True,
+                "duration_months": 0,
+                "renewal_months": 0,
+                "notice_months": 0,
+                "description": "No commitment"
+            }
+        },
+    ]
+
+
 @register_fixture(depends_on=[
     "LicensePlanDevFixtures",
     "LicenseCurrencyFixtures",
     "LicensePricePeriodFixtures",
+    "LicenseCommitmentFixtures",
 ])
 class LicensePlanVersionDevFixtures(EntityFixtures[LicensePlanVersionService]):
     """
     Fixtures for license plan versions with pricing and rules.
 
     Each version defines:
-    - Prices, one per (period, currency), in currency minor units.
+    - Prices, one per (period, currency, commitment), in currency minor units.
       No price entry means the version is free.
     - Rules with limit values (quotas and feature toggles)
 
@@ -224,7 +254,8 @@ class LicensePlanVersionDevFixtures(EntityFixtures[LicensePlanVersionService]):
         fixture change visible.
 
         Args:
-            prices_data: List of {"period_id": str, "amount": int, "currency_id": str}
+            prices_data: List of {"period_id": str, "amount": int,
+                         "currency_id": str, "commitment_id": str}
             session: Database session
             extra_data: Optional context with parent_id for upsert
 
@@ -238,6 +269,7 @@ class LicensePlanVersionDevFixtures(EntityFixtures[LicensePlanVersionService]):
         for price_data in prices_data:
             period_id = price_data["period_id"]
             currency_id = price_data.get("currency_id", DEFAULT_CURRENCY)
+            commitment_id = price_data.get("commitment_id", NO_COMMITMENT)
             amount = price_data["amount"]
 
             if parent_id:
@@ -246,7 +278,8 @@ class LicensePlanVersionDevFixtures(EntityFixtures[LicensePlanVersionService]):
                     and_(
                         price_class.plan_version_id == parent_id,
                         price_class.period_id == period_id,
-                        price_class.currency_id == currency_id
+                        price_class.currency_id == currency_id,
+                        price_class.commitment_id == commitment_id
                     )
                 ).limit(1)
                 result = await session.execute(stmt)
@@ -256,7 +289,8 @@ class LicensePlanVersionDevFixtures(EntityFixtures[LicensePlanVersionService]):
                     if existing_price.amount != amount:
                         logger.warning(
                             f"Ignoring price change for plan version {parent_id} "
-                            f"({period_id}/{currency_id}): stored {existing_price.amount}, "
+                            f"({period_id}/{currency_id}/{commitment_id}): "
+                            f"stored {existing_price.amount}, "
                             f"fixture {amount}. Publish a new plan version instead."
                         )
                     prices.append(existing_price)
@@ -265,6 +299,7 @@ class LicensePlanVersionDevFixtures(EntityFixtures[LicensePlanVersionService]):
             prices.append(price_class(
                 period_id=period_id,
                 currency_id=currency_id,
+                commitment_id=commitment_id,
                 amount=amount
             ))
 

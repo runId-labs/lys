@@ -14,14 +14,17 @@ from typing import Any, Dict, List, Optional
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from lys.apps.licensing.consts import DEFAULT_CURRENCY
+from lys.apps.licensing.consts import DEFAULT_CURRENCY, NO_COMMITMENT
 from lys.apps.licensing.errors import (
     DUPLICATE_PRICE,
+    INVALID_COMMITMENT_DURATION,
     INVALID_PRICE_AMOUNT,
+    UNKNOWN_COMMITMENT,
     UNKNOWN_CURRENCY,
     UNKNOWN_PRICE_PERIOD,
 )
 from lys.apps.licensing.modules.plan.entities import (
+    LicenseCommitment,
     LicenseCurrency,
     LicensePlan,
     LicensePlanVersion,
@@ -51,6 +54,16 @@ class LicensePricePeriodService(EntityService[LicensePricePeriod]):
 
     Periodicities are reference data: they are provisioned by fixtures and
     referenced by plan version prices and subscriptions.
+    """
+
+
+@register_service()
+class LicenseCommitmentService(EntityService[LicenseCommitment]):
+    """
+    Service for managing contractual commitments.
+
+    Commitments are reference data: they are provisioned by fixtures and
+    referenced by plan version prices.
     """
 
 
@@ -140,36 +153,43 @@ class LicensePlanVersionService(EntityService[LicensePlanVersion]):
         Validate the price definitions of a version before creating it.
 
         Args:
-            prices: List of {"period_id": str, "amount": int, "currency_id": str}
+            prices: List of {"period_id": str, "amount": int, "currency_id": str,
+                    "commitment_id": str}
             session: Database session
 
         Raises:
-            LysError: DUPLICATE_PRICE if two entries share a (period, currency)
+            LysError: DUPLICATE_PRICE if two entries share the same terms
             LysError: INVALID_PRICE_AMOUNT if an amount is not strictly positive
             LysError: UNKNOWN_PRICE_PERIOD if a periodicity does not exist or is disabled
             LysError: UNKNOWN_CURRENCY if a currency does not exist or is disabled
+            LysError: UNKNOWN_COMMITMENT if a commitment does not exist or is disabled
+            LysError: INVALID_COMMITMENT_DURATION if the commitment does not span
+                a whole number of billing periods
         """
         period_service = cls.app_manager.get_service("license_price_period")
         currency_service = cls.app_manager.get_service("license_currency")
+        commitment_service = cls.app_manager.get_service("license_commitment")
 
         seen = set()
         for price in prices:
             period_id = price["period_id"]
             currency_id = price.get("currency_id", DEFAULT_CURRENCY)
+            commitment_id = price.get("commitment_id", NO_COMMITMENT)
             amount = price["amount"]
+            terms = f"{period_id}/{currency_id}/{commitment_id}"
 
-            key = (period_id, currency_id)
+            key = (period_id, currency_id, commitment_id)
             if key in seen:
                 raise LysError(
                     DUPLICATE_PRICE,
-                    f"Version priced twice for {period_id}/{currency_id}"
+                    f"Version priced twice for {terms}"
                 )
             seen.add(key)
 
             if not isinstance(amount, int) or amount <= 0:
                 raise LysError(
                     INVALID_PRICE_AMOUNT,
-                    f"Price for {period_id}/{currency_id} must be a positive integer, got {amount!r}"
+                    f"Price for {terms} must be a positive integer, got {amount!r}"
                 )
 
             period = await period_service.get_by_id(period_id, session)
@@ -184,6 +204,22 @@ class LicensePlanVersionService(EntityService[LicensePlanVersion]):
                 raise LysError(
                     UNKNOWN_CURRENCY,
                     f"Currency {currency_id} does not exist or is disabled"
+                )
+
+            commitment = await commitment_service.get_by_id(commitment_id, session)
+            if commitment is None or not commitment.enabled:
+                raise LysError(
+                    UNKNOWN_COMMITMENT,
+                    f"Commitment {commitment_id} does not exist or is disabled"
+                )
+
+            # A commitment ending mid-period would leave a partially billed
+            # period nobody can settle, so it must span whole billing periods
+            if commitment.duration_months % period.interval_months != 0:
+                raise LysError(
+                    INVALID_COMMITMENT_DURATION,
+                    f"Commitment {commitment_id} lasts {commitment.duration_months} months, "
+                    f"which is not a whole number of {period.interval_months} month periods"
                 )
 
     @classmethod
@@ -206,9 +242,10 @@ class LicensePlanVersionService(EntityService[LicensePlanVersion]):
         Args:
             plan_id: License plan ID
             session: Database session
-            prices: List of {"period_id": str, "amount": int, "currency_id": str},
-                    amount in currency minor units. currency_id defaults to
-                    DEFAULT_CURRENCY
+            prices: List of {"period_id": str, "amount": int, "currency_id": str,
+                    "commitment_id": str}, amount in currency minor units.
+                    currency_id defaults to DEFAULT_CURRENCY and commitment_id
+                    to NO_COMMITMENT
 
         Returns:
             New LicensePlanVersion entity
@@ -251,6 +288,7 @@ class LicensePlanVersionService(EntityService[LicensePlanVersion]):
                 plan_version_id=new_version.id,
                 period_id=price["period_id"],
                 currency_id=price.get("currency_id", DEFAULT_CURRENCY),
+                commitment_id=price.get("commitment_id", NO_COMMITMENT),
                 amount=price["amount"]
             )
 

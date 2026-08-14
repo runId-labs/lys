@@ -9,7 +9,10 @@ import strawberry
 from strawberry import relay
 from strawberry.types import Info
 
-from lys.apps.licensing.modules.plan.nodes import LicensePlanVersionNode
+from lys.apps.licensing.modules.plan.nodes import (
+    LicensePlanVersionNode,
+    LicensePlanVersionPriceNode,
+)
 from lys.apps.licensing.modules.subscription.entities import Subscription
 from lys.apps.licensing.modules.subscription.services import SubscriptionService
 from lys.core.graphql.nodes import EntityNode
@@ -59,3 +62,32 @@ class SubscriptionNode(EntityNode[SubscriptionService], relay.Node):
     @strawberry.field(description="Whether this is a free subscription (no payment provider)")
     def is_free(self) -> bool:
         return self._entity.provider_subscription_id is None
+
+    @strawberry.field(description="The price subscribed to, carrying periodicity, currency and commitment")
+    async def plan_version_price(self, info: Info) -> Optional[LicensePlanVersionPriceNode]:
+        if self._entity.plan_version_price is None:
+            return None
+        return LicensePlanVersionPriceNode.from_obj(self._entity.plan_version_price)
+
+    @strawberry.field(description="End of the contractual commitment, null when not committed")
+    def commitment_end_date(self) -> Optional[datetime]:
+        return self._entity.commitment_end_date
+
+    @strawberry.field(description="Whether the client is still bound by a commitment")
+    def is_committed(self) -> bool:
+        return self._entity.is_committed
+
+    @strawberry.field(
+        description="Last date a cancellation is accepted for the current term; "
+                    "past it the commitment is tacitly renewed"
+    )
+    def notice_deadline(self) -> Optional[datetime]:
+        return self._entity.notice_deadline
+
+    @strawberry.field(description="Whether a cancellation can still be requested for this term")
+    def can_be_cancelled_now(self) -> bool:
+        return self._entity.is_within_notice_period
+
+    @strawberry.field(description="Date a scheduled plan change takes effect")
+    def effective_change_date(self) -> Optional[datetime]:
+        return self._entity.effective_change_date

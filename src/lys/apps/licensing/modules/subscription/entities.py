@@ -6,11 +6,13 @@ This module defines:
 - subscription_user: Association table linking subscriptions to users
 """
 
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
 from sqlalchemy import Column, DateTime, ForeignKey, String, Table, func
 from sqlalchemy.orm import Mapped, mapped_column, declared_attr, relationship
 
+from lys.apps.licensing.modules.subscription.prorata import subtract_months
 from lys.core.entities import Entity
 from lys.core.managers.database import Base
 from lys.core.registries import register_entity
@@ -98,6 +100,12 @@ class Subscription(Entity):
         nullable=True,
         comment="Date when subscription was canceled (takes effect at period end)"
     )
+    commitment_end_date: Mapped[DateTime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+        index=True,
+        comment="End of the contractual commitment; NULL when not committed"
+    )
 
     @declared_attr
     def client(self):
@@ -155,6 +163,72 @@ class Subscription(Entity):
     def is_free(self) -> bool:
         """Returns True if on a free plan (no provider subscription)."""
         return self.provider_subscription_id is None
+
+    @property
+    def is_committed(self) -> bool:
+        """
+        Returns True if the client is still bound by a commitment.
+
+        While committed, the subscription cannot be downgraded or cancelled
+        before the commitment end date.
+        """
+        if self.commitment_end_date is None:
+            return False
+
+        end_date = self.commitment_end_date
+        if end_date.tzinfo is None:
+            end_date = end_date.replace(tzinfo=UTC)
+
+        return end_date > datetime.now(UTC)
+
+    @property
+    def effective_change_date(self):
+        """
+        Date a scheduled plan change takes effect.
+
+        A commitment outlives the current billing period, so a change requested
+        while committed only applies at the end of the commitment.
+        """
+        if self.is_committed:
+            return self.commitment_end_date
+        return self.current_period_end
+
+    @property
+    def notice_deadline(self):
+        """
+        Last date a denunciation is accepted for the current term.
+
+        Returns None when the subscription is not committed, or when the
+        commitment requires no notice: the term itself is then the deadline.
+        """
+        if not self.is_committed:
+            return None
+
+        commitment = (
+            self.plan_version_price.commitment
+            if self.plan_version_price is not None else None
+        )
+        if commitment is None or not commitment.notice_months:
+            return self.commitment_end_date
+
+        return subtract_months(self.commitment_end_date, commitment.notice_months)
+
+    @property
+    def is_within_notice_period(self) -> bool:
+        """
+        Returns True if a denunciation can still be received for this term.
+
+        Past the deadline the commitment is tacitly renewed, and the client has
+        to wait for the next notice window.
+        """
+        deadline = self.notice_deadline
+        if deadline is None:
+            return True
+
+        if deadline.tzinfo is None:
+            deadline = deadline.replace(tzinfo=UTC)
+
+        return datetime.now(UTC) <= deadline
 
     @classmethod
     def organization_accessing_filters(cls, stmt, organization_id_dict):

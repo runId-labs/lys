@@ -26,3 +26,6 @@ class SubscribeToPlanInput:
     currency_id: strawberry.auto = strawberry.field(
         description="Currency to be billed in (ISO 4217 code, defaults to EUR)"
     )
+    commitment_id: strawberry.auto = strawberry.field(
+        description="Contractual commitment to subscribe under (defaults to none)"
+    )

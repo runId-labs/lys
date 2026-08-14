@@ -20,7 +20,7 @@ from mollie.api.error import Error as MollieError
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from lys.apps.licensing.consts import DEFAULT_CURRENCY, MONTHLY_PERIOD
+from lys.apps.licensing.consts import DEFAULT_CURRENCY, MONTHLY_PERIOD, NO_COMMITMENT
 from lys.apps.licensing.modules.event.consts import (
     SUBSCRIPTION_PAYMENT_SUCCESS,
     SUBSCRIPTION_PAYMENT_FAILED,
@@ -210,14 +210,19 @@ class MollieWebhookService(Service):
         # Resolve the exact price that was paid for; it carries the periodicity,
         # the currency and the amount the client agreed to
         currency_id = metadata.get("currency_id", DEFAULT_CURRENCY)
+        commitment_id = metadata.get("commitment_id", NO_COMMITMENT)
         plan_version_entity = cls.app_manager.get_entity("license_plan_version")
         version = await session.get(plan_version_entity, plan_version_id)
-        price = version.price_for(billing_period, currency_id) if version else None
+        price = (
+            version.price_for(billing_period, currency_id, commitment_id)
+            if version else None
+        )
 
         if not price:
             logger.critical(
                 f"Payment {payment.id} for client {client_id} refers to plan version "
-                f"{plan_version_id} with no price for {billing_period}/{currency_id}. "
+                f"{plan_version_id} with no price for "
+                f"{billing_period}/{currency_id}/{commitment_id}. "
                 f"Manual intervention required."
             )
             return
@@ -225,6 +230,12 @@ class MollieWebhookService(Service):
         now = datetime.now(timezone.utc)
         period_start = now
         period_end = calculate_period_end(now, price.period.interval_months)
+
+        # A commitment runs from the first payment and is never restarted by a
+        # renewal, so it is only computed when none is recorded yet
+        commitment_end = None
+        if price.commitment.is_binding:
+            commitment_end = calculate_period_end(now, price.commitment.duration_months)
 
         # Update client's provider customer ID first
         client = None
@@ -259,6 +270,8 @@ class MollieWebhookService(Service):
             subscription.plan_version_price_id = price.id
             subscription.current_period_start = period_start
             subscription.current_period_end = period_end
+            if subscription.commitment_end_date is None:
+                subscription.commitment_end_date = commitment_end
 
             # Update provider subscription ID if needed
             if payment.subscription_id and not subscription.provider_subscription_id:
@@ -271,7 +284,8 @@ class MollieWebhookService(Service):
                 plan_version_price_id=price.id,
                 provider_subscription_id=payment.subscription_id,
                 current_period_start=period_start,
-                current_period_end=period_end
+                current_period_end=period_end,
+                commitment_end_date=commitment_end
             )
             session.add(subscription)
             logger.info(f"Created new subscription for client {client_id}")
@@ -292,7 +306,8 @@ class MollieWebhookService(Service):
                     billing_period=billing_period,
                     webhook_url=webhook_url,
                     session=session,
-                    currency_id=metadata.get("currency_id", DEFAULT_CURRENCY)
+                    currency_id=metadata.get("currency_id", DEFAULT_CURRENCY),
+                    commitment_id=metadata.get("commitment_id", NO_COMMITMENT)
                 )
 
                 if mollie_sub_id:
@@ -478,7 +493,8 @@ class MollieCheckoutService(Service):
         webhook_url: str,
         session: AsyncSession,
         cancel_url: Optional[str] = None,
-        currency_id: str = DEFAULT_CURRENCY
+        currency_id: str = DEFAULT_CURRENCY,
+        commitment_id: str = NO_COMMITMENT
     ) -> Optional[str]:
         """
         Create a Mollie payment for subscription.
@@ -492,6 +508,7 @@ class MollieCheckoutService(Service):
             session: Database session
             cancel_url: URL to redirect if user cancels (optional)
             currency_id: Currency to charge in
+            commitment_id: Contractual commitment subscribed to
 
         Returns:
             Checkout URL or None on failure
@@ -510,11 +527,12 @@ class MollieCheckoutService(Service):
             return None
 
         # Get price for the requested period and currency
-        price = version.price_for(billing_period, currency_id)
+        price = version.price_for(billing_period, currency_id, commitment_id)
 
         if not price or not price.amount:
             logger.error(
-                f"Plan version {plan_version_id} has no price for {billing_period}/{currency_id}"
+                f"Plan version {plan_version_id} has no price for "
+                f"{billing_period}/{currency_id}/{commitment_id}"
             )
             return None
 
@@ -552,7 +570,8 @@ class MollieCheckoutService(Service):
                     "client_id": client_id,
                     "plan_version_id": plan_version_id,
                     "billing_period": billing_period,
-                    "currency_id": price.currency_id
+                    "currency_id": price.currency_id,
+                    "commitment_id": price.commitment_id
                 }
             }
 
@@ -576,7 +595,8 @@ class MollieCheckoutService(Service):
         billing_period: str,
         webhook_url: str,
         session: AsyncSession,
-        currency_id: str = DEFAULT_CURRENCY
+        currency_id: str = DEFAULT_CURRENCY,
+        commitment_id: str = NO_COMMITMENT
     ) -> Optional[str]:
         """
         Create a recurring Mollie subscription.
@@ -590,6 +610,7 @@ class MollieCheckoutService(Service):
             webhook_url: URL for Mollie webhooks
             session: Database session
             currency_id: Currency to charge in
+            commitment_id: Contractual commitment subscribed to
 
         Returns:
             Mollie subscription ID or None on failure
@@ -605,11 +626,12 @@ class MollieCheckoutService(Service):
         if not version:
             return None
 
-        price = version.price_for(billing_period, currency_id)
+        price = version.price_for(billing_period, currency_id, commitment_id)
 
         if not price or not price.amount:
             logger.error(
-                f"Plan version {plan_version_id} has no price for {billing_period}/{currency_id}"
+                f"Plan version {plan_version_id} has no price for "
+                f"{billing_period}/{currency_id}/{commitment_id}"
             )
             return None
 
@@ -625,7 +647,8 @@ class MollieCheckoutService(Service):
                 "webhookUrl": webhook_url,
                 "metadata": {
                     "plan_version_id": plan_version_id,
-                    "currency_id": price.currency_id
+                    "currency_id": price.currency_id,
+                    "commitment_id": price.commitment_id
                 }
             })
 

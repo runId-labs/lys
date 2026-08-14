@@ -142,11 +142,16 @@ async def licensing_app_manager():
         from lys.apps.licensing.consts import (
             EUR_CURRENCY,
             MONTHLY_PERIOD,
+            NO_COMMITMENT,
             YEARLY_PERIOD,
         )
         currency_service = app_manager.get_service("license_currency")
         await currency_service.create(
             session=session, id=EUR_CURRENCY, enabled=True, minor_unit=2
+        )
+        commitment_service = app_manager.get_service("license_commitment")
+        await commitment_service.create(
+            session=session, id=NO_COMMITMENT, enabled=True, duration_months=0
         )
         period_service = app_manager.get_service("license_price_period")
         await period_service.create(
@@ -177,11 +182,13 @@ async def licensing_app_manager():
         ):
             await price_service.create(
                 session=session, plan_version_id=version.id,
-                period_id=MONTHLY_PERIOD, currency_id=EUR_CURRENCY, amount=monthly
+                period_id=MONTHLY_PERIOD, currency_id=EUR_CURRENCY,
+                commitment_id=NO_COMMITMENT, amount=monthly
             )
             await price_service.create(
                 session=session, plan_version_id=version.id,
-                period_id=YEARLY_PERIOD, currency_id=EUR_CURRENCY, amount=yearly
+                period_id=YEARLY_PERIOD, currency_id=EUR_CURRENCY,
+                commitment_id=NO_COMMITMENT, amount=yearly
             )
 
         # Version Rules

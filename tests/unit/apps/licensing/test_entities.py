@@ -239,11 +239,11 @@ class TestLicensePlanVersionPriceEntity:
 
     def test_has_expected_columns(self):
         from lys.apps.licensing.modules.plan.entities import LicensePlanVersionPrice
-        for column in ("plan_version_id", "period_id", "currency_id", "amount"):
+        for column in ("plan_version_id", "period_id", "currency_id", "commitment_id", "amount"):
             attr = inspect.getattr_static(LicensePlanVersionPrice, column)
             assert isinstance(attr, MappedColumn)
 
-    def test_unique_constraint_on_version_period_currency(self):
+    def test_unique_constraint_on_billing_terms(self):
         from sqlalchemy import UniqueConstraint
         from lys.apps.licensing.modules.plan.entities import LicensePlanVersionPrice
         constraints = [
@@ -252,7 +252,9 @@ class TestLicensePlanVersionPriceEntity:
         ]
         assert len(constraints) == 1
         # Columns are still pending until the entity is mapped at app startup
-        assert constraints[0]._pending_colargs == ["plan_version_id", "period_id", "currency_id"]
+        assert constraints[0]._pending_colargs == [
+            "plan_version_id", "period_id", "currency_id", "commitment_id"
+        ]
 
 
 class TestLicensePlanVersionRuleEntity:

@@ -250,7 +250,8 @@ class MollieMutation(Mutation):
             success_url=data.success_url,
             webhook_url=webhook_url,
             session=info.context.session,
-            currency_id=data.currency_id
+            currency_id=data.currency_id,
+            commitment_id=data.commitment_id
         )
 
         return SubscribeToPlanResultNode(

@@ -7,6 +7,21 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.32.0] - 2026-08-14
+
+### Added
+- `LicenseCommitment` parametric entity carrying the initial duration, the span it is tacitly renewed for and the notice required before the term, so that a commitment is not billed as a periodicity
+- `commitment_id` on plan version prices, letting the same plan be priced differently depending on how long the client commits, and `commitment_end_date` on subscriptions
+- `commitmentId` argument on the `subscribeToPlan` mutation
+- Tacit renewal in `apply_pending_plan_changes`: a commitment reaching its term undenounced is renewed for its own renewal span, or simply ends when it has none
+- `SubscriptionNode` exposes the commitment term, the notice deadline and whether a cancellation can still be requested, so a client can know when they may leave
+- `subtract_months` deriving a notice deadline from a commitment term, with the same day clamping as `calculate_period_end`
+
+### Changed
+- A downgrade or a cancellation requested under commitment is deferred to the commitment term instead of the billing period end, and the recurring collection continues until then; stopping it earlier would have handed out the remaining periods for free
+- A downgrade or a cancellation is refused with `NOTICE_PERIOD_EXPIRED_ERROR` once the notice deadline has passed, the commitment being renewed at that point
+- `LicensePlanVersionService.create_new_version` rejects a commitment that does not span a whole number of billing periods, which would otherwise leave a partially billed period nobody can settle
+
 ## [0.31.0] - 2026-08-13
 
 ### Added

@@ -180,6 +180,9 @@ class TestHandleDowngrade:
         mock_sub.pending_plan_version_id = None
         mock_sub.current_period_end = datetime(2025, 2, 1)
         mock_sub.provider_subscription_id = "sub_123"
+        mock_sub.commitment_end_date = None
+        mock_sub.is_committed = False
+        mock_sub.effective_change_date = datetime(2025, 2, 1)
 
         paid_target = Mock()
         paid_target.is_free = False
@@ -212,6 +215,9 @@ class TestHandleDowngrade:
         mock_sub.current_period_end = datetime(2025, 2, 1)
         mock_sub.provider_subscription_id = "sub_123"
         mock_sub.client_id = "client-1"
+        mock_sub.commitment_end_date = None
+        mock_sub.is_committed = False
+        mock_sub.effective_change_date = datetime(2025, 2, 1)
 
         free_target = Mock()
         free_target.is_free = True
@@ -329,6 +335,7 @@ class TestApplyPendingPlanChangesGuards:
 
         subscription_entity = Mock()
         subscription_entity.current_period_end = Mock(__le__=Mock(return_value=Mock()))
+        subscription_entity.commitment_end_date = Mock(__le__=Mock(return_value=Mock()))
 
         app_manager = Mock()
         app_manager.get_entity = Mock(return_value=subscription_entity)
@@ -337,10 +344,39 @@ class TestApplyPendingPlanChangesGuards:
         with patch("lys.apps.licensing.tasks.current_app") as mock_current_app:
             mock_current_app.app_manager = app_manager
             # The entity registry is mocked, so the query cannot be built for real
-            with patch("lys.apps.licensing.tasks.select"):
+            with patch("lys.apps.licensing.tasks.select"), \
+                    patch("lys.apps.licensing.tasks.and_"), \
+                    patch("lys.apps.licensing.tasks.or_"):
                 applied = apply_pending_plan_changes()
 
         assert applied == 0
         # The change is still pending, and the plan was not switched
         assert subscription.pending_plan_version_id == "pv-target"
         assert subscription.plan_version_id == "pv-current"
+
+
+class TestSubscriptionCommitmentExposure:
+    """The commitment terms a client is bound by must be readable."""
+
+    def test_node_exposes_the_commitment_fields(self):
+        """
+        A client cannot know when they may leave unless the term and the notice
+        deadline are exposed.
+        """
+        from lys.apps.licensing.modules.subscription.nodes import SubscriptionNode
+
+        for field in (
+            "commitment_end_date", "notice_deadline", "is_committed",
+            "can_be_cancelled_now", "effective_change_date", "plan_version_price"
+        ):
+            assert hasattr(SubscriptionNode, field), f"{field} is not exposed"
+
+    def test_commitment_node_exposes_renewal_and_notice(self):
+        """A buyer must see the renewal and notice terms before committing."""
+        from lys.apps.licensing.modules.plan.nodes import LicenseCommitmentNode
+
+        annotations = LicenseCommitmentNode.__annotations__
+        assert "duration_months" in annotations
+        assert "renewal_months" in annotations
+        assert "notice_months" in annotations
+        assert hasattr(LicenseCommitmentNode, "is_renewable")

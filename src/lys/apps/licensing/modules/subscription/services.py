@@ -14,10 +14,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from lys.apps.licensing.consts import (
     BILLING_TERMS_CHANGE_ERROR,
     CANCEL_SUBSCRIPTION_FAILED_ERROR,
+    NOTICE_PERIOD_EXPIRED_ERROR,
     CHECKOUT_SESSION_FAILED_ERROR,
     DEFAULT_CURRENCY,
     FREE_PLAN,
     NO_ACTIVE_SUBSCRIPTION_ERROR,
+    NO_COMMITMENT,
     NO_PROVIDER_SUBSCRIPTION_ERROR,
     PLAN_NOT_FOUND_ERROR,
     PLAN_NOT_PRICED_ERROR,
@@ -182,13 +184,16 @@ class SubscriptionService(EntityService[Subscription]):
 
             if current_price is not None:
                 new_price = new_version.price_for(
-                    current_price.period_id, current_price.currency_id
+                    current_price.period_id,
+                    current_price.currency_id,
+                    current_price.commitment_id
                 )
                 if new_price is None and not new_version.is_free:
                     raise LysError(
                         PLAN_VERSION_NOT_PRICED,
                         f"Plan version {new_plan_version_id} has no price for "
-                        f"{current_price.period_id}/{current_price.currency_id}"
+                        f"{current_price.period_id}/{current_price.currency_id}/"
+                        f"{current_price.commitment_id}"
                     )
 
             subscription.plan_version_id = new_plan_version_id
@@ -368,7 +373,8 @@ class SubscriptionService(EntityService[Subscription]):
         success_url: str,
         webhook_url: str,
         session: AsyncSession,
-        currency_id: str = DEFAULT_CURRENCY
+        currency_id: str = DEFAULT_CURRENCY,
+        commitment_id: str = NO_COMMITMENT
     ) -> SubscribeToPlanResult:
         """
         Subscribe a client to a plan, handling all cases automatically.
@@ -387,6 +393,7 @@ class SubscriptionService(EntityService[Subscription]):
             webhook_url: URL for payment provider webhooks
             session: Database session
             currency_id: Currency the subscription is billed in
+            commitment_id: Contractual commitment subscribed to
 
         Returns:
             SubscribeToPlanResult with checkout_url or effective_date
@@ -411,11 +418,11 @@ class SubscriptionService(EntityService[Subscription]):
         # requested terms must be rejected here: leaving it at 0 would make both
         # sides of the comparison below equal, route the request to the downgrade
         # branch, and schedule the plan change without any payment.
-        new_price_entity = new_version.price_for(billing_period, currency_id)
+        new_price_entity = new_version.price_for(billing_period, currency_id, commitment_id)
         if new_price_entity is None and not new_version.is_free:
             logger.warning(
                 f"Client {client_id} requested plan version {plan_version_id} "
-                f"for {billing_period}/{currency_id}, which is not priced"
+                f"for {billing_period}/{currency_id}/{commitment_id}, which is not priced"
             )
             return SubscribeToPlanResult(success=False, error=PLAN_NOT_PRICED_ERROR)
 
@@ -441,12 +448,15 @@ class SubscriptionService(EntityService[Subscription]):
         if current_terms is not None and (
             current_terms.period_id != billing_period
             or current_terms.currency_id != currency_id
+            or current_terms.commitment_id != commitment_id
         ):
             return SubscribeToPlanResult(success=False, error=BILLING_TERMS_CHANGE_ERROR)
 
         # Get current plan version and price
         current_version = await session.get(plan_version_entity, subscription.plan_version_id)
-        current_price_entity = current_version.price_for(billing_period, currency_id)
+        current_price_entity = current_version.price_for(
+            billing_period, currency_id, commitment_id
+        )
         current_price = current_price_entity.amount if current_price_entity else 0
 
         # Case 2: Same plan
@@ -465,10 +475,16 @@ class SubscriptionService(EntityService[Subscription]):
                 success_url=success_url,
                 webhook_url=webhook_url,
                 session=session,
-                currency_id=currency_id
+                currency_id=currency_id,
+                commitment_id=commitment_id
             )
 
-        # Case 4: Downgrade
+        # Case 4: Downgrade. Under commitment it only takes effect at the term,
+        # and only if the notice deadline has not passed. Upgrades stay allowed
+        # throughout, since they raise the amount due.
+        if not subscription.is_within_notice_period:
+            return SubscribeToPlanResult(success=False, error=NOTICE_PERIOD_EXPIRED_ERROR)
+
         return await cls._handle_downgrade(
             subscription=subscription,
             plan_version_id=plan_version_id,
@@ -484,7 +500,8 @@ class SubscriptionService(EntityService[Subscription]):
         success_url: str,
         webhook_url: str,
         session: AsyncSession,
-        currency_id: str = DEFAULT_CURRENCY
+        currency_id: str = DEFAULT_CURRENCY,
+        commitment_id: str = NO_COMMITMENT
     ) -> SubscribeToPlanResult:
         """Handle new subscription or upgrade from FREE plan."""
         checkout_service = cls.app_manager.get_service("mollie_checkout")
@@ -495,7 +512,8 @@ class SubscriptionService(EntityService[Subscription]):
             redirect_url=success_url,
             webhook_url=webhook_url,
             session=session,
-            currency_id=currency_id
+            currency_id=currency_id,
+            commitment_id=commitment_id
         )
 
         if not checkout_url:
@@ -515,7 +533,8 @@ class SubscriptionService(EntityService[Subscription]):
         success_url: str,
         webhook_url: str,
         session: AsyncSession,
-        currency_id: str = DEFAULT_CURRENCY
+        currency_id: str = DEFAULT_CURRENCY,
+        commitment_id: str = NO_COMMITMENT
     ) -> SubscribeToPlanResult:
         """Handle upgrade with prorata calculation."""
         # No billing period info - treat as new subscription
@@ -527,7 +546,8 @@ class SubscriptionService(EntityService[Subscription]):
                 success_url=success_url,
                 webhook_url=webhook_url,
                 session=session,
-                currency_id=currency_id
+                currency_id=currency_id,
+                commitment_id=commitment_id
             )
 
         # Calculate prorata
@@ -540,7 +560,9 @@ class SubscriptionService(EntityService[Subscription]):
 
         # No prorata needed (period almost over) - apply immediately
         if prorata_amount <= 0:
-            new_price_entity = new_version.price_for(billing_period, currency_id)
+            new_price_entity = new_version.price_for(
+                billing_period, currency_id, commitment_id
+            )
 
             subscription.plan_version_id = new_version.id
             subscription.pending_plan_version_id = None
@@ -583,6 +605,7 @@ class SubscriptionService(EntityService[Subscription]):
                     "plan_version_id": new_version.id,
                     "billing_period": billing_period,
                     "currency_id": currency_id,
+                    "commitment_id": commitment_id,
                     "is_prorata": True
                 }
             }
@@ -620,6 +643,10 @@ class SubscriptionService(EntityService[Subscription]):
         applied, by apply_pending_plan_changes, since until then the client is
         still on the current plan and owes its price.
 
+        A committed subscription is left alone entirely: the client owes every
+        remaining period until the commitment ends, so collection must continue
+        and is only stopped by apply_pending_plan_changes at the term.
+
         Args:
             subscription: The subscription to downgrade
             plan_version_id: Target plan version
@@ -633,7 +660,12 @@ class SubscriptionService(EntityService[Subscription]):
         plan_version_entity = cls.app_manager.get_entity("license_plan_version")
         target_version = await session.get(plan_version_entity, plan_version_id)
 
-        if target_version is not None and target_version.is_free and subscription.provider_subscription_id:
+        if (
+            target_version is not None
+            and target_version.is_free
+            and subscription.provider_subscription_id
+            and not subscription.is_committed
+        ):
             client_entity = cls.app_manager.get_entity("client")
             client = await session.get(client_entity, subscription.client_id)
 
@@ -653,7 +685,7 @@ class SubscriptionService(EntityService[Subscription]):
 
         return SubscribeToPlanResult(
             success=True,
-            effective_date=subscription.current_period_end
+            effective_date=subscription.effective_change_date
         )
 
     @classmethod
@@ -665,8 +697,17 @@ class SubscriptionService(EntityService[Subscription]):
         """
         Cancel a subscription.
 
-        The cancellation takes effect at the end of the current billing period.
-        The client keeps access until then, then downgrades to FREE plan.
+        The cancellation takes effect at the end of the current billing period,
+        or at the end of the commitment when the client is still bound. The
+        client keeps access until then, then downgrades to FREE plan.
+
+        It is refused once the notice deadline of a committed subscription has
+        passed: the commitment is then renewed, and the denunciation has to be
+        requested again during the next notice window.
+
+        A committed subscription keeps being collected until the term: the
+        provider subscription is stopped by apply_pending_plan_changes on the
+        effective date, not here.
 
         Args:
             client_id: Client ID
@@ -690,6 +731,11 @@ class SubscriptionService(EntityService[Subscription]):
         if not subscription.provider_subscription_id:
             return CancelSubscriptionResult(success=False, error=NO_PROVIDER_SUBSCRIPTION_ERROR)
 
+        # Past the notice deadline the commitment is tacitly renewed, so the
+        # denunciation can only be received during the next notice window
+        if not subscription.is_within_notice_period:
+            return CancelSubscriptionResult(success=False, error=NOTICE_PERIOD_EXPIRED_ERROR)
+
         if not client.provider_customer_id:
             return CancelSubscriptionResult(success=False, error=CANCEL_SUBSCRIPTION_FAILED_ERROR)
 
@@ -702,15 +748,18 @@ class SubscriptionService(EntityService[Subscription]):
 
         # A cancellation is a downgrade to the free plan: same scheduling, same
         # handling of the provider subscription
+        was_committed = subscription.is_committed
         await cls._handle_downgrade(
             subscription=subscription,
             plan_version_id=free_version.id,
             session=session
         )
 
-        if subscription.canceled_at is None:
-            # The provider subscription could not be stopped, so the client would
-            # keep being charged; report the failure rather than a false success
+        if not was_committed and subscription.canceled_at is None:
+            # Collection was meant to stop now but could not, so the client would
+            # keep being charged; report the failure rather than a false success.
+            # A committed subscription is expected to keep being charged until
+            # the term, so it is not concerned.
             return CancelSubscriptionResult(success=False, error=CANCEL_SUBSCRIPTION_FAILED_ERROR)
 
         # Trigger subscription canceled event (notification + email)
@@ -718,10 +767,8 @@ class SubscriptionService(EntityService[Subscription]):
         plan_name = None
         if subscription.plan_version and subscription.plan_version.plan:
             plan_name = subscription.plan_version.plan.id
-        effective_date = (
-            subscription.current_period_end.isoformat()
-            if subscription.current_period_end else None
-        )
+        change_date = subscription.effective_change_date
+        effective_date = change_date.isoformat() if change_date else None
 
         trigger_event.delay(
             event_type=SUBSCRIPTION_CANCELED,
@@ -742,5 +789,5 @@ class SubscriptionService(EntityService[Subscription]):
 
         return CancelSubscriptionResult(
             success=True,
-            effective_date=subscription.current_period_end
+            effective_date=subscription.effective_change_date
         )

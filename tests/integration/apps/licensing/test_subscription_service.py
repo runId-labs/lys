@@ -13,11 +13,15 @@ via the licensing ClientService extension.
 """
 
 import pytest
+from datetime import datetime, timedelta, timezone
+from unittest.mock import patch
 from uuid import uuid4
 
 from lys.apps.licensing.consts import (
     BILLING_TERMS_CHANGE_ERROR,
+    NOTICE_PERIOD_EXPIRED_ERROR,
     DEFAULT_APPLICATION,
+    EUR_CURRENCY,
     FREE_PLAN,
     MONTHLY_PERIOD,
     PLAN_NOT_PRICED_ERROR,
@@ -675,3 +679,299 @@ class TestChangePlanKeepsPriceCoherent:
                     session=session,
                     immediate=True
                 )
+
+
+class TestCommitment:
+    """A commitment binds the client until its term."""
+
+    @staticmethod
+    async def _committed_client(licensing_app_manager, months=36):
+        """Put a client on a paid yearly plan committed for `months` months."""
+        client_service = licensing_app_manager.get_service("client")
+        plan_service = licensing_app_manager.get_service("license_plan")
+        version_service = licensing_app_manager.get_service("license_plan_version")
+        commitment_service = licensing_app_manager.get_service("license_commitment")
+        subscription_service = licensing_app_manager.get_service("subscription")
+
+        commitment_id = f"COMMIT_{months}M_{uuid4().hex[:6]}"
+        plan_id = f"COMMITTED_{uuid4().hex[:6]}"
+
+        async with licensing_app_manager.database.get_session() as session:
+            client = await client_service.create_client_with_owner(
+                session=session,
+                client_name=f"Commit-Corp-{uuid4().hex[:8]}",
+                email=f"commit-{uuid4().hex[:8]}@example.com",
+                password="Password123!",
+                language_id="en",
+                send_verification_email=False
+            )
+            await commitment_service.create(
+                session=session, id=commitment_id, enabled=True, duration_months=months
+            )
+            await plan_service.create(
+                session=session, id=plan_id, enabled=True, app_id=DEFAULT_APPLICATION
+            )
+            version = await version_service.create_new_version(
+                plan_id, session,
+                prices=[{
+                    "period_id": YEARLY_PERIOD,
+                    "amount": 30000,
+                    "commitment_id": commitment_id,
+                }]
+            )
+
+            # The freshly created version has no loaded prices yet, so the price
+            # is looked up on its own rather than through the relationship
+            price_service = licensing_app_manager.get_service("license_plan_version_price")
+            prices = await price_service.get_all(session)
+            price = next(
+                p for p in prices
+                if p.plan_version_id == version.id and p.commitment_id == commitment_id
+            )
+
+            subscription = await subscription_service.get_client_subscription(client.id, session)
+            subscription.plan_version_id = version.id
+            subscription.plan_version_price_id = price.id
+            subscription.provider_subscription_id = f"sub_{uuid4().hex[:8]}"
+            subscription.current_period_end = datetime.now(timezone.utc) + timedelta(days=300)
+            subscription.commitment_end_date = datetime.now(timezone.utc) + timedelta(days=900)
+            client.provider_customer_id = f"cst_{uuid4().hex[:8]}"
+            client_id = client.id
+            version_id = version.id
+            await session.commit()
+
+        return client_id, version_id, commitment_id
+
+    @pytest.mark.asyncio
+    async def test_downgrade_is_deferred_to_the_term_while_committed(self, licensing_app_manager):
+        """The commitment is honoured by deferring, not by refusing."""
+        subscription_service = licensing_app_manager.get_service("subscription")
+        version_service = licensing_app_manager.get_service("license_plan_version")
+
+        client_id, _, commitment_id = await self._committed_client(licensing_app_manager)
+
+        async with licensing_app_manager.database.get_session() as session:
+            free_version = await version_service.get_current_version(FREE_PLAN, session)
+            subscription = await subscription_service.get_client_subscription(client_id, session)
+            commitment_end = subscription.commitment_end_date
+
+            result = await subscription_service.subscribe_to_plan(
+                client_id=client_id,
+                plan_version_id=free_version.id,
+                billing_period=YEARLY_PERIOD,
+                success_url="https://example.com/success",
+                webhook_url="https://example.com/webhooks/mollie",
+                session=session,
+                commitment_id=commitment_id
+            )
+
+            assert result.success is True
+            assert result.effective_date == commitment_end
+            assert subscription.pending_plan_version_id == free_version.id
+            # Collection continues until the term
+            assert subscription.provider_subscription_id is not None
+
+    @pytest.mark.asyncio
+    async def test_cancel_defers_to_the_term_and_keeps_collecting(self, licensing_app_manager):
+        """
+        The provider subscription must stay alive: the client owes every period
+        until the term. Stopping it now would hand out free months.
+        """
+        subscription_service = licensing_app_manager.get_service("subscription")
+
+        client_id, _, _ = await self._committed_client(licensing_app_manager)
+
+        async with licensing_app_manager.database.get_session() as session:
+            subscription = await subscription_service.get_client_subscription(client_id, session)
+            provider_id = subscription.provider_subscription_id
+            commitment_end = subscription.commitment_end_date
+
+            # The cancellation event is dispatched through Celery, out of scope here
+            with patch(
+                "lys.apps.licensing.modules.subscription.services.trigger_event.delay"
+            ):
+                result = await subscription_service.cancel(client_id, session)
+
+            assert result.success is True
+            # Effective at the commitment term, not at the end of the period
+            assert result.effective_date == commitment_end
+            # Collection continues until then
+            assert subscription.provider_subscription_id == provider_id
+            assert subscription.canceled_at is None
+            assert subscription.pending_plan_version_id is not None
+
+    @pytest.mark.asyncio
+    async def test_expired_commitment_no_longer_binds(self, licensing_app_manager):
+        subscription_service = licensing_app_manager.get_service("subscription")
+
+        client_id, _, _ = await self._committed_client(licensing_app_manager)
+
+        async with licensing_app_manager.database.get_session() as session:
+            subscription = await subscription_service.get_client_subscription(client_id, session)
+            subscription.commitment_end_date = datetime.now(timezone.utc) - timedelta(days=1)
+            await session.commit()
+
+            assert subscription.is_committed is False
+            assert subscription.effective_change_date == subscription.current_period_end
+
+
+class TestCommitmentPriceValidation:
+    """A commitment must span a whole number of billing periods."""
+
+    @pytest.mark.asyncio
+    async def test_commitment_not_divisible_by_period_is_refused(self, licensing_app_manager):
+        plan_service = licensing_app_manager.get_service("license_plan")
+        version_service = licensing_app_manager.get_service("license_plan_version")
+        commitment_service = licensing_app_manager.get_service("license_commitment")
+
+        plan_id = f"ODD_COMMIT_{uuid4().hex[:6]}"
+        commitment_id = f"COMMIT_18M_{uuid4().hex[:6]}"
+
+        async with licensing_app_manager.database.get_session() as session:
+            await commitment_service.create(
+                session=session, id=commitment_id, enabled=True, duration_months=18
+            )
+            await plan_service.create(
+                session=session, id=plan_id, enabled=True, app_id=DEFAULT_APPLICATION
+            )
+
+            # 18 months of commitment cannot be split into whole years
+            with pytest.raises(LysError, match="INVALID_COMMITMENT_DURATION"):
+                await version_service.create_new_version(
+                    plan_id, session,
+                    prices=[{
+                        "period_id": YEARLY_PERIOD,
+                        "amount": 30000,
+                        "commitment_id": commitment_id,
+                    }]
+                )
+
+
+class TestNoticePeriodAndTacitRenewal:
+    """Past the notice deadline the commitment renews and denunciation is refused."""
+
+    @staticmethod
+    async def _client_with_notice(licensing_app_manager, notice_months, days_to_term):
+        """Commit a client with a notice period, whose term is `days_to_term` away."""
+        client_service = licensing_app_manager.get_service("client")
+        plan_service = licensing_app_manager.get_service("license_plan")
+        version_service = licensing_app_manager.get_service("license_plan_version")
+        commitment_service = licensing_app_manager.get_service("license_commitment")
+        price_service = licensing_app_manager.get_service("license_plan_version_price")
+        subscription_service = licensing_app_manager.get_service("subscription")
+
+        commitment_id = f"NOTICE_{uuid4().hex[:6]}"
+        plan_id = f"NOTICE_PLAN_{uuid4().hex[:6]}"
+
+        async with licensing_app_manager.database.get_session() as session:
+            client = await client_service.create_client_with_owner(
+                session=session,
+                client_name=f"Notice-Corp-{uuid4().hex[:8]}",
+                email=f"notice-{uuid4().hex[:8]}@example.com",
+                password="Password123!",
+                language_id="en",
+                send_verification_email=False
+            )
+            await commitment_service.create(
+                session=session, id=commitment_id, enabled=True,
+                duration_months=36, renewal_months=12, notice_months=notice_months
+            )
+            await plan_service.create(
+                session=session, id=plan_id, enabled=True, app_id=DEFAULT_APPLICATION
+            )
+            version = await version_service.create_new_version(
+                plan_id, session,
+                prices=[{
+                    "period_id": YEARLY_PERIOD,
+                    "amount": 30000,
+                    "commitment_id": commitment_id,
+                }]
+            )
+            prices = await price_service.get_all(session)
+            price = next(p for p in prices if p.plan_version_id == version.id)
+
+            subscription = await subscription_service.get_client_subscription(client.id, session)
+            subscription.plan_version_id = version.id
+            subscription.plan_version_price_id = price.id
+            subscription.provider_subscription_id = f"sub_{uuid4().hex[:8]}"
+            subscription.current_period_end = datetime.now(timezone.utc) + timedelta(days=30)
+            subscription.commitment_end_date = (
+                datetime.now(timezone.utc) + timedelta(days=days_to_term)
+            )
+            client.provider_customer_id = f"cst_{uuid4().hex[:8]}"
+            client_id = client.id
+            await session.commit()
+
+        return client_id
+
+    @pytest.mark.asyncio
+    async def test_denunciation_inside_the_notice_window_is_accepted(self, licensing_app_manager):
+        subscription_service = licensing_app_manager.get_service("subscription")
+
+        # Term in 300 days, 3 months of notice: the deadline is far ahead
+        client_id = await self._client_with_notice(licensing_app_manager, 3, 300)
+
+        async with licensing_app_manager.database.get_session() as session:
+            with patch(
+                "lys.apps.licensing.modules.subscription.services.trigger_event.delay"
+            ):
+                result = await subscription_service.cancel(client_id, session)
+
+            assert result.success is True
+
+    @pytest.mark.asyncio
+    async def test_denunciation_past_the_deadline_is_refused(self, licensing_app_manager):
+        subscription_service = licensing_app_manager.get_service("subscription")
+
+        # Term in 30 days with 3 months of notice: the deadline has passed
+        client_id = await self._client_with_notice(licensing_app_manager, 3, 30)
+
+        async with licensing_app_manager.database.get_session() as session:
+            result = await subscription_service.cancel(client_id, session)
+
+            assert result.success is False
+            assert result.error == NOTICE_PERIOD_EXPIRED_ERROR
+
+            subscription = await subscription_service.get_client_subscription(client_id, session)
+            assert subscription.pending_plan_version_id is None
+
+    @pytest.mark.asyncio
+    async def test_commitment_is_renewed_for_its_renewal_span(self, licensing_app_manager):
+        """A term reached undenounced renews for renewal_months, not the initial duration."""
+        from lys.apps.licensing.tasks import _renew_commitment
+
+        subscription_service = licensing_app_manager.get_service("subscription")
+
+        client_id = await self._client_with_notice(licensing_app_manager, 3, 1)
+
+        async with licensing_app_manager.database.get_session() as session:
+            subscription = await subscription_service.get_client_subscription(client_id, session)
+            term = subscription.commitment_end_date
+
+            renewed = _renew_commitment(subscription)
+
+            assert renewed == 1
+            # Renewed by 12 months, not by the initial 36
+            assert subscription.commitment_end_date.year == term.year + 1
+            assert subscription.commitment_end_date.month == term.month
+
+    @pytest.mark.asyncio
+    async def test_commitment_without_renewal_span_simply_ends(self, licensing_app_manager):
+        from lys.apps.licensing.tasks import _renew_commitment
+
+        subscription_service = licensing_app_manager.get_service("subscription")
+        commitment_service = licensing_app_manager.get_service("license_commitment")
+
+        client_id = await self._client_with_notice(licensing_app_manager, 0, 1)
+
+        async with licensing_app_manager.database.get_session() as session:
+            subscription = await subscription_service.get_client_subscription(client_id, session)
+            commitment = subscription.plan_version_price.commitment
+            commitment.renewal_months = 0
+            await session.flush()
+
+            renewed = _renew_commitment(subscription)
+
+            assert renewed == 0
+            assert subscription.commitment_end_date is None
+            assert subscription.is_committed is False

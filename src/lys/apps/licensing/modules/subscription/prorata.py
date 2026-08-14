@@ -90,6 +90,29 @@ def calculate_period_end(
     return period_start.replace(year=year, month=month, day=min(period_start.day, last_day))
 
 
+def subtract_months(reference: datetime, months: int) -> datetime:
+    """
+    Move a date back by a number of months.
+
+    Used to derive a notice deadline from a commitment term.
+
+    Args:
+        reference: Date to move back from
+        months: Number of months to subtract
+
+    Returns:
+        The resulting date, same day of month, clamped to the last day of the
+        target month when it is shorter (e.g., Mar 31 minus 1 month -> Feb 28)
+    """
+    total_months = reference.month - 1 - months
+    year = reference.year + total_months // 12
+    month = total_months % 12 + 1
+
+    last_day = calendar.monthrange(year, month)[1]
+
+    return reference.replace(year=year, month=month, day=min(reference.day, last_day))
+
+
 def is_upgrade(old_price: int, new_price: int) -> bool:
     """
     Determine if a plan change is an upgrade.
