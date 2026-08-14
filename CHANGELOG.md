@@ -7,6 +7,14 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.33.0] - 2026-08-14
+
+### Changed
+- `LicensePlanDevFixtures` no longer disables the plans it does not list. Custom plans negotiated with a single client are created at runtime and appear in no `data_list`, so the sweep silently disabled them and removed them from the catalogue while their subscribers kept their entitlements. Retiring a plan is now an explicit `enabled: False`
+
+### Removed
+- `STARTER` and `PRO` plans and their versions. `LicensePlan` is parametric, so these demonstration tiers were loaded in every environment, production included, and competed with the plans of the applications consuming the framework. Only the free plan is shipped, because the framework depends on it: a new client is subscribed to it and a cancellation falls back to it
+
 ## [0.32.0] - 2026-08-14
 
 ### Added

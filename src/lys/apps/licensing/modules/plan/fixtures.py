@@ -20,8 +20,6 @@ from lys.apps.licensing.consts import (
     DEFAULT_CURRENCY,
     EUR_CURRENCY,
     FREE_PLAN,
-    STARTER_PLAN,
-    PRO_PLAN,
     MAX_USERS,
     MAX_PROJECTS_PER_MONTH,
     MONTHLY_PERIOD,
@@ -106,10 +104,17 @@ class LicensePlanDevFixtures(EntityFixtures[LicensePlanService]):
     """
     Fixtures for license plan types.
 
-    Plans represent subscription tiers available to clients.
+    Only the free plan is shipped, because the framework depends on it: a new
+    client is automatically subscribed to it, and a cancellation falls back to
+    it. Commercial tiers belong to each application's own offer.
+
+    Plans not listed here are left untouched, so that custom plans negotiated
+    with a single client and created at runtime are not disabled on the next
+    fixture run. Retiring a plan is therefore an explicit `enabled: False`.
     """
     model = ParametricEntityFixturesModel
     _allowed_envs = [EnvironmentEnum.DEV, ]
+    delete_previous_data = False
 
     data_list = [
         {
@@ -118,22 +123,6 @@ class LicensePlanDevFixtures(EntityFixtures[LicensePlanService]):
                 "app_id": DEFAULT_APPLICATION,
                 "enabled": True,
                 "description": "Free plan with basic features and limited quotas"
-            }
-        },
-        {
-            "id": STARTER_PLAN,
-            "attributes": {
-                "app_id": DEFAULT_APPLICATION,
-                "enabled": True,
-                "description": "Starter plan for small teams"
-            }
-        },
-        {
-            "id": PRO_PLAN,
-            "attributes": {
-                "app_id": DEFAULT_APPLICATION,
-                "enabled": True,
-                "description": "Professional plan for growing businesses"
             }
         },
     ]
@@ -172,9 +161,13 @@ class LicenseCommitmentFixtures(EntityFixtures[LicenseCommitmentService]):
 ])
 class LicensePlanVersionDevFixtures(EntityFixtures[LicensePlanVersionService]):
     """
-    Fixtures for license plan versions with pricing and rules.
+    Fixture for the free plan version.
 
-    Each version defines:
+    Only the free plan is versioned here, since it is the only plan the
+    framework ships. Priced versions belong to each application's own offer and
+    are published through the plan version webservices.
+
+    A version defines:
     - Prices, one per (period, currency, commitment), in currency minor units.
       No price entry means the version is free.
     - Rules with limit values (quotas and feature toggles)
@@ -198,38 +191,6 @@ class LicensePlanVersionDevFixtures(EntityFixtures[LicensePlanVersionService]):
                 "rules": [
                     {"rule_id": MAX_USERS, "limit_value": 5},
                     {"rule_id": MAX_PROJECTS_PER_MONTH, "limit_value": 3},
-                ]
-            }
-        },
-        # STARTER v1: 19€/month or 190€/year
-        {
-            "attributes": {
-                "plan_id": STARTER_PLAN,
-                "version": 1,
-                "enabled": True,
-                "prices": [
-                    {"period_id": MONTHLY_PERIOD, "amount": 1900},
-                    {"period_id": YEARLY_PERIOD, "amount": 19000},
-                ],
-                "rules": [
-                    {"rule_id": MAX_USERS, "limit_value": 25},
-                    {"rule_id": MAX_PROJECTS_PER_MONTH, "limit_value": 20},
-                ]
-            }
-        },
-        # PRO v1: 49€/month or 490€/year
-        {
-            "attributes": {
-                "plan_id": PRO_PLAN,
-                "version": 1,
-                "enabled": True,
-                "prices": [
-                    {"period_id": MONTHLY_PERIOD, "amount": 4900},
-                    {"period_id": YEARLY_PERIOD, "amount": 49000},
-                ],
-                "rules": [
-                    {"rule_id": MAX_USERS, "limit_value": 100},
-                    {"rule_id": MAX_PROJECTS_PER_MONTH, "limit_value": None},  # Unlimited
                 ]
             }
         },
