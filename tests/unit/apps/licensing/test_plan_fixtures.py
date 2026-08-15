@@ -75,3 +75,40 @@ class TestLicensePlanVersionDevFixtures:
     def test_has_format_rules_method(self):
         from lys.apps.licensing.modules.plan.fixtures import LicensePlanVersionDevFixtures
         assert hasattr(LicensePlanVersionDevFixtures, "format_rules")
+
+
+class TestCatalogueAdministrationWebservices:
+    """The catalogue mutations must exist and be reachable by the admin role."""
+
+    def test_listing_query_is_registered(self):
+        """Without it, the version IDs the mutations take cannot be discovered."""
+        from lys.apps.licensing.modules.plan.webservices import LicensePlanQuery
+
+        for query in ("all_license_plans", "all_license_plan_versions"):
+            assert hasattr(LicensePlanQuery, query)
+
+    def test_mutations_are_registered(self):
+        from lys.apps.licensing.modules.plan.webservices import LicensePlanVersionMutation
+
+        for mutation in (
+            "create_license_plan_version",
+            "set_license_plan_version_rule",
+            "set_license_plan_version_enabled",
+        ):
+            assert hasattr(LicensePlanVersionMutation, mutation)
+
+    def test_admin_role_grants_them(self):
+        """
+        A mutation absent from the role's list is unreachable, so adding one
+        without granting it would ship a dead webservice.
+        """
+        from lys.apps.licensing.modules.role.fixtures import LICENSE_ADMIN_ROLE_WEBSERVICES
+
+        for webservice in (
+            "all_license_plans",
+            "all_license_plan_versions",
+            "create_license_plan_version",
+            "set_license_plan_version_rule",
+            "set_license_plan_version_enabled",
+        ):
+            assert webservice in LICENSE_ADMIN_ROLE_WEBSERVICES

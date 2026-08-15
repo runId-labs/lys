@@ -12,7 +12,8 @@ import pytest
 from uuid import uuid4
 from unittest.mock import patch, AsyncMock
 
-from lys.apps.licensing.consts import FREE_PLAN, MAX_USERS, MAX_PROJECTS_PER_MONTH
+from lys.apps.licensing.consts import FREE_PLAN, MAX_USERS
+from tests.integration.apps.licensing.conftest import DEMO_QUOTA_RULE
 
 
 class TestLicensingAuthServiceClaims:
@@ -104,7 +105,7 @@ class TestLicensingAuthServiceSubscriptionClaims:
             assert client.id in sub_claims
             claim = sub_claims[client.id]
             assert "rules" in claim
-            # FREE plan has MAX_USERS=5 and MAX_PROJECTS_PER_MONTH=3
+            # FREE plan has MAX_USERS=5 and DEMO_QUOTA_RULE=3
             assert MAX_USERS in claim["rules"]
             assert claim["rules"][MAX_USERS] == 5
 

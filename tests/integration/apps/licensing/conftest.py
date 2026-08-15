@@ -7,10 +7,25 @@ including plans, rules, and versions for testing subscription and checker servic
 
 import pytest_asyncio
 
+from lys.apps.licensing.registries import register_validator
 from lys.core.configs import LysAppSettings
 from lys.core.consts.component_types import AppComponentTypeEnum
 from lys.core.managers.app import AppManager
 from tests.fixtures.database import create_all_tables
+
+
+# A second quota rule, defined by the tests rather than by the framework: lys
+# only ships quotas it can actually count. Its validator mirrors what a business
+# application would register for its own countable resource.
+DEMO_QUOTA_RULE = "DEMO_QUOTA"
+
+
+@register_validator(DEMO_QUOTA_RULE)
+async def validate_demo_quota(session, client_id, app_id, limit_value):
+    """Validator standing in for an application-specific quota."""
+    if limit_value is None:
+        return (True, 0, -1)
+    return (True, 0, limit_value)
 
 
 @pytest_asyncio.fixture(scope="session")
@@ -120,10 +135,10 @@ async def licensing_app_manager():
         )
 
         # License Rules
-        from lys.apps.licensing.consts import MAX_USERS, MAX_PROJECTS_PER_MONTH
+        from lys.apps.licensing.consts import MAX_USERS
         license_rule_service = app_manager.get_service("license_rule")
         await license_rule_service.create(session=session, id=MAX_USERS, enabled=True)
-        await license_rule_service.create(session=session, id=MAX_PROJECTS_PER_MONTH, enabled=True)
+        await license_rule_service.create(session=session, id=DEMO_QUOTA_RULE, enabled=True)
 
         # License Plans
         from lys.apps.licensing.consts import FREE_PLAN, STARTER_PLAN, PRO_PLAN
@@ -200,7 +215,7 @@ async def licensing_app_manager():
         )
         await version_rule_service.create(
             session=session, plan_version_id=free_version.id,
-            rule_id=MAX_PROJECTS_PER_MONTH, limit_value=3
+            rule_id=DEMO_QUOTA_RULE, limit_value=3
         )
         # STARTER: 25 users, 20 projects/month
         await version_rule_service.create(
@@ -209,7 +224,7 @@ async def licensing_app_manager():
         )
         await version_rule_service.create(
             session=session, plan_version_id=starter_version.id,
-            rule_id=MAX_PROJECTS_PER_MONTH, limit_value=20
+            rule_id=DEMO_QUOTA_RULE, limit_value=20
         )
         # PRO: 100 users, unlimited projects (no rule = unlimited)
         await version_rule_service.create(

@@ -13,9 +13,12 @@ class TestLicenseRuleFixtures:
     def test_inherits_from_entity_fixtures(self):
         assert issubclass(LicenseRuleFixtures, EntityFixtures)
 
-    def test_has_data_list(self):
-        assert LicenseRuleFixtures.data_list is not None
-        assert len(LicenseRuleFixtures.data_list) == 2
+    def test_ships_only_the_seat_quota(self):
+        """
+        A quota lys cannot count belongs to the application, so only the seat
+        quota, which counts subscription_user rows, is shipped.
+        """
+        assert [entry["id"] for entry in LicenseRuleFixtures.data_list] == ["MAX_USERS"]
 
     def test_has_model(self):
         assert LicenseRuleFixtures.model is not None

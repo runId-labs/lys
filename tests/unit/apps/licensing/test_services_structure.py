@@ -249,7 +249,3 @@ class TestRuleValidatorsStructure:
         assert "app_id" in sig.parameters
         assert "limit_value" in sig.parameters
 
-    def test_validate_max_projects_per_month_exists(self):
-        from lys.apps.licensing.modules.rule.validators import validate_max_projects_per_month
-        assert validate_max_projects_per_month is not None
-        assert inspect.iscoroutinefunction(validate_max_projects_per_month)

@@ -2,7 +2,7 @@
 License rule entity definitions.
 
 LicenseRule defines the types of constraints that can be applied to license plans:
-- Quotas (e.g., MAX_USERS, MAX_PROJECTS_PER_MONTH)
+- Quotas (e.g., MAX_USERS)
 - Feature toggles (e.g., EXPORT_PDF_ACCESS, API_ACCESS)
 """
 

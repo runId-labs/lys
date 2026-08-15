@@ -16,7 +16,13 @@ LICENSE_ADMIN_ROLE_WEBSERVICES = [
     "create_checkout_session",
     "create_billing_portal_session",
     "add_client_user_to_subscription",
-    "remove_client_user_from_subscription"
+    "remove_client_user_from_subscription",
+    # Catalogue administration
+    "all_license_plans",
+    "all_license_plan_versions",
+    "create_license_plan_version",
+    "set_license_plan_version_rule",
+    "set_license_plan_version_enabled"
 ]
 
 

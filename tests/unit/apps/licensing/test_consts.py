@@ -59,10 +59,6 @@ class TestRuleConstants:
         from lys.apps.licensing.consts import MAX_USERS
         assert MAX_USERS == "MAX_USERS"
 
-    def test_max_projects_per_month(self):
-        from lys.apps.licensing.consts import MAX_PROJECTS_PER_MONTH
-        assert MAX_PROJECTS_PER_MONTH == "MAX_PROJECTS_PER_MONTH"
-
 
 class TestRoleConstants:
     """Tests for role constants."""

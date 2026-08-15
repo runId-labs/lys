@@ -17,11 +17,16 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from lys.apps.licensing.consts import DEFAULT_CURRENCY, NO_COMMITMENT
 from lys.apps.licensing.errors import (
     DUPLICATE_PRICE,
+    DUPLICATE_RULE,
+    INVALID_RULE_LIMIT,
+    NO_RULE_ON_VERSION,
     INVALID_COMMITMENT_DURATION,
     INVALID_PRICE_AMOUNT,
     UNKNOWN_COMMITMENT,
     UNKNOWN_CURRENCY,
+    PLAN_VERSION_NOT_FOUND,
     UNKNOWN_PRICE_PERIOD,
+    UNKNOWN_RULE,
 )
 from lys.apps.licensing.modules.plan.entities import (
     LicenseCommitment,
@@ -223,21 +228,71 @@ class LicensePlanVersionService(EntityService[LicensePlanVersion]):
                 )
 
     @classmethod
+    async def _validate_rules(
+        cls,
+        rules: List[Dict[str, Any]],
+        session: AsyncSession
+    ) -> None:
+        """
+        Validate the rule definitions of a version before creating it.
+
+        Args:
+            rules: List of {"rule_id": str, "limit_value": int | None}
+            session: Database session
+
+        Raises:
+            LysError: NO_RULE_ON_VERSION if the version grants nothing
+            LysError: DUPLICATE_RULE if the same rule is listed twice
+            LysError: UNKNOWN_RULE if a rule does not exist or is disabled
+            LysError: INVALID_RULE_LIMIT if a limit is negative
+        """
+        version_rule_service = cls.app_manager.get_service("license_plan_version_rule")
+
+        # A quota rule missing from a version is read as unlimited by the
+        # checker, so a version granting nothing explicitly grants everything.
+        # Unlimited has its own representation, a null limit, and expressing it
+        # must stay deliberate.
+        if not rules:
+            raise LysError(
+                NO_RULE_ON_VERSION,
+                "A plan version must declare at least one rule: an undeclared quota "
+                "is treated as unlimited. Use a null limit to grant unlimited."
+            )
+
+        seen = set()
+        for rule in rules:
+            rule_id = rule["rule_id"]
+            limit_value = rule.get("limit_value")
+
+            if rule_id in seen:
+                raise LysError(
+                    DUPLICATE_RULE,
+                    f"Rule {rule_id} listed twice on the same version"
+                )
+            seen.add(rule_id)
+
+            await version_rule_service.validate_rule(rule_id, limit_value, session)
+
+    @classmethod
     async def create_new_version(
         cls,
         plan_id: str,
         session: AsyncSession,
-        prices: Optional[List[Dict[str, Any]]] = None
+        prices: Optional[List[Dict[str, Any]]] = None,
+        rules: Optional[List[Dict[str, Any]]] = None
     ) -> LicensePlanVersion:
         """
-        Create a new version for a plan, with its prices.
+        Create a new version for a plan, with its prices and its rules.
 
         Automatically increments the version number and disables the previous
-        version. Prices are created together with the version: a version is
-        never left temporarily unpriced, which matters because prices cannot be
-        added afterwards without publishing yet another version.
+        version. Prices and rules are created together with the version, in the
+        same transaction: the new version becomes the offered one as soon as it
+        exists, so a version published without its rules would grant nothing to
+        the clients landing on it, and prices cannot be added afterwards without
+        publishing yet another version.
 
-        An empty price list produces a free version.
+        An empty price list produces a free version, but the rule list is never
+        empty: see _validate_rules.
 
         Args:
             plan_id: License plan ID
@@ -246,15 +301,21 @@ class LicensePlanVersionService(EntityService[LicensePlanVersion]):
                     "commitment_id": str}, amount in currency minor units.
                     currency_id defaults to DEFAULT_CURRENCY and commitment_id
                     to NO_COMMITMENT
+            rules: List of {"rule_id": str, "limit_value": int | None}, at least
+                   one. A null limit means unlimited for a quota, or grants a
+                   feature toggle
 
         Returns:
             New LicensePlanVersion entity
 
         Raises:
             LysError: if a price definition is invalid, see _validate_prices
+            LysError: if a rule definition is invalid, see _validate_rules
         """
         prices = prices or []
+        rules = rules or []
         await cls._validate_prices(prices, session)
+        await cls._validate_rules(rules, session)
 
         # Get current max version number
         stmt = select(cls.entity_class.version).where(
@@ -292,7 +353,64 @@ class LicensePlanVersionService(EntityService[LicensePlanVersion]):
                 amount=price["amount"]
             )
 
+        # Create its rules
+        rule_service = cls.app_manager.get_service("license_plan_version_rule")
+        for rule in rules:
+            await rule_service.set_rule_limit(
+                plan_version_id=new_version.id,
+                rule_id=rule["rule_id"],
+                limit_value=rule.get("limit_value"),
+                session=session
+            )
+
         return new_version
+
+
+    @classmethod
+    async def set_enabled(
+        cls,
+        plan_version_id: str,
+        enabled: bool,
+        session: AsyncSession
+    ) -> LicensePlanVersion:
+        """
+        Enable or disable a plan version.
+
+        Only one version of a plan can be enabled at a time, so enabling one
+        disables the others. Disabling withdraws the version from the catalogue
+        without touching the subscriptions that reference it: they keep the
+        rules and the price they were sold.
+
+        Args:
+            plan_version_id: Plan version ID
+            enabled: Whether the version can be selected for new subscriptions
+            session: Database session
+
+        Returns:
+            The updated LicensePlanVersion
+
+        Raises:
+            LysError: PLAN_VERSION_NOT_FOUND if the version does not exist
+        """
+        version = await cls.get_by_id(plan_version_id, session)
+        if version is None:
+            raise LysError(
+                PLAN_VERSION_NOT_FOUND,
+                f"Plan version {plan_version_id} not found"
+            )
+
+        if enabled:
+            stmt = select(cls.entity_class).where(
+                cls.entity_class.plan_id == version.plan_id,
+                cls.entity_class.enabled == True,
+                cls.entity_class.id != version.id
+            )
+            result = await session.execute(stmt)
+            for other in result.scalars():
+                other.enabled = False
+
+        version.enabled = enabled
+        return version
 
 
 @register_service()
@@ -341,6 +459,41 @@ class LicensePlanVersionRuleService(EntityService[LicensePlanVersionRule]):
         return list(result.scalars().all())
 
     @classmethod
+    async def validate_rule(
+        cls,
+        rule_id: str,
+        limit_value: int | None,
+        session: AsyncSession
+    ) -> None:
+        """
+        Validate a rule and its limit before associating them with a version.
+
+        Args:
+            rule_id: Rule ID
+            limit_value: Limit value (None for feature toggles or unlimited)
+            session: Database session
+
+        Raises:
+            LysError: UNKNOWN_RULE if the rule does not exist or is disabled
+            LysError: INVALID_RULE_LIMIT if the limit is negative
+        """
+        if limit_value is not None and (not isinstance(limit_value, int) or limit_value < 0):
+            raise LysError(
+                INVALID_RULE_LIMIT,
+                f"Limit of rule {rule_id} must be a positive integer or null, "
+                f"got {limit_value!r}"
+            )
+
+        rule_service = cls.app_manager.get_service("license_rule")
+        rule_definition = await rule_service.get_by_id(rule_id, session)
+
+        if rule_definition is None or not rule_definition.enabled:
+            raise LysError(
+                UNKNOWN_RULE,
+                f"Rule {rule_id} does not exist or is disabled"
+            )
+
+    @classmethod
     async def set_rule_limit(
         cls,
         plan_version_id: str,
@@ -351,6 +504,17 @@ class LicensePlanVersionRuleService(EntityService[LicensePlanVersionRule]):
         """
         Set or update a rule limit for a plan version.
 
+        Unlike prices, which are immutable once published, a rule can be changed
+        on a version that has already been sold, and the change applies at once
+        to every subscriber of that version: the checker reads the current limit,
+        not the one in force on the subscription date.
+
+        The framework does not arbitrate this. Lowering what a client already
+        paid for is a unilateral change of terms, which business practice only
+        allows at renewal, through a new version; raising a limit, or correcting
+        a version nobody has subscribed to yet, is harmless. Applications
+        enforcing such a policy must implement it themselves.
+
         Args:
             plan_version_id: Plan version ID
             rule_id: Rule ID
@@ -359,7 +523,21 @@ class LicensePlanVersionRuleService(EntityService[LicensePlanVersionRule]):
 
         Returns:
             LicensePlanVersionRule entity (created or updated)
+
+        Raises:
+            LysError: PLAN_VERSION_NOT_FOUND if the version does not exist
+            LysError: UNKNOWN_RULE if the rule does not exist or is disabled
+            LysError: INVALID_RULE_LIMIT if the limit is negative
         """
+        version_service = cls.app_manager.get_service("license_plan_version")
+        if await version_service.get_by_id(plan_version_id, session) is None:
+            raise LysError(
+                PLAN_VERSION_NOT_FOUND,
+                f"Plan version {plan_version_id} not found"
+            )
+
+        await cls.validate_rule(rule_id, limit_value, session)
+
         # Check if association already exists
         stmt = select(cls.entity_class).where(
             cls.entity_class.plan_version_id == plan_version_id,

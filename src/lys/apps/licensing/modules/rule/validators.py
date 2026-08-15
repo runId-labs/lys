@@ -26,7 +26,7 @@ Note:
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from lys.apps.licensing.consts import MAX_USERS, MAX_PROJECTS_PER_MONTH
+from lys.apps.licensing.consts import MAX_USERS
 from lys.apps.licensing.modules.subscription.entities import subscription_user
 from lys.apps.licensing.registries import register_validator
 from lys.core.managers.app import LysAppManager
@@ -81,38 +81,3 @@ async def validate_max_users(
 
     is_valid = current_count < limit_value
     return (is_valid, current_count, limit_value)
-
-
-@register_validator(MAX_PROJECTS_PER_MONTH)
-async def validate_max_projects_per_month(
-    session: AsyncSession,
-    client_id: str,
-    app_id: str,
-    limit_value: int | None
-) -> tuple[bool, int, int]:
-    """
-    Validate the maximum number of projects per month for a client.
-
-    This is a placeholder validator. The actual implementation depends on
-    the application's project entity, which is not part of lys core.
-
-    Applications should override this validator with their own implementation
-    by registering a new validator with the same rule_id.
-
-    Args:
-        session: Database session
-        client_id: Client ID
-        app_id: Application ID (for multi-app support)
-        limit_value: Maximum allowed projects per month (None = unlimited)
-
-    Returns:
-        Tuple of (is_valid, current_count, limit)
-        Default: Always returns valid since project counting is app-specific
-    """
-    # Placeholder: return valid with 0 count
-    # Applications should implement their own validator
-    _ = (session, client_id, app_id)  # Unused in placeholder
-    if limit_value is None:
-        return True, 0, -1
-
-    return True, 0, limit_value

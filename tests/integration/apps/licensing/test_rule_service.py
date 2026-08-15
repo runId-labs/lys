@@ -10,7 +10,8 @@ Tests cover:
 import pytest
 from uuid import uuid4
 
-from lys.apps.licensing.consts import MAX_USERS, MAX_PROJECTS_PER_MONTH
+from lys.apps.licensing.consts import MAX_USERS
+from tests.integration.apps.licensing.conftest import DEMO_QUOTA_RULE
 
 
 class TestLicenseRuleServiceCRUD:
@@ -50,7 +51,7 @@ class TestLicenseRuleServiceCRUD:
             assert len(rules) >= 2
             rule_ids = {r.id for r in rules}
             assert MAX_USERS in rule_ids
-            assert MAX_PROJECTS_PER_MONTH in rule_ids
+            assert DEMO_QUOTA_RULE in rule_ids
 
 
 class TestValidateMaxUsers:
@@ -88,7 +89,7 @@ class TestValidateMaxProjectsPerMonth:
 
     @pytest.mark.asyncio
     async def test_validate_max_projects_per_month_within_limit(self, licensing_app_manager):
-        """Test MAX_PROJECTS_PER_MONTH validator returns valid (placeholder)."""
+        """Test DEMO_QUOTA_RULE validator returns valid (placeholder)."""
         checker_service = licensing_app_manager.get_service("license_checker")
         client_service = licensing_app_manager.get_service("client")
 
@@ -102,10 +103,10 @@ class TestValidateMaxProjectsPerMonth:
                 send_verification_email=False
             )
 
-        # FREE plan has MAX_PROJECTS_PER_MONTH=3
+        # FREE plan has DEMO_QUOTA_RULE=3
         async with licensing_app_manager.database.get_session() as session:
             is_valid, current, limit = await checker_service.check_quota(
-                client.id, MAX_PROJECTS_PER_MONTH, session
+                client.id, DEMO_QUOTA_RULE, session
             )
             # Placeholder validator always returns valid
             assert is_valid is True

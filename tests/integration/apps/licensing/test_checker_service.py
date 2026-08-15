@@ -15,10 +15,11 @@ import pytest
 from uuid import uuid4
 
 from lys.apps.licensing.consts import (
-    FREE_PLAN, STARTER_PLAN, PRO_PLAN, MAX_USERS, MAX_PROJECTS_PER_MONTH,
+    FREE_PLAN, STARTER_PLAN, PRO_PLAN, MAX_USERS,
     DEFAULT_APPLICATION,
 )
 from lys.core.errors import LysError
+from tests.integration.apps.licensing.conftest import DEMO_QUOTA_RULE
 
 
 class TestLicenseCheckerServiceFeatures:
@@ -63,7 +64,7 @@ class TestLicenseCheckerServiceFeatures:
                 send_verification_email=False
             )
 
-        # Upgrade to PRO plan (no MAX_PROJECTS_PER_MONTH rule)
+        # Upgrade to PRO plan (no DEMO_QUOTA_RULE rule)
         async with licensing_app_manager.database.get_session() as session:
             pro_version = await version_service.get_current_version(PRO_PLAN, session)
             await subscription_service.change_plan(
@@ -75,7 +76,7 @@ class TestLicenseCheckerServiceFeatures:
 
         async with licensing_app_manager.database.get_session() as session:
             has_feature = await checker_service.check_feature(
-                client.id, MAX_PROJECTS_PER_MONTH, session
+                client.id, DEMO_QUOTA_RULE, session
             )
             assert has_feature is False
 
@@ -97,7 +98,7 @@ class TestLicenseCheckerServiceFeatures:
                 send_verification_email=False
             )
 
-        # Upgrade to PRO plan (no MAX_PROJECTS_PER_MONTH rule)
+        # Upgrade to PRO plan (no DEMO_QUOTA_RULE rule)
         async with licensing_app_manager.database.get_session() as session:
             pro_version = await version_service.get_current_version(PRO_PLAN, session)
             await subscription_service.change_plan(
@@ -110,7 +111,7 @@ class TestLicenseCheckerServiceFeatures:
         async with licensing_app_manager.database.get_session() as session:
             with pytest.raises(LysError) as exc_info:
                 await checker_service.enforce_feature(
-                    client.id, MAX_PROJECTS_PER_MONTH, session
+                    client.id, DEMO_QUOTA_RULE, session
                 )
             assert "FEATURE_NOT_AVAILABLE" in str(exc_info.value)
 
@@ -151,8 +152,8 @@ class TestLicenseCheckerServiceLimits:
             assert MAX_USERS in limits
             assert limits[MAX_USERS]["limit"] == 5
             assert limits[MAX_USERS]["type"] == "quota"
-            assert MAX_PROJECTS_PER_MONTH in limits
-            assert limits[MAX_PROJECTS_PER_MONTH]["limit"] == 3
+            assert DEMO_QUOTA_RULE in limits
+            assert limits[DEMO_QUOTA_RULE]["limit"] == 3
 
     @pytest.mark.asyncio
     async def test_get_client_limits_no_subscription_raises(self, licensing_app_manager):
@@ -216,7 +217,7 @@ class TestLicenseCheckerServiceQuota:
                 send_verification_email=False
             )
 
-        # Upgrade to PRO plan (no MAX_PROJECTS_PER_MONTH rule)
+        # Upgrade to PRO plan (no DEMO_QUOTA_RULE rule)
         async with licensing_app_manager.database.get_session() as session:
             pro_version = await version_service.get_current_version(PRO_PLAN, session)
             await subscription_service.change_plan(
@@ -228,7 +229,7 @@ class TestLicenseCheckerServiceQuota:
 
         async with licensing_app_manager.database.get_session() as session:
             is_valid, current, limit = await checker_service.check_quota(
-                client.id, MAX_PROJECTS_PER_MONTH, session
+                client.id, DEMO_QUOTA_RULE, session
             )
             # Rule not configured = unlimited
             assert is_valid is True

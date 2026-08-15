@@ -10,11 +10,8 @@ import pytest
 
 pytest.importorskip("mollie", reason="mollie package not installed")
 
-from lys.apps.licensing.modules.rule.validators import (
-    validate_max_users,
-    validate_max_projects_per_month,
-)
-from lys.apps.licensing.consts import MAX_USERS, MAX_PROJECTS_PER_MONTH
+from lys.apps.licensing.modules.rule.validators import validate_max_users
+from lys.apps.licensing.consts import MAX_USERS
 
 
 class TestValidatorsExist:
@@ -26,21 +23,12 @@ class TestValidatorsExist:
     def test_validate_max_users_is_callable(self):
         assert callable(validate_max_users)
 
-    def test_validate_max_projects_per_month_exists(self):
-        assert validate_max_projects_per_month is not None
-
-    def test_validate_max_projects_per_month_is_callable(self):
-        assert callable(validate_max_projects_per_month)
-
 
 class TestValidatorsAreAsync:
     """Tests that validators are async functions."""
 
     def test_validate_max_users_is_async(self):
         assert inspect.iscoroutinefunction(validate_max_users)
-
-    def test_validate_max_projects_per_month_is_async(self):
-        assert inspect.iscoroutinefunction(validate_max_projects_per_month)
 
 
 class TestValidatorSignatures:
@@ -54,53 +42,22 @@ class TestValidatorSignatures:
         assert "app_id" in params
         assert "limit_value" in params
 
-    def test_validate_max_projects_per_month_params(self):
-        sig = inspect.signature(validate_max_projects_per_month)
-        params = list(sig.parameters.keys())
-        assert "session" in params
-        assert "client_id" in params
-        assert "app_id" in params
-        assert "limit_value" in params
 
+class TestShippedValidators:
+    """The framework only ships validators it can actually implement."""
 
-class TestValidateMaxProjectsPerMonth:
-    """Tests for validate_max_projects_per_month placeholder behavior."""
+    def test_seat_counting_is_the_only_shipped_quota(self):
+        """
+        A quota lys cannot count belongs to the application: shipping a
+        placeholder validator that always passes would silently grant it.
+        """
+        from lys.apps.licensing.modules.rule import validators
 
-    @pytest.mark.asyncio
-    async def test_unlimited_returns_minus_one(self):
-        result = await validate_max_projects_per_month(
-            session=None, client_id="c1", app_id="app1", limit_value=None
-        )
-        assert result == (True, 0, -1)
-
-    @pytest.mark.asyncio
-    async def test_with_limit_returns_valid(self):
-        result = await validate_max_projects_per_month(
-            session=None, client_id="c1", app_id="app1", limit_value=10
-        )
-        assert result == (True, 0, 10)
-
-    @pytest.mark.asyncio
-    async def test_returns_tuple_of_three(self):
-        result = await validate_max_projects_per_month(
-            session=None, client_id="c1", app_id="app1", limit_value=5
-        )
-        assert isinstance(result, tuple)
-        assert len(result) == 3
-
-    @pytest.mark.asyncio
-    async def test_first_element_is_bool(self):
-        result = await validate_max_projects_per_month(
-            session=None, client_id="c1", app_id="app1", limit_value=5
-        )
-        assert isinstance(result[0], bool)
-
-    @pytest.mark.asyncio
-    async def test_second_element_is_int(self):
-        result = await validate_max_projects_per_month(
-            session=None, client_id="c1", app_id="app1", limit_value=5
-        )
-        assert isinstance(result[1], int)
+        shipped = [
+            name for name in dir(validators)
+            if name.startswith("validate_")
+        ]
+        assert shipped == ["validate_max_users"]
 
 
 class TestRuleConstants:
@@ -108,6 +65,3 @@ class TestRuleConstants:
 
     def test_max_users_is_string(self):
         assert isinstance(MAX_USERS, str)
-
-    def test_max_projects_per_month_is_string(self):
-        assert isinstance(MAX_PROJECTS_PER_MONTH, str)

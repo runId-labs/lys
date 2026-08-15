@@ -21,7 +21,6 @@ from lys.apps.licensing.consts import (
     EUR_CURRENCY,
     FREE_PLAN,
     MAX_USERS,
-    MAX_PROJECTS_PER_MONTH,
     MONTHLY_PERIOD,
     NO_COMMITMENT,
     YEARLY_PERIOD,
@@ -190,7 +189,6 @@ class LicensePlanVersionDevFixtures(EntityFixtures[LicensePlanVersionService]):
                 "prices": [],
                 "rules": [
                     {"rule_id": MAX_USERS, "limit_value": 5},
-                    {"rule_id": MAX_PROJECTS_PER_MONTH, "limit_value": 3},
                 ]
             }
         },

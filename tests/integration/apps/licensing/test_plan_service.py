@@ -13,10 +13,13 @@ from uuid import uuid4
 from lys.apps.licensing.consts import (
     DEFAULT_APPLICATION,
     FREE_PLAN,
+    MAX_USERS,
     MONTHLY_PERIOD,
     PRO_PLAN,
     STARTER_PLAN,
+    YEARLY_PERIOD,
 )
+from lys.core.errors import LysError
 
 
 class TestLicensePlanServiceAvailablePlans:
@@ -126,7 +129,9 @@ class TestLicensePlanVersionService:
             )
             # Create first version
             v1 = await version_service.create_new_version(
-                plan_id, session, prices=[{"period_id": MONTHLY_PERIOD, "amount": 1000}]
+                plan_id, session,
+                prices=[{"period_id": MONTHLY_PERIOD, "amount": 1000}],
+                rules=[{"rule_id": MAX_USERS, "limit_value": 10}]
             )
             assert v1.version == 1
             assert v1.enabled is True
@@ -135,7 +140,9 @@ class TestLicensePlanVersionService:
         # Create second version
         async with licensing_app_manager.database.get_session() as session:
             v2 = await version_service.create_new_version(
-                plan_id, session, prices=[{"period_id": MONTHLY_PERIOD, "amount": 1500}]
+                plan_id, session,
+                prices=[{"period_id": MONTHLY_PERIOD, "amount": 1500}],
+                rules=[{"rule_id": MAX_USERS, "limit_value": 20}]
             )
             assert v2.version == 2
             assert v2.enabled is True
@@ -158,3 +165,234 @@ class TestLicensePlanVersionService:
 
             starter_version = await version_service.get_current_version(STARTER_PLAN, session)
             assert starter_version.is_free is False
+
+
+class TestPlanVersionAdministration:
+    """The catalogue is published through the plan version services."""
+
+    @pytest.mark.asyncio
+    async def test_publish_a_priced_version_and_set_a_quota(self, licensing_app_manager):
+        """
+        A version is published complete: it becomes the offered one as soon as
+        it exists, so its rules cannot wait for a second call.
+        """
+        plan_service = licensing_app_manager.get_service("license_plan")
+        version_service = licensing_app_manager.get_service("license_plan_version")
+
+        plan_id = f"ADMIN_{uuid4().hex[:6]}"
+
+        async with licensing_app_manager.database.get_session() as session:
+            await plan_service.create(
+                session=session, id=plan_id, enabled=True, app_id=DEFAULT_APPLICATION
+            )
+
+            await version_service.create_new_version(
+                plan_id, session,
+                prices=[
+                    {"period_id": MONTHLY_PERIOD, "amount": 2900},
+                    {"period_id": YEARLY_PERIOD, "amount": 29000},
+                ],
+                rules=[{"rule_id": MAX_USERS, "limit_value": 50}]
+            )
+            await session.commit()
+
+        async with licensing_app_manager.database.get_session() as session:
+            current = await version_service.get_current_version(plan_id, session)
+
+            assert current.version == 1
+            assert current.is_free is False
+            assert current.price_for(MONTHLY_PERIOD).amount == 2900
+            assert current.price_for(YEARLY_PERIOD).amount == 29000
+            assert [(r.rule_id, r.limit_value) for r in current.rules] == [(MAX_USERS, 50)]
+
+    @pytest.mark.asyncio
+    async def test_free_version_needs_no_price(self, licensing_app_manager):
+        """The free plan is versioned like any other, simply without a price."""
+        plan_service = licensing_app_manager.get_service("license_plan")
+        version_service = licensing_app_manager.get_service("license_plan_version")
+
+        plan_id = f"FREEISH_{uuid4().hex[:6]}"
+
+        async with licensing_app_manager.database.get_session() as session:
+            await plan_service.create(
+                session=session, id=plan_id, enabled=True, app_id=DEFAULT_APPLICATION
+            )
+            version = await version_service.create_new_version(
+                plan_id, session,
+                rules=[{"rule_id": MAX_USERS, "limit_value": 3}]
+            )
+            await session.commit()
+
+        async with licensing_app_manager.database.get_session() as session:
+            current = await version_service.get_current_version(plan_id, session)
+            assert current.id == version.id
+            assert current.is_free is True
+
+    @pytest.mark.asyncio
+    async def test_enabling_a_version_disables_the_others(self, licensing_app_manager):
+        """Only one version of a plan may be offered at a time."""
+        plan_service = licensing_app_manager.get_service("license_plan")
+        version_service = licensing_app_manager.get_service("license_plan_version")
+
+        plan_id = f"TOGGLE_{uuid4().hex[:6]}"
+
+        async with licensing_app_manager.database.get_session() as session:
+            await plan_service.create(
+                session=session, id=plan_id, enabled=True, app_id=DEFAULT_APPLICATION
+            )
+            v1 = await version_service.create_new_version(
+                plan_id, session,
+                prices=[{"period_id": MONTHLY_PERIOD, "amount": 1000}],
+                rules=[{"rule_id": MAX_USERS, "limit_value": 10}]
+            )
+            v2 = await version_service.create_new_version(
+                plan_id, session,
+                prices=[{"period_id": MONTHLY_PERIOD, "amount": 1500}],
+                rules=[{"rule_id": MAX_USERS, "limit_value": 20}]
+            )
+            await session.commit()
+
+        # v2 is the current one; putting v1 back must withdraw v2
+        async with licensing_app_manager.database.get_session() as session:
+            await version_service.set_enabled(v1.id, True, session)
+            await session.commit()
+
+        async with licensing_app_manager.database.get_session() as session:
+            current = await version_service.get_current_version(plan_id, session)
+            assert current.id == v1.id
+
+            withdrawn = await version_service.get_by_id(v2.id, session)
+            assert withdrawn.enabled is False
+
+    @pytest.mark.asyncio
+    async def test_set_enabled_on_unknown_version_raises(self, licensing_app_manager):
+        version_service = licensing_app_manager.get_service("license_plan_version")
+
+        async with licensing_app_manager.database.get_session() as session:
+            with pytest.raises(LysError, match="PLAN_VERSION_NOT_FOUND"):
+                await version_service.set_enabled(str(uuid4()), True, session)
+
+    @pytest.mark.asyncio
+    async def test_unknown_rule_is_rejected(self, licensing_app_manager):
+        plan_service = licensing_app_manager.get_service("license_plan")
+        version_service = licensing_app_manager.get_service("license_plan_version")
+
+        plan_id = f"BADRULE_{uuid4().hex[:6]}"
+
+        async with licensing_app_manager.database.get_session() as session:
+            await plan_service.create(
+                session=session, id=plan_id, enabled=True, app_id=DEFAULT_APPLICATION
+            )
+
+            with pytest.raises(LysError, match="UNKNOWN_RULE"):
+                await version_service.create_new_version(
+                    plan_id, session,
+                    rules=[{"rule_id": "NOT_A_RULE", "limit_value": 5}]
+                )
+
+    @pytest.mark.asyncio
+    async def test_rule_listed_twice_is_rejected(self, licensing_app_manager):
+        plan_service = licensing_app_manager.get_service("license_plan")
+        version_service = licensing_app_manager.get_service("license_plan_version")
+
+        plan_id = f"DUPRULE_{uuid4().hex[:6]}"
+
+        async with licensing_app_manager.database.get_session() as session:
+            await plan_service.create(
+                session=session, id=plan_id, enabled=True, app_id=DEFAULT_APPLICATION
+            )
+
+            with pytest.raises(LysError, match="DUPLICATE_RULE"):
+                await version_service.create_new_version(
+                    plan_id, session,
+                    rules=[
+                        {"rule_id": MAX_USERS, "limit_value": 5},
+                        {"rule_id": MAX_USERS, "limit_value": 10},
+                    ]
+                )
+
+    @pytest.mark.asyncio
+    async def test_version_without_any_rule_is_rejected(self, licensing_app_manager):
+        """
+        An undeclared quota is read as unlimited by the checker, so a version
+        granting nothing explicitly would grant everything.
+        """
+        plan_service = licensing_app_manager.get_service("license_plan")
+        version_service = licensing_app_manager.get_service("license_plan_version")
+
+        plan_id = f"NORULE_{uuid4().hex[:6]}"
+
+        async with licensing_app_manager.database.get_session() as session:
+            await plan_service.create(
+                session=session, id=plan_id, enabled=True, app_id=DEFAULT_APPLICATION
+            )
+
+            with pytest.raises(LysError, match="NO_RULE_ON_VERSION"):
+                await version_service.create_new_version(
+                    plan_id, session,
+                    prices=[{"period_id": MONTHLY_PERIOD, "amount": 2900}]
+                )
+
+    @pytest.mark.asyncio
+    async def test_unlimited_is_expressed_with_a_null_limit(self, licensing_app_manager):
+        """Unlimited has its own representation, so it stays deliberate."""
+        plan_service = licensing_app_manager.get_service("license_plan")
+        version_service = licensing_app_manager.get_service("license_plan_version")
+
+        plan_id = f"UNLIMITED_{uuid4().hex[:6]}"
+
+        async with licensing_app_manager.database.get_session() as session:
+            await plan_service.create(
+                session=session, id=plan_id, enabled=True, app_id=DEFAULT_APPLICATION
+            )
+            await version_service.create_new_version(
+                plan_id, session,
+                rules=[{"rule_id": MAX_USERS, "limit_value": None}]
+            )
+            await session.commit()
+
+        async with licensing_app_manager.database.get_session() as session:
+            current = await version_service.get_current_version(plan_id, session)
+            assert [(r.rule_id, r.limit_value) for r in current.rules] == [(MAX_USERS, None)]
+
+    @pytest.mark.asyncio
+    async def test_setting_an_unknown_rule_is_rejected_cleanly(self, licensing_app_manager):
+        """
+        The same mistake must surface the same way whether it is made when
+        publishing a version or when correcting one afterwards.
+        """
+        plan_service = licensing_app_manager.get_service("license_plan")
+        version_service = licensing_app_manager.get_service("license_plan_version")
+        rule_service = licensing_app_manager.get_service("license_plan_version_rule")
+
+        plan_id = f"SETRULE_{uuid4().hex[:6]}"
+
+        async with licensing_app_manager.database.get_session() as session:
+            await plan_service.create(
+                session=session, id=plan_id, enabled=True, app_id=DEFAULT_APPLICATION
+            )
+            version = await version_service.create_new_version(
+                plan_id, session,
+                rules=[{"rule_id": MAX_USERS, "limit_value": 5}]
+            )
+
+            with pytest.raises(LysError, match="UNKNOWN_RULE"):
+                await rule_service.set_rule_limit(
+                    plan_version_id=version.id,
+                    rule_id="NOT_A_RULE",
+                    limit_value=5,
+                    session=session
+                )
+
+    @pytest.mark.asyncio
+    async def test_setting_a_rule_on_an_unknown_version_is_rejected(self, licensing_app_manager):
+        rule_service = licensing_app_manager.get_service("license_plan_version_rule")
+
+        async with licensing_app_manager.database.get_session() as session:
+            with pytest.raises(LysError, match="PLAN_VERSION_NOT_FOUND"):
+                await rule_service.set_rule_limit(
+                    plan_version_id=str(uuid4()),
+                    rule_id=MAX_USERS,
+                    limit_value=5,
+                    session=session
+                )

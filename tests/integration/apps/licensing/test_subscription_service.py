@@ -23,6 +23,7 @@ from lys.apps.licensing.consts import (
     DEFAULT_APPLICATION,
     EUR_CURRENCY,
     FREE_PLAN,
+    MAX_USERS,
     MONTHLY_PERIOD,
     PLAN_NOT_PRICED_ERROR,
     PRO_PLAN,
@@ -531,7 +532,9 @@ class TestSubscribeToPlanPricingGuard:
             )
             # Priced monthly only
             version = await version_service.create_new_version(
-                plan_id, session, prices=[{"period_id": MONTHLY_PERIOD, "amount": 2500}]
+                plan_id, session,
+                prices=[{"period_id": MONTHLY_PERIOD, "amount": 2500}],
+                rules=[{"rule_id": MAX_USERS, "limit_value": 10}]
             )
             await session.commit()
 
@@ -662,7 +665,9 @@ class TestChangePlanKeepsPriceCoherent:
                 session=session, id=plan_id, enabled=True, app_id=DEFAULT_APPLICATION
             )
             yearly_only = await version_service.create_new_version(
-                plan_id, session, prices=[{"period_id": YEARLY_PERIOD, "amount": 30000}]
+                plan_id, session,
+                prices=[{"period_id": YEARLY_PERIOD, "amount": 30000}],
+                rules=[{"rule_id": MAX_USERS, "limit_value": 10}]
             )
 
             starter = await version_service.get_current_version(STARTER_PLAN, session)
@@ -717,7 +722,8 @@ class TestCommitment:
                     "period_id": YEARLY_PERIOD,
                     "amount": 30000,
                     "commitment_id": commitment_id,
-                }]
+                }],
+                rules=[{"rule_id": MAX_USERS, "limit_value": 10}]
             )
 
             # The freshly created version has no loaded prices yet, so the price
@@ -843,7 +849,8 @@ class TestCommitmentPriceValidation:
                         "period_id": YEARLY_PERIOD,
                         "amount": 30000,
                         "commitment_id": commitment_id,
-                    }]
+                    }],
+                    rules=[{"rule_id": MAX_USERS, "limit_value": 10}]
                 )
 
 
@@ -885,7 +892,8 @@ class TestNoticePeriodAndTacitRenewal:
                     "period_id": YEARLY_PERIOD,
                     "amount": 30000,
                     "commitment_id": commitment_id,
-                }]
+                }],
+                rules=[{"rule_id": MAX_USERS, "limit_value": 10}]
             )
             prices = await price_service.get_all(session)
             price = next(p for p in prices if p.plan_version_id == version.id)

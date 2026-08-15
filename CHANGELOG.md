@@ -7,6 +7,22 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.34.0] - 2026-08-15
+
+### Added
+- Catalogue administration webservices, restricted to `LICENSE_ADMIN_ROLE`: `allLicensePlans` and `allLicensePlanVersions` list disabled and client-specific entries, which the public catalogue deliberately hides; `createLicensePlanVersion` publishes a version with its prices and its rules; `setLicensePlanVersionRule` corrects a limit; `setLicensePlanVersionEnabled` withdraws a version or puts a previous one back. Together they let an application define its commercial offer in preproduction and production, where the development fixtures do not run
+- `LicensePlanVersionService.set_enabled`, enforcing that a single version of a plan is offered at a time
+- `LicensePlanVersionRuleService.validate_rule`, shared by the publication and the correction paths so the same mistake surfaces the same way
+- Integration test building the GraphQL schema with the licensing app loaded: a malformed resolver signature only fails when Strawberry resolves the fields, at application startup, so the whole suite passed while the application could not boot
+
+### Changed
+- `create_new_version` takes the version rules and creates them in the same transaction. The new version is offered as soon as it exists, so publishing it without its rules left a live version granting unlimited quotas
+- A plan version must declare at least one rule, `NO_RULE_ON_VERSION` otherwise. A quota missing from a version is read as unlimited by the checker, and unlimited has its own representation, a null limit, which must stay deliberate
+- `set_rule_limit` validates the version, the rule and the limit instead of relying on foreign keys to raise
+
+### Removed
+- `MAX_PROJECTS_PER_MONTH` rule and its validator. The validator always returned valid, since counting projects depends on an entity the framework does not own, so the limit shown in the catalogue was never enforced. A quota the framework cannot count belongs to the application
+
 ## [0.33.0] - 2026-08-14
 
 ### Changed

@@ -363,17 +363,3 @@ class TestLicenseCheckerGetLimitsFromClaims:
         assert limits["EXPORT_PDF"]["type"] == "feature"
 
 
-class TestValidateMaxProjectsPerMonthPlaceholder:
-    """Tests for placeholder validator."""
-
-    @pytest.mark.asyncio
-    async def test_returns_valid_with_limit(self):
-        from lys.apps.licensing.modules.rule.validators import validate_max_projects_per_month
-        result = await validate_max_projects_per_month(None, "client-1", "app-1", 100)
-        assert result == (True, 0, 100)
-
-    @pytest.mark.asyncio
-    async def test_returns_unlimited_when_none(self):
-        from lys.apps.licensing.modules.rule.validators import validate_max_projects_per_month
-        result = await validate_max_projects_per_month(None, "client-1", "app-1", None)
-        assert result == (True, 0, -1)
