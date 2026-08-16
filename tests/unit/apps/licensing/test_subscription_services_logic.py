@@ -182,6 +182,7 @@ class TestHandleDowngrade:
         mock_sub.provider_subscription_id = "sub_123"
         mock_sub.commitment_end_date = None
         mock_sub.is_committed = False
+        mock_sub.is_manually_billed = False
         mock_sub.effective_change_date = datetime(2025, 2, 1)
 
         paid_target = Mock()
@@ -217,6 +218,7 @@ class TestHandleDowngrade:
         mock_sub.client_id = "client-1"
         mock_sub.commitment_end_date = None
         mock_sub.is_committed = False
+        mock_sub.is_manually_billed = False
         mock_sub.effective_change_date = datetime(2025, 2, 1)
 
         free_target = Mock()

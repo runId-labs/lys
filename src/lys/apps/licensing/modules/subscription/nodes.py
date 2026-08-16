@@ -13,10 +13,32 @@ from lys.apps.licensing.modules.plan.nodes import (
     LicensePlanVersionNode,
     LicensePlanVersionPriceNode,
 )
-from lys.apps.licensing.modules.subscription.entities import Subscription
-from lys.apps.licensing.modules.subscription.services import SubscriptionService
+from lys.apps.licensing.modules.subscription.entities import (
+    LicenseBillingMode,
+    Subscription,
+)
+from lys.apps.licensing.modules.subscription.services import (
+    LicenseBillingModeService,
+    SubscriptionService,
+)
 from lys.core.graphql.nodes import EntityNode
 from lys.core.registries import register_node
+
+
+@register_node()
+class LicenseBillingModeNode(EntityNode[LicenseBillingModeService], relay.Node):
+    """
+    GraphQL node for LicenseBillingMode entity.
+
+    Represents how a subscription is collected.
+    """
+    id: relay.NodeID[str]
+    code: str
+    description: Optional[str]
+    enabled: bool
+    created_at: datetime
+    updated_at: Optional[datetime]
+    _entity: strawberry.Private[LicenseBillingMode]
 
 
 @register_node()
@@ -59,9 +81,17 @@ class SubscriptionNode(EntityNode[SubscriptionService], relay.Node):
     def has_pending_downgrade(self) -> bool:
         return self._entity.has_pending_downgrade
 
-    @strawberry.field(description="Whether this is a free subscription (no payment provider)")
+    @strawberry.field(description="Whether nothing is owed for this subscription")
     def is_free(self) -> bool:
-        return self._entity.provider_subscription_id is None
+        return self._entity.is_free
+
+    @strawberry.field(description="How this subscription is collected")
+    async def billing_mode(self, info: Info) -> LicenseBillingModeNode:
+        return LicenseBillingModeNode.from_obj(self._entity.billing_mode)
+
+    @strawberry.field(description="Whether collection happens outside the application")
+    def is_manually_billed(self) -> bool:
+        return self._entity.is_manually_billed
 
     @strawberry.field(description="The price subscribed to, carrying periodicity, currency and commitment")
     async def plan_version_price(self, info: Info) -> Optional[LicensePlanVersionPriceNode]:

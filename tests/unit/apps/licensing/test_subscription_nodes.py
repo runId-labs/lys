@@ -70,13 +70,17 @@ class TestSubscriptionNodeFields:
         result = _get_resolver("has_pending_downgrade")(node)
         assert result is False
 
-    def test_is_free_when_no_provider(self):
-        node = _make_node({"provider_subscription_id": None})
+    def test_is_free_when_no_price_was_subscribed(self):
+        node = _make_node({"is_free": True})
         result = _get_resolver("is_free")(node)
         assert result is True
 
-    def test_is_not_free_when_has_provider(self):
-        node = _make_node({"provider_subscription_id": "sub_12345"})
+    def test_is_not_free_when_a_price_was_subscribed(self):
+        """
+        A paid subscription billed by invoice has no provider subscription and
+        is not free: what is owed comes from the price, not from the collection.
+        """
+        node = _make_node({"is_free": False, "provider_subscription_id": None})
         result = _get_resolver("is_free")(node)
         assert result is False
 

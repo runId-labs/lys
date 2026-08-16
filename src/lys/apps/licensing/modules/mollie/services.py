@@ -20,7 +20,12 @@ from mollie.api.error import Error as MollieError
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from lys.apps.licensing.consts import DEFAULT_CURRENCY, MONTHLY_PERIOD, NO_COMMITMENT
+from lys.apps.licensing.consts import (
+    DEFAULT_CURRENCY,
+    MONTHLY_PERIOD,
+    NO_COMMITMENT,
+    PROVIDER_BILLING,
+)
 from lys.apps.licensing.modules.event.consts import (
     SUBSCRIPTION_PAYMENT_SUCCESS,
     SUBSCRIPTION_PAYMENT_FAILED,
@@ -266,6 +271,11 @@ class MollieWebhookService(Service):
                         interval_months=price.period.interval_months
                     )
 
+            # Step 3 of the migration described on LicenseBillingMode: the first
+            # successful payment is what proves the mode, so a client invoiced
+            # until now is recorded as collected by the provider from here on
+            subscription.billing_mode_id = PROVIDER_BILLING
+
             # Update billing period tracking
             subscription.plan_version_price_id = price.id
             subscription.current_period_start = period_start
@@ -282,6 +292,7 @@ class MollieWebhookService(Service):
                 client_id=client_id,
                 plan_version_id=plan_version_id,
                 plan_version_price_id=price.id,
+                billing_mode_id=PROVIDER_BILLING,
                 provider_subscription_id=payment.subscription_id,
                 current_period_start=period_start,
                 current_period_end=period_end,

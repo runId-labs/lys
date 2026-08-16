@@ -160,6 +160,11 @@ async def licensing_app_manager():
             NO_COMMITMENT,
             YEARLY_PERIOD,
         )
+        from lys.apps.licensing.consts import MANUAL_BILLING, PROVIDER_BILLING
+        billing_mode_service = app_manager.get_service("license_billing_mode")
+        await billing_mode_service.create(session=session, id=PROVIDER_BILLING, enabled=True)
+        await billing_mode_service.create(session=session, id=MANUAL_BILLING, enabled=True)
+
         currency_service = app_manager.get_service("license_currency")
         await currency_service.create(
             session=session, id=EUR_CURRENCY, enabled=True, minor_unit=2

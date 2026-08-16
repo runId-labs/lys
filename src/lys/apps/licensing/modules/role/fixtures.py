@@ -22,7 +22,10 @@ LICENSE_ADMIN_ROLE_WEBSERVICES = [
     "all_license_plan_versions",
     "create_license_plan_version",
     "set_license_plan_version_rule",
-    "set_license_plan_version_enabled"
+    "set_license_plan_version_enabled",
+    # Manual billing, never opened to organization roles
+    "subscribe_client_manually",
+    "set_subscription_billing_mode"
 ]
 
 

@@ -153,7 +153,11 @@ def apply_pending_plan_changes():
                     # was requested, on an uncommitted subscription
                     subscription.provider_subscription_id = None
                     subscription.canceled_at = None
-                elif new_price is None and subscription.provider_subscription_id:
+                elif (
+                    new_price is None
+                    and subscription.provider_subscription_id
+                    and not subscription.is_manually_billed
+                ):
                     # Committed subscription reaching its term on a free plan:
                     # collection ran until now and must be stopped at this point
                     provider_cancellations.append({
@@ -163,7 +167,11 @@ def apply_pending_plan_changes():
                         "provider_subscription_id": subscription.provider_subscription_id,
                     })
                     subscription.provider_subscription_id = None
-                elif new_price is not None and subscription.provider_subscription_id:
+                elif (
+                    new_price is not None
+                    and subscription.provider_subscription_id
+                    and not subscription.is_manually_billed
+                ):
                     # Downgrade to a cheaper paid plan: the new price applies from
                     # now on, so the recurring collection must follow. Deferred
                     # until the database is committed, so that a failed commit

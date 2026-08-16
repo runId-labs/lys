@@ -13,7 +13,8 @@ from sqlalchemy import Column, DateTime, ForeignKey, String, Table, func
 from sqlalchemy.orm import Mapped, mapped_column, declared_attr, relationship
 
 from lys.apps.licensing.modules.subscription.prorata import subtract_months
-from lys.core.entities import Entity
+from lys.apps.licensing.consts import MANUAL_BILLING, PROVIDER_BILLING
+from lys.core.entities import Entity, ParametricEntity
 from lys.core.managers.database import Base
 from lys.core.registries import register_entity
 
@@ -33,6 +34,62 @@ subscription_user = Table(
 
 
 @register_entity()
+class LicenseBillingMode(ParametricEntity):
+    """
+    How a subscription is collected.
+
+    This is a routing value, not a payment provider: it says whether collection
+    goes through the configured provider or is handled outside the application,
+    typically by invoicing. Which provider is used is a matter of configuration.
+
+    Why two modes
+    -------------
+    An application usually launches before its payment integration is ready.
+    Clients are then placed on their plan by an administrator and invoiced by
+    other means, while entitlements, commitment and renewal already work: those
+    depend on the plan and its price, never on how the money is collected.
+
+    Migration to a provider
+    -----------------------
+    Adopting a provider is a per-client move, not a global switch: the client
+    goes through checkout, and the first successful payment sets the mode to
+    PROVIDER. Nothing is switched beforehand.
+
+    The mode is therefore always true, which is what billing teams read to know
+    who to invoice: MANUAL means nothing collects automatically, PROVIDER means
+    the provider does. Flipping it in advance would mark a client as collected
+    while nothing collects, and the invoicing would stop for a subscription
+    nobody is charging.
+
+    The reverse move is refused while the provider still collects: switching the
+    mode does not stop the provider subscription, and every provider branch is
+    skipped once manual, so the client would be charged and invoiced at the same
+    time, and a later cancellation would no longer stop the collection. Billing a
+    collected subscription manually therefore means cancelling it first.
+
+    A period can be both invoiced and charged during the move. Nothing here can
+    prevent it: whether to switch at a period boundary is an operational choice.
+
+    Every mode is backed by code. Adding a value without the service able to
+    honour it must fail loudly rather than silently collect nothing.
+
+    Attributes:
+        id: Mode identifier ("MANUAL", "PROVIDER")
+        description: Human-readable name, shown when choosing how to bill
+        enabled: If False, the mode cannot be used for new subscriptions
+    """
+    __tablename__ = "license_billing_mode"
+
+    def accessing_users(self) -> list[str]:
+        """Users who can access this billing mode."""
+        return []
+
+    def accessing_organizations(self) -> dict[str, list[str]]:
+        """Organizations that can access this billing mode."""
+        return {}
+
+
+@register_entity()
 class Subscription(Entity):
     """
     Client subscription to a license plan version.
@@ -47,7 +104,10 @@ class Subscription(Entity):
                                periodicity, the currency and the amount agreed
                                upon. NULL on free subscriptions, which have no
                                price at all
-        provider_subscription_id: Payment provider subscription ID (NULL for free plans)
+        billing_mode_id: How the subscription is collected: through the provider
+                         or outside the application
+        provider_subscription_id: Payment provider subscription ID, only set when
+                                  billed through the provider
         pending_plan_version_id: Plan version to switch to at period end (for scheduled downgrades)
     """
 
@@ -67,6 +127,12 @@ class Subscription(Entity):
         nullable=True,
         index=True,
         comment="Price subscribed to; NULL on free subscriptions"
+    )
+
+    billing_mode_id: Mapped[str] = mapped_column(
+        ForeignKey("license_billing_mode.id", ondelete="RESTRICT"),
+        default=PROVIDER_BILLING,
+        index=True
     )
 
     # Payment provider field
@@ -122,6 +188,11 @@ class Subscription(Entity):
         )
 
     @declared_attr
+    def billing_mode(self):
+        """How this subscription is collected."""
+        return relationship("license_billing_mode", lazy="selectin")
+
+    @declared_attr
     def plan_version_price(self):
         """Price subscribed to, or None on a free subscription."""
         return relationship("license_plan_version_price", lazy="selectin")
@@ -161,8 +232,19 @@ class Subscription(Entity):
 
     @property
     def is_free(self) -> bool:
-        """Returns True if on a free plan (no provider subscription)."""
-        return self.provider_subscription_id is None
+        """
+        Returns True if nothing is owed for this subscription.
+
+        This is a property of the plan subscribed to, not of the way it is
+        collected: a paid subscription billed by invoice has no provider
+        subscription and is not free.
+        """
+        return self.plan_version_price_id is None
+
+    @property
+    def is_manually_billed(self) -> bool:
+        """Returns True if collection happens outside the application."""
+        return self.billing_mode_id == MANUAL_BILLING
 
     @property
     def is_committed(self) -> bool:

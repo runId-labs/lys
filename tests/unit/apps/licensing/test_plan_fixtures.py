@@ -105,6 +105,8 @@ class TestCatalogueAdministrationWebservices:
         from lys.apps.licensing.modules.role.fixtures import LICENSE_ADMIN_ROLE_WEBSERVICES
 
         for webservice in (
+            "subscribe_client_manually",
+            "set_subscription_billing_mode",
             "all_license_plans",
             "all_license_plan_versions",
             "create_license_plan_version",

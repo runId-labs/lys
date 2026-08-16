@@ -22,6 +22,7 @@ from lys.apps.licensing.consts import (
     NOTICE_PERIOD_EXPIRED_ERROR,
     DEFAULT_APPLICATION,
     EUR_CURRENCY,
+    CHECKOUT_SESSION_FAILED_ERROR,
     FREE_PLAN,
     MAX_USERS,
     MONTHLY_PERIOD,
@@ -983,3 +984,286 @@ class TestNoticePeriodAndTacitRenewal:
             assert renewed == 0
             assert subscription.commitment_end_date is None
             assert subscription.is_committed is False
+
+
+class TestManualAndProviderBillingCoexist:
+    """Both collection modes share the same subscription model."""
+
+    @staticmethod
+    async def _manually_billed_client(licensing_app_manager):
+        """A client on a paid plan collected outside the application."""
+        from lys.apps.licensing.consts import MANUAL_BILLING
+
+        client_service = licensing_app_manager.get_service("client")
+        version_service = licensing_app_manager.get_service("license_plan_version")
+        subscription_service = licensing_app_manager.get_service("subscription")
+
+        async with licensing_app_manager.database.get_session() as session:
+            client = await client_service.create_client_with_owner(
+                session=session,
+                client_name=f"Manual-Corp-{uuid4().hex[:8]}",
+                email=f"manual-{uuid4().hex[:8]}@example.com",
+                password="Password123!",
+                language_id="en",
+                send_verification_email=False
+            )
+
+        async with licensing_app_manager.database.get_session() as session:
+            starter = await version_service.get_current_version(STARTER_PLAN, session)
+            subscription = await subscription_service.get_client_subscription(client.id, session)
+            subscription.plan_version_id = starter.id
+            subscription.plan_version_price_id = starter.price_for(MONTHLY_PERIOD).id
+            subscription.billing_mode_id = MANUAL_BILLING
+            # No provider subscription: collection happens by invoicing
+            subscription.provider_subscription_id = None
+            client_id = client.id
+            await session.commit()
+
+        return client_id
+
+    @pytest.mark.asyncio
+    async def test_a_manually_billed_paid_subscription_is_not_free(self, licensing_app_manager):
+        """
+        What is owed comes from the price. Reading it from the provider marked
+        every invoiced subscription as free.
+        """
+        subscription_service = licensing_app_manager.get_service("subscription")
+
+        client_id = await self._manually_billed_client(licensing_app_manager)
+
+        async with licensing_app_manager.database.get_session() as session:
+            subscription = await subscription_service.get_client_subscription(client_id, session)
+
+            assert subscription.provider_subscription_id is None
+            assert subscription.is_manually_billed is True
+            assert subscription.is_free is False
+
+    @pytest.mark.asyncio
+    async def test_a_manual_subscription_reaches_checkout(self, licensing_app_manager):
+        """
+        A manually billed client migrates by paying: routing them to checkout is
+        the migration path, and the payment is what records the new mode. It must
+        therefore not be refused on the ground that they are invoiced today.
+        """
+        subscription_service = licensing_app_manager.get_service("subscription")
+        version_service = licensing_app_manager.get_service("license_plan_version")
+
+        client_id = await self._manually_billed_client(licensing_app_manager)
+
+        async with licensing_app_manager.database.get_session() as session:
+            pro = await version_service.get_current_version(PRO_PLAN, session)
+
+            result = await subscription_service.subscribe_to_plan(
+                client_id=client_id,
+                plan_version_id=pro.id,
+                billing_period=MONTHLY_PERIOD,
+                success_url="https://example.com/success",
+                webhook_url="https://example.com/webhooks/mollie",
+                session=session
+            )
+
+            # Mollie is not configured in tests, so checkout creation fails there
+            # rather than being refused upfront on the billing mode
+            assert result.error == CHECKOUT_SESSION_FAILED_ERROR
+
+    @pytest.mark.asyncio
+    async def test_a_manual_subscription_can_be_cancelled(self, licensing_app_manager):
+        """Cancellation must not require a provider subscription to stop."""
+        subscription_service = licensing_app_manager.get_service("subscription")
+
+        client_id = await self._manually_billed_client(licensing_app_manager)
+
+        async with licensing_app_manager.database.get_session() as session:
+            with patch(
+                "lys.apps.licensing.modules.subscription.services.trigger_event.delay"
+            ):
+                result = await subscription_service.cancel(client_id, session)
+
+            assert result.success is True
+
+            subscription = await subscription_service.get_client_subscription(client_id, session)
+            assert subscription.pending_plan_version_id is not None
+
+    @pytest.mark.asyncio
+    async def test_provider_billing_is_unaffected(self, licensing_app_manager):
+        """The default mode keeps the existing behaviour."""
+        from lys.apps.licensing.consts import PROVIDER_BILLING
+
+        subscription_service = licensing_app_manager.get_service("subscription")
+        client_service = licensing_app_manager.get_service("client")
+
+        async with licensing_app_manager.database.get_session() as session:
+            client = await client_service.create_client_with_owner(
+                session=session,
+                client_name=f"Provider-Corp-{uuid4().hex[:8]}",
+                email=f"provider-{uuid4().hex[:8]}@example.com",
+                password="Password123!",
+                language_id="en",
+                send_verification_email=False
+            )
+
+        async with licensing_app_manager.database.get_session() as session:
+            subscription = await subscription_service.get_client_subscription(client.id, session)
+
+            assert subscription.billing_mode_id == PROVIDER_BILLING
+            assert subscription.is_manually_billed is False
+            # Auto-subscribed to the free plan, so nothing is owed
+            assert subscription.is_free is True
+
+    @pytest.mark.asyncio
+    async def test_subscribing_manually_records_the_agreed_price(self, licensing_app_manager):
+        """
+        No payment is taken, but the terms are recorded: entitlements and
+        renewal must behave as they do under provider billing.
+        """
+        from lys.apps.licensing.consts import MANUAL_BILLING
+
+        subscription_service = licensing_app_manager.get_service("subscription")
+        version_service = licensing_app_manager.get_service("license_plan_version")
+        client_service = licensing_app_manager.get_service("client")
+
+        async with licensing_app_manager.database.get_session() as session:
+            client = await client_service.create_client_with_owner(
+                session=session,
+                client_name=f"Invoice-Corp-{uuid4().hex[:8]}",
+                email=f"invoice-{uuid4().hex[:8]}@example.com",
+                password="Password123!",
+                language_id="en",
+                send_verification_email=False
+            )
+
+        async with licensing_app_manager.database.get_session() as session:
+            pro = await version_service.get_current_version(PRO_PLAN, session)
+
+            subscription = await subscription_service.get_client_subscription(
+                client.id, session
+            )
+            subscription = await subscription_service.subscribe_manually(
+                subscription=subscription,
+                plan_version_price_id=pro.price_for(YEARLY_PERIOD).id,
+                session=session
+            )
+
+            assert subscription.billing_mode_id == MANUAL_BILLING
+            assert subscription.plan_version_id == pro.id
+            assert subscription.plan_version_price_id == pro.price_for(YEARLY_PERIOD).id
+            assert subscription.is_free is False
+            # No provider was called
+            assert subscription.provider_subscription_id is None
+            # The billing period is tracked, so renewal and prorata still work
+            assert subscription.current_period_end is not None
+
+    @pytest.mark.asyncio
+    async def test_an_unknown_billing_mode_is_refused(self, licensing_app_manager):
+        """A mode no service can honour would silently collect nothing."""
+        subscription_service = licensing_app_manager.get_service("subscription")
+
+        client_id = await self._manually_billed_client(licensing_app_manager)
+
+        async with licensing_app_manager.database.get_session() as session:
+            subscription = await subscription_service.get_client_subscription(
+                client_id, session
+            )
+            with pytest.raises(LysError, match="UNKNOWN_BILLING_MODE"):
+                await subscription_service.set_billing_mode(
+                    subscription=subscription,
+                    billing_mode_id="CARRIER_PIGEON",
+                    session=session
+                )
+
+    @pytest.mark.asyncio
+    async def test_manual_billing_is_refused_while_the_provider_collects(
+        self, licensing_app_manager
+    ):
+        """
+        Switching the mode does not stop the provider subscription, and every
+        provider branch is skipped once manual. The client would be charged
+        automatically and invoiced at the same time.
+        """
+        from lys.apps.licensing.consts import MANUAL_BILLING
+
+        subscription_service = licensing_app_manager.get_service("subscription")
+        version_service = licensing_app_manager.get_service("license_plan_version")
+        client_service = licensing_app_manager.get_service("client")
+
+        async with licensing_app_manager.database.get_session() as session:
+            client = await client_service.create_client_with_owner(
+                session=session,
+                client_name=f"Collected-Corp-{uuid4().hex[:8]}",
+                email=f"collected-{uuid4().hex[:8]}@example.com",
+                password="Password123!",
+                language_id="en",
+                send_verification_email=False
+            )
+
+        async with licensing_app_manager.database.get_session() as session:
+            pro = await version_service.get_current_version(PRO_PLAN, session)
+            subscription = await subscription_service.get_client_subscription(client.id, session)
+            subscription.provider_subscription_id = f"sub_{uuid4().hex[:8]}"
+            await session.flush()
+
+            # Both entries into manual billing must refuse
+            with pytest.raises(LysError, match="PROVIDER_SUBSCRIPTION_ACTIVE"):
+                await subscription_service.set_billing_mode(
+                    subscription=subscription,
+                    billing_mode_id=MANUAL_BILLING,
+                    session=session
+                )
+
+            with pytest.raises(LysError, match="PROVIDER_SUBSCRIPTION_ACTIVE"):
+                await subscription_service.subscribe_manually(
+                    subscription=subscription,
+                    plan_version_price_id=pro.price_for(MONTHLY_PERIOD).id,
+                    session=session
+                )
+
+    @pytest.mark.asyncio
+    async def test_manual_billing_is_allowed_once_nothing_is_collected(
+        self, licensing_app_manager
+    ):
+        """A cancelled or never-collected subscription can move to invoicing."""
+        from lys.apps.licensing.consts import MANUAL_BILLING
+
+        subscription_service = licensing_app_manager.get_service("subscription")
+        version_service = licensing_app_manager.get_service("license_plan_version")
+        client_service = licensing_app_manager.get_service("client")
+
+        async with licensing_app_manager.database.get_session() as session:
+            client = await client_service.create_client_with_owner(
+                session=session,
+                client_name=f"Uncollected-Corp-{uuid4().hex[:8]}",
+                email=f"uncollected-{uuid4().hex[:8]}@example.com",
+                password="Password123!",
+                language_id="en",
+                send_verification_email=False
+            )
+
+        async with licensing_app_manager.database.get_session() as session:
+            pro = await version_service.get_current_version(PRO_PLAN, session)
+            subscription = await subscription_service.get_client_subscription(client.id, session)
+
+            # No provider subscription: nothing to stop
+            subscription = await subscription_service.subscribe_manually(
+                subscription=subscription,
+                plan_version_price_id=pro.price_for(MONTHLY_PERIOD).id,
+                session=session
+            )
+
+            assert subscription.billing_mode_id == MANUAL_BILLING
+            assert subscription.plan_version_id == pro.id
+
+    @pytest.mark.asyncio
+    async def test_an_unknown_price_is_refused(self, licensing_app_manager):
+        subscription_service = licensing_app_manager.get_service("subscription")
+
+        client_id = await self._manually_billed_client(licensing_app_manager)
+
+        async with licensing_app_manager.database.get_session() as session:
+            subscription = await subscription_service.get_client_subscription(client_id, session)
+
+            with pytest.raises(LysError, match="PLAN_VERSION_PRICE_NOT_FOUND"):
+                await subscription_service.subscribe_manually(
+                    subscription=subscription,
+                    plan_version_price_id=str(uuid4()),
+                    session=session
+                )

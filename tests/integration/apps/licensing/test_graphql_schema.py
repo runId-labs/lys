@@ -63,6 +63,13 @@ class TestLicensingGraphQLSchema:
     def test_catalogue_mutation_is_exposed(self, licensing_schema, mutation):
         assert mutation in str(licensing_schema)
 
+    @pytest.mark.parametrize("mutation", [
+        "subscribeClientManually",
+        "setSubscriptionBillingMode",
+    ])
+    def test_manual_billing_mutation_is_exposed(self, licensing_schema, mutation):
+        assert mutation in str(licensing_schema)
+
     def test_plan_version_entity_is_not_exposed_as_an_argument(self, licensing_schema):
         """
         lys_edition injects the edited entity, it is never an input. Leaking it

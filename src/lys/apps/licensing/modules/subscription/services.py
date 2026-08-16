@@ -18,6 +18,7 @@ from lys.apps.licensing.consts import (
     CHECKOUT_SESSION_FAILED_ERROR,
     DEFAULT_CURRENCY,
     FREE_PLAN,
+    MANUAL_BILLING,
     NO_ACTIVE_SUBSCRIPTION_ERROR,
     NO_COMMITMENT,
     NO_PROVIDER_SUBSCRIPTION_ERROR,
@@ -27,8 +28,11 @@ from lys.apps.licensing.consts import (
 )
 from lys.apps.licensing.errors import (
     NO_ACTIVE_SUBSCRIPTION,
+    PROVIDER_SUBSCRIPTION_ACTIVE,
+    UNKNOWN_BILLING_MODE,
     PLAN_VERSION_NOT_FOUND,
     PLAN_VERSION_NOT_PRICED,
+    PLAN_VERSION_PRICE_NOT_FOUND,
     SUBSCRIPTION_ALREADY_EXISTS,
     USER_ALREADY_LICENSED,
     USER_NOT_LICENSED,
@@ -40,8 +44,13 @@ from lys.apps.licensing.modules.mollie.models import (
     SubscribeToPlanResult,
 )
 from lys.apps.licensing.modules.mollie.services import get_mollie_client
-from lys.apps.licensing.modules.subscription.entities import Subscription, subscription_user
+from lys.apps.licensing.modules.subscription.entities import (
+    LicenseBillingMode,
+    Subscription,
+    subscription_user,
+)
 from lys.apps.licensing.modules.subscription.prorata import (
+    calculate_period_end,
     calculate_prorata,
     is_upgrade,
 )
@@ -50,6 +59,16 @@ from lys.core.registries import register_service
 from lys.core.services import EntityService
 
 logger = logging.getLogger(__name__)
+
+
+@register_service()
+class LicenseBillingModeService(EntityService[LicenseBillingMode]):
+    """
+    Service for managing billing modes.
+
+    Billing modes are reference data: they are provisioned by fixtures and
+    referenced by subscriptions to route collection.
+    """
 
 
 @register_service()
@@ -361,6 +380,142 @@ class SubscriptionService(EntityService[Subscription]):
         return result.first() is not None
 
     # =========================================================================
+    # Manual billing (collection handled outside the application)
+    # =========================================================================
+
+    @classmethod
+    def _reject_if_provider_collects(cls, subscription: Subscription) -> None:
+        """
+        Refuse to route a subscription as manual while the provider collects it.
+
+        Switching the mode does not stop the provider subscription, and every
+        provider branch is skipped once the mode is manual. The client would
+        keep being charged automatically while also being invoiced, and a later
+        cancellation would no longer stop the collection.
+
+        Args:
+            subscription: Subscription about to be switched to manual billing
+
+        Raises:
+            LysError: PROVIDER_SUBSCRIPTION_ACTIVE if a provider subscription is live
+        """
+        if subscription.provider_subscription_id:
+            raise LysError(
+                PROVIDER_SUBSCRIPTION_ACTIVE,
+                f"Subscription {subscription.id} is still collected by the provider. "
+                f"Cancel it first, which stops the collection, before billing manually."
+            )
+
+    @classmethod
+    async def subscribe_manually(
+        cls,
+        subscription: Subscription,
+        plan_version_price_id: str,
+        session: AsyncSession
+    ) -> Subscription:
+        """
+        Place a subscription on a priced plan, collected outside the application.
+
+        No payment is taken and no provider is called: the amount is invoiced by
+        other means. The price carries the version, the periodicity, the currency
+        and the commitment agreed to, so entitlements, commitment and renewal
+        behave as they would under provider billing.
+
+        This is a commercial act performed by an administrator on behalf of a
+        client, never by the client themselves. A free plan has no price and is
+        therefore reached through cancellation, not through this method.
+
+        Args:
+            subscription: Subscription to place on the plan
+            plan_version_price_id: Price agreed to, which identifies the plan
+                version and the terms
+            session: Database session
+
+        Returns:
+            The updated Subscription
+
+        Raises:
+            LysError: PROVIDER_SUBSCRIPTION_ACTIVE if the provider still collects
+            LysError: PLAN_VERSION_PRICE_NOT_FOUND if the price does not exist
+        """
+        cls._reject_if_provider_collects(subscription)
+
+        price_service = cls.app_manager.get_service("license_plan_version_price")
+        price = await price_service.get_by_id(plan_version_price_id, session)
+
+        if price is None:
+            raise LysError(
+                PLAN_VERSION_PRICE_NOT_FOUND,
+                f"Plan version price {plan_version_price_id} not found"
+            )
+
+        now = datetime.now(timezone.utc)
+
+        subscription.billing_mode_id = MANUAL_BILLING
+        subscription.plan_version_id = price.plan_version_id
+        subscription.plan_version_price_id = price.id
+        subscription.pending_plan_version_id = None
+        subscription.canceled_at = None
+        subscription.current_period_start = now
+        subscription.current_period_end = calculate_period_end(
+            now, price.period.interval_months
+        )
+        subscription.commitment_end_date = (
+            calculate_period_end(now, price.commitment.duration_months)
+            if price.commitment.is_binding else None
+        )
+
+        return subscription
+
+    @classmethod
+    async def set_billing_mode(
+        cls,
+        subscription: Subscription,
+        billing_mode_id: str,
+        session: AsyncSession
+    ) -> Subscription:
+        """
+        Change how a subscription is collected.
+
+        This is the migration path between the two modes: an application
+        adopting a payment provider releases its manually billed clients one by
+        one, so that they can subscribe through checkout.
+
+        Switching to provider billing does not create anything at the provider;
+        it only stops routing the subscription as manual. Collection starts when
+        the client subscribes.
+
+        Args:
+            subscription: Subscription whose collection mode changes
+            billing_mode_id: Target billing mode
+            session: Database session
+
+        Returns:
+            The updated Subscription
+
+        Raises:
+            LysError: UNKNOWN_BILLING_MODE if the mode does not exist or is disabled
+            LysError: PROVIDER_SUBSCRIPTION_ACTIVE if switching to manual while
+                the provider still collects
+        """
+        if billing_mode_id == MANUAL_BILLING:
+            cls._reject_if_provider_collects(subscription)
+
+        billing_mode_service = cls.app_manager.get_service("license_billing_mode")
+        billing_mode = await billing_mode_service.get_by_id(billing_mode_id, session)
+
+        # A mode with no service able to honour it would silently collect
+        # nothing, so an unknown or withdrawn mode is refused outright
+        if billing_mode is None or not billing_mode.enabled:
+            raise LysError(
+                UNKNOWN_BILLING_MODE,
+                f"Billing mode {billing_mode_id} does not exist or is disabled"
+            )
+
+        subscription.billing_mode_id = billing_mode_id
+        return subscription
+
+    # =========================================================================
     # Subscription Management (with payment provider integration)
     # =========================================================================
 
@@ -428,7 +583,11 @@ class SubscriptionService(EntityService[Subscription]):
 
         new_price = new_price_entity.amount if new_price_entity else 0
 
-        # Case 1: No subscription or FREE plan (no provider_subscription_id)
+        # Case 1: nothing is being collected yet, so the change starts a
+        # collection rather than altering one. A manually billed client reaches
+        # checkout through here: the payment is what moves them to the provider,
+        # so that the recorded mode never claims a collection that has not
+        # started. See LicenseBillingMode for the migration it belongs to.
         if not subscription or not subscription.provider_subscription_id:
             return await cls._handle_new_subscription(
                 client=client,
@@ -664,6 +823,7 @@ class SubscriptionService(EntityService[Subscription]):
             target_version is not None
             and target_version.is_free
             and subscription.provider_subscription_id
+            and not subscription.is_manually_billed
             and not subscription.is_committed
         ):
             client_entity = cls.app_manager.get_entity("client")
@@ -728,7 +888,7 @@ class SubscriptionService(EntityService[Subscription]):
         if not subscription:
             return CancelSubscriptionResult(success=False, error=NO_ACTIVE_SUBSCRIPTION_ERROR)
 
-        if not subscription.provider_subscription_id:
+        if not subscription.is_manually_billed and not subscription.provider_subscription_id:
             return CancelSubscriptionResult(success=False, error=NO_PROVIDER_SUBSCRIPTION_ERROR)
 
         # Past the notice deadline the commitment is tacitly renewed, so the
@@ -736,7 +896,7 @@ class SubscriptionService(EntityService[Subscription]):
         if not subscription.is_within_notice_period:
             return CancelSubscriptionResult(success=False, error=NOTICE_PERIOD_EXPIRED_ERROR)
 
-        if not client.provider_customer_id:
+        if not subscription.is_manually_billed and not client.provider_customer_id:
             return CancelSubscriptionResult(success=False, error=CANCEL_SUBSCRIPTION_FAILED_ERROR)
 
         # Get FREE plan version to downgrade to
@@ -755,7 +915,8 @@ class SubscriptionService(EntityService[Subscription]):
             session=session
         )
 
-        if not was_committed and subscription.canceled_at is None:
+        if not was_committed and not subscription.is_manually_billed \
+                and subscription.canceled_at is None:
             # Collection was meant to stop now but could not, so the client would
             # keep being charged; report the failure rather than a false success.
             # A committed subscription is expected to keep being charged until

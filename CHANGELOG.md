@@ -7,6 +7,18 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.35.0] - 2026-08-16
+
+### Added
+- `LicenseBillingMode` parametric entity routing how a subscription is collected: through the payment provider, or outside the application by invoicing. An application usually launches before its payment integration is ready, and entitlements, commitment and renewal already work in the meantime, since they depend on the plan and its price and never on how the money is collected
+- `subscribeClientManually`, placing a subscription on a priced plan without taking any payment, and `setSubscriptionBillingMode`, both restricted to `LICENSE_ADMIN_ROLE` and deliberately not opened to organization roles: granting a paid plan is a commercial act, never a client one
+- `SubscriptionNode` exposes the billing mode, so a billing team can read who is still to be invoiced
+
+### Changed
+- `Subscription.is_free` is derived from the subscribed price instead of the absence of a provider subscription. A paid subscription billed by invoice has no provider subscription and is not free
+- The first successful payment records the provider mode, so the mode never claims a collection that has not started. Nothing is switched beforehand: flipping it in advance would stop the invoicing of a subscription nobody is charging
+- Routing a subscription as manual is refused while the provider still collects. Switching the mode does not stop the provider subscription, and every provider branch is skipped once manual, so the client would be charged and invoiced at once, and a later cancellation would no longer stop the collection
+
 ## [0.34.0] - 2026-08-15
 
 ### Added
