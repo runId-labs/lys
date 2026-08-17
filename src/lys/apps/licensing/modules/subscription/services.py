@@ -460,10 +460,15 @@ class SubscriptionService(EntityService[Subscription]):
         subscription.current_period_end = calculate_period_end(
             now, price.period.interval_months
         )
-        subscription.commitment_end_date = (
-            calculate_period_end(now, price.commitment.duration_months)
-            if price.commitment.is_binding else None
-        )
+        # Co-termination: a commitment already running is never restarted by a
+        # change of plan. The client owes more from now on, but changing plan
+        # must not lock them in for longer than what they agreed to. A new term
+        # only starts when none is running.
+        if not subscription.is_committed:
+            subscription.commitment_end_date = (
+                calculate_period_end(now, price.commitment.duration_months)
+                if price.commitment.is_binding else None
+            )
 
         return subscription
 

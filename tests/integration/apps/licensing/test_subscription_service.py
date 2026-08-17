@@ -1267,3 +1267,117 @@ class TestManualAndProviderBillingCoexist:
                     plan_version_price_id=str(uuid4()),
                     session=session
                 )
+
+
+class TestCommitmentCoTermination:
+    """Changing plan mid-term never restarts the commitment already running."""
+
+    @staticmethod
+    async def _committed_client(licensing_app_manager, days_to_term):
+        """Commit a client on a plan, with a term `days_to_term` away.
+
+        Returns the client id and the price of another plan to move them to.
+        """
+        client_service = licensing_app_manager.get_service("client")
+        plan_service = licensing_app_manager.get_service("license_plan")
+        version_service = licensing_app_manager.get_service("license_plan_version")
+        commitment_service = licensing_app_manager.get_service("license_commitment")
+        price_service = licensing_app_manager.get_service("license_plan_version_price")
+        subscription_service = licensing_app_manager.get_service("subscription")
+
+        commitment_id = f"COTERM_{uuid4().hex[:6]}"
+        held_plan_id = f"COTERM_HELD_{uuid4().hex[:6]}"
+        target_plan_id = f"COTERM_TARGET_{uuid4().hex[:6]}"
+
+        async with licensing_app_manager.database.get_session() as session:
+            client = await client_service.create_client_with_owner(
+                session=session,
+                client_name=f"Coterm-Corp-{uuid4().hex[:8]}",
+                email=f"coterm-{uuid4().hex[:8]}@example.com",
+                password="Password123!",
+                language_id="en",
+                send_verification_email=False
+            )
+            await commitment_service.create(
+                session=session, id=commitment_id, enabled=True,
+                duration_months=36, renewal_months=36, notice_months=3
+            )
+
+            versions = {}
+            for plan_id, amount in ((held_plan_id, 30000), (target_plan_id, 60000)):
+                await plan_service.create(
+                    session=session, id=plan_id, enabled=True, app_id=DEFAULT_APPLICATION
+                )
+                versions[plan_id] = await version_service.create_new_version(
+                    plan_id, session,
+                    prices=[{
+                        "period_id": YEARLY_PERIOD,
+                        "amount": amount,
+                        "commitment_id": commitment_id,
+                    }],
+                    rules=[{"rule_id": MAX_USERS, "limit_value": 10}]
+                )
+
+            prices = await price_service.get_all(session)
+            held_price = next(
+                p for p in prices if p.plan_version_id == versions[held_plan_id].id
+            )
+            target_price = next(
+                p for p in prices if p.plan_version_id == versions[target_plan_id].id
+            )
+
+            subscription = await subscription_service.get_client_subscription(client.id, session)
+            subscription.plan_version_id = versions[held_plan_id].id
+            subscription.plan_version_price_id = held_price.id
+            subscription.current_period_end = datetime.now(timezone.utc) + timedelta(days=30)
+            subscription.commitment_end_date = (
+                datetime.now(timezone.utc) + timedelta(days=days_to_term)
+            )
+            client_id = client.id
+            target_price_id = target_price.id
+            await session.commit()
+
+        return client_id, target_price_id
+
+    @pytest.mark.asyncio
+    async def test_a_running_term_survives_a_plan_change(self, licensing_app_manager):
+        """Upgrading raises the amount due, it does not lock the client in longer."""
+        subscription_service = licensing_app_manager.get_service("subscription")
+
+        # Two years left of a three-year term
+        client_id, target_price_id = await self._committed_client(licensing_app_manager, 730)
+
+        async with licensing_app_manager.database.get_session() as session:
+            subscription = await subscription_service.get_client_subscription(client_id, session)
+            term = subscription.commitment_end_date
+
+            subscription = await subscription_service.subscribe_manually(
+                subscription=subscription,
+                plan_version_price_id=target_price_id,
+                session=session
+            )
+
+            assert subscription.commitment_end_date == term
+
+    @pytest.mark.asyncio
+    async def test_a_lapsed_term_starts_anew(self, licensing_app_manager):
+        """Nothing is running any more, so the plan taken today opens its own term."""
+        subscription_service = licensing_app_manager.get_service("subscription")
+
+        # The term ended yesterday
+        client_id, target_price_id = await self._committed_client(licensing_app_manager, -1)
+
+        async with licensing_app_manager.database.get_session() as session:
+            subscription = await subscription_service.get_client_subscription(client_id, session)
+            # Read back from storage without a timezone, unlike the date the
+            # service computes
+            lapsed_term = subscription.commitment_end_date.replace(tzinfo=timezone.utc)
+
+            subscription = await subscription_service.subscribe_manually(
+                subscription=subscription,
+                plan_version_price_id=target_price_id,
+                session=session
+            )
+
+            assert subscription.commitment_end_date > lapsed_term
+            assert subscription.commitment_end_date > datetime.now(timezone.utc)

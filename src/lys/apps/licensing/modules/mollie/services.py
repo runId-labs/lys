@@ -236,8 +236,8 @@ class MollieWebhookService(Service):
         period_start = now
         period_end = calculate_period_end(now, price.period.interval_months)
 
-        # A commitment runs from the first payment and is never restarted by a
-        # renewal, so it is only computed when none is recorded yet
+        # A commitment runs from the first payment of a term, so this candidate
+        # end date is only applied when no term is running
         commitment_end = None
         if price.commitment.is_binding:
             commitment_end = calculate_period_end(now, price.commitment.duration_months)
@@ -280,7 +280,9 @@ class MollieWebhookService(Service):
             subscription.plan_version_price_id = price.id
             subscription.current_period_start = period_start
             subscription.current_period_end = period_end
-            if subscription.commitment_end_date is None:
+            # Co-termination: a commitment already running is never restarted by
+            # a change of plan, and a term that has lapsed starts anew
+            if not subscription.is_committed:
                 subscription.commitment_end_date = commitment_end
 
             # Update provider subscription ID if needed

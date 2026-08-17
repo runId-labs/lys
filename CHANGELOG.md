@@ -7,6 +7,11 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.35.1] - 2026-08-16
+
+### Fixed
+- A commitment already running is no longer restarted by a plan change. Moving a client to another plan raises what they owe, but it must not lock them in for longer than what they signed: a three year term entered two years ago now ends on its original date, whichever plan they move to. A term that has lapsed still opens a new one, which the previous null check never did
+
 ## [0.35.0] - 2026-08-16
 
 ### Added
