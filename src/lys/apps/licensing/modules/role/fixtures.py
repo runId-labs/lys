@@ -23,9 +23,17 @@ LICENSE_ADMIN_ROLE_WEBSERVICES = [
     "create_license_plan_version",
     "set_license_plan_version_rule",
     "set_license_plan_version_enabled",
+    "all_license_discounts",
+    "create_license_discount",
+    "set_license_discount_enabled",
     # Manual billing, never opened to organization roles
     "subscribe_client_manually",
-    "set_subscription_billing_mode"
+    "set_subscription_billing_mode",
+    "revoke_subscription_discount",
+    # Reading what a client signed belongs to the same act as granting a
+    # discount against it: the operator must not have to remember, nor be able
+    # to forget, what was agreed
+    "all_client_legal_acceptances"
 ]
 
 

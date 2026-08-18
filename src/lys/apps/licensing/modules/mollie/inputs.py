@@ -29,3 +29,6 @@ class SubscribeToPlanInput:
     commitment_id: strawberry.auto = strawberry.field(
         description="Contractual commitment to subscribe under (defaults to none)"
     )
+    discount_id: strawberry.auto = strawberry.field(
+        description="Discount claimed, granted once the payment is confirmed"
+    )

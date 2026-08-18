@@ -7,9 +7,11 @@ Webservices for the legal_document module.
   wired like the Mollie webhook (module-level `router`, auto-mounted by lys).
 """
 import logging
+from typing import Optional
 
 import strawberry
 from fastapi import APIRouter
+from sqlalchemy import Select, select
 from fastapi.responses import RedirectResponse
 from strawberry import relay
 
@@ -22,6 +24,7 @@ from lys.apps.legal.modules.legal_document.consts import (
     DEFAULT_PRESIGNED_URL_EXPIRY,
     LEGAL_ROUTE_PREFIX,
 )
+from lys.apps.user_role.consts import ROLE_ACCESS_LEVEL
 from lys.apps.legal.modules.legal_document.nodes import (
     LegalDocumentAcceptanceNode,
     LegalDocumentVersionNode,
@@ -30,6 +33,7 @@ from lys.apps.legal.modules.legal_document.nodes import (
 from lys.core.consts.webservices import CONNECTED_ACCESS_LEVEL
 from lys.core.contexts import Info
 from lys.core.errors import LysError
+from lys.core.graphql.connection import lys_connection
 from lys.core.graphql.create import lys_creation
 from lys.core.graphql.fields import lys_field
 from lys.core.graphql.registries import register_mutation, register_query
@@ -65,6 +69,60 @@ class LegalDocumentQuery(Query):
             type_id, language_id, session=info.context.session
         )
         return LegalDocumentVersionNode.from_obj(version)
+
+    @lys_connection(
+        LegalDocumentAcceptanceNode,
+        access_levels=[ROLE_ACCESS_LEVEL],
+        is_licenced=False,
+        description=(
+            "List the acceptance proofs recorded for the users of a client, most recent "
+            "first. Use 'type_id' to restrict to one document type."
+        ),
+    )
+    async def all_client_legal_acceptances(
+        self,
+        info: Info,
+        client_id: relay.GlobalID,
+        type_id: Optional[str] = None,
+    ) -> Select:
+        """
+        List what a client's users have accepted.
+
+        A proof belongs to the person who gave it, but it is the organisation
+        that is bound: an operator deciding on a commercial term needs to know
+        whether the company signed, not which of its users clicked. Any user
+        attached to the client counts — reaching the mutation at all means being
+        entitled to act for it.
+
+        The version accepted is exposed rather than compared to the one in force:
+        a document republished since does not erase what was agreed, and it is
+        the operator's job to weigh a proof given on an earlier text.
+
+        Args:
+            info: GraphQL context
+            client_id: Client whose users' acceptances are listed
+            type_id: Optional document type to restrict to
+
+        Returns:
+            Select statement, most recent acceptance first
+        """
+        app_manager = info.context.app_manager
+        acceptance_entity = app_manager.get_entity("legal_document_acceptance")
+        version_entity = app_manager.get_entity("legal_document_version")
+        user_entity = app_manager.get_entity("user")
+
+        stmt = (
+            select(acceptance_entity)
+            .join(user_entity, user_entity.id == acceptance_entity.user_id)
+            .where(user_entity.client_id == client_id.node_id)
+        )
+
+        if type_id is not None:
+            stmt = stmt.join(
+                version_entity, version_entity.id == acceptance_entity.version_id
+            ).where(version_entity.type_id == type_id)
+
+        return stmt.order_by(acceptance_entity.created_at.desc())
 
     @lys_field(
         ensure_type=OutstandingLegalAcceptancesNode,

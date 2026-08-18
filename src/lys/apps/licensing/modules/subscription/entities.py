@@ -2,6 +2,7 @@
 Subscription entity definitions.
 
 This module defines:
+- LicenseBillingMode: how a subscription is collected
 - Subscription: Client subscription to a license plan version
 - subscription_user: Association table linking subscriptions to users
 """
@@ -9,7 +10,7 @@ This module defines:
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
-from sqlalchemy import Column, DateTime, ForeignKey, String, Table, func
+from sqlalchemy import JSON, Column, DateTime, ForeignKey, String, Table, func
 from sqlalchemy.orm import Mapped, mapped_column, declared_attr, relationship
 
 from lys.apps.licensing.modules.subscription.prorata import subtract_months
@@ -133,6 +134,22 @@ class Subscription(Entity):
         ForeignKey("license_billing_mode.id", ondelete="RESTRICT"),
         default=PROVIDER_BILLING,
         index=True
+    )
+
+    # What the client actually owes, and what was agreed to obtain it. The price
+    # says what the catalogue asks; these say what this client pays, which a
+    # discount can make differ. Reading the catalogue back would recompute the
+    # past every time a discount or a price is revised. The currency is not
+    # repeated here: an amount is only owed when a price exists, and that price
+    # carries it.
+    amount_due: Mapped[int | None] = mapped_column(
+        nullable=True,
+        comment="Amount actually owed per period, in the price's minor units; NULL when free"
+    )
+    receipt: Mapped[dict | None] = mapped_column(
+        JSON,
+        nullable=True,
+        comment="Snapshot of the commercial terms agreed to: plan, price, discount, commitment"
     )
 
     # Payment provider field

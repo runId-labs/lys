@@ -5,6 +5,9 @@ Provides a session-scoped AppManager with licensing app loaded,
 including plans, rules, and versions for testing subscription and checker services.
 """
 
+import os
+import tempfile
+
 import pytest_asyncio
 
 from lys.apps.licensing.registries import register_validator
@@ -30,11 +33,22 @@ async def validate_demo_quota(session, client_id, app_id, limit_value):
 
 @pytest_asyncio.fixture(scope="session")
 async def licensing_app_manager():
-    """Create AppManager with licensing app loaded."""
+    """Create AppManager with licensing app loaded.
+
+    The database is a temporary file rather than ":memory:". The manager builds
+    one engine per driver from the same setting, and ":memory:" gives each of
+    them a database of its own: the Celery tasks, which run on the synchronous
+    engine, would then open an empty schema and silently do nothing. A file is
+    what makes both engines address the same data, and it is what makes
+    `apply_pending_plan_changes` testable at all.
+    """
+    db_handle, db_path = tempfile.mkstemp(suffix=".sqlite", prefix="lys_licensing_")
+    os.close(db_handle)
+
     settings = LysAppSettings()
     settings.database.configure(
         type="sqlite",
-        database=":memory:",
+        database=db_path,
         echo=False
     )
     settings.apps = [
@@ -240,4 +254,7 @@ async def licensing_app_manager():
         await session.commit()
 
     yield app_manager
+
+    # close() disposes both engines through reset_database_connection
     await app_manager.database.close()
+    os.unlink(db_path)

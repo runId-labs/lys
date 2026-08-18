@@ -16,3 +16,6 @@ class SubscribeManuallyInput:
             "the currency and the commitment"
         )
     )
+    discount_id: strawberry.auto = strawberry.field(
+        description="Discount granted at the same time, if any"
+    )

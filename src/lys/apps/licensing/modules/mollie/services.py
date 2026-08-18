@@ -13,15 +13,17 @@ Configuration via plugins:
 """
 import logging
 from datetime import datetime, timezone
-from typing import Any, Dict, Optional
+from typing import TYPE_CHECKING, Any, Dict, Optional
 
 from mollie.api.client import Client as MollieClient
 from mollie.api.error import Error as MollieError
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from lys.apps.licensing.modules.discount.amounts import discounted_amount
 from lys.apps.licensing.consts import (
     DEFAULT_CURRENCY,
+    MANUAL_GRANT,
     MONTHLY_PERIOD,
     NO_COMMITMENT,
     PROVIDER_BILLING,
@@ -34,8 +36,16 @@ from lys.apps.licensing.modules.event.consts import (
 from lys.apps.licensing.modules.subscription.prorata import calculate_period_end
 from lys.apps.user_auth.modules.event.tasks import trigger_event
 from lys.core.configs import settings
+from lys.core.errors import LysError
 from lys.core.registries import register_service
 from lys.core.services import Service
+
+if TYPE_CHECKING:
+    # Annotations only: entities and services are resolved through app_manager
+    # at runtime, never imported.
+    from lys.apps.licensing.modules.plan.entities import LicensePlanVersionPrice
+    from lys.apps.licensing.modules.subscription.entities import Subscription
+    from lys.apps.licensing.modules.subscription.services import SubscriptionService
 
 logger = logging.getLogger(__name__)
 
@@ -177,6 +187,46 @@ class MollieWebhookService(Service):
     # =========================================================================
 
     @classmethod
+    async def _grant_claimed_discount(
+        cls,
+        subscription_service: type["SubscriptionService"],
+        subscription: "Subscription",
+        discount_id: Optional[str],
+        session: AsyncSession
+    ) -> None:
+        """Grant the discount claimed at checkout, once the payment is confirmed.
+
+        Only the first payment carries it: Mollie forwards a subscription's
+        metadata to every payment it generates, so declaring the discount there
+        would grant it again at each renewal, including after the commitment it
+        was granted against had ended.
+
+        Silent when there is nothing to grant or a discount is already in place:
+        a webhook can be delivered more than once, and a payment confirmation is
+        no place to fail over a commercial detail — the refusal is logged
+        instead, so that a missed grant is traceable.
+
+        Only a refusal is caught. A database error is left to propagate: the
+        session is then unusable, and swallowing it would let the rest of the
+        confirmation run on a broken transaction.
+        """
+        if not discount_id:
+            return
+
+        if await subscription_service.get_granted_discount(subscription, session) is not None:
+            return
+
+        try:
+            await subscription_service.grant_discount(
+                subscription, discount_id, session, claimed=True
+            )
+        except LysError as e:
+            logger.error(
+                f"Could not grant discount {discount_id} claimed at checkout for "
+                f"subscription {subscription.id}: {e}"
+            )
+
+    @classmethod
     async def _handle_payment_paid(cls, payment: Any, session: AsyncSession) -> None:
         """
         Handle successful payment.
@@ -254,22 +304,12 @@ class MollieWebhookService(Service):
 
         if subscription:
             # Existing subscription - update plan version and billing dates
-            if subscription.plan_version_id != plan_version_id:
+            plan_changed = subscription.plan_version_id != plan_version_id
+
+            if plan_changed:
                 subscription.plan_version_id = plan_version_id
                 subscription.pending_plan_version_id = None
                 logger.info(f"Updated subscription {subscription.id} to plan version {plan_version_id}")
-
-                # Align the recurring collection with the plan now granted,
-                # otherwise Mollie keeps charging the previous amount
-                if subscription.provider_subscription_id and client and client.provider_customer_id:
-                    checkout_service = cls.app_manager.get_service("mollie_checkout")
-                    checkout_service.update_subscription_amount(
-                        customer_id=client.provider_customer_id,
-                        provider_subscription_id=subscription.provider_subscription_id,
-                        currency_id=price.currency_id,
-                        value=price.major_unit_value,
-                        interval_months=price.period.interval_months
-                    )
 
             # Step 3 of the migration described on LicenseBillingMode: the first
             # successful payment is what proves the mode, so a client invoiced
@@ -288,6 +328,30 @@ class MollieWebhookService(Service):
             # Update provider subscription ID if needed
             if payment.subscription_id and not subscription.provider_subscription_id:
                 subscription.provider_subscription_id = payment.subscription_id
+
+            subscription_service = cls.app_manager.get_service("subscription")
+            await cls._grant_claimed_discount(
+                subscription_service, subscription, metadata.get("discount_id"), session
+            )
+            await subscription_service.settle_terms(subscription, price, session)
+
+            # Align the recurring collection with what is now owed, otherwise
+            # Mollie keeps charging the previous amount. Settled first on
+            # purpose: the discount granted a few lines above is part of it.
+            if plan_changed and subscription.provider_subscription_id and client \
+                    and client.provider_customer_id:
+                checkout_service = cls.app_manager.get_service("mollie_checkout")
+                currency = price.currency
+                checkout_service.update_subscription_amount(
+                    customer_id=client.provider_customer_id,
+                    provider_subscription_id=subscription.provider_subscription_id,
+                    currency_id=price.currency_id,
+                    value=(
+                        f"{currency.to_major_unit(subscription.amount_due):.{currency.minor_unit}f}"
+                        if subscription.amount_due is not None else price.major_unit_value
+                    ),
+                    interval_months=price.period.interval_months
+                )
         else:
             # New subscription
             subscription = subscription_entity(
@@ -301,6 +365,13 @@ class MollieWebhookService(Service):
                 commitment_end_date=commitment_end
             )
             session.add(subscription)
+            await session.flush()
+
+            subscription_service = cls.app_manager.get_service("subscription")
+            await cls._grant_claimed_discount(
+                subscription_service, subscription, metadata.get("discount_id"), session
+            )
+            await subscription_service.settle_terms(subscription, price, session)
             logger.info(f"Created new subscription for client {client_id}")
 
         # For first payments (sequenceType == "first"), create Mollie subscription
@@ -320,7 +391,8 @@ class MollieWebhookService(Service):
                     webhook_url=webhook_url,
                     session=session,
                     currency_id=metadata.get("currency_id", DEFAULT_CURRENCY),
-                    commitment_id=metadata.get("commitment_id", NO_COMMITMENT)
+                    commitment_id=metadata.get("commitment_id", NO_COMMITMENT),
+                    amount_due=subscription.amount_due
                 )
 
                 if mollie_sub_id:
@@ -497,6 +569,46 @@ class MollieCheckoutService(Service):
     service_name = "mollie_checkout"
 
     @classmethod
+    async def _amount_to_charge(
+        cls,
+        price: "LicensePlanVersionPrice",
+        discount_id: Optional[str],
+        session: AsyncSession
+    ) -> str:
+        """What the provider must actually collect for one period.
+
+        The catalogue price is what the offer costs; a claimed discount is taken
+        off it before the payment is created. Charging the full price and
+        recording a reduced amount would have the client pay what nobody agreed
+        to, and no later correction would give the money back on its own.
+
+        An unknown or withdrawn discount charges the full price rather than
+        failing: the claim is settled again when the payment is confirmed, and
+        refusing a payment over a commercial detail costs more than collecting
+        the catalogue amount.
+        """
+        if not discount_id:
+            return price.major_unit_value
+
+        discount_entity = cls.app_manager.get_entity("license_discount")
+        discount = await session.get(discount_entity, discount_id)
+
+        # The same rule as the one that grants it: charging a reduced amount for
+        # a discount the grant would refuse under-bills the first payment, and
+        # nothing later gives that money back.
+        if discount is None or not discount.enabled or discount.grant_id != MANUAL_GRANT:
+            logger.warning(
+                f"Discount {discount_id} claimed at checkout cannot be claimed; "
+                f"charging the catalogue price"
+            )
+            return price.major_unit_value
+
+        amount = discounted_amount(price.amount, discount.value, discount.unit_id)
+        currency = price.currency
+
+        return f"{currency.to_major_unit(amount):.{currency.minor_unit}f}"
+
+    @classmethod
     async def create_payment(
         cls,
         client_id: str,
@@ -507,7 +619,8 @@ class MollieCheckoutService(Service):
         session: AsyncSession,
         cancel_url: Optional[str] = None,
         currency_id: str = DEFAULT_CURRENCY,
-        commitment_id: str = NO_COMMITMENT
+        commitment_id: str = NO_COMMITMENT,
+        discount_id: Optional[str] = None
     ) -> Optional[str]:
         """
         Create a Mollie payment for subscription.
@@ -522,6 +635,9 @@ class MollieCheckoutService(Service):
             cancel_url: URL to redirect if user cancels (optional)
             currency_id: Currency to charge in
             commitment_id: Contractual commitment subscribed to
+            discount_id: Discount claimed at checkout, carried in the payment
+                metadata and granted once the payment is confirmed — never
+                before, since an abandoned checkout must leave nothing behind
 
         Returns:
             Checkout URL or None on failure
@@ -574,17 +690,26 @@ class MollieCheckoutService(Service):
             payment_data = {
                 "amount": {
                     "currency": price.currency_id,
-                    "value": price.major_unit_value
+                    "value": await cls._amount_to_charge(price, discount_id, session)
                 },
                 "description": f"{version.plan_id} - {billing_period}",
                 "redirectUrl": redirect_url,
                 "webhookUrl": webhook_url,
+                # Mollie returns the metadata whenever the payment is fetched,
+                # which is how the webhook knows what was subscribed to. It is
+                # deliberately set on the payment and not on the recurring
+                # subscription: Mollie forwards a subscription's metadata to
+                # every payment it generates, so a discount declared there would
+                # be granted again at each renewal — including after the
+                # commitment ended it. Roughly 1kB is allowed, this stays far
+                # below.
                 "metadata": {
                     "client_id": client_id,
                     "plan_version_id": plan_version_id,
                     "billing_period": billing_period,
                     "currency_id": price.currency_id,
-                    "commitment_id": price.commitment_id
+                    "commitment_id": price.commitment_id,
+                    "discount_id": discount_id
                 }
             }
 
@@ -609,7 +734,8 @@ class MollieCheckoutService(Service):
         webhook_url: str,
         session: AsyncSession,
         currency_id: str = DEFAULT_CURRENCY,
-        commitment_id: str = NO_COMMITMENT
+        commitment_id: str = NO_COMMITMENT,
+        amount_due: Optional[int] = None
     ) -> Optional[str]:
         """
         Create a recurring Mollie subscription.
@@ -624,6 +750,9 @@ class MollieCheckoutService(Service):
             session: Database session
             currency_id: Currency to charge in
             commitment_id: Contractual commitment subscribed to
+            amount_due: What the client actually owes per period, discount
+                included. Every renewal is collected on this amount, so leaving
+                it out would silently charge the catalogue price for years
 
         Returns:
             Mollie subscription ID or None on failure
@@ -650,10 +779,16 @@ class MollieCheckoutService(Service):
 
         try:
             customer = mollie.customers.get(customer_id)
+            currency = price.currency
+            recurring_value = (
+                f"{currency.to_major_unit(amount_due):.{currency.minor_unit}f}"
+                if amount_due is not None else price.major_unit_value
+            )
+
             subscription = customer.subscriptions.create(data={
                 "amount": {
                     "currency": price.currency_id,
-                    "value": price.major_unit_value
+                    "value": recurring_value
                 },
                 "interval": f"{price.period.interval_months} months",
                 "description": f"{version.plan_id} subscription",

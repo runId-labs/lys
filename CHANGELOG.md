@@ -7,6 +7,25 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.36.0] - 2026-08-18
+
+### Added
+- Discount module: `LicenseDiscount` declares a reduction the catalogue can offer, `LicenseDiscountUnit` says how its value is read and `LicenseDiscountGrant` how it is obtained. A price is immutable and shared by every subscriber, so a negotiated or promotional reduction cannot be expressed as a price of its own. What entitles a client to a discount is not checked: the conditions are commercial and agreed outside the application
+- `SubscriptionDiscount` records the discount a subscription benefits from, carrying the value **as granted**. A discount revised later never rewrites what a client was granted, which is the same promise immutable prices already carry. One row per subscription at most: discounts do not stack
+- `Subscription.amount_due` and `Subscription.receipt`. The price says what the catalogue asks, these say what this client pays and on what basis. The receipt repeats the plan, the price, the currency, the discount and the commitment rather than referring to rows that can be revised, so it reads on its own
+- `allClaimableLicenseDiscounts` lists what a client may claim when subscribing; `allLicenseDiscounts`, `createLicenseDiscount` and `setLicenseDiscountEnabled` administer the catalogue under `LICENSE_ADMIN_ROLE`; `revokeSubscriptionDiscount` undoes a grant made by mistake
+- `subscribeToPlan` and `subscribeClientManually` accept a discount. A claimed discount is taken off the payment at checkout and granted once the payment is confirmed, never before: an abandoned checkout leaves nothing behind
+- `allClientLegalAcceptances` lists the acceptance proofs recorded for a client's users, under `LICENSE_ADMIN_ROLE`. Reading what a company signed belongs to the same act as granting a discount against it
+
+### Changed
+- A discount claimed by a client is refused unless it is meant to be claimed. A business code is guessable, and both the payment amount and the grant now apply that rule, so a discount reserved to operators can neither be granted nor collected at a reduced price
+- A commitment reaching its term removes the discount granted against it, and the subscription renews at the catalogue price. A denounced commitment does the same when its pending change is applied — its only occasion, since clearing the term takes it out of the renewal loop for good
+- Every path that changes what is owed now realigns the recurring collection: the provider knows nothing of a discount and would keep charging the reduced amount indefinitely
+- A discount is refused on a subscription carrying no price. It would reduce nothing, and with no price there is no commitment to end it
+
+### Fixed
+- Plan version fixtures no longer detach the rules they do not list, and set the parent explicitly on rules and prices added to a version already stored. An application refining a version the framework ships kept losing its own rules on the next boot
+
 ## [0.35.1] - 2026-08-16
 
 ### Fixed

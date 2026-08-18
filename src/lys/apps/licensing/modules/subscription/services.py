@@ -7,8 +7,10 @@ This module provides:
 
 import logging
 from datetime import datetime, timezone
+from typing import TYPE_CHECKING, Optional
 
 from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from lys.apps.licensing.consts import (
@@ -19,6 +21,7 @@ from lys.apps.licensing.consts import (
     DEFAULT_CURRENCY,
     FREE_PLAN,
     MANUAL_BILLING,
+    MANUAL_GRANT,
     NO_ACTIVE_SUBSCRIPTION_ERROR,
     NO_COMMITMENT,
     NO_PROVIDER_SUBSCRIPTION_ERROR,
@@ -27,6 +30,10 @@ from lys.apps.licensing.consts import (
     SAME_PLAN_ERROR,
 )
 from lys.apps.licensing.errors import (
+    DISCOUNT_ALREADY_GRANTED,
+    DISCOUNT_NOT_AVAILABLE,
+    DISCOUNT_NOT_FOUND,
+    DISCOUNT_WITHOUT_PRICE,
     NO_ACTIVE_SUBSCRIPTION,
     PROVIDER_SUBSCRIPTION_ACTIVE,
     UNKNOWN_BILLING_MODE,
@@ -37,6 +44,7 @@ from lys.apps.licensing.errors import (
     USER_ALREADY_LICENSED,
     USER_NOT_LICENSED,
 )
+from lys.apps.licensing.modules.discount.amounts import discounted_amount
 from lys.apps.licensing.modules.event.consts import SUBSCRIPTION_CANCELED
 from lys.apps.user_auth.modules.event.tasks import trigger_event
 from lys.apps.licensing.modules.mollie.models import (
@@ -57,6 +65,13 @@ from lys.apps.licensing.modules.subscription.prorata import (
 from lys.core.errors import LysError
 from lys.core.registries import register_service
 from lys.core.services import EntityService
+
+if TYPE_CHECKING:
+    # Annotations only: entities are resolved through app_manager at runtime,
+    # never imported. Declaring them here lets a consumer of this service see
+    # what it is handed without the import ever executing.
+    from lys.apps.licensing.modules.discount.entities import SubscriptionDiscount
+    from lys.apps.licensing.modules.plan.entities import LicensePlanVersionPrice
 
 logger = logging.getLogger(__name__)
 
@@ -384,6 +399,319 @@ class SubscriptionService(EntityService[Subscription]):
     # =========================================================================
 
     @classmethod
+    async def get_granted_discount(
+        cls,
+        subscription: Subscription,
+        session: AsyncSession
+    ) -> Optional["SubscriptionDiscount"]:
+        """Return the discount the subscription benefits from, if any."""
+        granted_entity = cls.app_manager.get_entity("subscription_discount")
+        result = await session.execute(
+            select(granted_entity).where(
+                granted_entity.subscription_id == subscription.id
+            )
+        )
+
+        return result.scalar_one_or_none()
+
+    @classmethod
+    def settle(
+        cls,
+        price: Optional["LicensePlanVersionPrice"],
+        granted: Optional["SubscriptionDiscount"],
+        commitment_end_date: Optional[datetime]
+    ) -> tuple[int | None, dict | None]:
+        """
+        Settle the amount owed and the receipt that justifies it.
+
+        Synchronous and session-free on purpose: the terms are settled from two
+        places that cannot share a session — this service, asynchronously, and
+        the renewal task, synchronously. Computing them twice would be the surest
+        way to see them drift.
+
+        The receipt reads on its own: it repeats the currency, the periodicity
+        and the discount rather than referring to rows that could be revised. A
+        catalogue evolves; what a client agreed to on a given day does not.
+
+        Args:
+            price: Price subscribed to, or None on a free subscription
+            granted: SubscriptionDiscount benefiting the subscription, or None
+            commitment_end_date: End of the commitment the terms are settled against
+
+        Returns:
+            Tuple of (amount_due, receipt), both None when nothing is owed.
+        """
+        if price is None:
+            return None, None
+
+        amount_due = price.amount
+        discount_receipt = None
+
+        if granted is not None:
+            amount_due = discounted_amount(price.amount, granted.value, granted.unit_id)
+            discount_receipt = {
+                "id": granted.discount_id,
+                "value": granted.value,
+                "unit": granted.unit_id,
+            }
+
+        commitment = price.commitment
+
+        receipt = {
+            "settled_at": datetime.now(timezone.utc).isoformat(),
+            "plan": {
+                "id": price.plan_version.plan_id,
+                "version": price.plan_version.version,
+                "version_id": price.plan_version_id,
+            },
+            "price": {
+                "id": price.id,
+                "amount": price.amount,
+                "currency": price.currency_id,
+                "period": price.period_id,
+            },
+            "commitment": {
+                "id": price.commitment_id,
+                "duration_months": commitment.duration_months if commitment else 0,
+                "end_date": commitment_end_date.isoformat() if commitment_end_date else None,
+            },
+            "discount": discount_receipt,
+            "amount_due": amount_due,
+        }
+
+        return amount_due, receipt
+
+    @classmethod
+    async def settle_terms(
+        cls,
+        subscription: Subscription,
+        price: Optional["LicensePlanVersionPrice"],
+        session: AsyncSession
+    ) -> Subscription:
+        """
+        Apply the settled terms to a subscription.
+
+        Called by every path that sets its price: the amount and the receipt are
+        written in the same move, from the same inputs, so that they can never
+        tell two different stories.
+
+        Args:
+            subscription: Subscription to settle
+            price: Price subscribed to, or None on a free subscription
+            session: Database session
+
+        Returns:
+            The updated Subscription, with amount_due and receipt set.
+        """
+        granted = await cls.get_granted_discount(subscription, session)
+
+        subscription.amount_due, subscription.receipt = cls.settle(
+            price, granted, subscription.commitment_end_date
+        )
+
+        return subscription
+
+    @classmethod
+    async def grant_discount(
+        cls,
+        subscription: Subscription,
+        discount_id: str,
+        session: AsyncSession,
+        price: Optional["LicensePlanVersionPrice"] = None,
+        claimed: bool = False
+    ) -> "SubscriptionDiscount":
+        """
+        Grant a discount to a subscription, and re-settle what is owed.
+
+        The value and its unit are copied onto the granted row rather than read
+        back from the discount: a discount revised later must not rewrite what
+        this client was granted.
+
+        What entitles the client to it is not checked: eligibility is agreed
+        commercially, outside the application. What is enforced here is that the
+        discount exists, is still offered, and that the subscription does not
+        already have one — discounts do not stack.
+
+        Args:
+            subscription: Subscription to grant the discount to
+            discount_id: Identifier of the discount granted
+            session: Database session
+            price: Price the terms are settled against. Pass it when the
+                subscription was just placed on it: the relationship still
+                resolves to what was stored before, and settling on that would
+                owe the wrong amount — nothing at all when the client was free
+            claimed: Whether the discount is claimed by the client rather than
+                granted by an operator. The identifier travels from the client
+                in that case, and a business code is guessable, so only a
+                discount meant to be claimed is accepted
+
+        Returns:
+            The granted SubscriptionDiscount.
+
+        Raises:
+            LysError: DISCOUNT_NOT_FOUND if the discount does not exist
+            LysError: DISCOUNT_NOT_AVAILABLE if it is no longer offered
+            LysError: DISCOUNT_ALREADY_GRANTED if one is already in place
+            LysError: DISCOUNT_WITHOUT_PRICE if the subscription owes nothing
+        """
+        discount_entity = cls.app_manager.get_entity("license_discount")
+        discount = await session.get(discount_entity, discount_id)
+
+        if discount is None:
+            raise LysError(
+                DISCOUNT_NOT_FOUND,
+                f"Discount {discount_id} not found"
+            )
+
+        if not discount.enabled:
+            raise LysError(
+                DISCOUNT_NOT_AVAILABLE,
+                f"Discount {discount_id} is no longer offered"
+            )
+
+        if claimed and discount.grant_id != MANUAL_GRANT:
+            raise LysError(
+                DISCOUNT_NOT_AVAILABLE,
+                f"Discount {discount_id} cannot be claimed"
+            )
+
+        settled_price = price if price is not None else subscription.plan_version_price
+
+        if settled_price is None:
+            # A discount on a subscription that owes nothing reduces nothing, and
+            # would outlive the free plan it was granted on: no price means no
+            # commitment either, so nothing would ever end it.
+            raise LysError(
+                DISCOUNT_WITHOUT_PRICE,
+                f"Subscription {subscription.id} carries no price to discount"
+            )
+
+        if await cls.get_granted_discount(subscription, session) is not None:
+            raise LysError(
+                DISCOUNT_ALREADY_GRANTED,
+                f"Subscription {subscription.id} already benefits from a discount"
+            )
+
+        granted_entity = cls.app_manager.get_entity("subscription_discount")
+        granted = granted_entity(
+            subscription_id=subscription.id,
+            discount_id=discount.id,
+            value=discount.value,
+            unit_id=discount.unit_id,
+        )
+        session.add(granted)
+
+        try:
+            # Two requests reaching here at once both passed the check above; the
+            # unique constraint is what actually keeps a subscription to one
+            # discount, and its failure is that same refusal, not a server error.
+            await session.flush()
+        except IntegrityError as exc:
+            raise LysError(
+                DISCOUNT_ALREADY_GRANTED,
+                f"Subscription {subscription.id} already benefits from a discount"
+            ) from exc
+
+        await cls.settle_terms(subscription, settled_price, session)
+
+        return granted
+
+    @classmethod
+    async def revoke_discount(
+        cls,
+        subscription: Subscription,
+        session: AsyncSession
+    ) -> bool:
+        """
+        Remove the discount a subscription benefits from, and re-settle.
+
+        This is what makes a discount end with the commitment it was granted
+        against: the renewal removes it, and the subscription renews at the
+        catalogue price.
+
+        What is owed goes up, so a provider already collecting must be told: it
+        knows nothing of the discount and would keep charging the reduced amount
+        indefinitely. Refusing the revocation instead would be worse — a discount
+        granted by mistake could never be undone on a collected subscription.
+
+        Returns:
+            True if a discount was removed, False if there was none.
+        """
+        granted = await cls.get_granted_discount(subscription, session)
+
+        if granted is None:
+            return False
+
+        await session.delete(granted)
+        await session.flush()
+
+        await cls.settle_terms(subscription, subscription.plan_version_price, session)
+        await cls._align_provider_collection(subscription, session)
+
+        return True
+
+    @classmethod
+    async def _align_provider_collection(
+        cls,
+        subscription: Subscription,
+        session: AsyncSession
+    ) -> None:
+        """Make the provider collect what the subscription now says is owed.
+
+        Silent when nothing is collected automatically: a manually billed
+        subscription is invoiced from the amount recorded here, so there is
+        nothing to align.
+
+        Called before the transaction is committed, unlike the renewal task
+        which defers its provider calls until after — and this is an exception
+        to the rule stated there, not an application of it. A commit failing
+        after the call leaves the provider collecting the catalogue price while
+        the database still holds the discount: the client is charged **more**
+        than what is recorded, which is exactly the direction that rule
+        forbids. It is accepted here because the window covers a single act,
+        performed by an operator watching its result, and a refusal by the
+        provider is logged. Deferring instead would require opening a session
+        after the commit, which no path does today.
+        """
+        price = subscription.plan_version_price
+
+        if (
+            price is None
+            or subscription.amount_due is None
+            or subscription.is_manually_billed
+            or not subscription.provider_subscription_id
+        ):
+            return
+
+        client = subscription.client
+
+        if not client or not client.provider_customer_id:
+            logger.error(
+                f"Cannot align the collection of subscription {subscription.id}: "
+                f"no provider customer for its client"
+            )
+            return
+
+        currency = price.currency
+        checkout_service = cls.app_manager.get_service("mollie_checkout")
+        aligned = checkout_service.update_subscription_amount(
+            customer_id=client.provider_customer_id,
+            provider_subscription_id=subscription.provider_subscription_id,
+            currency_id=price.currency_id,
+            value=f"{currency.to_major_unit(subscription.amount_due):.{currency.minor_unit}f}",
+            interval_months=price.period.interval_months
+        )
+
+        if not aligned:
+            # The provider refused. What is owed is recorded either way, so the
+            # collection has to be corrected by hand: say so rather than let it
+            # pass unnoticed.
+            logger.error(
+                f"Provider refused to align the collection of subscription "
+                f"{subscription.id} on {subscription.amount_due}"
+            )
+
+    @classmethod
     def _reject_if_provider_collects(cls, subscription: Subscription) -> None:
         """
         Refuse to route a subscription as manual while the provider collects it.
@@ -411,7 +739,8 @@ class SubscriptionService(EntityService[Subscription]):
         cls,
         subscription: Subscription,
         plan_version_price_id: str,
-        session: AsyncSession
+        session: AsyncSession,
+        discount_id: str | None = None
     ) -> Subscription:
         """
         Place a subscription on a priced plan, collected outside the application.
@@ -430,6 +759,7 @@ class SubscriptionService(EntityService[Subscription]):
             plan_version_price_id: Price agreed to, which identifies the plan
                 version and the terms
             session: Database session
+            discount_id: Discount granted in the same move, if any
 
         Returns:
             The updated Subscription
@@ -469,6 +799,15 @@ class SubscriptionService(EntityService[Subscription]):
                 calculate_period_end(now, price.commitment.duration_months)
                 if price.commitment.is_binding else None
             )
+
+        if discount_id:
+            # Granting settles the terms itself, and refuses a second discount.
+            # The price is handed over: the subscription was just placed on it,
+            # so its relationship still resolves to the previous one — to
+            # nothing at all when the client was on the free plan
+            await cls.grant_discount(subscription, discount_id, session, price=price)
+        else:
+            await cls.settle_terms(subscription, price, session)
 
         return subscription
 
@@ -534,7 +873,8 @@ class SubscriptionService(EntityService[Subscription]):
         webhook_url: str,
         session: AsyncSession,
         currency_id: str = DEFAULT_CURRENCY,
-        commitment_id: str = NO_COMMITMENT
+        commitment_id: str = NO_COMMITMENT,
+        discount_id: str | None = None
     ) -> SubscribeToPlanResult:
         """
         Subscribe a client to a plan, handling all cases automatically.
@@ -554,6 +894,11 @@ class SubscriptionService(EntityService[Subscription]):
             session: Database session
             currency_id: Currency the subscription is billed in
             commitment_id: Contractual commitment subscribed to
+            discount_id: Discount claimed at checkout, granted once the payment
+                is confirmed. Only honoured when the subscription is taken, not
+                when an existing one is upgraded: a discount already granted
+                follows the client to their new plan on its own, and claiming a
+                second one at that point would stack
 
         Returns:
             SubscribeToPlanResult with checkout_url or effective_date
@@ -601,7 +946,9 @@ class SubscriptionService(EntityService[Subscription]):
                 success_url=success_url,
                 webhook_url=webhook_url,
                 session=session,
-                currency_id=currency_id
+                currency_id=currency_id,
+                commitment_id=commitment_id,
+                discount_id=discount_id
             )
 
         # Changing the periodicity or the currency of a running subscription is
@@ -665,7 +1012,8 @@ class SubscriptionService(EntityService[Subscription]):
         webhook_url: str,
         session: AsyncSession,
         currency_id: str = DEFAULT_CURRENCY,
-        commitment_id: str = NO_COMMITMENT
+        commitment_id: str = NO_COMMITMENT,
+        discount_id: str | None = None
     ) -> SubscribeToPlanResult:
         """Handle new subscription or upgrade from FREE plan."""
         checkout_service = cls.app_manager.get_service("mollie_checkout")
@@ -677,7 +1025,8 @@ class SubscriptionService(EntityService[Subscription]):
             webhook_url=webhook_url,
             session=session,
             currency_id=currency_id,
-            commitment_id=commitment_id
+            commitment_id=commitment_id,
+            discount_id=discount_id
         )
 
         if not checkout_url:
@@ -714,7 +1063,10 @@ class SubscriptionService(EntityService[Subscription]):
                 commitment_id=commitment_id
             )
 
-        # Calculate prorata
+        # The prorata compares catalogue prices, not what the client owes: a
+        # discount is a reduction on a period, and spreading it over the days
+        # remaining of a period already paid for would credit it twice. The
+        # discount resumes on the next full period, which settle_terms restates.
         prorata_amount = calculate_prorata(
             old_price=current_price,
             new_price=new_price,
@@ -732,15 +1084,23 @@ class SubscriptionService(EntityService[Subscription]):
             subscription.pending_plan_version_id = None
             subscription.plan_version_price_id = new_price_entity.id
 
+            # The plan changed without a payment, so nothing else would restate
+            # what is owed. Any discount in place is kept: it was granted against
+            # the commitment, which the upgrade does not end.
+            await cls.settle_terms(subscription, new_price_entity, session)
+
             # No payment is made here, so nothing else would align the recurring
             # collection with the plan now granted
             if subscription.provider_subscription_id and client.provider_customer_id:
                 checkout_service = cls.app_manager.get_service("mollie_checkout")
+                currency = new_price_entity.currency
                 checkout_service.update_subscription_amount(
                     customer_id=client.provider_customer_id,
                     provider_subscription_id=subscription.provider_subscription_id,
                     currency_id=new_price_entity.currency_id,
-                    value=new_price_entity.major_unit_value,
+                    # What is owed, not what the catalogue asks: the discount
+                    # follows the upgrade, so the collection must follow it too
+                    value=f"{currency.to_major_unit(subscription.amount_due):.{currency.minor_unit}f}",
                     interval_months=new_price_entity.period.interval_months
                 )
 

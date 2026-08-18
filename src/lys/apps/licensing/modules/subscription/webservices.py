@@ -29,6 +29,7 @@ class SubscriptionQuery(Query):
     async def subscription(self, obj: Subscription, info: Info):
         pass
 
+
 @strawberry.type
 @register_mutation()
 class ManualSubscriptionMutation(Mutation):
@@ -41,6 +42,30 @@ class ManualSubscriptionMutation(Mutation):
     restricted to the licensing administrator role, and deliberately not opened
     to organization roles.
     """
+
+    @lys_edition(
+        ensure_type=SubscriptionNode,
+        is_public=False,
+        access_levels=[ROLE_ACCESS_LEVEL],
+        is_licenced=False,
+        description="Remove the discount a subscription benefits from"
+    )
+    async def revoke_subscription_discount(self, obj: Subscription, info: Info):
+        """
+        Remove the discount granted to a subscription.
+
+        A discount granted against a commitment ends with it, on its own. One
+        granted on a subscription with no commitment has no term to end with, so
+        removing it is a deliberate act — this is that act, and the only way to
+        undo a grant made by mistake.
+
+        Args:
+            obj: The subscription, resolved and permission-checked by the decorator
+            info: GraphQL context
+        """
+        subscription_service = info.context.app_manager.get_service("subscription")
+
+        await subscription_service.revoke_discount(obj, info.context.session)
 
     @lys_edition(
         ensure_type=SubscriptionNode,
@@ -64,7 +89,7 @@ class ManualSubscriptionMutation(Mutation):
 
         Args:
             obj: The subscription, resolved and permission-checked by the decorator
-            input: Price agreed to
+            input: Price agreed to, and the discount granted with it if any
             info: GraphQL context
         """
         data = input.to_pydantic()
@@ -73,7 +98,8 @@ class ManualSubscriptionMutation(Mutation):
         await subscription_service.subscribe_manually(
             subscription=obj,
             plan_version_price_id=data.plan_version_price_id,
-            session=info.context.session
+            session=info.context.session,
+            discount_id=data.discount_id
         )
 
     @lys_edition(

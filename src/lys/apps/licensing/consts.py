@@ -34,6 +34,12 @@ NO_COMMITMENT = "NO_COMMITMENT"
 MANUAL_BILLING = "MANUAL"
 PROVIDER_BILLING = "PROVIDER"
 
+# License Discount Unit IDs
+PERCENT_UNIT = "PERCENT"
+
+# License Discount Grant IDs
+MANUAL_GRANT = "MANUAL"
+
 # License Currency IDs (ISO 4217, uppercase)
 EUR_CURRENCY = "EUR"
 

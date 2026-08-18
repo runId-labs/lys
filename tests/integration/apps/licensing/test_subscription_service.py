@@ -19,6 +19,8 @@ from uuid import uuid4
 
 from lys.apps.licensing.consts import (
     BILLING_TERMS_CHANGE_ERROR,
+    MANUAL_GRANT,
+    PERCENT_UNIT,
     NOTICE_PERIOD_EXPIRED_ERROR,
     DEFAULT_APPLICATION,
     EUR_CURRENCY,
@@ -28,6 +30,7 @@ from lys.apps.licensing.consts import (
     MONTHLY_PERIOD,
     PLAN_NOT_PRICED_ERROR,
     PRO_PLAN,
+    PROVIDER_BILLING,
     STARTER_PLAN,
     YEARLY_PERIOD,
 )
@@ -1381,3 +1384,377 @@ class TestCommitmentCoTermination:
 
             assert subscription.commitment_end_date > lapsed_term
             assert subscription.commitment_end_date > datetime.now(timezone.utc)
+
+
+class TestSubscriptionDiscounts:
+    """A discount changes what is owed, and the receipt says on what basis."""
+
+    @staticmethod
+    async def _priced_client(licensing_app_manager, amount=30000):
+        """A manually billed client on a committed price, and a 30% discount to grant."""
+        client_service = licensing_app_manager.get_service("client")
+        plan_service = licensing_app_manager.get_service("license_plan")
+        version_service = licensing_app_manager.get_service("license_plan_version")
+        commitment_service = licensing_app_manager.get_service("license_commitment")
+        price_service = licensing_app_manager.get_service("license_plan_version_price")
+        discount_service = licensing_app_manager.get_service("license_discount")
+        subscription_service = licensing_app_manager.get_service("subscription")
+
+        suffix = uuid4().hex[:6]
+        commitment_id = f"DISC_COMMIT_{suffix}"
+        plan_id = f"DISC_PLAN_{suffix}"
+        discount_id = f"DISC_{suffix}"
+
+        async with licensing_app_manager.database.get_session() as session:
+            client = await client_service.create_client_with_owner(
+                session=session,
+                client_name=f"Discount-Corp-{uuid4().hex[:8]}",
+                email=f"discount-{uuid4().hex[:8]}@example.com",
+                password="Password123!",
+                language_id="en",
+                send_verification_email=False
+            )
+            await commitment_service.create(
+                session=session, id=commitment_id, enabled=True,
+                duration_months=12, renewal_months=12, notice_months=3
+            )
+            await plan_service.create(
+                session=session, id=plan_id, enabled=True, app_id=DEFAULT_APPLICATION
+            )
+            version = await version_service.create_new_version(
+                plan_id, session,
+                prices=[{
+                    "period_id": YEARLY_PERIOD,
+                    "amount": amount,
+                    "commitment_id": commitment_id,
+                }],
+                rules=[{"rule_id": MAX_USERS, "limit_value": 10}]
+            )
+            await discount_service.create(
+                session=session,
+                id=discount_id,
+                enabled=True,
+                value=30,
+                unit_id=PERCENT_UNIT,
+                grant_id=MANUAL_GRANT,
+                description="Thirty percent off",
+            )
+            prices = await price_service.get_all(session)
+            price = next(p for p in prices if p.plan_version_id == version.id)
+
+            subscription = await subscription_service.get_client_subscription(client.id, session)
+            await subscription_service.subscribe_manually(
+                subscription=subscription,
+                plan_version_price_id=price.id,
+                session=session
+            )
+            client_id = client.id
+            await session.commit()
+
+        return client_id, discount_id
+
+    @pytest.mark.asyncio
+    async def test_the_price_is_owed_in_full_without_a_discount(self, licensing_app_manager):
+        subscription_service = licensing_app_manager.get_service("subscription")
+
+        client_id, _ = await self._priced_client(licensing_app_manager)
+
+        async with licensing_app_manager.database.get_session() as session:
+            subscription = await subscription_service.get_client_subscription(client_id, session)
+
+            assert subscription.amount_due == 30000
+            assert subscription.receipt["amount_due"] == 30000
+            assert subscription.receipt["discount"] is None
+            # The receipt reads on its own: no join needed to know what was agreed
+            assert subscription.receipt["price"]["currency"] == EUR_CURRENCY
+            assert subscription.receipt["price"]["period"] == YEARLY_PERIOD
+
+    @pytest.mark.asyncio
+    async def test_granting_a_discount_settles_what_is_owed(self, licensing_app_manager):
+        subscription_service = licensing_app_manager.get_service("subscription")
+
+        client_id, discount_id = await self._priced_client(licensing_app_manager)
+
+        async with licensing_app_manager.database.get_session() as session:
+            subscription = await subscription_service.get_client_subscription(client_id, session)
+
+            await subscription_service.grant_discount(subscription, discount_id, session)
+
+            assert subscription.amount_due == 21000
+            assert subscription.receipt["discount"] == {
+                "id": discount_id,
+                "value": 30,
+                "unit": PERCENT_UNIT,
+            }
+
+    @pytest.mark.asyncio
+    async def test_discounts_do_not_stack(self, licensing_app_manager):
+        subscription_service = licensing_app_manager.get_service("subscription")
+
+        client_id, discount_id = await self._priced_client(licensing_app_manager)
+
+        async with licensing_app_manager.database.get_session() as session:
+            subscription = await subscription_service.get_client_subscription(client_id, session)
+            await subscription_service.grant_discount(subscription, discount_id, session)
+
+            with pytest.raises(LysError, match="DISCOUNT_ALREADY_GRANTED"):
+                await subscription_service.grant_discount(subscription, discount_id, session)
+
+    @pytest.mark.asyncio
+    async def test_a_withdrawn_discount_cannot_be_granted(self, licensing_app_manager):
+        """Closing a campaign must stop new grants, without touching those already made."""
+        subscription_service = licensing_app_manager.get_service("subscription")
+        discount_service = licensing_app_manager.get_service("license_discount")
+
+        client_id, discount_id = await self._priced_client(licensing_app_manager)
+
+        async with licensing_app_manager.database.get_session() as session:
+            discount = await discount_service.get_by_id(discount_id, session)
+            discount.enabled = False
+            await session.commit()
+
+        async with licensing_app_manager.database.get_session() as session:
+            subscription = await subscription_service.get_client_subscription(client_id, session)
+
+            with pytest.raises(LysError, match="DISCOUNT_NOT_AVAILABLE"):
+                await subscription_service.grant_discount(subscription, discount_id, session)
+
+    @pytest.mark.asyncio
+    async def test_the_granted_value_survives_a_revision(self, licensing_app_manager):
+        """A discount revised later must not rewrite what a client was granted."""
+        subscription_service = licensing_app_manager.get_service("subscription")
+        discount_service = licensing_app_manager.get_service("license_discount")
+
+        client_id, discount_id = await self._priced_client(licensing_app_manager)
+
+        async with licensing_app_manager.database.get_session() as session:
+            subscription = await subscription_service.get_client_subscription(client_id, session)
+            await subscription_service.grant_discount(subscription, discount_id, session)
+            await session.commit()
+
+        async with licensing_app_manager.database.get_session() as session:
+            discount = await discount_service.get_by_id(discount_id, session)
+            discount.value = 10
+            await session.commit()
+
+        async with licensing_app_manager.database.get_session() as session:
+            subscription = await subscription_service.get_client_subscription(client_id, session)
+            granted = await subscription_service.get_granted_discount(subscription, session)
+
+            assert granted.value == 30
+            assert subscription.amount_due == 21000
+
+    @pytest.mark.asyncio
+    async def test_revoking_returns_to_the_catalogue_price(self, licensing_app_manager):
+        """What the renewal does at term: the discount goes, the catalogue price returns."""
+        subscription_service = licensing_app_manager.get_service("subscription")
+
+        client_id, discount_id = await self._priced_client(licensing_app_manager)
+
+        async with licensing_app_manager.database.get_session() as session:
+            subscription = await subscription_service.get_client_subscription(client_id, session)
+            await subscription_service.grant_discount(subscription, discount_id, session)
+
+            assert await subscription_service.revoke_discount(subscription, session) is True
+
+            assert subscription.amount_due == 30000
+            assert subscription.receipt["discount"] is None
+            assert await subscription_service.get_granted_discount(subscription, session) is None
+
+    @pytest.mark.asyncio
+    async def test_subscribing_manually_can_grant_the_discount_in_one_move(
+        self, licensing_app_manager
+    ):
+        """The administrator settles the offer and the discount in a single act."""
+        subscription_service = licensing_app_manager.get_service("subscription")
+        version_service = licensing_app_manager.get_service("license_plan_version")
+        price_service = licensing_app_manager.get_service("license_plan_version_price")
+
+        client_id, discount_id = await self._priced_client(licensing_app_manager)
+
+        # Another plan to move the client to, priced the same way
+        async with licensing_app_manager.database.get_session() as session:
+            subscription = await subscription_service.get_client_subscription(client_id, session)
+            current_price = subscription.plan_version_price
+            version = await version_service.get_by_id(current_price.plan_version_id, session)
+            prices = await price_service.get_all(session)
+            price = next(p for p in prices if p.plan_version_id == version.id)
+
+            await subscription_service.revoke_discount(subscription, session)
+            await subscription_service.subscribe_manually(
+                subscription=subscription,
+                plan_version_price_id=price.id,
+                session=session,
+                discount_id=discount_id
+            )
+
+            assert subscription.amount_due == 21000
+            assert subscription.receipt["discount"]["id"] == discount_id
+
+    @pytest.mark.asyncio
+    async def test_a_free_client_subscribing_with_a_discount_owes_the_reduced_price(
+        self, licensing_app_manager
+    ):
+        """The case that bit: the price relationship still says 'free' when settling."""
+        client_service = licensing_app_manager.get_service("client")
+        plan_service = licensing_app_manager.get_service("license_plan")
+        version_service = licensing_app_manager.get_service("license_plan_version")
+        price_service = licensing_app_manager.get_service("license_plan_version_price")
+        discount_service = licensing_app_manager.get_service("license_discount")
+        subscription_service = licensing_app_manager.get_service("subscription")
+
+        suffix = uuid4().hex[:6]
+        plan_id = f"FREEUP_PLAN_{suffix}"
+        discount_id = f"FREEUP_DISC_{suffix}"
+
+        async with licensing_app_manager.database.get_session() as session:
+            client = await client_service.create_client_with_owner(
+                session=session,
+                client_name=f"Freeup-Corp-{uuid4().hex[:8]}",
+                email=f"freeup-{uuid4().hex[:8]}@example.com",
+                password="Password123!",
+                language_id="en",
+                send_verification_email=False
+            )
+            await plan_service.create(
+                session=session, id=plan_id, enabled=True, app_id=DEFAULT_APPLICATION
+            )
+            version = await version_service.create_new_version(
+                plan_id, session,
+                prices=[{"period_id": YEARLY_PERIOD, "amount": 30000}],
+                rules=[{"rule_id": MAX_USERS, "limit_value": 10}]
+            )
+            await discount_service.create(
+                session=session,
+                id=discount_id,
+                enabled=True,
+                value=30,
+                unit_id=PERCENT_UNIT,
+                grant_id=MANUAL_GRANT,
+                description="Thirty percent off",
+            )
+            prices = await price_service.get_all(session)
+            price = next(p for p in prices if p.plan_version_id == version.id)
+
+            # The client starts on the free plan, so carries no price at all
+            subscription = await subscription_service.get_client_subscription(client.id, session)
+            assert subscription.plan_version_price is None
+
+            await subscription_service.subscribe_manually(
+                subscription=subscription,
+                plan_version_price_id=price.id,
+                session=session,
+                discount_id=discount_id
+            )
+
+            assert subscription.amount_due == 21000
+            assert subscription.receipt["price"]["amount"] == 30000
+            assert subscription.receipt["discount"]["id"] == discount_id
+
+    @pytest.mark.asyncio
+    async def test_a_discount_can_be_revoked_by_hand(self, licensing_app_manager):
+        """Without a commitment there is no term to end it: revoking is the only way."""
+        subscription_service = licensing_app_manager.get_service("subscription")
+
+        client_id, discount_id = await self._priced_client(licensing_app_manager)
+
+        async with licensing_app_manager.database.get_session() as session:
+            subscription = await subscription_service.get_client_subscription(client_id, session)
+            await subscription_service.grant_discount(subscription, discount_id, session)
+            await session.commit()
+
+        async with licensing_app_manager.database.get_session() as session:
+            subscription = await subscription_service.get_client_subscription(client_id, session)
+
+            assert await subscription_service.revoke_discount(subscription, session) is True
+            assert subscription.amount_due == 30000
+
+            # Revoking again says so rather than failing
+            assert await subscription_service.revoke_discount(subscription, session) is False
+
+    @pytest.mark.asyncio
+    async def test_a_discount_needs_something_to_reduce(self, licensing_app_manager):
+        """A free subscription has no price, hence no commitment to end the discount."""
+        client_service = licensing_app_manager.get_service("client")
+        discount_service = licensing_app_manager.get_service("license_discount")
+        subscription_service = licensing_app_manager.get_service("subscription")
+
+        discount_id = f"FREE_DISC_{uuid4().hex[:6]}"
+
+        async with licensing_app_manager.database.get_session() as session:
+            client = await client_service.create_client_with_owner(
+                session=session,
+                client_name=f"Free-Corp-{uuid4().hex[:8]}",
+                email=f"free-{uuid4().hex[:8]}@example.com",
+                password="Password123!",
+                language_id="en",
+                send_verification_email=False
+            )
+            await discount_service.create(
+                session=session,
+                id=discount_id,
+                enabled=True,
+                value=30,
+                unit_id=PERCENT_UNIT,
+                grant_id=MANUAL_GRANT,
+                description="Thirty percent off",
+            )
+            subscription = await subscription_service.get_client_subscription(client.id, session)
+
+            with pytest.raises(LysError, match="DISCOUNT_WITHOUT_PRICE"):
+                await subscription_service.grant_discount(subscription, discount_id, session)
+
+    @pytest.mark.asyncio
+    async def test_revoking_leaves_a_manually_billed_subscription_alone(
+        self, licensing_app_manager
+    ):
+        """Nothing collects automatically, so there is no collection to align."""
+        subscription_service = licensing_app_manager.get_service("subscription")
+
+        client_id, discount_id = await self._priced_client(licensing_app_manager)
+
+        async with licensing_app_manager.database.get_session() as session:
+            subscription = await subscription_service.get_client_subscription(client_id, session)
+            await subscription_service.grant_discount(subscription, discount_id, session)
+
+            with patch(
+                "lys.apps.licensing.modules.mollie.services."
+                "MollieCheckoutService.update_subscription_amount"
+            ) as update:
+                assert await subscription_service.revoke_discount(subscription, session) is True
+
+                update.assert_not_called()
+
+            assert subscription.amount_due == 30000
+
+    @pytest.mark.asyncio
+    async def test_revoking_realigns_a_collected_subscription(self, licensing_app_manager):
+        """The provider knows nothing of the discount and would keep charging it."""
+        subscription_service = licensing_app_manager.get_service("subscription")
+        client_service = licensing_app_manager.get_service("client")
+
+        client_id, discount_id = await self._priced_client(licensing_app_manager)
+
+        async with licensing_app_manager.database.get_session() as session:
+            subscription = await subscription_service.get_client_subscription(client_id, session)
+            await subscription_service.grant_discount(subscription, discount_id, session)
+
+            # The provider collects this subscription
+            client = await client_service.get_by_id(client_id, session)
+            client.provider_customer_id = f"cst_{uuid4().hex[:8]}"
+            subscription.provider_subscription_id = f"sub_{uuid4().hex[:8]}"
+            subscription.billing_mode_id = PROVIDER_BILLING
+            await session.commit()
+
+        async with licensing_app_manager.database.get_session() as session:
+            subscription = await subscription_service.get_client_subscription(client_id, session)
+
+            with patch(
+                "lys.apps.licensing.modules.mollie.services."
+                "MollieCheckoutService.update_subscription_amount"
+            ) as update:
+                await subscription_service.revoke_discount(subscription, session)
+
+                update.assert_called_once()
+                # The catalogue price is what must now be collected
+                assert update.call_args.kwargs["value"] == "300.00"

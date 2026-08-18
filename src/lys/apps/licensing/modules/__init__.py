@@ -9,6 +9,7 @@ Import order matters for fixture dependencies:
 from . import application
 from . import rule
 from . import plan
+from . import discount
 from . import auth
 from . import checker
 from . import client
@@ -26,6 +27,7 @@ __submodules__ = [
     application,
     rule,
     plan,
+    discount,
     auth,
     checker,
     client,

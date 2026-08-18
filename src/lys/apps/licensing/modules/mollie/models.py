@@ -38,6 +38,7 @@ class SubscribeToPlanInputModel(BaseModel):
     success_url: str
     currency_id: str = DEFAULT_CURRENCY
     commitment_id: str = NO_COMMITMENT
+    discount_id: Optional[str] = None
 
     @field_validator("plan_version_id", mode="before")
     @classmethod

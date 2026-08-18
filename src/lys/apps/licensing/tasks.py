@@ -7,16 +7,85 @@ Tasks:
 
 import logging
 from datetime import datetime, timezone
+from typing import TYPE_CHECKING, Optional
 
 from celery import shared_task, current_app
 from sqlalchemy import and_, or_, select
+from sqlalchemy.orm import Session
 
 from lys.apps.licensing.modules.subscription.prorata import calculate_period_end
+from lys.apps.licensing.modules.subscription.services import SubscriptionService
+
+if TYPE_CHECKING:
+    # Annotations only: entities are resolved through app_manager at runtime.
+    from lys.apps.licensing.modules.discount.entities import SubscriptionDiscount
+    from lys.apps.licensing.modules.plan.entities import (
+        LicenseCurrency,
+        LicensePlanVersionPrice,
+    )
+    from lys.apps.licensing.modules.subscription.entities import Subscription
 
 logger = logging.getLogger(__name__)
 
 
-def _renew_commitment(subscription) -> int:
+def _drop_discount(
+    subscription: "Subscription",
+    session: Optional[Session]
+) -> Optional[bool]:
+    """Remove the discount granted to a subscription, and return what remains.
+
+    Returns True when a discount was removed, False when there was none, and
+    None when there was no session to look into. The third case is what the
+    caller must not confuse with the second: without a session nothing was read
+    and nothing was deleted, so the terms cannot be settled — dropping the
+    discount from the amount owed while its row still exists would under-bill.
+    """
+    if session is None:
+        return None
+
+    # Resolved through the service rather than the Celery app: the renewal is
+    # also exercised outside a worker, where no Celery app is bound.
+    granted_entity = SubscriptionService.app_manager.get_entity("subscription_discount")
+    granted = session.execute(
+        select(granted_entity).where(
+            granted_entity.subscription_id == subscription.id
+        )
+    ).scalar_one_or_none()
+
+    if granted is None:
+        return False
+
+    session.delete(granted)
+    logger.info(
+        f"Discount {granted.discount_id} of subscription {subscription.id} "
+        f"ended with its commitment"
+    )
+
+    return True
+
+
+def _major_unit(currency: "LicenseCurrency", amount: int) -> str:
+    """Format an amount in minor units as the decimal string a provider expects."""
+    return f"{currency.to_major_unit(amount):.{currency.minor_unit}f}"
+
+
+def _settle_terms(
+    subscription: "Subscription",
+    price: Optional["LicensePlanVersionPrice"],
+    granted: Optional["SubscriptionDiscount"]
+) -> None:
+    """Recompute what is owed once the discount and the term have been settled."""
+    # The service class is imported rather than resolved: settle touches no
+    # entity and no session, so the concrete mapping is irrelevant here.
+    subscription.amount_due, subscription.receipt = SubscriptionService.settle(
+        price, granted, subscription.commitment_end_date
+    )
+
+
+def _renew_commitment(
+    subscription: "Subscription",
+    session: Optional[Session] = None
+) -> int:
     """
     Tacitly renew a commitment that reached its term undenounced.
 
@@ -33,8 +102,15 @@ def _renew_commitment(subscription) -> int:
     price = subscription.plan_version_price
     commitment = price.commitment if price is not None else None
 
+    # A discount is granted against a commitment and dies with it: reaching the
+    # term is what sends the subscription back to the catalogue price, whether
+    # the commitment renews or ends here.
+    dropped = _drop_discount(subscription, session)
+
     if commitment is None or not commitment.is_renewable:
         subscription.commitment_end_date = None
+        if dropped is not None:
+            _settle_terms(subscription, price, None)
         logger.info(
             f"Commitment of subscription {subscription.id} ended and was not renewed"
         )
@@ -43,6 +119,8 @@ def _renew_commitment(subscription) -> int:
     subscription.commitment_end_date = calculate_period_end(
         subscription.commitment_end_date, commitment.renewal_months
     )
+    if dropped is not None:
+        _settle_terms(subscription, price, None)
     logger.info(
         f"Commitment of subscription {subscription.id} tacitly renewed for "
         f"{commitment.renewal_months} months, until {subscription.commitment_end_date}"
@@ -51,7 +129,7 @@ def _renew_commitment(subscription) -> int:
 
 
 @shared_task
-def apply_pending_plan_changes():
+def apply_pending_plan_changes() -> int:
     """
     Apply pending plan changes whose billing period has ended.
 
@@ -86,7 +164,30 @@ def apply_pending_plan_changes():
         )
         for subscription in session.execute(renewal_stmt).scalars().all():
             try:
-                renewed_count += _renew_commitment(subscription)
+                amount_before = subscription.amount_due
+                renewed_count += _renew_commitment(subscription, session)
+
+                # A discount that ended raises what is owed. The provider knows
+                # nothing of it and would keep collecting the reduced amount, so
+                # the renewal must push the new one — the mirror of what the
+                # checkout does when the discount is granted.
+                if (
+                    subscription.amount_due != amount_before
+                    and subscription.provider_subscription_id
+                    and not subscription.is_manually_billed
+                ):
+                    price = subscription.plan_version_price
+                    client = subscription.client
+
+                    if price is not None and client and client.provider_customer_id:
+                        provider_updates.append({
+                            "subscription_id": subscription.id,
+                            "customer_id": client.provider_customer_id,
+                            "provider_subscription_id": subscription.provider_subscription_id,
+                            "currency_id": price.currency_id,
+                            "value": _major_unit(price.currency, subscription.amount_due),
+                            "interval_months": price.period.interval_months,
+                        })
             except Exception as e:
                 logger.error(
                     f"Error renewing commitment for subscription {subscription.id}: {e}"
@@ -143,10 +244,21 @@ def apply_pending_plan_changes():
                 # A commitment that reached its term is over, whatever happens next
                 subscription.commitment_end_date = None
 
+                # And the discount granted against it ends with it. This loop is
+                # the only chance to do so: a denounced subscription never enters
+                # the renewal loop, and once the term is cleared it never will —
+                # the discount would otherwise follow the client onto the new
+                # plan, for good.
+                _drop_discount(subscription, session)
+
                 # Apply the pending change
                 subscription.plan_version_id = new_plan_version_id
                 subscription.pending_plan_version_id = None
                 subscription.plan_version_price_id = new_price.id if new_price else None
+
+                # The price changed, so what is owed and the receipt that
+                # justifies it must follow
+                _settle_terms(subscription, new_price, None)
 
                 if subscription.canceled_at is not None:
                     # The provider subscription was already stopped when the change
@@ -183,7 +295,13 @@ def apply_pending_plan_changes():
                             "customer_id": client.provider_customer_id,
                             "provider_subscription_id": subscription.provider_subscription_id,
                             "currency_id": new_price.currency_id,
-                            "value": new_price.major_unit_value,
+                            # What is owed, discount included, not the catalogue
+                            # price: the provider collects what the client pays
+                            "value": (
+                                _major_unit(new_price.currency, subscription.amount_due)
+                                if subscription.amount_due is not None
+                                else new_price.major_unit_value
+                            ),
                             "interval_months": new_price.period.interval_months,
                         })
 

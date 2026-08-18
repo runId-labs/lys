@@ -6,9 +6,11 @@ from datetime import datetime
 from typing import Optional
 
 import strawberry
+from strawberry.scalars import JSON
 from strawberry import relay
 from strawberry.types import Info
 
+from lys.apps.licensing.modules.discount.nodes import SubscriptionDiscountNode
 from lys.apps.licensing.modules.plan.nodes import (
     LicensePlanVersionNode,
     LicensePlanVersionPriceNode,
@@ -93,11 +95,42 @@ class SubscriptionNode(EntityNode[SubscriptionService], relay.Node):
     def is_manually_billed(self) -> bool:
         return self._entity.is_manually_billed
 
+    @strawberry.field(
+        description="Discount granted on this subscription, with the value as "
+                    "granted — which can differ from the discount's current value"
+    )
+    async def granted_discount(self, info: Info) -> Optional[SubscriptionDiscountNode]:
+        subscription_service = info.context.app_manager.get_service("subscription")
+        granted = await subscription_service.get_granted_discount(
+            self._entity, info.context.session
+        )
+
+        if granted is None:
+            return None
+
+        return SubscriptionDiscountNode.from_obj(granted)
+
     @strawberry.field(description="The price subscribed to, carrying periodicity, currency and commitment")
     async def plan_version_price(self, info: Info) -> Optional[LicensePlanVersionPriceNode]:
         if self._entity.plan_version_price is None:
             return None
         return LicensePlanVersionPriceNode.from_obj(self._entity.plan_version_price)
+
+    @strawberry.field(
+        description="Amount actually owed per period, in the price's minor units; "
+                    "null when nothing is owed. Differs from the catalogue price "
+                    "when a discount was granted"
+    )
+    def amount_due(self) -> Optional[int]:
+        return self._entity.amount_due
+
+    @strawberry.field(
+        description="Snapshot of the commercial terms agreed to: plan, price, "
+                    "discount, commitment. Reads on its own, without following "
+                    "any reference"
+    )
+    def receipt(self) -> Optional[JSON]:
+        return self._entity.receipt
 
     @strawberry.field(description="End of the contractual commitment, null when not committed")
     def commitment_end_date(self) -> Optional[datetime]:

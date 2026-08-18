@@ -210,7 +210,8 @@ class LicensePlanVersionDevFixtures(EntityFixtures[LicensePlanVersionService]):
         For existing entities (upsert), prices already stored are returned
         unchanged: a published price is immutable, so a price change must go
         through a new plan version. A mismatch is logged to make the discarded
-        fixture change visible.
+        fixture change visible. A price the version does not carry yet is created
+        with its parent set explicitly, for the same reason as the rules.
 
         Args:
             prices_data: List of {"period_id": str, "amount": int,
@@ -259,7 +260,8 @@ class LicensePlanVersionDevFixtures(EntityFixtures[LicensePlanVersionService]):
                 period_id=period_id,
                 currency_id=currency_id,
                 commitment_id=commitment_id,
-                amount=amount
+                amount=amount,
+                **({"plan_version_id": parent_id} if parent_id else {})
             ))
 
         return prices
@@ -277,7 +279,11 @@ class LicensePlanVersionDevFixtures(EntityFixtures[LicensePlanVersionService]):
         For new entities, SQLAlchemy will automatically set plan_version_id
         when the version is added to the session via the relationship.
 
-        For existing entities (upsert), looks up existing rules and updates them.
+        For existing entities (upsert), looks up existing rules and updates
+        them. A rule the version does not carry yet is created with its parent
+        set explicitly, and the rules the fixture does not list are kept: an
+        application refining a version the framework ships must not see its own
+        rules detached on the next boot.
 
         Args:
             rules_data: List of {"rule_id": str, "limit_value": int|None}
@@ -312,12 +318,34 @@ class LicensePlanVersionDevFixtures(EntityFixtures[LicensePlanVersionService]):
                     version_rules.append(existing_rule)
                     continue
 
-            # Create new rule
+            # Create new rule. On an existing version the parent is set here:
+            # the update path assigns this list to the version rather than
+            # cascading through the relationship, so a rule added to a version
+            # already stored would be inserted without its parent.
             version_rule = version_rule_class(
                 rule_id=rule_id,
-                limit_value=limit_value
+                limit_value=limit_value,
+                **({"plan_version_id": parent_id} if parent_id else {})
             )
             version_rules.append(version_rule)
+
+        if parent_id:
+            # Keep the rules this fixture does not list. A version can be
+            # refined by an application — the framework ships a free plan, an
+            # application adds its own quota to it — and both fixtures then
+            # describe the same version. Assigning only what is listed would
+            # detach the others, which the database refuses since a rule cannot
+            # exist without its version. Removing a rule is deliberate enough to
+            # go through the webservice.
+            listed = {rule["rule_id"] for rule in rules_data}
+            stmt = select(version_rule_class).where(
+                and_(
+                    version_rule_class.plan_version_id == parent_id,
+                    version_rule_class.rule_id.notin_(listed)
+                )
+            )
+            result = await session.execute(stmt)
+            version_rules.extend(result.scalars().all())
 
         return version_rules
 
