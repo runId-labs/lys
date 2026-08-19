@@ -7,6 +7,14 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.36.1] - 2026-08-19
+
+### Fixed
+- A structured response cut off by the output token limit is no longer retried. `AIResponseTruncatedError` separates that case from an ordinary schema mismatch: truncation is deterministic, so the same request on the same endpoint hits the same limit, and three attempts per endpoint burnt the tokens of a large payload for nothing. It now falls back immediately, where a model with a different limit may answer
+- A schema mismatch is retried on its own endpoint before falling back. A malformed answer says nothing about the provider's health, and moving straight to the fallback took the request off the model it was written for
+- Anthropic's forced tool use sometimes nests the arguments one level deeper, under a lone wrapper key holding the whole object, itself sometimes a JSON string. That wrapper carries no information, so it is unwrapped and the otherwise complete response is recovered. Only attempted after validation has already failed, so a legitimate single-field payload is never rewritten
+- The error raised once the fallback chain is exhausted now carries the last provider error, both in its message and as `__cause__`. The detail existed only in the logs, and the caller received an opaque `All providers failed`
+
 ## [0.36.0] - 2026-08-18
 
 ### Added

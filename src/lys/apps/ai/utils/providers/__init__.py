@@ -15,6 +15,7 @@ from lys.apps.ai.utils.providers.exceptions import (
     AIProviderError,
     AITimeoutError,
     AIPurposeNotFoundError,
+    AIResponseTruncatedError,
     AIValidationError,
 )
 from lys.apps.ai.utils.providers.anthropic import AnthropicProvider
@@ -36,6 +37,7 @@ __all__ = [
     "AIProviderError",
     "AITimeoutError",
     "AIPurposeNotFoundError",
+    "AIResponseTruncatedError",
     "AIValidationError",
     # Providers
     "MistralProvider",

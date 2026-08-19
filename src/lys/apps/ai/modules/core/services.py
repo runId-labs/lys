@@ -20,6 +20,8 @@ from lys.apps.ai.utils.providers.exceptions import (
     AIError,
     AIRateLimitError,
     AIProviderError,
+    AIResponseTruncatedError,
+    AIValidationError,
 )
 from lys.apps.ai.utils.message_sanitizer import sanitize_llm_messages
 from lys.apps.ai.utils.providers.anthropic import AnthropicProvider
@@ -272,7 +274,8 @@ class AIService(Service):
             AIResponse with content, tool_calls, usage, etc.
 
         Raises:
-            AIError: Provider errors after retries/fallback exhausted
+            AIError: No endpoint in the fallback chain succeeded. The message carries
+                the last provider error, also chained as ``__cause__``.
         """
         # Add system prompt from config if present
         if config.system_prompt:
@@ -316,8 +319,9 @@ class AIService(Service):
             Validated Pydantic model instance
 
         Raises:
-            AIValidationError: Response doesn't match schema
-            AIError: Provider errors after retries/fallback exhausted
+            AIError: No endpoint in the fallback chain produced a valid response.
+                The message carries the last provider error (schema mismatch,
+                truncation, rate limit, ...), which is also chained as ``__cause__``.
         """
         if config.system_prompt:
             messages = [{"role": "system", "content": config.system_prompt}] + messages
@@ -459,6 +463,7 @@ class AIService(Service):
 
         if last_error:
             logger.error(f"All providers failed: {last_error}")
+            raise AIError(f"All providers failed: {last_error}") from last_error
         raise AIError("All providers failed")
 
     @classmethod
@@ -498,6 +503,7 @@ class AIService(Service):
 
         if last_error:
             logger.error(f"All providers failed: {last_error}")
+            raise AIError(f"All providers failed: {last_error}") from last_error
         raise AIError("All providers failed")
 
     @classmethod
@@ -525,7 +531,18 @@ class AIService(Service):
                     last_error = e
                     break
 
-                except AIProviderError as e:
+                except AIResponseTruncatedError as e:
+                    # Truncation is deterministic: retrying the same endpoint hits the
+                    # same output limit. Fall back instead.
+                    logger.warning(
+                        f"Truncated response on {current_endpoint.provider}, trying fallback"
+                    )
+                    last_error = e
+                    break
+
+                except (AIProviderError, AIValidationError) as e:
+                    # A schema violation is usually a one-off formatting glitch: retry on
+                    # the same endpoint before falling back.
                     last_error = e
                     if retry < cls.MAX_RETRIES - 1:
                         logger.warning(
@@ -550,6 +567,7 @@ class AIService(Service):
 
         if last_error:
             logger.error(f"All providers failed: {last_error}")
+            raise AIError(f"All providers failed: {last_error}") from last_error
         raise AIError("All providers failed")
 
     @classmethod
@@ -574,7 +592,12 @@ class AIService(Service):
                     last_error = e
                     break
 
-                except AIProviderError as e:
+                except AIResponseTruncatedError as e:
+                    # See the async twin: truncation falls back without retrying.
+                    last_error = e
+                    break
+
+                except (AIProviderError, AIValidationError) as e:
                     last_error = e
                     if retry < cls.MAX_RETRIES - 1:
                         time.sleep(cls.RETRY_DELAY * (retry + 1))
@@ -589,6 +612,7 @@ class AIService(Service):
 
         if last_error:
             logger.error(f"All providers failed: {last_error}")
+            raise AIError(f"All providers failed: {last_error}") from last_error
         raise AIError("All providers failed")
 
 

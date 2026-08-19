@@ -22,6 +22,7 @@ from lys.apps.ai.utils.providers.exceptions import (
     AIRateLimitError,
     AIModelNotFoundError,
     AIProviderError,
+    AIResponseTruncatedError,
     AITimeoutError,
     AIValidationError,
 )
@@ -2199,6 +2200,248 @@ class TestAnthropicProviderChatJson:
             mock_client.return_value.__enter__.return_value = mock_instance
             result = provider.chat_json_sync(messages, config, _SampleSchema)
         assert result.name == "Carol"
+
+
+class TestAnthropicUnwrapSingleKeyEnvelope:
+    """Tests for AnthropicProvider._unwrap_single_key_envelope."""
+
+    @staticmethod
+    def _unwrap(arguments):
+        return AnthropicProvider._unwrap_single_key_envelope(arguments)
+
+    def test_unwraps_nested_object(self):
+        payload = json.dumps({"submit__sampleschema": {"name": "Alice", "age": 30}})
+        assert self._unwrap(payload) == {"name": "Alice", "age": 30}
+
+    def test_unwraps_nested_json_string(self):
+        payload = json.dumps({"input": json.dumps({"name": "Alice", "age": 30})})
+        assert self._unwrap(payload) == {"name": "Alice", "age": 30}
+
+    def test_returns_none_for_multi_key_object(self):
+        assert self._unwrap(json.dumps({"name": "Alice", "age": 30})) is None
+
+    def test_returns_none_when_inner_is_scalar(self):
+        assert self._unwrap(json.dumps({"name": "Alice"})) is None
+
+    def test_returns_none_when_inner_is_list(self):
+        assert self._unwrap(json.dumps({"items": [1, 2]})) is None
+
+    def test_returns_none_when_inner_string_is_not_json(self):
+        assert self._unwrap(json.dumps({"input": "not json"})) is None
+
+    def test_returns_none_when_inner_object_is_empty(self):
+        assert self._unwrap(json.dumps({"input": {}})) is None
+
+    def test_returns_none_for_invalid_json(self):
+        assert self._unwrap("{not json") is None
+
+    def test_returns_none_for_non_object_payload(self):
+        assert self._unwrap(json.dumps([1, 2])) is None
+
+    def test_returns_none_for_empty_object(self):
+        assert self._unwrap(json.dumps({})) is None
+
+    def test_accepts_a_dict_directly(self):
+        assert self._unwrap({"input": {"name": "Alice"}}) == {"name": "Alice"}
+
+
+class TestAnthropicValidationErrorType:
+    """Truncated responses must surface as the non-retryable AIResponseTruncatedError."""
+
+    def test_schema_mismatch_is_plain_validation_error(self):
+        response = AIResponse(content="", finish_reason="stop")
+        error = AnthropicProvider._validation_error(response, "boom")
+        assert type(error) is AIValidationError
+
+    def test_length_finish_reason_is_truncation_error(self):
+        response = AIResponse(content="", finish_reason="length")
+        error = AnthropicProvider._validation_error(response, "boom")
+        assert isinstance(error, AIResponseTruncatedError)
+
+    def test_truncation_error_is_a_validation_error(self):
+        assert issubclass(AIResponseTruncatedError, AIValidationError)
+
+    def test_missing_finish_reason_is_plain_validation_error(self):
+        response = AIResponse(content="", finish_reason=None)
+        assert type(AnthropicProvider._validation_error(response, "boom")) is AIValidationError
+
+
+class TestMistralValidationErrorType:
+    """Mistral maps its own truncation vocabulary onto AIResponseTruncatedError."""
+
+    @pytest.mark.parametrize("finish_reason", ["length", "model_length"])
+    def test_truncation_finish_reasons(self, finish_reason):
+        response = AIResponse(content="", finish_reason=finish_reason)
+        error = MistralProvider._validation_error(response, _SampleSchema, ValueError("boom"))
+        assert isinstance(error, AIResponseTruncatedError)
+
+    def test_stop_finish_reason_is_plain_validation_error(self):
+        response = AIResponse(content="", finish_reason="stop")
+        error = MistralProvider._validation_error(response, _SampleSchema, ValueError("boom"))
+        assert type(error) is AIValidationError
+
+    def test_message_names_the_schema(self):
+        response = AIResponse(content="", finish_reason="stop")
+        error = MistralProvider._validation_error(response, _SampleSchema, ValueError("boom"))
+        assert "_SampleSchema" in str(error)
+
+
+class TestAnthropicProviderChatJsonRecovery:
+    """chat_json recovers wrapped tool inputs and flags truncation."""
+
+    @pytest.fixture
+    def provider(self):
+        return AnthropicProvider()
+
+    @pytest.fixture
+    def config(self):
+        return AIEndpointConfig(
+            provider="anthropic", model="claude-opus-4-8", api_key="k", timeout=30,
+        )
+
+    @pytest.fixture
+    def messages(self):
+        return [{"role": "user", "content": "Give me a person"}]
+
+    @staticmethod
+    def _mock_json_response(tool_input=None, stop_reason="tool_use"):
+        response = MagicMock(spec=httpx.Response)
+        response.status_code = 200
+        content = []
+        if tool_input is not None:
+            content = [{"type": "tool_use", "id": "tu-1",
+                        "name": "submit__sampleschema", "input": tool_input}]
+        response.json.return_value = {
+            "content": content,
+            "usage": {"input_tokens": 10, "output_tokens": 5},
+            "model": "claude-opus-4-8",
+            "stop_reason": stop_reason,
+        }
+        return response
+
+    async def _call(self, provider, config, messages, response):
+        with patch("httpx.AsyncClient") as mock_client:
+            mock_instance = AsyncMock()
+            mock_instance.post.return_value = response
+            mock_client.return_value.__aenter__.return_value = mock_instance
+            return await provider.chat_json(messages, config, _SampleSchema)
+
+    @pytest.mark.asyncio
+    async def test_wrapped_tool_input_is_unwrapped(self, provider, config, messages):
+        response = self._mock_json_response({"person": {"name": "Alice", "age": 30}})
+        result = await self._call(provider, config, messages, response)
+        assert result.name == "Alice"
+        assert result.age == 30
+
+    @pytest.mark.asyncio
+    async def test_wrapped_json_string_input_is_unwrapped(self, provider, config, messages):
+        response = self._mock_json_response(
+            {"input": json.dumps({"name": "Bob", "age": 7})}
+        )
+        result = await self._call(provider, config, messages, response)
+        assert result.name == "Bob"
+
+    @pytest.mark.asyncio
+    async def test_unwrapping_logs_the_recovery(self, provider, config, messages, caplog):
+        response = self._mock_json_response({"person": {"name": "Alice", "age": 30}})
+        with caplog.at_level(logging.INFO, logger="lys.apps.ai.utils.providers.anthropic"):
+            await self._call(provider, config, messages, response)
+        assert "wrapped the _SampleSchema tool input" in caplog.text
+
+    @pytest.mark.asyncio
+    async def test_unwrapped_payload_still_invalid_raises_original_error(
+        self, provider, config, messages
+    ):
+        response = self._mock_json_response({"person": {"name": "Alice"}})  # age missing
+        with pytest.raises(AIValidationError) as exc_info:
+            await self._call(provider, config, messages, response)
+        assert "_SampleSchema" in str(exc_info.value)
+
+    @pytest.mark.asyncio
+    async def test_truncated_tool_input_raises_truncation_error(
+        self, provider, config, messages
+    ):
+        response = self._mock_json_response({"name": "Alice"}, stop_reason="max_tokens")
+        with pytest.raises(AIResponseTruncatedError):
+            await self._call(provider, config, messages, response)
+
+    @pytest.mark.asyncio
+    async def test_truncated_without_tool_use_raises_truncation_error(
+        self, provider, config, messages
+    ):
+        response = self._mock_json_response(tool_input=None, stop_reason="max_tokens")
+        with pytest.raises(AIResponseTruncatedError):
+            await self._call(provider, config, messages, response)
+
+    @pytest.mark.asyncio
+    async def test_schema_mismatch_is_not_a_truncation_error(self, provider, config, messages):
+        response = self._mock_json_response({"name": "Alice"}, stop_reason="tool_use")
+        with pytest.raises(AIValidationError) as exc_info:
+            await self._call(provider, config, messages, response)
+        assert not isinstance(exc_info.value, AIResponseTruncatedError)
+
+    def test_chat_json_sync_unwraps_wrapped_input(self, provider, config, messages):
+        response = self._mock_json_response({"person": {"name": "Carol", "age": 22}})
+        with patch("httpx.Client") as mock_client:
+            mock_instance = MagicMock()
+            mock_instance.post.return_value = response
+            mock_client.return_value.__enter__.return_value = mock_instance
+            result = provider.chat_json_sync(messages, config, _SampleSchema)
+        assert result.name == "Carol"
+
+
+class TestMistralChatJsonTruncation:
+    """Mistral chat_json raises the truncation error when the answer is cut off."""
+
+    @pytest.fixture
+    def provider(self):
+        return MistralProvider()
+
+    @pytest.fixture
+    def config(self):
+        return AIEndpointConfig(
+            provider="mistral", model="mistral-large-latest", api_key="k", timeout=30,
+        )
+
+    @staticmethod
+    def _mock_response(content, finish_reason):
+        response = MagicMock(spec=httpx.Response)
+        response.status_code = 200
+        response.json.return_value = {
+            "choices": [{"message": {"content": content}, "finish_reason": finish_reason}],
+            "usage": {"prompt_tokens": 1, "completion_tokens": 2, "total_tokens": 3},
+            "model": "mistral-large-latest",
+        }
+        return response
+
+    @pytest.mark.asyncio
+    async def test_truncated_json_raises_truncation_error(self, provider, config):
+        response = self._mock_response('{"name": "Ali', "length")
+        with patch("httpx.AsyncClient") as mock_client:
+            mock_instance = AsyncMock()
+            mock_instance.post.return_value = response
+            mock_client.return_value.__aenter__.return_value = mock_instance
+            with pytest.raises(AIResponseTruncatedError):
+                await provider.chat_json([{"role": "user", "content": "hi"}], config, _SampleSchema)
+
+    def test_sync_truncated_json_raises_truncation_error(self, provider, config):
+        response = self._mock_response('{"name": "Ali', "model_length")
+        with patch("httpx.Client") as mock_client:
+            mock_instance = MagicMock()
+            mock_instance.post.return_value = response
+            mock_client.return_value.__enter__.return_value = mock_instance
+            with pytest.raises(AIResponseTruncatedError):
+                provider.chat_json_sync([{"role": "user", "content": "hi"}], config, _SampleSchema)
+
+    def test_plain_mismatch_is_not_a_truncation_error(self, provider, config):
+        response = self._mock_response('{"name": "Ali"}', "stop")
+        with patch("httpx.Client") as mock_client:
+            mock_instance = MagicMock()
+            mock_instance.post.return_value = response
+            mock_client.return_value.__enter__.return_value = mock_instance
+            with pytest.raises(AIValidationError) as exc_info:
+                provider.chat_json_sync([{"role": "user", "content": "hi"}], config, _SampleSchema)
+        assert not isinstance(exc_info.value, AIResponseTruncatedError)
 
 
 # ========== OCR ==========

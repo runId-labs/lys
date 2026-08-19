@@ -19,13 +19,20 @@ from typing import AsyncGenerator, List, Dict, Any, Optional, Tuple, Type
 
 import httpx
 
-from lys.apps.ai.utils.providers.abstracts import AIProvider, AIResponse, AIStreamChunk, T
+from lys.apps.ai.utils.providers.abstracts import (
+    AIProvider,
+    AIResponse,
+    AIStreamChunk,
+    TRUNCATION_FINISH_REASONS,
+    T,
+)
 from lys.apps.ai.utils.providers.config import AIEndpointConfig
 from lys.apps.ai.utils.providers.exceptions import (
     AIAuthError,
     AIRateLimitError,
     AIModelNotFoundError,
     AIProviderError,
+    AIResponseTruncatedError,
     AITimeoutError,
     AIValidationError,
 )
@@ -607,20 +614,58 @@ class AnthropicProvider(AIProvider):
                 "Anthropic returned no tool_use for %s (finish_reason=%s)",
                 schema.__name__, ai_response.finish_reason,
             )
-            raise AIValidationError(
-                f"Expected a tool call for schema {schema.__name__}, got none"
+            raise self._validation_error(
+                ai_response,
+                f"Expected a tool call for schema {schema.__name__}, got none",
             )
         arguments = ai_response.tool_calls[0]["function"]["arguments"]
         try:
             return schema.model_validate_json(arguments)
         except Exception as e:
+            unwrapped = self._unwrap_single_key_envelope(arguments)
+            if unwrapped is not None:
+                try:
+                    validated = schema.model_validate(unwrapped)
+                except Exception:  # noqa: BLE001 - fall through to the original error
+                    pass
+                else:
+                    logger.info(
+                        "Anthropic wrapped the %s tool input in an extra key; unwrapped it",
+                        schema.__name__,
+                    )
+                    return validated
             logger.warning(
                 "Anthropic response validation failed for %s: %s (finish_reason=%s)",
                 schema.__name__, e, ai_response.finish_reason,
             )
-            raise AIValidationError(
-                f"Failed to validate response against schema {schema.__name__}: {e}"
+            raise self._validation_error(
+                ai_response,
+                f"Failed to validate response against schema {schema.__name__}: {e}",
             )
+
+    @staticmethod
+    def _validation_error(ai_response: AIResponse, message: str) -> AIValidationError:
+        """Build the validation error, flagging output-limit truncation as non-retryable."""
+        if ai_response.finish_reason in TRUNCATION_FINISH_REASONS:
+            return AIResponseTruncatedError(message)
+        return AIValidationError(message)
+
+    @classmethod
+    def _unwrap_single_key_envelope(cls, arguments: Any) -> Optional[Dict[str, Any]]:
+        """Return the object nested under a lone wrapper key, or None.
+
+        Forced tool use occasionally returns the arguments one level deeper: a single
+        key holding the whole object, whose value is sometimes a JSON string rather
+        than an object. Only called after validation already failed, so a legitimate
+        single-field payload is never rewritten.
+        """
+        payload = cls._safe_json(arguments)
+        if len(payload) != 1:
+            return None
+        inner = next(iter(payload.values()))
+        if isinstance(inner, str):
+            inner = cls._safe_json(inner)
+        return inner if isinstance(inner, dict) and inner else None
 
     @staticmethod
     def _map_finish_reason(stop_reason: Optional[str]) -> Optional[str]:

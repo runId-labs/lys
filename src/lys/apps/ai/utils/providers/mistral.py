@@ -13,7 +13,13 @@ from typing import AsyncGenerator, List, Dict, Any, Optional, Type
 
 import httpx
 
-from lys.apps.ai.utils.providers.abstracts import AIProvider, AIResponse, AIStreamChunk, T
+from lys.apps.ai.utils.providers.abstracts import (
+    AIProvider,
+    AIResponse,
+    AIStreamChunk,
+    TRUNCATION_FINISH_REASONS,
+    T,
+)
 from lys.apps.ai.utils.providers.config import AIEndpointConfig
 from lys.apps.ai.utils.providers.exceptions import (
     AIAuthError,
@@ -21,6 +27,7 @@ from lys.apps.ai.utils.providers.exceptions import (
     AIModelNotFoundError,
     AIProviderError,
     AITimeoutError,
+    AIResponseTruncatedError,
     AIValidationError,
 )
 
@@ -366,9 +373,7 @@ class MistralProvider(AIProvider):
                 return schema.model_validate_json(ai_response.content)
             except Exception as e:
                 self._log_validation_failure(ai_response, schema, e)
-                raise AIValidationError(
-                    f"Failed to validate response against schema {schema.__name__}: {e}"
-                )
+                raise self._validation_error(ai_response, schema, e)
 
         except httpx.TimeoutException:
             raise AITimeoutError(f"Request timed out after {config.timeout}s")
@@ -420,9 +425,7 @@ class MistralProvider(AIProvider):
                 return schema.model_validate_json(ai_response.content)
             except Exception as e:
                 self._log_validation_failure(ai_response, schema, e)
-                raise AIValidationError(
-                    f"Failed to validate response against schema {schema.__name__}: {e}"
-                )
+                raise self._validation_error(ai_response, schema, e)
 
         except httpx.TimeoutException:
             raise AITimeoutError(f"Request timed out after {config.timeout}s")
@@ -509,6 +512,16 @@ class MistralProvider(AIProvider):
         return "\n\n".join(p.get("markdown", "") for p in pages).strip()
 
     # ========== Helpers ==========
+
+    @staticmethod
+    def _validation_error(
+        ai_response: AIResponse, schema: Type[T], error: Exception
+    ) -> AIValidationError:
+        """Build the validation error, flagging output-limit truncation as non-retryable."""
+        message = f"Failed to validate response against schema {schema.__name__}: {error}"
+        if ai_response.finish_reason in TRUNCATION_FINISH_REASONS:
+            return AIResponseTruncatedError(message)
+        return AIValidationError(message)
 
     @staticmethod
     def _warn_if_non_stop_finish(ai_response: AIResponse, schema: Type[T]) -> None:

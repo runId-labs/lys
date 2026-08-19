@@ -193,6 +193,218 @@ class TestChatWithFallback:
                 )
 
 
+class TestChatJsonFallbackRetryPolicy:
+    """Retry policy of AIService._chat_json_with_fallback and its sync twin.
+
+    A schema mismatch is retried on the same endpoint; a truncated response is not,
+    because the same request hits the same output limit every time.
+    """
+
+    @staticmethod
+    def _endpoints():
+        from lys.apps.ai.utils.providers.config import AIEndpointConfig
+
+        fallback = AIEndpointConfig(provider="fallback", model="fb", api_key="k")
+        primary = AIEndpointConfig(
+            provider="mistral", model="test", api_key="k", fallback=fallback
+        )
+        return primary, fallback
+
+    @staticmethod
+    def _no_delay():
+        from lys.apps.ai.modules.core.services import AIService
+
+        return patch.object(AIService, "RETRY_DELAY", 0)
+
+    @pytest.mark.asyncio
+    async def test_validation_error_is_retried_then_falls_back(self):
+        from lys.apps.ai.modules.core.services import AIService
+        from lys.apps.ai.utils.providers.exceptions import AIValidationError
+
+        primary_endpoint, _ = self._endpoints()
+        sentinel = object()
+
+        mock_primary = AsyncMock()
+        mock_primary.chat_json = AsyncMock(side_effect=AIValidationError("bad schema"))
+        mock_fallback = AsyncMock()
+        mock_fallback.chat_json = AsyncMock(return_value=sentinel)
+
+        def get_provider(name):
+            return mock_primary if name == "mistral" else mock_fallback
+
+        with self._no_delay():
+            with patch.object(AIService, "get_provider", side_effect=get_provider):
+                result = await AIService._chat_json_with_fallback(
+                    [{"role": "user", "content": "hi"}], primary_endpoint, Mock
+                )
+
+        assert result is sentinel
+        assert mock_primary.chat_json.call_count == AIService.MAX_RETRIES
+
+    @pytest.mark.asyncio
+    async def test_truncation_falls_back_without_retrying(self):
+        from lys.apps.ai.modules.core.services import AIService
+        from lys.apps.ai.utils.providers.exceptions import AIResponseTruncatedError
+
+        primary_endpoint, _ = self._endpoints()
+        sentinel = object()
+
+        mock_primary = AsyncMock()
+        mock_primary.chat_json = AsyncMock(side_effect=AIResponseTruncatedError("cut off"))
+        mock_fallback = AsyncMock()
+        mock_fallback.chat_json = AsyncMock(return_value=sentinel)
+
+        def get_provider(name):
+            return mock_primary if name == "mistral" else mock_fallback
+
+        with self._no_delay():
+            with patch.object(AIService, "get_provider", side_effect=get_provider):
+                result = await AIService._chat_json_with_fallback(
+                    [{"role": "user", "content": "hi"}], primary_endpoint, Mock
+                )
+
+        assert result is sentinel
+        assert mock_primary.chat_json.call_count == 1
+
+    def test_sync_validation_error_is_retried_then_falls_back(self):
+        from lys.apps.ai.modules.core.services import AIService
+        from lys.apps.ai.utils.providers.exceptions import AIValidationError
+
+        primary_endpoint, _ = self._endpoints()
+        sentinel = object()
+
+        mock_primary = Mock()
+        mock_primary.chat_json_sync = Mock(side_effect=AIValidationError("bad schema"))
+        mock_fallback = Mock()
+        mock_fallback.chat_json_sync = Mock(return_value=sentinel)
+
+        def get_provider(name):
+            return mock_primary if name == "mistral" else mock_fallback
+
+        with self._no_delay():
+            with patch.object(AIService, "get_provider", side_effect=get_provider):
+                result = AIService._chat_json_with_fallback_sync(
+                    [{"role": "user", "content": "hi"}], primary_endpoint, Mock
+                )
+
+        assert result is sentinel
+        assert mock_primary.chat_json_sync.call_count == AIService.MAX_RETRIES
+
+    def test_sync_truncation_falls_back_without_retrying(self):
+        from lys.apps.ai.modules.core.services import AIService
+        from lys.apps.ai.utils.providers.exceptions import AIResponseTruncatedError
+
+        primary_endpoint, _ = self._endpoints()
+        sentinel = object()
+
+        mock_primary = Mock()
+        mock_primary.chat_json_sync = Mock(side_effect=AIResponseTruncatedError("cut off"))
+        mock_fallback = Mock()
+        mock_fallback.chat_json_sync = Mock(return_value=sentinel)
+
+        def get_provider(name):
+            return mock_primary if name == "mistral" else mock_fallback
+
+        with self._no_delay():
+            with patch.object(AIService, "get_provider", side_effect=get_provider):
+                result = AIService._chat_json_with_fallback_sync(
+                    [{"role": "user", "content": "hi"}], primary_endpoint, Mock
+                )
+
+        assert result is sentinel
+        assert mock_primary.chat_json_sync.call_count == 1
+
+    @pytest.mark.asyncio
+    async def test_truncation_on_every_endpoint_never_retries(self):
+        from lys.apps.ai.modules.core.services import AIService
+        from lys.apps.ai.utils.providers.exceptions import AIError, AIResponseTruncatedError
+
+        primary_endpoint, _ = self._endpoints()
+
+        mock_provider = AsyncMock()
+        mock_provider.chat_json = AsyncMock(side_effect=AIResponseTruncatedError("cut off"))
+
+        with self._no_delay():
+            with patch.object(AIService, "get_provider", return_value=mock_provider):
+                with pytest.raises(AIError):
+                    await AIService._chat_json_with_fallback(
+                        [{"role": "user", "content": "hi"}], primary_endpoint, Mock
+                    )
+
+        # One call per endpoint in the chain, no retry on either.
+        assert mock_provider.chat_json.call_count == 2
+
+
+class TestFallbackErrorChaining:
+    """The exhausted-chain AIError must carry the last provider error."""
+
+    @pytest.mark.asyncio
+    async def test_chat_error_reports_and_chains_the_cause(self):
+        from lys.apps.ai.modules.core.services import AIService
+        from lys.apps.ai.utils.providers.config import AIEndpointConfig
+        from lys.apps.ai.utils.providers.exceptions import AIError, AIProviderError
+
+        endpoint = AIEndpointConfig(provider="mistral", model="test", api_key="k")
+        cause = AIProviderError("upstream exploded")
+
+        mock_provider = AsyncMock()
+        mock_provider.chat = AsyncMock(side_effect=cause)
+
+        with patch.object(AIService, "RETRY_DELAY", 0):
+            with patch.object(AIService, "get_provider", return_value=mock_provider):
+                with pytest.raises(AIError) as exc_info:
+                    await AIService._chat_with_fallback(
+                        [{"role": "user", "content": "hi"}], endpoint
+                    )
+
+        assert "All providers failed" in str(exc_info.value)
+        assert "upstream exploded" in str(exc_info.value)
+        assert exc_info.value.__cause__ is cause
+
+    @pytest.mark.asyncio
+    async def test_chat_json_error_reports_and_chains_the_cause(self):
+        from lys.apps.ai.modules.core.services import AIService
+        from lys.apps.ai.utils.providers.config import AIEndpointConfig
+        from lys.apps.ai.utils.providers.exceptions import AIError, AIResponseTruncatedError
+
+        endpoint = AIEndpointConfig(provider="mistral", model="test", api_key="k")
+        cause = AIResponseTruncatedError("cut off at 8192 tokens")
+
+        mock_provider = AsyncMock()
+        mock_provider.chat_json = AsyncMock(side_effect=cause)
+
+        with patch.object(AIService, "RETRY_DELAY", 0):
+            with patch.object(AIService, "get_provider", return_value=mock_provider):
+                with pytest.raises(AIError) as exc_info:
+                    await AIService._chat_json_with_fallback(
+                        [{"role": "user", "content": "hi"}], endpoint, Mock
+                    )
+
+        assert "cut off at 8192 tokens" in str(exc_info.value)
+        assert exc_info.value.__cause__ is cause
+
+    def test_sync_chat_json_error_reports_and_chains_the_cause(self):
+        from lys.apps.ai.modules.core.services import AIService
+        from lys.apps.ai.utils.providers.config import AIEndpointConfig
+        from lys.apps.ai.utils.providers.exceptions import AIError, AIValidationError
+
+        endpoint = AIEndpointConfig(provider="mistral", model="test", api_key="k")
+        cause = AIValidationError("schema mismatch")
+
+        mock_provider = Mock()
+        mock_provider.chat_json_sync = Mock(side_effect=cause)
+
+        with patch.object(AIService, "RETRY_DELAY", 0):
+            with patch.object(AIService, "get_provider", return_value=mock_provider):
+                with pytest.raises(AIError) as exc_info:
+                    AIService._chat_json_with_fallback_sync(
+                        [{"role": "user", "content": "hi"}], endpoint, Mock
+                    )
+
+        assert "schema mismatch" in str(exc_info.value)
+        assert exc_info.value.__cause__ is cause
+
+
 class TestAIToolServiceGetAccessibleTools:
     """Tests for AIToolService.get_accessible_tools()."""
 

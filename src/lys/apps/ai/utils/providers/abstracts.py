@@ -15,6 +15,10 @@ from lys.apps.ai.utils.providers.config import AIEndpointConfig
 
 T = TypeVar("T", bound=BaseModel)
 
+# finish_reason values meaning the provider stopped on the output token limit.
+# "model_length" is Mistral-specific; Anthropic's "max_tokens" is mapped to "length".
+TRUNCATION_FINISH_REASONS = frozenset({"length", "model_length"})
+
 
 @dataclass
 class AIResponse:

@@ -42,5 +42,14 @@ class AIPurposeNotFoundError(AIError):
 
 
 class AIValidationError(AIError):
-    """Response validation failed (e.g., JSON schema mismatch)."""
+    """Response validation failed (e.g., JSON schema mismatch). May trigger retry."""
+    pass
+
+
+class AIResponseTruncatedError(AIValidationError):
+    """Response was cut off by the output token limit before it could be validated.
+
+    Unlike a plain schema mismatch, this is deterministic: the same request on the
+    same endpoint truncates again. Callers must fall back instead of retrying.
+    """
     pass
