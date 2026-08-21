@@ -426,6 +426,45 @@ class TestRegisterWebservicesToAuthServer:
             result = await manager._register_webservices_to_auth_server()
         assert result is False
 
+    @pytest.mark.asyncio
+    async def test_defaults_is_licenced_to_true_when_attribute_missing(self):
+        """
+        A webservice with no 'is_licenced' in its attributes must be reported as
+        licenced (fail closed), not licence-free (fail open): the Auth Server
+        gates access on this flag, so an absent value must not grant free access.
+        """
+        manager = _create_app_manager()
+        manager.registry.entities = {}
+        manager.settings.gateway_server_url = "http://gateway"
+        manager.settings.service_name = "svc"
+        manager.settings.graphql_schema_name = "graphql"
+        manager.settings.secret_key = "secret"
+        manager.registry.webservices = {"ws1": {"attributes": {}}}
+        with patch("lys.core.managers.app.GraphQLClient") as mock_cls:
+            mock_execute = AsyncMock(return_value={"data": {}})
+            mock_cls.return_value.execute = mock_execute
+            await manager._register_webservices_to_auth_server()
+
+        variables = mock_execute.call_args.args[1]
+        assert variables["webservices"][0]["attributes"]["isLicenced"] is True
+
+    @pytest.mark.asyncio
+    async def test_preserves_explicit_is_licenced_false(self):
+        manager = _create_app_manager()
+        manager.registry.entities = {}
+        manager.settings.gateway_server_url = "http://gateway"
+        manager.settings.service_name = "svc"
+        manager.settings.graphql_schema_name = "graphql"
+        manager.settings.secret_key = "secret"
+        manager.registry.webservices = {"ws1": {"attributes": {"is_licenced": False}}}
+        with patch("lys.core.managers.app.GraphQLClient") as mock_cls:
+            mock_execute = AsyncMock(return_value={"data": {}})
+            mock_cls.return_value.execute = mock_execute
+            await manager._register_webservices_to_auth_server()
+
+        variables = mock_execute.call_args.args[1]
+        assert variables["webservices"][0]["attributes"]["isLicenced"] is False
+
 
 class TestEnsureSuperUser:
     """Tests for _ensure_super_user method."""

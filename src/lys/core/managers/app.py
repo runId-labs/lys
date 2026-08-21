@@ -377,7 +377,7 @@ class AppManager:
                     "attributes": {
                         "enabled": attrs.get("enabled", True),
                         "publicType": attrs.get("public_type"),
-                        "isLicenced": attrs.get("is_licenced", False),
+                        "isLicenced": attrs.get("is_licenced", True),
                         "accessLevels": attrs.get("access_levels", []),
                         "operationType": attrs.get("operation_type"),
                         "aiTool": attrs.get("ai_tool"),

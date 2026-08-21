@@ -7,6 +7,11 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.38.1] - 2026-08-21
+
+### Fixed
+- `AppManager._register_webservices_to_auth_server` no longer defaults a webservice's `is_licenced` to `False` when the attribute is absent from its registered attributes. The Auth Server gates access on this flag, so a missing value must fail closed (licenced) rather than silently grant licence-free access; the fallback now matches the `True` default used everywhere else `is_licenced` is declared
+
 ## [0.38.0] - 2026-08-21
 
 ### Added
