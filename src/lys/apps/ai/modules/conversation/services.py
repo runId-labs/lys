@@ -157,6 +157,7 @@ class AIConversationService(EntityService[AIConversation]):
         user_id: str,
         session: AsyncSession,
         conversation_id: Optional[str] = None,
+        client_id: Optional[str] = None,
     ) -> "AIConversation":
         """
         Get existing conversation or create a new one.
@@ -165,6 +166,9 @@ class AIConversationService(EntityService[AIConversation]):
             user_id: User ID
             session: Database session
             conversation_id: Optional conversation ID to retrieve
+            client_id: Optional tenant/client ID to stamp on a newly created conversation
+                (soft reference, see AIConversation.client_id). Ignored when an existing
+                conversation is returned.
 
         Returns:
             AIConversation instance
@@ -178,6 +182,7 @@ class AIConversationService(EntityService[AIConversation]):
             session,
             user_id=user_id,
             purpose=AI_PURPOSE_CHATBOT,
+            client_id=client_id,
         )
 
     @classmethod
@@ -698,6 +703,7 @@ class AIConversationService(EntityService[AIConversation]):
         info: Any,
         conversation_id: Optional[str] = None,
         page_context: Optional[PageContextModel] = None,
+        client_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Prepare the shared context for both streaming and non-streaming chat.
@@ -713,6 +719,11 @@ class AIConversationService(EntityService[AIConversation]):
             info: GraphQL info context (or _StreamingInfo shim)
             conversation_id: Optional conversation ID to continue
             page_context: Optional page context for tool filtering and param injection
+            client_id: Optional tenant/client ID to stamp on a newly created conversation
+                (see AIConversation.client_id). lys stays agnostic about how this is
+                resolved — a consumer overriding this method (e.g. to enforce a
+                tenant-scoped quota) resolves it from its own trust boundary and passes
+                it through to super().
 
         Returns:
             Dict with keys: tools, llm_tools, executor, conversation,
@@ -819,7 +830,7 @@ class AIConversationService(EntityService[AIConversation]):
 
         # Conversation + its current compaction summary, loaded before the system prompt
         # so the summary can be injected as a volatile system segment.
-        conversation = await cls.get_or_create(user_id, session, conversation_id)
+        conversation = await cls.get_or_create(user_id, session, conversation_id, client_id=client_id)
         current_summary = await cls._load_current_summary(conversation.id, session)
         stable_context = await cls._get_stable_context(session, connected_user, page_context, info)
         focus_context = await cls._get_focus_context(session, connected_user, page_context, info)

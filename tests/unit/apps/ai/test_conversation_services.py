@@ -96,6 +96,31 @@ class TestAIConversationServiceGetOrCreate:
             mock_session,
             user_id="user-123",
             purpose=AI_PURPOSE_CHATBOT,
+            client_id=None,
+        )
+
+    @pytest.mark.asyncio
+    async def test_get_or_create_stamps_client_id_on_new_conversation(self, mock_app_manager, mock_session):
+        """A client_id passed in is forwarded to create() on a newly created conversation."""
+        from lys.apps.ai.modules.conversation.services import AIConversationService
+
+        new_conv = MagicMock()
+
+        with patch.object(AIConversationService, "create", new_callable=AsyncMock) as mock_create:
+            mock_create.return_value = new_conv
+
+            await AIConversationService.get_or_create(
+                user_id="user-123",
+                session=mock_session,
+                conversation_id=None,
+                client_id="client-456",
+            )
+
+        mock_create.assert_called_once_with(
+            mock_session,
+            user_id="user-123",
+            purpose=AI_PURPOSE_CHATBOT,
+            client_id="client-456",
         )
 
     @pytest.mark.asyncio
@@ -746,6 +771,42 @@ class TestPrepareChatContext:
         )
 
         assert ctx["info"] is mock_info
+
+    @pytest.mark.asyncio
+    async def test_forwards_client_id_to_get_or_create(self, connected_user, mock_session, mock_info, _setup_mocks):
+        """Test that a client_id passed in is forwarded to get_or_create()."""
+        from lys.apps.ai.modules.conversation.services import AIConversationService
+
+        await AIConversationService._prepare_chat_context(
+            user_id="user-123",
+            content="Hello",
+            session=mock_session,
+            connected_user=connected_user,
+            info=mock_info,
+            conversation_id="conv-existing",
+            client_id="client-456",
+        )
+
+        AIConversationService.get_or_create.assert_called_once_with(
+            "user-123", mock_session, "conv-existing", client_id="client-456",
+        )
+
+    @pytest.mark.asyncio
+    async def test_client_id_defaults_to_none(self, connected_user, mock_session, mock_info, _setup_mocks):
+        """Test that client_id defaults to None when not passed."""
+        from lys.apps.ai.modules.conversation.services import AIConversationService
+
+        await AIConversationService._prepare_chat_context(
+            user_id="user-123",
+            content="Hello",
+            session=mock_session,
+            connected_user=connected_user,
+            info=mock_info,
+        )
+
+        AIConversationService.get_or_create.assert_called_once_with(
+            "user-123", mock_session, None, client_id=None,
+        )
 
 
 # ========== chat_with_tools ==========

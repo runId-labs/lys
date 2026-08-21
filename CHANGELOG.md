@@ -7,6 +7,11 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.37.0] - 2026-08-21
+
+### Added
+- `AIConversation.client_id`, an optional soft-FK tenant reference stamped on a conversation at creation time. `AIConversationService.get_or_create` and `_prepare_chat_context` accept a `client_id` and forward it through, ignoring it once a conversation already exists. lys stays agnostic about how the value is resolved: a consumer app scoping conversations to a tenant overrides `_prepare_chat_context` to resolve it from its own trust boundary
+
 ## [0.36.1] - 2026-08-19
 
 ### Fixed

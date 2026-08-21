@@ -32,6 +32,15 @@ class AIConversation(Entity):
         index=True,
         comment="Reference to user (soft FK - no constraint for microservices)",
     )
+    client_id: Mapped[Optional[str]] = mapped_column(
+        Uuid(as_uuid=False),
+        nullable=True,
+        index=True,
+        comment=(
+            "Optional tenant/client reference (soft FK - no constraint for microservices), "
+            "stamped at creation time by consumers that scope conversations to a tenant"
+        ),
+    )
     purpose: Mapped[str] = mapped_column(String(50), nullable=False, index=True)
     title: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     archived_at: Mapped[Optional[datetime]] = mapped_column(nullable=True)
