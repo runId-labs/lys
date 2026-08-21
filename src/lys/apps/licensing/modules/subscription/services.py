@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING, Optional
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import Session
 
 from lys.apps.licensing.consts import (
     BILLING_TERMS_CHANGE_ERROR,
@@ -115,6 +116,28 @@ class SubscriptionService(EntityService[Subscription]):
             cls.entity_class.client_id == client_id
         )
         result = await session.execute(stmt)
+        return result.scalar_one_or_none()
+
+    @classmethod
+    def get_client_subscription_sync(
+        cls,
+        client_id: str,
+        session: Session
+    ) -> Subscription | None:
+        """
+        Get the active subscription for a client (sync — for Celery task contexts).
+
+        Args:
+            client_id: Client ID
+            session: Sync database session
+
+        Returns:
+            Subscription entity or None if no active subscription
+        """
+        stmt = select(cls.entity_class).where(
+            cls.entity_class.client_id == client_id
+        )
+        result = session.execute(stmt)
         return result.scalar_one_or_none()
 
     @classmethod

@@ -20,6 +20,7 @@ from lys.apps.licensing.consts import (
     YEARLY_PERIOD,
 )
 from lys.core.errors import LysError
+from tests.integration.apps.licensing.conftest import DEMO_QUOTA_RULE
 
 
 class TestLicensePlanServiceAvailablePlans:
@@ -396,3 +397,30 @@ class TestPlanVersionAdministration:
                     limit_value=5,
                     session=session
                 )
+
+
+class TestLicensePlanVersionRuleServiceGetRulesForVersionSync:
+    """Test LicensePlanVersionRuleService.get_rules_for_version_sync (Celery contexts)."""
+
+    @pytest.mark.asyncio
+    async def test_returns_the_rules_configured_for_the_version(self, licensing_app_manager):
+        rule_service = licensing_app_manager.get_service("license_plan_version_rule")
+        version_service = licensing_app_manager.get_service("license_plan_version")
+
+        async with licensing_app_manager.database.get_session() as session:
+            free_version = await version_service.get_current_version(FREE_PLAN, session)
+
+        with licensing_app_manager.database.get_sync_session() as session:
+            rules = rule_service.get_rules_for_version_sync(free_version.id, session)
+
+        rules_by_id = {r.rule_id: r.limit_value for r in rules}
+        assert rules_by_id == {MAX_USERS: 5, DEMO_QUOTA_RULE: 3}
+
+    @pytest.mark.asyncio
+    async def test_returns_empty_for_an_unknown_version(self, licensing_app_manager):
+        rule_service = licensing_app_manager.get_service("license_plan_version_rule")
+
+        with licensing_app_manager.database.get_sync_session() as session:
+            rules = rule_service.get_rules_for_version_sync(str(uuid4()), session)
+
+        assert rules == []

@@ -13,6 +13,7 @@ from typing import Any, Dict, List, Optional
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import Session
 
 from lys.apps.licensing.consts import DEFAULT_CURRENCY, NO_COMMITMENT
 from lys.apps.licensing.errors import (
@@ -456,6 +457,28 @@ class LicensePlanVersionRuleService(EntityService[LicensePlanVersionRule]):
             cls.entity_class.plan_version_id == plan_version_id
         )
         result = await session.execute(stmt)
+        return list(result.scalars().all())
+
+    @classmethod
+    def get_rules_for_version_sync(
+        cls,
+        plan_version_id: str,
+        session: Session
+    ) -> List[LicensePlanVersionRule]:
+        """
+        Get all rules associated with a plan version (sync — for Celery task contexts).
+
+        Args:
+            plan_version_id: Plan version ID
+            session: Sync database session
+
+        Returns:
+            List of LicensePlanVersionRule entities
+        """
+        stmt = select(cls.entity_class).where(
+            cls.entity_class.plan_version_id == plan_version_id
+        )
+        result = session.execute(stmt)
         return list(result.scalars().all())
 
     @classmethod

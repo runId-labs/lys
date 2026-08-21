@@ -7,10 +7,11 @@ This app provides:
 - Rule-based quotas and feature toggles
 - Payment provider integration (Mollie) for billing
 """
-from lys.apps.licensing.registries import ValidatorRegistry, DowngraderRegistry
+from lys.apps.licensing.registries import ValidatorRegistry, SyncValidatorRegistry, DowngraderRegistry
 
 
 __registries__ = [
     ValidatorRegistry,
+    SyncValidatorRegistry,
     DowngraderRegistry,
 ]

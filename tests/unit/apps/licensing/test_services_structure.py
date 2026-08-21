@@ -59,6 +59,16 @@ class TestLicenseCheckerServiceStructure:
         assert hasattr(LicenseCheckerService, "execute_downgrade")
         assert not inspect.iscoroutinefunction(LicenseCheckerService.execute_downgrade)
 
+    def test_has_check_quota_sync_method(self):
+        from lys.apps.licensing.modules.checker.services import LicenseCheckerService
+        assert hasattr(LicenseCheckerService, "check_quota_sync")
+        assert not inspect.iscoroutinefunction(LicenseCheckerService.check_quota_sync)
+
+    def test_has_enforce_quota_sync_method(self):
+        from lys.apps.licensing.modules.checker.services import LicenseCheckerService
+        assert hasattr(LicenseCheckerService, "enforce_quota_sync")
+        assert not inspect.iscoroutinefunction(LicenseCheckerService.enforce_quota_sync)
+
     def test_has_check_subscription_from_claims(self):
         from lys.apps.licensing.modules.checker.services import LicenseCheckerService
         assert hasattr(LicenseCheckerService, "check_subscription_from_claims")
@@ -103,6 +113,11 @@ class TestSubscriptionServiceStructure:
         from lys.apps.licensing.modules.subscription.services import SubscriptionService
         assert hasattr(SubscriptionService, "get_client_subscription")
         assert inspect.iscoroutinefunction(SubscriptionService.get_client_subscription)
+
+    def test_has_get_client_subscription_sync(self):
+        from lys.apps.licensing.modules.subscription.services import SubscriptionService
+        assert hasattr(SubscriptionService, "get_client_subscription_sync")
+        assert not inspect.iscoroutinefunction(SubscriptionService.get_client_subscription_sync)
 
     def test_has_subscribe_to_plan(self):
         from lys.apps.licensing.modules.subscription.services import SubscriptionService
@@ -223,6 +238,27 @@ class TestLicensingClientServiceStructure:
         from lys.apps.licensing.modules.client.services import ClientService
         assert hasattr(ClientService, "create_client_with_owner")
         assert inspect.iscoroutinefunction(ClientService.create_client_with_owner)
+
+
+class TestLicensePlanVersionRuleServiceStructure:
+    """Tests for LicensePlanVersionRuleService class structure."""
+
+    def test_has_get_rules_for_version(self):
+        from lys.apps.licensing.modules.plan.services import LicensePlanVersionRuleService
+        assert hasattr(LicensePlanVersionRuleService, "get_rules_for_version")
+        assert inspect.iscoroutinefunction(LicensePlanVersionRuleService.get_rules_for_version)
+
+    def test_has_get_rules_for_version_sync(self):
+        from lys.apps.licensing.modules.plan.services import LicensePlanVersionRuleService
+        assert hasattr(LicensePlanVersionRuleService, "get_rules_for_version_sync")
+        assert not inspect.iscoroutinefunction(LicensePlanVersionRuleService.get_rules_for_version_sync)
+
+    def test_get_rules_for_version_sync_signature(self):
+        from lys.apps.licensing.modules.plan.services import LicensePlanVersionRuleService
+        sig = inspect.signature(LicensePlanVersionRuleService.get_rules_for_version_sync)
+        params = list(sig.parameters.keys())
+        assert "plan_version_id" in params
+        assert "session" in params
 
 
 class TestLicenseApplicationServiceStructure:

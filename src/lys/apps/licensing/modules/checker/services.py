@@ -142,6 +142,113 @@ class LicenseCheckerService(Service):
             )
 
     @classmethod
+    def check_quota_sync(
+        cls,
+        client_id: str,
+        rule_id: str,
+        session: Session
+    ) -> Tuple[bool, int, int]:
+        """
+        Check if a quota rule is satisfied for a client (sync — for Celery task
+        contexts holding a sync Session, where bridging to an AsyncSession
+        isn't practical).
+
+        Mirrors check_quota, using the sync counterparts of the subscription
+        and rule lookups, and dispatching to the "validators_sync" registry
+        (see SyncValidatorRegistry) instead of "validators".
+
+        Args:
+            client_id: Client ID
+            rule_id: Rule ID (e.g., "MAX_USERS")
+            session: Sync database session
+
+        Returns:
+            Tuple of (is_valid, current_count, limit)
+
+        Raises:
+            LysError: If client has no subscription or rule is unknown
+        """
+        # Get client's subscription
+        subscription_service = cls.app_manager.get_service("subscription")
+        subscription = subscription_service.get_client_subscription_sync(client_id, session)
+
+        if not subscription:
+            raise LysError(
+                NO_ACTIVE_SUBSCRIPTION,
+                f"Client {client_id} has no active subscription"
+            )
+
+        # Get rule limit from subscription's plan version
+        version_rule_service = cls.app_manager.get_service("license_plan_version_rule")
+        version_rules = version_rule_service.get_rules_for_version_sync(
+            subscription.plan_version_id, session
+        )
+
+        # Find the specific rule
+        rule_config = None
+        for vr in version_rules:
+            if vr.rule_id == rule_id:
+                rule_config = vr
+                break
+
+        if not rule_config:
+            # Rule not configured for this plan = unlimited or not applicable
+            return (True, 0, -1)
+
+        limit_value = rule_config.limit_value
+
+        # Get app_id from subscription's plan version
+        session.refresh(subscription, ["plan_version"])
+        plan_version = subscription.plan_version
+        session.refresh(plan_version, ["plan"])
+        app_id = plan_version.plan.app_id
+
+        # Get validator from the sync registry
+        validators_registry = cls.app_manager.registry.get_registry("validators_sync")
+        if not validators_registry:
+            logger.warning("Sync validators registry not found")
+            return (True, 0, limit_value or -1)
+
+        validator = validators_registry.get(rule_id)
+        if not validator:
+            logger.warning(f"No sync validator found for rule {rule_id}")
+            # No validator = assume valid
+            return (True, 0, limit_value or -1)
+
+        # Execute validator
+        return validator(session, client_id, app_id, limit_value)
+
+    @classmethod
+    def enforce_quota_sync(
+        cls,
+        client_id: str,
+        rule_id: str,
+        session: Session,
+        error: Tuple[int, str] | None = None
+    ) -> None:
+        """
+        Enforce a quota rule - raises error if quota exceeded (sync variant
+        of enforce_quota, see check_quota_sync).
+
+        Args:
+            client_id: Client ID
+            rule_id: Rule ID
+            session: Sync database session
+            error: Optional custom error tuple (status_code, error_code).
+                   Defaults to QUOTA_EXCEEDED if not provided.
+
+        Raises:
+            LysError: If quota is exceeded
+        """
+        is_valid, current, limit = cls.check_quota_sync(client_id, rule_id, session)
+
+        if not is_valid:
+            raise LysError(
+                error or QUOTA_EXCEEDED,
+                f"Quota exceeded for {rule_id}: {current}/{limit}"
+            )
+
+    @classmethod
     async def check_feature(
         cls,
         client_id: str,

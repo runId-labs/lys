@@ -123,6 +123,48 @@ class TestLicenseCheckerServiceAsyncDatabaseMethods:
         assert "session" in params
 
 
+class TestLicenseCheckerServiceSyncDatabaseMethods:
+    """Tests for sync database-based checking methods on LicenseCheckerService (Celery contexts)."""
+
+    def test_check_quota_sync_exists_and_is_sync(self):
+        from lys.apps.licensing.modules.checker.services import LicenseCheckerService
+        assert hasattr(LicenseCheckerService, "check_quota_sync")
+        assert not inspect.iscoroutinefunction(LicenseCheckerService.check_quota_sync)
+
+    def test_check_quota_sync_is_classmethod(self):
+        from lys.apps.licensing.modules.checker.services import LicenseCheckerService
+        attr = inspect.getattr_static(LicenseCheckerService, "check_quota_sync")
+        assert isinstance(attr, classmethod)
+
+    def test_check_quota_sync_signature(self):
+        from lys.apps.licensing.modules.checker.services import LicenseCheckerService
+        sig = inspect.signature(LicenseCheckerService.check_quota_sync)
+        params = list(sig.parameters.keys())
+        assert "client_id" in params
+        assert "rule_id" in params
+        assert "session" in params
+
+    def test_enforce_quota_sync_exists_and_is_sync(self):
+        from lys.apps.licensing.modules.checker.services import LicenseCheckerService
+        assert hasattr(LicenseCheckerService, "enforce_quota_sync")
+        assert not inspect.iscoroutinefunction(LicenseCheckerService.enforce_quota_sync)
+
+    def test_enforce_quota_sync_is_classmethod(self):
+        from lys.apps.licensing.modules.checker.services import LicenseCheckerService
+        attr = inspect.getattr_static(LicenseCheckerService, "enforce_quota_sync")
+        assert isinstance(attr, classmethod)
+
+    def test_enforce_quota_sync_signature(self):
+        from lys.apps.licensing.modules.checker.services import LicenseCheckerService
+        sig = inspect.signature(LicenseCheckerService.enforce_quota_sync)
+        params = sig.parameters
+        assert "client_id" in params
+        assert "rule_id" in params
+        assert "session" in params
+        assert "error" in params
+        assert params["error"].default is None
+
+
 class TestLicenseCheckerServiceSyncClaimsMethods:
     """Tests for synchronous JWT claims-based checking methods on LicenseCheckerService."""
 

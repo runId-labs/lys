@@ -21,6 +21,23 @@ class TestValidatorRegistry:
         assert ValidatorRegistry.name == "validators"
 
 
+class TestSyncValidatorRegistry:
+    """Tests for SyncValidatorRegistry class."""
+
+    def test_sync_validator_registry_exists(self):
+        from lys.apps.licensing.registries import SyncValidatorRegistry
+        assert SyncValidatorRegistry is not None
+
+    def test_inherits_from_custom_registry(self):
+        from lys.apps.licensing.registries import SyncValidatorRegistry
+        from lys.core.registries import CustomRegistry
+        assert issubclass(SyncValidatorRegistry, CustomRegistry)
+
+    def test_name_is_validators_sync(self):
+        from lys.apps.licensing.registries import SyncValidatorRegistry
+        assert SyncValidatorRegistry.name == "validators_sync"
+
+
 class TestDowngraderRegistry:
     """Tests for DowngraderRegistry class."""
 
@@ -76,6 +93,44 @@ class TestRegisterValidatorDecorator:
         mock_registry.register.assert_called_once_with("MY_RULE", my_validator)
 
 
+class TestRegisterValidatorSyncDecorator:
+    """Tests for register_validator_sync decorator factory."""
+
+    def test_register_validator_sync_exists(self):
+        from lys.apps.licensing.registries import register_validator_sync
+        assert callable(register_validator_sync)
+
+    def test_register_validator_sync_returns_decorator(self):
+        from lys.apps.licensing.registries import register_validator_sync
+        decorator = register_validator_sync("TEST_RULE")
+        assert callable(decorator)
+
+    def test_decorator_returns_original_function(self):
+        from lys.apps.licensing.registries import register_validator_sync
+
+        def my_validator_sync(session, client_id, app_id, limit_value):
+            return (True, 0, 10)
+
+        with patch("lys.apps.licensing.registries.LysAppRegistry") as mock_registry_cls:
+            mock_registry_cls.return_value.get_registry.return_value = None
+            result = register_validator_sync("TEST_RULE")(my_validator_sync)
+
+        assert result is my_validator_sync
+
+    def test_decorator_registers_with_registry(self):
+        from lys.apps.licensing.registries import register_validator_sync
+
+        def my_validator_sync(session, client_id, app_id, limit_value):
+            return (True, 0, 10)
+
+        mock_registry = MagicMock()
+        with patch("lys.apps.licensing.registries.LysAppRegistry") as mock_registry_cls:
+            mock_registry_cls.return_value.get_registry.return_value = mock_registry
+            register_validator_sync("MY_RULE")(my_validator_sync)
+
+        mock_registry.register.assert_called_once_with("MY_RULE", my_validator_sync)
+
+
 class TestRegisterDowngraderDecorator:
     """Tests for register_downgrader decorator factory."""
 
@@ -125,6 +180,10 @@ class TestTypeAliases:
         from lys.apps.licensing.registries import DowngraderFunc
         assert DowngraderFunc is not None
 
+    def test_sync_validator_func_type_exists(self):
+        from lys.apps.licensing.registries import SyncValidatorFunc
+        assert SyncValidatorFunc is not None
+
 
 class TestLicensingInitRegistries:
     """Tests for __registries__ in licensing __init__.py."""
@@ -143,6 +202,11 @@ class TestLicensingInitRegistries:
         from lys.apps.licensing.registries import DowngraderRegistry
         assert DowngraderRegistry in __registries__
 
+    def test_registries_contains_sync_validator_registry(self):
+        from lys.apps.licensing import __registries__
+        from lys.apps.licensing.registries import SyncValidatorRegistry
+        assert SyncValidatorRegistry in __registries__
+
     def test_registries_count(self):
         from lys.apps.licensing import __registries__
-        assert len(__registries__) == 2
+        assert len(__registries__) == 3

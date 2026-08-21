@@ -128,6 +128,38 @@ class TestSubscriptionServiceGetAndChange:
             assert subscription is None
 
     @pytest.mark.asyncio
+    async def test_get_client_subscription_sync(self, licensing_app_manager):
+        """Test retrieving a client's subscription via the sync (Celery) path."""
+        subscription_service = licensing_app_manager.get_service("subscription")
+        client_service = licensing_app_manager.get_service("client")
+
+        async with licensing_app_manager.database.get_session() as session:
+            client = await client_service.create_client_with_owner(
+                session=session,
+                client_name=f"GetSync-Corp-{uuid4().hex[:8]}",
+                email=f"getsync-{uuid4().hex[:8]}@example.com",
+                password="Password123!",
+                language_id="en",
+                send_verification_email=False
+            )
+
+        with licensing_app_manager.database.get_sync_session() as session:
+            subscription = subscription_service.get_client_subscription_sync(client.id, session)
+            assert subscription is not None
+            assert subscription.client_id == client.id
+
+    @pytest.mark.asyncio
+    async def test_get_client_subscription_sync_none(self, licensing_app_manager):
+        """Test that a client without subscription returns None via the sync (Celery) path."""
+        subscription_service = licensing_app_manager.get_service("subscription")
+
+        with licensing_app_manager.database.get_sync_session() as session:
+            subscription = subscription_service.get_client_subscription_sync(
+                str(uuid4()), session
+            )
+            assert subscription is None
+
+    @pytest.mark.asyncio
     async def test_change_plan_immediate(self, licensing_app_manager):
         """Test changing plan immediately."""
         subscription_service = licensing_app_manager.get_service("subscription")

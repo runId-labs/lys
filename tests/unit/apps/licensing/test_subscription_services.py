@@ -47,6 +47,30 @@ class TestSubscriptionServiceGetClientSubscription:
         assert "session" in params
 
 
+class TestSubscriptionServiceGetClientSubscriptionSync:
+    """Tests for SubscriptionService.get_client_subscription_sync method (Celery contexts)."""
+
+    def test_method_exists(self):
+        from lys.apps.licensing.modules.subscription.services import SubscriptionService
+        assert hasattr(SubscriptionService, "get_client_subscription_sync")
+
+    def test_is_sync(self):
+        from lys.apps.licensing.modules.subscription.services import SubscriptionService
+        assert not inspect.iscoroutinefunction(SubscriptionService.get_client_subscription_sync)
+
+    def test_is_classmethod(self):
+        from lys.apps.licensing.modules.subscription.services import SubscriptionService
+        attr = inspect.getattr_static(SubscriptionService, "get_client_subscription_sync")
+        assert isinstance(attr, classmethod)
+
+    def test_signature(self):
+        from lys.apps.licensing.modules.subscription.services import SubscriptionService
+        sig = inspect.signature(SubscriptionService.get_client_subscription_sync)
+        params = list(sig.parameters.keys())
+        assert "client_id" in params
+        assert "session" in params
+
+
 class TestSubscriptionServiceCreateSubscription:
     """Tests for SubscriptionService.create_subscription method."""
 

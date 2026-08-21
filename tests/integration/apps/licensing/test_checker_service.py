@@ -266,6 +266,111 @@ class TestLicenseCheckerServiceQuota:
             await checker_service.enforce_quota(client.id, MAX_USERS, session)
 
 
+class TestLicenseCheckerServiceQuotaSync:
+    """Test LicenseCheckerService.check_quota_sync and enforce_quota_sync (Celery contexts)."""
+
+    @pytest.mark.asyncio
+    async def test_check_quota_sync_within_limit(self, licensing_app_manager):
+        """Test check_quota_sync returns valid when under limit."""
+        checker_service = licensing_app_manager.get_service("license_checker")
+        client_service = licensing_app_manager.get_service("client")
+
+        async with licensing_app_manager.database.get_session() as session:
+            client = await client_service.create_client_with_owner(
+                session=session,
+                client_name=f"QuotaSync-Corp-{uuid4().hex[:8]}",
+                email=f"quotasync-{uuid4().hex[:8]}@example.com",
+                password="Password123!",
+                language_id="en",
+                send_verification_email=False
+            )
+
+        # FREE plan has MAX_USERS=5, no users added yet so should be valid
+        with licensing_app_manager.database.get_sync_session() as session:
+            is_valid, current, limit = checker_service.check_quota_sync(
+                client.id, MAX_USERS, session
+            )
+            assert is_valid is True
+            assert current >= 0
+            assert limit == 5
+
+    @pytest.mark.asyncio
+    async def test_check_quota_sync_rule_not_in_plan(self, licensing_app_manager):
+        """Test check_quota_sync returns valid with -1 limit when rule not in plan."""
+        checker_service = licensing_app_manager.get_service("license_checker")
+        client_service = licensing_app_manager.get_service("client")
+        subscription_service = licensing_app_manager.get_service("subscription")
+        version_service = licensing_app_manager.get_service("license_plan_version")
+
+        async with licensing_app_manager.database.get_session() as session:
+            client = await client_service.create_client_with_owner(
+                session=session,
+                client_name=f"NoRuleSync-Corp-{uuid4().hex[:8]}",
+                email=f"norulesync-{uuid4().hex[:8]}@example.com",
+                password="Password123!",
+                language_id="en",
+                send_verification_email=False
+            )
+
+        # Upgrade to PRO plan (no DEMO_QUOTA_RULE rule)
+        async with licensing_app_manager.database.get_session() as session:
+            pro_version = await version_service.get_current_version(PRO_PLAN, session)
+            await subscription_service.change_plan(
+                client_id=client.id,
+                new_plan_version_id=pro_version.id,
+                session=session,
+                immediate=True
+            )
+
+        with licensing_app_manager.database.get_sync_session() as session:
+            is_valid, current, limit = checker_service.check_quota_sync(
+                client.id, DEMO_QUOTA_RULE, session
+            )
+            # Rule not configured = unlimited
+            assert is_valid is True
+            assert limit == -1
+
+    @pytest.mark.asyncio
+    async def test_check_quota_sync_no_subscription_raises(self, licensing_app_manager):
+        """Test check_quota_sync raises error when no subscription exists."""
+        checker_service = licensing_app_manager.get_service("license_checker")
+
+        with licensing_app_manager.database.get_sync_session() as session:
+            with pytest.raises(LysError) as exc_info:
+                checker_service.check_quota_sync(str(uuid4()), MAX_USERS, session)
+            assert "NO_ACTIVE_SUBSCRIPTION" in str(exc_info.value)
+
+    @pytest.mark.asyncio
+    async def test_enforce_quota_sync_within_limit(self, licensing_app_manager):
+        """Test enforce_quota_sync does not raise when within limit."""
+        checker_service = licensing_app_manager.get_service("license_checker")
+        client_service = licensing_app_manager.get_service("client")
+
+        async with licensing_app_manager.database.get_session() as session:
+            client = await client_service.create_client_with_owner(
+                session=session,
+                client_name=f"EnforceSyncOK-Corp-{uuid4().hex[:8]}",
+                email=f"enforcesyncok-{uuid4().hex[:8]}@example.com",
+                password="Password123!",
+                language_id="en",
+                send_verification_email=False
+            )
+
+        # Should not raise (within limit)
+        with licensing_app_manager.database.get_sync_session() as session:
+            checker_service.enforce_quota_sync(client.id, MAX_USERS, session)
+
+    @pytest.mark.asyncio
+    async def test_enforce_quota_sync_no_subscription_raises(self, licensing_app_manager):
+        """Test enforce_quota_sync raises error when no subscription exists."""
+        checker_service = licensing_app_manager.get_service("license_checker")
+
+        with licensing_app_manager.database.get_sync_session() as session:
+            with pytest.raises(LysError) as exc_info:
+                checker_service.enforce_quota_sync(str(uuid4()), MAX_USERS, session)
+            assert "NO_ACTIVE_SUBSCRIPTION" in str(exc_info.value)
+
+
 # ==============================================================================
 # Phase 1A: validate_downgrade tests
 # ==============================================================================

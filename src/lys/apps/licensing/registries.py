@@ -19,6 +19,10 @@ ValidatorFunc = Callable[
     [AsyncSession, str, str, int | None],  # session, client_id, app_id, limit_value
     Awaitable[tuple[bool, int, int]]
 ]
+SyncValidatorFunc = Callable[
+    [Session, str, str, int | None],  # session, client_id, app_id, limit_value
+    tuple[bool, int, int]
+]
 DowngraderFunc = Callable[
     [Session, str, str, int],  # session, client_id, app_id, new_limit
     bool
@@ -42,6 +46,26 @@ class ValidatorRegistry(CustomRegistry):
             # Returns: (is_valid, current_count, limit)
     """
     name = "validators"
+
+
+class SyncValidatorRegistry(CustomRegistry):
+    """
+    Registry for license rule validators usable from synchronous contexts
+    (e.g. Celery tasks holding a sync Session, where bridging to an
+    AsyncSession isn't practical).
+
+    File loaded: validators_sync.py in each module.
+
+    Validator signature:
+        def validate_xxx_sync(
+            session: Session,
+            client_id: str,
+            app_id: str,
+            limit_value: int | None
+        ) -> tuple[bool, int, int]:
+            # Returns: (is_valid, current_count, limit)
+    """
+    name = "validators_sync"
 
 
 class DowngraderRegistry(CustomRegistry):
@@ -79,6 +103,27 @@ def register_validator(rule_id: str):
     def decorator(func: ValidatorFunc) -> ValidatorFunc:
         app_registry = LysAppRegistry()
         registry = app_registry.get_registry("validators")
+        if registry:
+            registry.register(rule_id, func)
+        return func
+    return decorator
+
+
+def register_validator_sync(rule_id: str):
+    """
+    Decorator to register a sync validator function for a license rule.
+
+    Usage:
+        @register_validator_sync("MAX_USERS")
+        def validate_max_users_sync(session, client_id, app_id, limit_value):
+            ...
+
+    Args:
+        rule_id: The rule identifier (e.g., "MAX_USERS")
+    """
+    def decorator(func: SyncValidatorFunc) -> SyncValidatorFunc:
+        app_registry = LysAppRegistry()
+        registry = app_registry.get_registry("validators_sync")
         if registry:
             registry.register(rule_id, func)
         return func

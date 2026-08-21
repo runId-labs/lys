@@ -272,6 +272,154 @@ class TestEnforceQuotaDB:
             await LicenseCheckerService.enforce_quota("c1", "MAX_USERS", AsyncMock())
 
 
+class TestCheckQuotaSyncDB:
+    """Tests for LicenseCheckerService.check_quota_sync() (sync DB-based, Celery contexts)."""
+
+    def test_no_subscription_raises(self):
+        from lys.apps.licensing.modules.checker.services import LicenseCheckerService
+        from lys.core.errors import LysError
+
+        mock_session = Mock()
+        mock_sub_service = Mock()
+        mock_sub_service.get_client_subscription_sync = Mock(return_value=None)
+
+        with patch.object(LicenseCheckerService, "app_manager", create=True) as mock_am:
+            mock_am.get_service.return_value = mock_sub_service
+            with pytest.raises(LysError, match="NO_ACTIVE_SUBSCRIPTION"):
+                LicenseCheckerService.check_quota_sync("c1", "MAX_USERS", mock_session)
+
+    def test_rule_not_configured_returns_valid(self):
+        from lys.apps.licensing.modules.checker.services import LicenseCheckerService
+
+        mock_session = Mock()
+        mock_sub = Mock()
+        mock_sub.plan_version_id = "pv-1"
+
+        mock_sub_service = Mock()
+        mock_sub_service.get_client_subscription_sync = Mock(return_value=mock_sub)
+
+        mock_vr_service = Mock()
+        mock_vr_service.get_rules_for_version_sync = Mock(return_value=[])
+
+        with patch.object(LicenseCheckerService, "app_manager", create=True) as mock_am:
+            mock_am.get_service.side_effect = lambda name: {
+                "subscription": mock_sub_service,
+                "license_plan_version_rule": mock_vr_service,
+            }.get(name)
+            is_valid, current, limit = LicenseCheckerService.check_quota_sync(
+                "c1", "MAX_USERS", mock_session
+            )
+
+        assert is_valid is True
+        assert limit == -1
+
+    def test_within_limit_dispatches_to_sync_validator(self):
+        from lys.apps.licensing.modules.checker.services import LicenseCheckerService
+
+        mock_session = Mock()
+        mock_sub = Mock()
+        mock_sub.plan_version_id = "pv-1"
+
+        mock_rule = Mock()
+        mock_rule.rule_id = "MAX_USERS"
+        mock_rule.limit_value = 50
+
+        mock_sub_service = Mock()
+        mock_sub_service.get_client_subscription_sync = Mock(return_value=mock_sub)
+
+        mock_vr_service = Mock()
+        mock_vr_service.get_rules_for_version_sync = Mock(return_value=[mock_rule])
+
+        mock_plan = Mock()
+        mock_plan.app_id = "app-1"
+        mock_plan_version = Mock()
+        mock_plan_version.plan = mock_plan
+        mock_sub.plan_version = mock_plan_version
+
+        mock_validator = Mock(return_value=(True, 30, 50))
+        mock_validators_registry = Mock()
+        mock_validators_registry.get.return_value = mock_validator
+
+        with patch.object(LicenseCheckerService, "app_manager", create=True) as mock_am:
+            mock_am.get_service.side_effect = lambda name: {
+                "subscription": mock_sub_service,
+                "license_plan_version_rule": mock_vr_service,
+            }.get(name)
+            mock_am.registry.get_registry.return_value = mock_validators_registry
+
+            is_valid, current, limit = LicenseCheckerService.check_quota_sync(
+                "c1", "MAX_USERS", mock_session
+            )
+
+        mock_validator.assert_called_once_with(mock_session, "c1", "app-1", 50)
+        assert (is_valid, current, limit) == (True, 30, 50)
+
+    def test_no_sync_validator_assumes_valid(self):
+        from lys.apps.licensing.modules.checker.services import LicenseCheckerService
+
+        mock_session = Mock()
+        mock_sub = Mock()
+        mock_sub.plan_version_id = "pv-1"
+
+        mock_rule = Mock()
+        mock_rule.rule_id = "MAX_USERS"
+        mock_rule.limit_value = 50
+
+        mock_sub_service = Mock()
+        mock_sub_service.get_client_subscription_sync = Mock(return_value=mock_sub)
+
+        mock_vr_service = Mock()
+        mock_vr_service.get_rules_for_version_sync = Mock(return_value=[mock_rule])
+
+        mock_plan = Mock()
+        mock_plan.app_id = "app-1"
+        mock_plan_version = Mock()
+        mock_plan_version.plan = mock_plan
+        mock_sub.plan_version = mock_plan_version
+
+        mock_validators_registry = Mock()
+        mock_validators_registry.get.return_value = None
+
+        with patch.object(LicenseCheckerService, "app_manager", create=True) as mock_am:
+            mock_am.get_service.side_effect = lambda name: {
+                "subscription": mock_sub_service,
+                "license_plan_version_rule": mock_vr_service,
+            }.get(name)
+            mock_am.registry.get_registry.return_value = mock_validators_registry
+
+            is_valid, current, limit = LicenseCheckerService.check_quota_sync(
+                "c1", "MAX_USERS", mock_session
+            )
+
+        assert is_valid is True
+        assert limit == 50
+
+
+class TestEnforceQuotaSyncDB:
+    """Tests for LicenseCheckerService.enforce_quota_sync() (sync DB-based, Celery contexts)."""
+
+    def test_exceeded_raises(self):
+        from lys.apps.licensing.modules.checker.services import LicenseCheckerService
+        from lys.core.errors import LysError
+
+        with patch.object(
+            LicenseCheckerService, "check_quota_sync",
+            return_value=(False, 60, 50)
+        ):
+            with pytest.raises(LysError, match="QUOTA_EXCEEDED"):
+                LicenseCheckerService.enforce_quota_sync("c1", "MAX_USERS", Mock())
+
+    def test_within_quota_does_not_raise(self):
+        from lys.apps.licensing.modules.checker.services import LicenseCheckerService
+
+        with patch.object(
+            LicenseCheckerService, "check_quota_sync",
+            return_value=(True, 30, 50)
+        ):
+            # Should not raise
+            LicenseCheckerService.enforce_quota_sync("c1", "MAX_USERS", Mock())
+
+
 class TestCheckFeatureDB:
     """Tests for LicenseCheckerService.check_feature() (DB-based)."""
 

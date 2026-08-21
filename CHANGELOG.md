@@ -7,6 +7,11 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.38.0] - 2026-08-21
+
+### Added
+- Sync counterparts for quota enforcement, usable from Celery task contexts holding a sync `Session` where bridging to an `AsyncSession` isn't practical: `LicenseCheckerService.check_quota_sync` / `enforce_quota_sync`, `SubscriptionService.get_client_subscription_sync`, `LicensePlanVersionRuleService.get_rules_for_version_sync`. A new `SyncValidatorRegistry` (`validators_sync`) and `register_validator_sync` decorator let rule validators be registered for this sync path alongside the existing async `validators` registry
+
 ## [0.37.0] - 2026-08-21
 
 ### Added
