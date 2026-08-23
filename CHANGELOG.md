@@ -7,6 +7,11 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.39.0] - 2026-08-21
+
+### Added
+- `extract_text` now also checks the PDF's font table (via `pdffonts`) before trusting `pdftotext`'s char count. A many-page scanned PDF can accumulate enough page-break characters to clear `min_text_chars` while carrying zero real text; an empty font table catches that case and routes to OCR regardless of char count. The check is skipped when the char count already falls under the threshold, since OCR is triggered either way and a second subprocess call would be wasted
+
 ## [0.38.1] - 2026-08-21
 
 ### Fixed

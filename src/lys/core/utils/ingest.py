@@ -103,6 +103,48 @@ def _pdftotext(content: bytes, timeout: int = DEFAULT_PDFTOTEXT_TIMEOUT) -> str:
     return (out.stdout or "").strip()
 
 
+def _has_font_layer(content: bytes, timeout: int = DEFAULT_PDFTOTEXT_TIMEOUT) -> bool:
+    """True if the PDF references at least one font (embedded or not) — i.e. a real text layer exists.
+
+    An empty font table means every page is image-only (a scan): there is no text
+    object to extract at all, regardless of what pdftotext's stdout contains. This
+    catches a case a bare character-count threshold misses: pdftotext inserts a
+    page-break character per page, so a many-page scan can accumulate enough of
+    them to clear a low min_text_chars threshold while carrying zero real text.
+
+    Fails open (returns True, deferring entirely to the min_text_chars check) when
+    pdffonts is unavailable or errors — same posture as a missing pdftotext binary.
+    """
+    try:
+        with tempfile.NamedTemporaryFile(suffix=".pdf") as tmp:
+            tmp.write(content)
+            tmp.flush()
+            out = subprocess.run(
+                ["pdffonts", tmp.name],
+                capture_output=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=timeout,
+            )
+    except FileNotFoundError:
+        logger.warning(
+            "pdffonts binary not found (poppler-utils not installed in this image?) "
+            "-> skipping the font-layer check for this file"
+        )
+        return True
+    except subprocess.SubprocessError as exc:
+        logger.warning("pdffonts failed (%s) -> skipping the font-layer check for this file", exc)
+        return True
+
+    if out.returncode != 0:
+        return True
+
+    # pdffonts always prints a 2-line header (column names + a "---" separator row),
+    # even for a PDF with zero fonts. More than 2 non-empty lines means at least one.
+    lines = [line for line in (out.stdout or "").splitlines() if line.strip()]
+    return len(lines) > 2
+
+
 def extract_text(
     content: bytes,
     mime_type: str,
@@ -133,8 +175,11 @@ def extract_text(
 
     if mime == PDF_MIME:
         text = _pdftotext(content, timeout=pdftotext_timeout)
-        if len(text) < min_text_chars:
-            logger.info("PDF text layer sparse (%d chars) -> OCR", len(text))
+        # Only worth checking the font table once the char count already clears the
+        # threshold: below it, OCR is triggered regardless, and pdffonts would be a
+        # second subprocess spawn spent on a decision that's already made.
+        if len(text) < min_text_chars or not _has_font_layer(content, timeout=pdftotext_timeout):
+            logger.info("PDF has no usable text layer (%d chars) -> OCR", len(text))
             return ai_service.ocr_sync(content, PDF_MIME, ocr_config)
         return text
 
