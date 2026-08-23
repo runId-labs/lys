@@ -290,10 +290,11 @@ class TestSecurityHeadersMiddleware:
 
 class TestRateLimitMiddleware:
 
-    def _make_request(self, ip="127.0.0.1", headers=None):
+    def _make_request(self, ip="127.0.0.1", headers=None, connected_user=None):
         request = MagicMock()
         request.client.host = ip
         request.headers = headers or {}
+        request.state.connected_user = connected_user
         return request
 
     def _make_response(self):
@@ -320,6 +321,7 @@ class TestRateLimitMiddleware:
     def test_default_config(self):
         middleware, _ = self._create_middleware()
         assert middleware.requests_per_minute == 60
+        assert middleware.user_requests_per_minute == 300
         assert middleware.enabled is True
 
     def test_custom_config(self):
@@ -484,11 +486,49 @@ class TestRateLimitMiddleware:
 
         assert result is response
 
+    def test_connected_user_uses_user_bucket_and_limit(self):
+        middleware, mock_am = self._create_middleware({"requests_per_minute": 1, "user_requests_per_minute": 5})
+        request = self._make_request(connected_user={"sub": "user-123"})
+        response = self._make_response()
+
+        async def call_next(_):
+            return response
+
+        with patch.object(RateLimitMiddleware, "app_manager", mock_am):
+            # 5 requests allowed even though the anonymous IP limit is 1
+            for _ in range(5):
+                result = self._run(middleware.dispatch(request, call_next))
+                assert result is response
+
+            # 6th request blocked
+            result = self._run(middleware.dispatch(request, call_next))
+
+        assert result.status_code == 429
+        assert "rate_limit_user:user-123" in middleware._memory_store
+
+    def test_different_connected_users_have_separate_limits(self):
+        middleware, mock_am = self._create_middleware({"user_requests_per_minute": 2})
+        response = self._make_response()
+
+        async def call_next(_):
+            return response
+
+        with patch.object(RateLimitMiddleware, "app_manager", mock_am):
+            for _ in range(2):
+                self._run(middleware.dispatch(self._make_request(connected_user={"sub": "user-a"}), call_next))
+
+            result_a = self._run(middleware.dispatch(self._make_request(connected_user={"sub": "user-a"}), call_next))
+            assert result_a.status_code == 429
+
+            result_b = self._run(middleware.dispatch(self._make_request(connected_user={"sub": "user-b"}), call_next))
+            assert result_b is response
+
     def test_no_client_uses_unknown_ip(self):
         middleware, mock_am = self._create_middleware({"requests_per_minute": 1})
         request = MagicMock()
         request.client = None
         request.headers = {}
+        request.state.connected_user = None
         response = self._make_response()
 
         async def call_next(_):

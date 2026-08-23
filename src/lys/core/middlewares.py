@@ -72,8 +72,18 @@ class RateLimitMiddleware(MiddlewareInterface, AppManagerCallerMixin, BaseHTTPMi
     deployments or when Redis is not configured.
 
     Configuration via settings.plugins["rate_limit"]:
-        - requests_per_minute: Max requests per IP per minute (default: 60)
+        - requests_per_minute: Max requests per IP per minute, anonymous traffic (default: 60)
+        - user_requests_per_minute: Max requests per authenticated user per minute (default: 300)
+        - service_requests_per_minute: Max requests per IP per minute, service-to-service (default: 600)
         - enabled: Enable/disable rate limiting (default: True)
+
+    Middleware order requirement: per-user limiting reads request.state.connected_user,
+    populated by UserAuthMiddleware. Starlette executes middlewares in the REVERSE of
+    their settings.middlewares declaration order (the last one declared runs first), so
+    UserAuthMiddleware must be declared AFTER RateLimitMiddleware in settings.middlewares
+    for connected_user to already be resolved by the time this middleware runs. Get this
+    backwards and the failure is silent: authenticated requests just fall back to the
+    anonymous IP bucket, with no error or log to point at the misconfiguration.
     """
 
     def __init__(self, app):
@@ -81,6 +91,7 @@ class RateLimitMiddleware(MiddlewareInterface, AppManagerCallerMixin, BaseHTTPMi
 
         config = self.app_manager.settings.plugins.get(RATE_LIMIT_PLUGIN_KEY, {})
         self.requests_per_minute: int = config.get("requests_per_minute", 60)
+        self.user_requests_per_minute: int = config.get("user_requests_per_minute", 300)
         self.service_requests_per_minute: int = config.get("service_requests_per_minute", 600)
         self.enabled: bool = config.get("enabled", True)
 
@@ -95,13 +106,13 @@ class RateLimitMiddleware(MiddlewareInterface, AppManagerCallerMixin, BaseHTTPMi
         return None
 
     async def _check_rate_limit_redis(
-        self, client_ip: str, redis_client, limit: int, key_prefix: str = "rate_limit"
+        self, rate_limit_key: str, redis_client, limit: int, key_prefix: str = "rate_limit"
     ) -> bool:
         """Check rate limit using Redis INCR + EXPIRE (fixed window).
 
         Returns True if request is allowed, False if rate limited.
         """
-        key = f"{key_prefix}:{client_ip}"
+        key = f"{key_prefix}:{rate_limit_key}"
         try:
             count = await redis_client.incr(key)
             if count == 1:
@@ -112,7 +123,7 @@ class RateLimitMiddleware(MiddlewareInterface, AppManagerCallerMixin, BaseHTTPMi
             return True
 
     def _check_rate_limit_memory(
-        self, client_ip: str, limit: int, key_prefix: str = "rate_limit"
+        self, rate_limit_key: str, limit: int, key_prefix: str = "rate_limit"
     ) -> bool:
         """Check rate limit using in-memory storage (fixed window).
 
@@ -121,7 +132,7 @@ class RateLimitMiddleware(MiddlewareInterface, AppManagerCallerMixin, BaseHTTPMi
         now = time.time()
         window_start = now - 60
 
-        key = f"{key_prefix}:{client_ip}"
+        key = f"{key_prefix}:{rate_limit_key}"
         timestamps = self._memory_store.get(key, [])
         timestamps = [t for t in timestamps if t > window_start]
 
@@ -144,14 +155,24 @@ class RateLimitMiddleware(MiddlewareInterface, AppManagerCallerMixin, BaseHTTPMi
         # so we still rate-limit to prevent abuse via forged headers.
         auth_header = request.headers.get("Authorization", "")
         is_service_call = auth_header.startswith("Service ")
-        rate_limit = self.service_requests_per_minute if is_service_call else self.requests_per_minute
-        key_prefix = "rate_limit_svc" if is_service_call else "rate_limit"
+        # UserAuthMiddleware runs before us in the actual execution order (Starlette
+        # reverses the declared middleware list), so connected_user is already resolved.
+        connected_user = getattr(request.state, "connected_user", None)
+
+        if is_service_call:
+            rate_limit, key_prefix, rate_limit_key = self.service_requests_per_minute, "rate_limit_svc", client_ip
+        elif connected_user:
+            rate_limit = self.user_requests_per_minute
+            key_prefix = "rate_limit_user"
+            rate_limit_key = connected_user["sub"]
+        else:
+            rate_limit, key_prefix, rate_limit_key = self.requests_per_minute, "rate_limit", client_ip
 
         redis_client = self._get_redis()
         if redis_client:
-            allowed = await self._check_rate_limit_redis(client_ip, redis_client, rate_limit, key_prefix)
+            allowed = await self._check_rate_limit_redis(rate_limit_key, redis_client, rate_limit, key_prefix)
         else:
-            allowed = self._check_rate_limit_memory(client_ip, rate_limit, key_prefix)
+            allowed = self._check_rate_limit_memory(rate_limit_key, rate_limit, key_prefix)
 
         if not allowed:
             return JSONResponse(

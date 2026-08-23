@@ -7,6 +7,11 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.40.0] - 2026-08-21
+
+### Added
+- `RateLimitMiddleware` now buckets authenticated requests by user (`connected_user["sub"]`) instead of falling into the shared anonymous IP bucket, via a new `user_requests_per_minute` setting (default: 300). Keeps multiple users behind the same IP (NAT, corporate proxy) from sharing — and exhausting — one quota. Requires `UserAuthMiddleware` to be declared **after** `RateLimitMiddleware` in `settings.middlewares` (Starlette runs middlewares in the reverse of their declaration order), documented directly in the class docstring; getting the order wrong fails silently to the anonymous IP bucket
+
 ## [0.39.0] - 2026-08-21
 
 ### Added
