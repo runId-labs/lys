@@ -132,6 +132,21 @@ async def organization_app_manager():
             session=session, id="EXTRA_ROLE", enabled=True, supervisor_only=False
         )
 
+        # Client request statuses and a type (needed for client_request tests)
+        from lys.apps.organization.modules.client_request.consts import (
+            CLIENT_REQUEST_STATUS_CANCELLED, CLIENT_REQUEST_STATUS_ERROR,
+            CLIENT_REQUEST_STATUS_PENDING, CLIENT_REQUEST_STATUS_PROCESSED,
+        )
+        client_request_status_service = app_manager.get_service("client_request_status")
+        for status_id in (
+            CLIENT_REQUEST_STATUS_PENDING, CLIENT_REQUEST_STATUS_PROCESSED,
+            CLIENT_REQUEST_STATUS_CANCELLED, CLIENT_REQUEST_STATUS_ERROR,
+        ):
+            await client_request_status_service.create(session=session, id=status_id, enabled=True)
+
+        client_request_type_service = app_manager.get_service("client_request_type")
+        await client_request_type_service.create(session=session, id="SUPPORT", enabled=True)
+
         await session.commit()
 
     yield app_manager

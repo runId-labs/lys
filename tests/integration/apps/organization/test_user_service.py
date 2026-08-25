@@ -12,6 +12,12 @@ Tests cover:
 import pytest
 from uuid import uuid4
 
+from lys.apps.organization.modules.client_request.consts import (
+    CLIENT_REQUEST_REASON_REQUESTER_ANONYMIZED,
+    CLIENT_REQUEST_STATUS_CANCELLED,
+    CLIENT_REQUEST_STATUS_PENDING,
+    CLIENT_REQUEST_STATUS_PROCESSED,
+)
 from lys.core.errors import LysError
 
 
@@ -414,3 +420,84 @@ class TestUserServiceProperties:
             assert user.is_supervisor is False
             assert user.is_client_user is True
             assert user.accessing_organizations() == {"client": [client.id]}
+
+
+class TestUserServiceAnonymizeUser:
+    """Test that anonymizing a user also settles their open client requests."""
+
+    @pytest.mark.asyncio
+    async def test_anonymize_user_cancels_and_scrubs_open_requests(self, organization_app_manager):
+        client_service = organization_app_manager.get_service("client")
+        user_service = organization_app_manager.get_service("user")
+        client_request_service = organization_app_manager.get_service("client_request")
+
+        async with organization_app_manager.database.get_session() as session:
+            client = await client_service.create_client_with_owner(
+                session=session,
+                client_name=f"Corp-anon-{uuid4().hex[:8]}",
+                email=f"owner-anon-{uuid4().hex[:8]}@example.com",
+                password="Password123!",
+                language_id="en",
+                send_verification_email=False
+            )
+
+        async with organization_app_manager.database.get_session() as session:
+            target_user = await user_service.create_client_user(
+                session=session,
+                client_id=client.id,
+                email=f"target-anon-{uuid4().hex[:8]}@example.com",
+                password="Password123!",
+                language_id="en"
+            )
+            admin_user = await user_service.create_client_user(
+                session=session,
+                client_id=client.id,
+                email=f"admin-anon-{uuid4().hex[:8]}@example.com",
+                password="Password123!",
+                language_id="en"
+            )
+
+        async with organization_app_manager.database.get_session() as session:
+            open_request = await client_request_service.create(
+                session=session,
+                type_id="SUPPORT",
+                status_id=CLIENT_REQUEST_STATUS_PENDING,
+                client_id=client.id,
+                user_id=target_user.id,
+                contact_phone="+33611223344",
+                message="Please contact me",
+            )
+            settled_request = await client_request_service.create(
+                session=session,
+                type_id="SUPPORT",
+                status_id=CLIENT_REQUEST_STATUS_PROCESSED,
+                client_id=client.id,
+                user_id=target_user.id,
+                contact_phone="+33611223344",
+                message="Already handled",
+            )
+            open_request_id, settled_request_id = open_request.id, settled_request.id
+
+        async with organization_app_manager.database.get_session() as session:
+            await user_service.anonymize_user(
+                user_id=target_user.id,
+                reason="User requested account deletion",
+                anonymized_by=admin_user.id,
+                session=session
+            )
+
+        async with organization_app_manager.database.get_session() as session:
+            from lys.apps.user_auth.modules.user.consts import DELETED_USER_STATUS
+
+            anonymized_user = await user_service.get_by_id(target_user.id, session)
+            assert anonymized_user.status_id == DELETED_USER_STATUS
+
+            open_request = await client_request_service.get_by_id(open_request_id, session)
+            assert open_request.status_id == CLIENT_REQUEST_STATUS_CANCELLED
+            assert open_request.reason_code == CLIENT_REQUEST_REASON_REQUESTER_ANONYMIZED
+            assert open_request.contact_phone is None
+            assert open_request.message is None
+
+            settled_request = await client_request_service.get_by_id(settled_request_id, session)
+            assert settled_request.status_id == CLIENT_REQUEST_STATUS_PROCESSED
+            assert settled_request.contact_phone == "+33611223344"

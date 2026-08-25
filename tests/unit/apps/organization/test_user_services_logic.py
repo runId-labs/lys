@@ -132,3 +132,50 @@ class TestUserServiceUpdateClientUserRolesLogic:
         # Should not add or delete anything
         mock_session.add.assert_not_called()
         mock_session.delete.assert_not_called()
+
+
+class TestUserServiceAnonymizeUserLogic:
+    """Tests for UserService.anonymize_user logic (organization override)."""
+
+    @pytest.fixture
+    def mock_session(self):
+        """Create mock async session."""
+        return AsyncMock()
+
+    @pytest.mark.asyncio
+    async def test_cancels_open_requests_via_client_request_service(self, mock_session):
+        from lys.apps.organization.modules.user.services import UserService
+
+        mock_client_request_service = AsyncMock()
+
+        with patch.object(UserService, "app_manager") as mock_app_manager:
+            mock_app_manager.get_service.return_value = mock_client_request_service
+
+            with patch(
+                "lys.apps.user_role.modules.user.services.UserService.anonymize_user",
+                new=AsyncMock()
+            ):
+                await UserService.anonymize_user(
+                    user_id="user-123", reason="gdpr", anonymized_by="admin-1", session=mock_session
+                )
+
+        mock_app_manager.get_service.assert_called_once_with("client_request", nullable=True)
+        mock_client_request_service.cancel_open_for_anonymized_user.assert_awaited_once_with(
+            user_id="user-123", session=mock_session
+        )
+
+    @pytest.mark.asyncio
+    async def test_does_not_raise_when_client_request_service_unregistered(self, mock_session):
+        from lys.apps.organization.modules.user.services import UserService
+
+        with patch.object(UserService, "app_manager") as mock_app_manager:
+            mock_app_manager.get_service.return_value = None
+
+            with patch(
+                "lys.apps.user_role.modules.user.services.UserService.anonymize_user",
+                new=AsyncMock()
+            ):
+                # Must not raise even though no client_request service is registered.
+                await UserService.anonymize_user(
+                    user_id="user-123", reason="gdpr", anonymized_by="admin-1", session=mock_session
+                )

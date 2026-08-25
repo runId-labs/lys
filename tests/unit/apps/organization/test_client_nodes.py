@@ -66,6 +66,22 @@ class TestClientNodeOwnerIdField:
         assert isinstance(ClientNode.owner_id, StrawberryField)
 
 
+class TestClientNodeOpenRequestsField:
+    """Tests for ClientNode.open_requests field method."""
+
+    def test_open_requests_method_exists(self):
+        """Test open_requests method exists on ClientNode."""
+        from lys.apps.organization.modules.client.nodes import ClientNode
+        assert hasattr(ClientNode, "open_requests")
+
+    def test_open_requests_is_strawberry_field(self):
+        """Test open_requests is a strawberry field."""
+        from lys.apps.organization.modules.client.nodes import ClientNode
+        from strawberry.types.field import StrawberryField
+
+        assert isinstance(ClientNode.open_requests, StrawberryField)
+
+
 class TestClientNodeOrderByAttributeMap:
     """Tests for ClientNode.order_by_attribute_map property."""
 

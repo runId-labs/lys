@@ -7,6 +7,13 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.41.0] - 2026-08-25
+
+### Added
+- New `client_request` module in the `organization` app: `ClientRequest` tracks a request raised by a client through to its outcome (PENDING/PROCESSED/CANCELLED/ERROR), with `ClientRequestService.mark_processed`/`mark_failed`/`mark_cancelled` recording the transition. The request type is left for the consuming application to declare; lys only owns the record and its lifecycle
+- `ClientNode.open_requests` GraphQL field: a client's requests still waiting for an action, oldest first
+- Anonymizing a user (`organization.UserService.anonymize_user`) now also cancels their open client requests and clears the free-text fields (`contact_phone`, `message`) in the same transaction, via `ClientRequestService.cancel_open_for_anonymized_user`. Settled requests are left untouched — they describe the client, not the person
+
 ## [0.40.0] - 2026-08-21
 
 ### Added

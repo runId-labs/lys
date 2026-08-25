@@ -1,3 +1,5 @@
+import logging
+
 from sqlalchemy import exists, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased, selectinload
@@ -244,3 +246,39 @@ class UserService(UserRoleService):
             for client_user_role in list(user.client_user_roles):
                 if client_user_role.role.id in roles_to_remove:
                     await session.delete(client_user_role)
+
+    @classmethod
+    async def anonymize_user(
+        cls,
+        user_id: str,
+        reason: str,
+        anonymized_by: str,
+        session: AsyncSession
+    ) -> None:
+        """Anonymize the account, then settle what the person had left open.
+
+        Extends the base anonymization: once the account is scrubbed, the requests this
+        user raised are cancelled and their free-text fields cleared, in the same
+        transaction. Deferring that to a reconciliation job would leave a window where
+        the account is anonymous but its requests still carry a phone number and a
+        message — and where a caller replaying one would send a demand with no requester.
+
+        Settled requests are left alone: they describe a company, not a person.
+        """
+        await super().anonymize_user(
+            user_id=user_id,
+            reason=reason,
+            anonymized_by=anonymized_by,
+            session=session,
+        )
+
+        client_request_service = cls.app_manager.get_service("client_request", nullable=True)
+
+        if client_request_service is None:
+            logging.warning(
+                "Cannot cancel open client requests during user anonymization: "
+                "client_request service not registered"
+            )
+            return
+
+        await client_request_service.cancel_open_for_anonymized_user(user_id=user_id, session=session)
