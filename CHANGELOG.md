@@ -7,6 +7,12 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.41.1] - 2026-08-26
+
+### Fixed
+- Multi-tenant SSO providers now verify the ID token's issuer against that directory's own published metadata (`SSOAuthService._assert_issuer_is_its_own_directory`), scoped to the authority already trusted by the deployment's configured `issuer_url`. Optional `allowed_tenants` restricts sign-in to a pre-approved set of directories; a provider whose discovery document advertises a per-directory issuer while not configured as `multi_tenant` now fails loudly (`SSO_PROVIDER_MISCONFIGURED`) instead of on an opaque token error
+- `SSOProviderQuery` no longer lists SSO providers that are declared but missing a `client_id`, avoiding a login button that fails on an unreadable provider error
+
 ## [0.41.0] - 2026-08-25
 
 ### Added

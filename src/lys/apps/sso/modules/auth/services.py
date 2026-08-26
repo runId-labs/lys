@@ -2,6 +2,7 @@ import json
 import logging
 import uuid
 from typing import Optional
+from urllib.parse import urlparse
 
 import httpx
 from authlib.integrations.httpx_client import AsyncOAuth2Client
@@ -25,10 +26,14 @@ from lys.apps.sso.errors import (
     SSO_INVALID_TOKEN,
     SSO_MISSING_EMAIL,
     SSO_SESSION_EXPIRED,
+    SSO_ISSUER_NOT_TRUSTED,
+    SSO_PROVIDER_MISCONFIGURED,
+    SSO_TENANT_NOT_ALLOWED,
 )
 from lys.core.errors import LysError
 from lys.core.registries import register_service
 from lys.core.services import Service
+from lys.core.utils.validators import validate_redirect_url
 
 logger = logging.getLogger(__name__)
 
@@ -187,7 +192,15 @@ class SSOAuthService(Service):
         if not id_token:
             raise LysError(SSO_CALLBACK_ERROR, "No ID token in provider response")
 
-        # Fetch provider JWKS for ID token signature verification
+        # Fetch provider JWKS for ID token signature verification.
+        #
+        # In multi_tenant mode, this JWKS comes from the configured (shared) discovery
+        # endpoint and is trusted for every directory behind it — the assumption is that
+        # the provider publishes one key set for its whole federation, as Azure AD does
+        # for its "common"/"organizations" endpoints. This does not hold for every OIDC
+        # provider: multi_tenant should only be enabled for a provider known to share
+        # signing keys this way. Which directory actually signed the token is verified
+        # separately below, against that directory's own metadata.
         jwks_uri = discovery.get("jwks_uri")
         if not jwks_uri:
             raise LysError(SSO_CALLBACK_ERROR, "No jwks_uri in provider discovery document")
@@ -197,21 +210,44 @@ class SSOAuthService(Service):
             jwks_resp.raise_for_status()
             jwks = jwks_resp.json()
 
-        # Decode and verify ID token with provider's public keys
+        # Decode and verify ID token with provider's public keys.
+        #
+        # Who the issuer must be depends on how many directories the provider serves.
+        # Single-directory is the default and pins the issuer the provider advertises.
+        # A provider serving several cannot name it in advance — the real issuer is the
+        # directory of whoever signs in — so its issuer is checked against that
+        # directory's own metadata instead, once the signature is verified.
         canonical_issuer = discovery.get("issuer", issuer_url)
+        multi_tenant = bool(provider_config.get("multi_tenant", False))
+
+        if not multi_tenant and "{" in canonical_issuer:
+            # Fail loudly rather than on an opaque token error: the provider is
+            # answering for several directories while configured for one.
+            raise LysError(
+                SSO_PROVIDER_MISCONFIGURED,
+                f"Provider '{provider}' advertises a per-directory issuer "
+                f"({canonical_issuer}) but is not configured as multi_tenant",
+            )
+
+        claims_options = {
+            "aud": {"essential": True, "value": provider_config["client_id"]},
+            "iss": {"essential": True},
+        }
+
+        if not multi_tenant:
+            claims_options["iss"]["value"] = canonical_issuer
+
         try:
             key_set = JsonWebKey.import_key_set(jwks)
-            claims = authlib_jwt.decode(
-                id_token,
-                key_set,
-                claims_options={
-                    "iss": {"essential": True, "value": canonical_issuer},
-                    "aud": {"essential": True, "value": provider_config["client_id"]},
-                },
-            )
+            claims = authlib_jwt.decode(id_token, key_set, claims_options=claims_options)
             claims.validate()
         except JoseError as e:
             raise LysError(SSO_INVALID_TOKEN, f"ID token validation failed: {e}") from e
+
+        if multi_tenant:
+            await cls._assert_issuer_is_its_own_directory(
+                provider, provider_config, issuer_url, claims
+            )
 
         # Verify nonce to prevent replay attacks
         token_nonce = claims.get("nonce")
@@ -240,6 +276,67 @@ class SSOAuthService(Service):
             "last_name": last_name,
             "external_user_id": external_user_id,
         }
+
+    @classmethod
+    async def _assert_issuer_is_its_own_directory(
+        cls, provider: str, provider_config: dict, issuer_url: str, claims
+    ) -> None:
+        """Check a multi-directory token's issuer against that directory's metadata.
+
+        The token says which directory issued it. Believing that claim on its own would
+        let anyone mint an issuer, so it is confirmed against the directory itself: its
+        published metadata must name the same issuer.
+
+        The lookup is confined to the authority the deployment already trusts — the host
+        of the configured `issuer_url`. Without that, the address fetched here would come
+        from the token, which is to say from whoever sent it. The same checks (HTTPS
+        only, no private/loopback/reserved IPs, no blocked hostnames) already enforced
+        for redirect URLs are reused here for consistency, since this URL is also built
+        from attacker-influenced input and then fetched server-side.
+
+        `allowed_tenants` is optional: leaving it unset lets any directory behind the
+        trusted authority sign in, which is the intended behavior for self-service B2B
+        signup (any verified organization can onboard). Set it to restrict sign-in to a
+        specific set of pre-approved directories instead.
+        """
+        token_issuer = claims.get("iss")
+        trusted_host = urlparse(issuer_url).hostname or ""
+
+        try:
+            validate_redirect_url(token_issuer or "", allowed_domains=[trusted_host])
+        except LysError as e:
+            raise LysError(
+                SSO_ISSUER_NOT_TRUSTED,
+                f"ID token issuer is not served by the authority configured for "
+                f"'{provider}': {e}",
+            ) from e
+
+        allowed = provider_config.get("allowed_tenants")
+
+        if allowed and claims.get("tid") not in allowed:
+            raise LysError(
+                SSO_TENANT_NOT_ALLOWED,
+                "This directory is not allowed to sign in to this application",
+            )
+
+        metadata_url = f"{token_issuer.rstrip('/')}/.well-known/openid-configuration"
+
+        try:
+            async with httpx.AsyncClient() as http_client:
+                response = await http_client.get(metadata_url)
+                response.raise_for_status()
+                metadata = response.json()
+        except httpx.HTTPError as e:
+            raise LysError(
+                SSO_ISSUER_NOT_TRUSTED,
+                f"Could not reach the metadata of the directory the ID token claims: {e}",
+            ) from e
+
+        if metadata.get("issuer") != token_issuer:
+            raise LysError(
+                SSO_ISSUER_NOT_TRUSTED,
+                "ID token issuer is not the one its own directory publishes",
+            )
 
     # ==================== Mode Handlers ====================
 

@@ -28,6 +28,9 @@ from lys.apps.sso.errors import (
     SSO_INVALID_TOKEN,
     SSO_MISSING_EMAIL,
     SSO_SESSION_EXPIRED,
+    SSO_ISSUER_NOT_TRUSTED,
+    SSO_TENANT_NOT_ALLOWED,
+    SSO_PROVIDER_MISCONFIGURED,
 )
 from lys.apps.sso.modules.auth.services import SSOAuthService
 from lys.core.errors import LysError
@@ -398,8 +401,13 @@ def _mock_oidc_flow(
     token_response_extra=None,
     claims=None,
     jwks_uri="https://login.microsoftonline.com/jwks",
+    extra_responses=None,
 ):
-    """Configure mocks for the full OIDC token exchange flow."""
+    """Configure mocks for the full OIDC token exchange flow.
+
+    `extra_responses` appends additional httpx GET responses after discovery and JWKS,
+    e.g. the per-directory metadata fetch performed for multi_tenant providers.
+    """
     discovery = {
         "token_endpoint": "https://login.microsoftonline.com/token",
         "jwks_uri": jwks_uri,
@@ -421,9 +429,10 @@ def _mock_oidc_flow(
     mock_jwks_resp.json.return_value = {"keys": []}
     mock_jwks_resp.raise_for_status = MagicMock()
 
-    # httpx.AsyncClient used as context manager - called twice (discovery, JWKS)
+    # httpx.AsyncClient used as context manager - called twice (discovery, JWKS),
+    # plus once more per entry in extra_responses.
     call_count = {"n": 0}
-    responses = [mock_discovery_resp, mock_jwks_resp]
+    responses = [mock_discovery_resp, mock_jwks_resp] + list(extra_responses or [])
 
     mock_http_instance = AsyncMock()
 
@@ -654,3 +663,194 @@ class TestHandleCallbackOIDCFlow:
             )
 
         assert result["external_user_id"] == "ms-oid-123"
+
+
+class TestMultiTenantIssuerValidation:
+    """Tests for multi_tenant SSO: per-directory issuer checks and tenant allowlist."""
+
+    @staticmethod
+    def _configure_multi_tenant_provider(sso_app_manager, allowed_tenants=None):
+        providers = sso_app_manager.settings.get_plugin_config.return_value["providers"]
+        config = {
+            "client_id": "test-client-id",
+            "client_secret": "test-client-secret",
+            "issuer_url": "https://login.microsoftonline.com/common/v2.0",
+            "display_name": "Microsoft (multi-tenant)",
+            "scopes": ["openid", "email", "profile"],
+            "multi_tenant": True,
+        }
+        if allowed_tenants is not None:
+            config["allowed_tenants"] = allowed_tenants
+        providers["microsoft"] = config
+        return config
+
+    @pytest.mark.asyncio
+    async def test_open_enrollment_when_allowed_tenants_unset(self, sso_app_manager, mock_pubsub):
+        """Without allowed_tenants, any directory behind the trusted authority may sign
+        in — the intended default for self-service B2B signup."""
+        self._configure_multi_tenant_provider(sso_app_manager, allowed_tenants=None)
+        _mock_valid_state(mock_pubsub)
+        token_issuer = "https://login.microsoftonline.com/any-tenant/v2.0"
+
+        mock_metadata_resp = MagicMock()
+        mock_metadata_resp.json.return_value = {"issuer": token_issuer}
+        mock_metadata_resp.raise_for_status = MagicMock()
+
+        with patch("lys.apps.sso.modules.auth.services.httpx.AsyncClient") as mock_httpx, \
+             patch("lys.apps.sso.modules.auth.services.AsyncOAuth2Client") as mock_oauth, \
+             patch("lys.apps.sso.modules.auth.services.JsonWebKey") as mock_jwk, \
+             patch("lys.apps.sso.modules.auth.services.authlib_jwt") as mock_jwt:
+
+            _mock_oidc_flow(
+                mock_httpx, mock_oauth, mock_jwk, mock_jwt,
+                discovery_extra={"issuer": "https://login.microsoftonline.com/{tenantid}/v2.0"},
+                claims={"iss": token_issuer, "tid": "any-tenant"},
+                extra_responses=[mock_metadata_resp],
+            )
+
+            result = await SSOAuthService.handle_callback(
+                provider="microsoft", code="code", state="state",
+                callback_url="https://api.example.com/callback",
+            )
+
+        assert result["email"] == "user@example.com"
+
+    @pytest.mark.asyncio
+    async def test_tenant_not_in_allowlist_raises(self, sso_app_manager, mock_pubsub):
+        self._configure_multi_tenant_provider(sso_app_manager, allowed_tenants=["allowed-tenant"])
+        _mock_valid_state(mock_pubsub)
+
+        with patch("lys.apps.sso.modules.auth.services.httpx.AsyncClient") as mock_httpx, \
+             patch("lys.apps.sso.modules.auth.services.AsyncOAuth2Client") as mock_oauth, \
+             patch("lys.apps.sso.modules.auth.services.JsonWebKey") as mock_jwk, \
+             patch("lys.apps.sso.modules.auth.services.authlib_jwt") as mock_jwt:
+
+            _mock_oidc_flow(
+                mock_httpx, mock_oauth, mock_jwk, mock_jwt,
+                discovery_extra={"issuer": "https://login.microsoftonline.com/{tenantid}/v2.0"},
+                claims={
+                    "iss": "https://login.microsoftonline.com/other-tenant/v2.0",
+                    "tid": "other-tenant",
+                },
+            )
+
+            with pytest.raises(LysError) as exc_info:
+                await SSOAuthService.handle_callback(
+                    provider="microsoft", code="code", state="state",
+                    callback_url="https://api.example.com/callback",
+                )
+            assert exc_info.value.detail == SSO_TENANT_NOT_ALLOWED[1]
+
+    @pytest.mark.asyncio
+    async def test_issuer_from_untrusted_host_raises(self, sso_app_manager, mock_pubsub):
+        """A token whose issuer host is not the deployment's configured authority must be
+        rejected, even though its tenant ID would otherwise be in the allowlist."""
+        self._configure_multi_tenant_provider(sso_app_manager, allowed_tenants=["any-tenant"])
+        _mock_valid_state(mock_pubsub)
+
+        with patch("lys.apps.sso.modules.auth.services.httpx.AsyncClient") as mock_httpx, \
+             patch("lys.apps.sso.modules.auth.services.AsyncOAuth2Client") as mock_oauth, \
+             patch("lys.apps.sso.modules.auth.services.JsonWebKey") as mock_jwk, \
+             patch("lys.apps.sso.modules.auth.services.authlib_jwt") as mock_jwt:
+
+            _mock_oidc_flow(
+                mock_httpx, mock_oauth, mock_jwk, mock_jwt,
+                discovery_extra={"issuer": "https://login.microsoftonline.com/{tenantid}/v2.0"},
+                claims={
+                    "iss": "https://attacker.example.com/any-tenant/v2.0",
+                    "tid": "any-tenant",
+                },
+            )
+
+            with pytest.raises(LysError) as exc_info:
+                await SSOAuthService.handle_callback(
+                    provider="microsoft", code="code", state="state",
+                    callback_url="https://api.example.com/callback",
+                )
+            assert exc_info.value.detail == SSO_ISSUER_NOT_TRUSTED[1]
+
+    @pytest.mark.asyncio
+    async def test_success_when_tenant_allowed_and_metadata_matches(self, sso_app_manager, mock_pubsub):
+        """Happy path: trusted host, allowed tenant, and the directory's own metadata
+        confirms the issuer it claims."""
+        self._configure_multi_tenant_provider(sso_app_manager, allowed_tenants=["allowed-tenant"])
+        _mock_valid_state(mock_pubsub)
+        token_issuer = "https://login.microsoftonline.com/allowed-tenant/v2.0"
+
+        mock_metadata_resp = MagicMock()
+        mock_metadata_resp.json.return_value = {"issuer": token_issuer}
+        mock_metadata_resp.raise_for_status = MagicMock()
+
+        with patch("lys.apps.sso.modules.auth.services.httpx.AsyncClient") as mock_httpx, \
+             patch("lys.apps.sso.modules.auth.services.AsyncOAuth2Client") as mock_oauth, \
+             patch("lys.apps.sso.modules.auth.services.JsonWebKey") as mock_jwk, \
+             patch("lys.apps.sso.modules.auth.services.authlib_jwt") as mock_jwt:
+
+            _mock_oidc_flow(
+                mock_httpx, mock_oauth, mock_jwk, mock_jwt,
+                discovery_extra={"issuer": "https://login.microsoftonline.com/{tenantid}/v2.0"},
+                claims={"iss": token_issuer, "tid": "allowed-tenant"},
+                extra_responses=[mock_metadata_resp],
+            )
+
+            result = await SSOAuthService.handle_callback(
+                provider="microsoft", code="code", state="state",
+                callback_url="https://api.example.com/callback",
+            )
+
+        assert result["email"] == "user@example.com"
+
+    @pytest.mark.asyncio
+    async def test_metadata_issuer_mismatch_raises(self, sso_app_manager, mock_pubsub):
+        """The directory's own metadata must confirm the issuer the token claims."""
+        self._configure_multi_tenant_provider(sso_app_manager, allowed_tenants=["allowed-tenant"])
+        _mock_valid_state(mock_pubsub)
+        token_issuer = "https://login.microsoftonline.com/allowed-tenant/v2.0"
+
+        mock_metadata_resp = MagicMock()
+        mock_metadata_resp.json.return_value = {"issuer": "https://login.microsoftonline.com/different/v2.0"}
+        mock_metadata_resp.raise_for_status = MagicMock()
+
+        with patch("lys.apps.sso.modules.auth.services.httpx.AsyncClient") as mock_httpx, \
+             patch("lys.apps.sso.modules.auth.services.AsyncOAuth2Client") as mock_oauth, \
+             patch("lys.apps.sso.modules.auth.services.JsonWebKey") as mock_jwk, \
+             patch("lys.apps.sso.modules.auth.services.authlib_jwt") as mock_jwt:
+
+            _mock_oidc_flow(
+                mock_httpx, mock_oauth, mock_jwk, mock_jwt,
+                discovery_extra={"issuer": "https://login.microsoftonline.com/{tenantid}/v2.0"},
+                claims={"iss": token_issuer, "tid": "allowed-tenant"},
+                extra_responses=[mock_metadata_resp],
+            )
+
+            with pytest.raises(LysError) as exc_info:
+                await SSOAuthService.handle_callback(
+                    provider="microsoft", code="code", state="state",
+                    callback_url="https://api.example.com/callback",
+                )
+            assert exc_info.value.detail == SSO_ISSUER_NOT_TRUSTED[1]
+
+    @pytest.mark.asyncio
+    async def test_non_multi_tenant_provider_with_templated_issuer_raises_misconfigured(
+        self, sso_app_manager, mock_pubsub
+    ):
+        """A provider answering with a per-directory issuer while not flagged multi_tenant
+        must fail loudly instead of on an opaque token validation error."""
+        _mock_valid_state(mock_pubsub)
+
+        with patch("lys.apps.sso.modules.auth.services.httpx.AsyncClient") as mock_httpx, \
+             patch("lys.apps.sso.modules.auth.services.AsyncOAuth2Client") as mock_oauth, \
+             patch("lys.apps.sso.modules.auth.services.JsonWebKey") as mock_jwk, \
+             patch("lys.apps.sso.modules.auth.services.authlib_jwt") as mock_jwt:
+
+            _mock_oidc_flow(
+                mock_httpx, mock_oauth, mock_jwk, mock_jwt,
+                discovery_extra={"issuer": "https://login.microsoftonline.com/{tenantid}/v2.0"},
+            )
+
+            with pytest.raises(LysError) as exc_info:
+                await SSOAuthService.handle_callback(
+                    provider="microsoft", code="code", state="state",
+                    callback_url="https://api.example.com/callback",
+                )
+            assert exc_info.value.detail == SSO_PROVIDER_MISCONFIGURED[1]

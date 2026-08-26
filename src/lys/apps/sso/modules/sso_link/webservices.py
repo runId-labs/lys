@@ -36,6 +36,13 @@ class SSOProviderQuery(Query):
 
         items = []
         for provider_id, provider_config in providers.items():
+            # A provider without credentials is declared, not available. Listing it
+            # would offer a button that leaves for the provider with an empty client id
+            # and comes back on an error nobody can read — and it is what lets a
+            # deployment enable one provider at a time.
+            if not provider_config.get("client_id"):
+                continue
+
             items.append(SSOProviderNode(
                 provider_id=provider_id,
                 name=provider_config.get("display_name", provider_id.capitalize()),
