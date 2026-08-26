@@ -23,9 +23,9 @@ class SSOProviderQuery(Query):
 
     @lys_field(
         ensure_type=SSOProvidersNode,
-        is_public="disconnected",
+        is_public=True,
         is_licenced=False,
-        description="List configured SSO providers for login/signup buttons."
+        description="List configured SSO providers for login/signup buttons, and for a connected user to link/unlink."
     )
     async def sso_providers(self, info: Info) -> SSOProvidersNode:
         """Return the list of configured SSO providers."""

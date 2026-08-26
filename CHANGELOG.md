@@ -7,6 +7,11 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.41.2] - 2026-08-26
+
+### Fixed
+- `sso_providers` is now reachable by connected users, not just anonymous ones (`is_public` changed from `"disconnected"` to `True`), so an already-authenticated user can list configured SSO providers to link/unlink their account instead of only seeing them pre-login
+
 ## [0.41.1] - 2026-08-26
 
 ### Fixed
