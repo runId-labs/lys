@@ -102,7 +102,7 @@ def parse_plugin_config(plugin_config: Dict[str, Any]) -> AIConfig:
             "_keys": {"mistral": "sk-...", "openai": "sk-..."},
             "executor": {
                 "gateway_url": "https://gateway:8000/graphql",
-                "service_name": "mimir-api",
+                "service_name": "my-api",
                 "timeout": 30
             },
             "chatbot": {

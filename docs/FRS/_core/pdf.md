@@ -7,7 +7,7 @@ lives in `lys.core`, not in any single app.
 > **FRS layout note.** This file inaugurates the foldered FRS convention
 > `docs/FRS/<app>/<capability>.md`, with `docs/FRS/_core/` for cross-cutting utilities
 > that belong to no single app. Existing flat FRS files and the `Documentation Reference`
-> section of `CLAUDE.md` are to be migrated to this layout separately.
+> section of `AGENTS.md` are to be migrated to this layout separately.
 
 ## Table of Contents
 

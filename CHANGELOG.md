@@ -7,6 +7,14 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.42.0] - 2026-08-27
+
+### Added
+- Per-topic AI-agent guides (`architecture.md`, `app-creation.md`, `entity.md`, `service.md`, `node.md`, `webservice.md`, `permissions.md`, `fixtures.md`, `emails-events.md`, `tasks.md`, `signals.md`, `ai.md`, `rules.md`) now ship inside the installed package at `lys/agents/guides/` (`package-data` in `pyproject.toml`), so a consuming project's own coding agent can read them directly from the installed dependency instead of duplicating this knowledge
+
+### Changed
+- `CLAUDE.md` is replaced by `AGENTS.md`, split into a section for agents working on lys itself and a section for agents working on a consuming project (pointing at the packaged guides above)
+
 ## [0.41.3] - 2026-08-27
 
 ### Changed

@@ -1,6 +1,6 @@
 [project]
 name = "runid-lys"
-version = "0.41.3"
+version = "0.42.0"
 description = "A modular FastAPI framework for building GraphQL APIs with SQLAlchemy, featuring component-based architecture, JWT authentication, and multi-tenant permissions."
 authors = [
   { name="THEVENIN Anthony", email = "labs@runid.fr" },
@@ -70,6 +70,7 @@ where = ["src"]
 
 [tool.setuptools.package-data]
 "lys.core.utils" = ["pdf_templates/*.html", "pdf_templates/*.css"]
+lys = ["agents/**/*.md"]
 
 [tool.pytest.ini_options]
 # Run unit tests before integration tests to avoid registry pollution.

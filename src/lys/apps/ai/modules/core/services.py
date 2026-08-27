@@ -630,7 +630,7 @@ class AIToolService(Service):
         settings.configure_plugin("ai",
             executor={
                 "gateway_url": "http://localhost:8000/graphql",
-                "service_name": "mimir-api",
+                "service_name": "my-api",
             },
         )
 

@@ -99,5 +99,5 @@ When adding new features to the Lys framework:
 ## Related Documentation
 
 - **[ADVANCED_PATTERNS.md](../ADVANCED_PATTERNS.md)**: Technical patterns and implementation details
-- **[CLAUDE.md](../../CLAUDE.md)**: Development guidelines and architecture overview
+- **[AGENTS.md](../../AGENTS.md)**: Development guidelines and architecture overview
 - **Code documentation**: Inline docstrings and type hints in source files

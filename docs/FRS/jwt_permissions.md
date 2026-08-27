@@ -48,7 +48,7 @@ The JWT-based permission system provides stateless authentication and authorizat
 ### Architecture
 
 ```
-Auth Server (Mimir)                    Business Microservice
+Auth Server                             Business Microservice
 ┌─────────────────────────────┐       ┌─────────────────────────────┐
 │ Has full database:          │       │ No webservice table         │
 │ - user, role, webservice    │       │ Only business data          │
@@ -491,7 +491,7 @@ organizations = connected_user.get("organizations", {})
 
 ## Configuration
 
-### Auth Server (Mimir)
+### Auth Server
 
 ```python
 # settings.py
