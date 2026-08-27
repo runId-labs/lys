@@ -1,39 +1,28 @@
-from datetime import datetime
-from typing import Any, Dict, Optional, List
+from typing import List, Optional
 
 import strawberry
 from strawberry import relay
 from strawberry.types import Info
 
-from lys.apps.base.modules.language.nodes import LanguageNode
 from lys.apps.organization.modules.client.nodes import ClientNode
 from lys.apps.organization.modules.user.entities import User
-from lys.apps.organization.modules.user.services import UserService
-from lys.apps.user_auth.modules.user.nodes import (
-    UserEmailAddressNode,
-    UserStatusNode,
-    UserPrivateDataNode
-)
 from lys.apps.user_role.modules.role.nodes import RoleNode
-from lys.core.graphql.nodes import EntityNode
+from lys.apps.user_role.modules.user.nodes import UserNode as UserRoleUserNode
 from lys.core.registries import register_node
-from lys.core.utils.manager import classproperty
 
 
 @register_node()
-class UserNode(EntityNode[UserService], relay.Node):
+class UserNode(UserRoleUserNode):
     """
-    Extended user node with client organization and role information.
+    Extended user node with client organization information.
 
-    This node extends the base UserNode from user_role by adding:
+    Adds, on top of the user_role UserNode:
     - client_id: The client organization ID (null for supervisors)
+    - client: The client organization itself (null for supervisors)
     - organization_roles: Roles assigned via client_user_role table
 
     It overrides the user_role UserNode when the organization app is enabled.
     """
-    id: relay.NodeID[str]
-    created_at: datetime
-    updated_at: Optional[datetime]
     _entity: strawberry.Private[User]
 
     @strawberry.field(description="Client organization ID (null for supervisors)")
@@ -49,26 +38,6 @@ class UserNode(EntityNode[UserService], relay.Node):
         if self._entity.client_id is None:
             return None
         return await self._lazy_load_relation('client', ClientNode, info)
-
-    @strawberry.field(description="User email address")
-    async def email_address(self, info: Info) -> UserEmailAddressNode:
-        """Get the user's email address."""
-        return await self._lazy_load_relation('email_address', UserEmailAddressNode, info)
-
-    @strawberry.field(description="User status")
-    async def status(self, info: Info) -> UserStatusNode:
-        """Get the user's status."""
-        return await self._lazy_load_relation('status', UserStatusNode, info)
-
-    @strawberry.field(description="User preferred language")
-    async def language(self, info: Info) -> LanguageNode:
-        """Get the user's preferred language."""
-        return await self._lazy_load_relation('language', LanguageNode, info)
-
-    @strawberry.field(description="User private data (GDPR protected)")
-    async def private_data(self, info: Info) -> Optional[UserPrivateDataNode]:
-        """Get the user's private data (nullable)."""
-        return await self._lazy_load_relation('private_data', UserPrivateDataNode, info)
 
     @strawberry.field(description="Roles assigned to this user (supervisor roles)")
     async def roles(self, info: Info) -> List[RoleNode]:
@@ -106,27 +75,3 @@ class UserNode(EntityNode[UserService], relay.Node):
                 result.append(RoleNode.from_obj(client_user_role.role))
 
         return result
-
-    @classproperty
-    def order_by_attribute_map(self) -> Dict[str, Any]:
-        """
-        Define allowed order by keys for User queries.
-
-        Allowed sorting fields:
-        - created_at: User creation date
-        - email_address: User email address (requires join with user_email_address)
-        - first_name: User first name (requires join with user_private_data)
-        - last_name: User last name (requires join with user_private_data)
-
-        Note: The query using these order_by fields MUST include the necessary joins.
-        """
-        entity_class = self.service_class.entity_class
-        email_entity = self.service_class.app_manager.get_entity("user_email_address")
-        private_data_entity = self.service_class.app_manager.get_entity("user_private_data")
-
-        return {
-            "created_at": entity_class.created_at,
-            "email_address": email_entity.id,
-            "first_name": private_data_entity.first_name,
-            "last_name": private_data_entity.last_name,
-        }

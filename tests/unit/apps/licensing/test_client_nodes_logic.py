@@ -15,8 +15,13 @@ from lys.apps.licensing.modules.client.nodes import ClientNode
 
 
 def _get_resolver(field_name):
-    """Get the wrapped resolver function from a Strawberry field."""
-    return ClientNode.__dict__[field_name].base_resolver.wrapped_func
+    """Get the wrapped resolver function from a Strawberry field.
+
+    Uses getattr (MRO-aware) rather than __dict__ (own attributes only), since
+    ClientNode now inherits fields like owner_id from OrganizationClientNode
+    instead of redeclaring them.
+    """
+    return getattr(ClientNode, field_name).base_resolver.wrapped_func
 
 
 def _make_node(entity_attrs):

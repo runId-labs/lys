@@ -112,6 +112,98 @@ class TestAppRegistryNodeRegistration:
             registry.register_node("bad", NotANode)
 
 
+class TestAppRegistryFinalizeNodesInheritance:
+    """Tests for finalize_nodes() when a node overrides another by subclassing it
+    instead of redeclaring every field (last-registered-wins under the same name)."""
+
+    def test_finalize_nodes_decorates_ancestor_and_keeps_inherited_fields(self):
+        from sqlalchemy.util import classproperty
+        from lys.core.registries import AppRegistry
+        from lys.core.graphql.interfaces import NodeInterface
+
+        class BaseNode(NodeInterface):
+            id: str
+
+            @classproperty
+            def service_class(self):
+                return None
+
+        class OverrideNode(BaseNode):
+            extra: str
+
+        registry = AppRegistry()
+        registry.register_node("Thing", BaseNode)
+        registry.register_node("Thing", OverrideNode)  # last-registered-wins
+
+        registry.finalize_nodes()
+
+        # The ancestor must be decorated too: dataclasses.dataclass() only
+        # picks up a base class's fields if that base is itself already a
+        # dataclass (i.e. already strawberry.type-decorated).
+        assert "__strawberry_definition__" in BaseNode.__dict__
+
+        final_node = registry.get_node("Thing")
+        assert final_node is OverrideNode
+        field_names = {f.python_name for f in final_node.__strawberry_definition__.fields}
+        assert {"id", "extra"} <= field_names
+
+    def test_finalize_nodes_does_not_redecorate_already_decorated_ancestor(self):
+        import strawberry
+        from sqlalchemy.util import classproperty
+        from lys.core.registries import AppRegistry
+        from lys.core.graphql.interfaces import NodeInterface
+
+        @strawberry.type
+        class AlreadyDecorated(NodeInterface):
+            id: str
+
+            @classproperty
+            def service_class(self):
+                return None
+
+        class OverrideNode(AlreadyDecorated):
+            extra: str
+
+        registry = AppRegistry()
+        registry.register_node("Thing", OverrideNode)
+
+        original_definition = AlreadyDecorated.__strawberry_definition__
+        registry.finalize_nodes()
+
+        assert AlreadyDecorated.__strawberry_definition__ is original_definition
+
+    def test_finalize_nodes_skips_framework_node_modules(self):
+        from lys.core.registries import AppRegistry
+        from lys.core.graphql.nodes import EntityNode
+        from lys.core.interfaces.services import ServiceInterface
+        from tests.mocks.app_manager import MockAppManager
+        from tests.mocks.utils import track_configured_class
+
+        class FakeEntity:
+            pass
+
+        class FakeService(ServiceInterface):
+            service_name = "fake_thing"
+
+        class ConcreteNode(EntityNode[FakeService]):
+            id: str
+
+        mock_app_manager = MockAppManager()
+        mock_app_manager.register_entity("fake_thing", FakeEntity)
+        mock_app_manager.register_service("fake_thing", FakeService)
+        ConcreteNode.configure_app_manager_for_testing(mock_app_manager)
+        track_configured_class(ConcreteNode)
+
+        registry = AppRegistry()
+        registry.register_node("Thing", ConcreteNode)
+        registry.finalize_nodes()
+
+        # EntityNode is a generic mixin, not a concrete overridable node — it
+        # must never get strawberry.type-decorated as a side effect of
+        # walking a concrete node's MRO.
+        assert "__strawberry_definition__" not in EntityNode.__dict__
+
+
 class TestAppRegistryLocking:
     """Tests for is_locked/lock logic."""
 

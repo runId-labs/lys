@@ -1,7 +1,7 @@
 import asyncio
 from abc import abstractmethod
 from datetime import datetime
-from typing import Type, Optional, Any, Self, Dict, List, TypeVar, Generic, overload, Union
+from typing import Type, Optional, Any, Self, Dict, List, TypeVar, Generic, overload, Union, get_type_hints
 
 import strawberry
 from sqlalchemy import Select, inspect
@@ -108,9 +108,15 @@ class EntityNode(Generic[T], ServiceNodeMixin):
         # Get the effective node class (handles overrides from other apps)
         effective_cls = cls.get_effective_node()
 
+        # Use get_type_hints (not __annotations__) so fields inherited from a base node
+        # class are picked up too — __annotations__ only holds what a class declares
+        # directly, which silently drops inherited fields when one app's node subclasses
+        # another's to extend it.
+        annotations = get_type_hints(effective_cls, include_extras=True)
+
         # Collect all non-private fields from annotations
         fields = {}
-        for field_name in effective_cls.__annotations__:
+        for field_name in annotations:
             # Skip private fields (will be handled separately)
             if field_name.startswith('_'):
                 continue
@@ -127,7 +133,7 @@ class EntityNode(Generic[T], ServiceNodeMixin):
                 fields[field_name] = getattr(entity, field_name)
 
         # Store entity if _entity field is defined
-        if '_entity' in effective_cls.__annotations__:
+        if '_entity' in annotations:
             fields['_entity'] = entity
 
         return effective_cls(**fields)

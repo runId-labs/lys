@@ -80,19 +80,23 @@ class TestUserNode:
 
     def test_user_node_has_id_field(self):
         """Test that UserNode has id field."""
+        from typing import get_type_hints
         from lys.apps.user_role.modules.user.nodes import UserNode
 
-        # Check if id is in annotations (for strawberry types)
-        assert "id" in UserNode.__annotations__
+        # get_type_hints (not __annotations__) so fields inherited from the
+        # user_auth base UserNode are picked up too.
+        assert "id" in get_type_hints(UserNode, include_extras=True)
 
     def test_user_node_has_created_at_field(self):
         """Test that UserNode has created_at field."""
+        from typing import get_type_hints
         from lys.apps.user_role.modules.user.nodes import UserNode
 
-        assert "created_at" in UserNode.__annotations__
+        assert "created_at" in get_type_hints(UserNode, include_extras=True)
 
     def test_user_node_has_updated_at_field(self):
         """Test that UserNode has updated_at field."""
+        from typing import get_type_hints
         from lys.apps.user_role.modules.user.nodes import UserNode
 
-        assert "updated_at" in UserNode.__annotations__
+        assert "updated_at" in get_type_hints(UserNode, include_extras=True)

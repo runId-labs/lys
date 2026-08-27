@@ -186,6 +186,32 @@ class TestEntityNodeFromObj:
         assert result.name == "Grace"
         assert not hasattr(result, "_entity")
 
+    def test_from_obj_maps_fields_inherited_from_base_node(self):
+        """Test that from_obj() maps fields declared only on a base node class,
+        not just fields redeclared on the class itself (get_type_hints vs __annotations__)."""
+        from lys.core.graphql.nodes import EntityNode
+
+        class BaseFakeNode(EntityNode):
+            __annotations__ = {"name": str}
+            service_name = "fake"
+
+            def __init__(self, **kwargs):
+                for k, v in kwargs.items():
+                    setattr(self, k, v)
+
+        class OverrideFakeNode(BaseFakeNode):
+            __annotations__ = {"extra": str}
+
+        mock_entity = MagicMock()
+        mock_entity.name = "Dave"
+        mock_entity.extra = "bonus"
+
+        with patch.object(OverrideFakeNode, "get_effective_node", return_value=OverrideFakeNode):
+            result = OverrideFakeNode.from_obj(mock_entity)
+
+        assert result.name == "Dave"
+        assert result.extra == "bonus"
+
 
 class TestLazyLoadRelation:
     """Tests for EntityNode._lazy_load_relation() covering lines 168-190."""

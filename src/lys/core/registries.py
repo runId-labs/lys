@@ -59,6 +59,17 @@ class CustomRegistry:
         return list(self._items.keys())
 
 
+# Framework modules that define abstract node machinery (generic mixins with no
+# GraphQL fields of their own) rather than an app's concrete, overridable node class.
+# finalize_nodes() walks a node's MRO to decorate ancestors it inherited from; these
+# are excluded since they're not meant to become standalone GraphQL types.
+_FRAMEWORK_NODE_MODULES = {
+    'lys.core.graphql.nodes',
+    'lys.core.graphql.interfaces',
+    'lys.core.utils.manager',
+}
+
+
 class AppRegistry:
     def __init__(self):
         self.entities: Dict[str, Type[EntityInterface]] = {}
@@ -573,7 +584,22 @@ class AppRegistry:
                     # Skip attributes that can't be accessed or don't have annotations
                     continue
 
-            # 3. Apply strawberry.type decorator
+            # 3. Decorate ancestor node classes first when this node overrides another
+            # app's node by subclassing it instead of redeclaring every field.
+            # That ancestor was registered under the same name and then replaced in
+            # self.nodes by the override, so this loop never reaches it directly through
+            # the dict — without decorating it here first, strawberry sees the Node
+            # interface implemented twice once it processes the subclass.
+            for base in reversed(node_class.__mro__[1:]):
+                if base.__module__ in _FRAMEWORK_NODE_MODULES:
+                    continue
+                if not issubclass(base, NodeInterface):
+                    continue
+                if '__strawberry_definition__' in base.__dict__:
+                    continue
+                strawberry.type(base)
+
+            # 4. Apply strawberry.type decorator
             strawberry_node = strawberry.type(node_class)
             self.nodes[node_name] = strawberry_node
             logging.info(f"✓ Finalized node: {node_name}")

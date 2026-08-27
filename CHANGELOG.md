@@ -7,6 +7,11 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.41.3] - 2026-08-27
+
+### Changed
+- `UserNode` (`user_role`/`organization`/`licensing`) and `ClientNode` (`licensing`) now extend the node they override by subclassing it instead of redeclaring `id`/`created_at`/`updated_at`/`_entity`/`order_by_attribute_map` at every layer. `AppRegistry.finalize_nodes()` decorates ancestor node classes with `@strawberry.type` before the overriding subclass (required for `dataclasses.dataclass()` to pick up inherited fields), and `EntityNode.from_obj()` now resolves fields via `typing.get_type_hints()` instead of `__annotations__` so inherited fields are mapped correctly
+
 ## [0.41.2] - 2026-08-26
 
 ### Fixed
