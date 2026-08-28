@@ -46,3 +46,6 @@ docs/todos/
 
 # Claude Code
 .claude/settings.local.json
+
+# Claude Code local shim (imports @AGENTS.md — dev-machine only)
+CLAUDE.md

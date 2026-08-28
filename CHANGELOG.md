@@ -7,6 +7,11 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.42.1] - 2026-08-28
+
+### Fixed
+- `MistralProvider._build_json_schema_response_format` now normalizes the Pydantic-generated JSON schema for Mistral's strict `json_schema` mode (`_strictify_schema`): every object lists all its properties in `required`, sets `additionalProperties: false`, and drops the `default` keyword, recursively across `$defs`/`properties`/`items`/`anyOf`/`oneOf`/`allOf`, without confusing a field literally named `default` with the JSON Schema keyword of the same name
+
 ## [0.42.0] - 2026-08-27
 
 ### Added

@@ -6,12 +6,13 @@ Tests provider error handling with mocked HTTP responses.
 
 import json
 import logging
+from typing import List, Literal, Optional
 
 import pytest
 from unittest.mock import patch, MagicMock, AsyncMock
 
 import httpx
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from lys.apps.ai.utils.providers import MistralProvider, AnthropicProvider
 from lys.apps.ai.utils.providers.abstracts import AIResponse, AIProvider
@@ -651,8 +652,31 @@ class _SampleSchema(BaseModel):
     age: int
 
 
+class _NestedItem(BaseModel):
+    """Nested schema with optional + defaulted fields (the shape strict mode chokes on)."""
+
+    label: str
+    amount: Optional[float] = None
+    level: Literal["high", "low"] = "low"
+
+
+class _SchemaWithOptionals(BaseModel):
+    """Schema mixing required, optional and defaulted fields, plus a nested list."""
+
+    kind: str
+    comment: Optional[str] = None
+    items: List[_NestedItem] = Field(default_factory=list)
+
+
+class _SchemaWithFieldNamedDefault(BaseModel):
+    """A field literally named ``default`` must not be confused with the JSON Schema keyword."""
+
+    default: str
+    other: int = 0
+
+
 class TestMistralProviderBuildJsonSchemaResponseFormat:
-    """Tests for the static helper MistralProvider._build_json_schema_response_format."""
+    """Tests for the helper MistralProvider._build_json_schema_response_format."""
 
     def test_returns_native_json_schema_payload(self):
         result = MistralProvider._build_json_schema_response_format(_SampleSchema)
@@ -660,7 +684,64 @@ class TestMistralProviderBuildJsonSchemaResponseFormat:
         assert result["type"] == "json_schema"
         assert result["json_schema"]["name"] == "_SampleSchema"
         assert result["json_schema"]["strict"] is True
-        assert result["json_schema"]["schema"] == _SampleSchema.model_json_schema()
+        assert result["json_schema"]["schema"]["properties"].keys() == {"name", "age"}
+
+    def test_schema_is_normalized_for_strict_mode(self):
+        schema = MistralProvider._build_json_schema_response_format(
+            _SchemaWithOptionals
+        )["json_schema"]["schema"]
+
+        assert schema["required"] == ["kind", "comment", "items"]
+        assert schema["additionalProperties"] is False
+
+    def test_nested_definitions_are_normalized(self):
+        schema = MistralProvider._build_json_schema_response_format(
+            _SchemaWithOptionals
+        )["json_schema"]["schema"]
+        nested = schema["$defs"]["_NestedItem"]
+
+        assert nested["required"] == ["label", "amount", "level"]
+        assert nested["additionalProperties"] is False
+
+    def test_defaults_are_stripped(self):
+        schema = MistralProvider._build_json_schema_response_format(
+            _SchemaWithOptionals
+        )["json_schema"]["schema"]
+
+        def walk(node):
+            if isinstance(node, list):
+                return any(walk(item) for item in node)
+            if not isinstance(node, dict):
+                return False
+            return "default" in node or any(walk(value) for value in node.values())
+
+        assert walk(schema) is False
+
+    def test_optional_fields_keep_their_nullable_union(self):
+        """Optionality is carried by ``anyOf: [T, null]``, which strict mode accepts."""
+        schema = MistralProvider._build_json_schema_response_format(
+            _SchemaWithOptionals
+        )["json_schema"]["schema"]
+
+        assert schema["properties"]["comment"]["anyOf"] == [
+            {"type": "string"}, {"type": "null"}
+        ]
+
+    def test_source_schema_is_not_mutated(self):
+        before = _SchemaWithOptionals.model_json_schema()
+        MistralProvider._build_json_schema_response_format(_SchemaWithOptionals)
+
+        assert _SchemaWithOptionals.model_json_schema() == before
+
+    def test_field_named_default_is_preserved(self):
+        """A property named ``default`` is a field name, not the JSON Schema keyword."""
+        schema = MistralProvider._build_json_schema_response_format(
+            _SchemaWithFieldNamedDefault
+        )["json_schema"]["schema"]
+
+        assert schema["properties"].keys() == {"default", "other"}
+        assert schema["required"] == ["default", "other"]
+        assert "default" not in schema["properties"]["other"]
 
 
 class TestMistralProviderParseResponseFinishReason:
@@ -1168,7 +1249,9 @@ class TestMistralProviderChatJson:
             assert payload["response_format"]["type"] == "json_schema"
             assert payload["response_format"]["json_schema"]["name"] == "_SampleSchema"
             assert payload["response_format"]["json_schema"]["strict"] is True
-            assert payload["response_format"]["json_schema"]["schema"] == _SampleSchema.model_json_schema()
+            assert (payload["response_format"]["json_schema"]["schema"]
+                    == MistralProvider._build_json_schema_response_format(
+                        _SampleSchema)["json_schema"]["schema"])
 
     @pytest.mark.asyncio
     async def test_chat_json_invalid_response_raises_validation_error(self, provider, config, messages):
@@ -1236,7 +1319,9 @@ class TestMistralProviderChatJson:
             assert payload["messages"] == messages
             assert payload["response_format"]["type"] == "json_schema"
             assert payload["response_format"]["json_schema"]["strict"] is True
-            assert payload["response_format"]["json_schema"]["schema"] == _SampleSchema.model_json_schema()
+            assert (payload["response_format"]["json_schema"]["schema"]
+                    == MistralProvider._build_json_schema_response_format(
+                        _SampleSchema)["json_schema"]["schema"])
 
     def test_chat_json_sync_invalid_response_raises_validation_error(self, provider, config, messages):
         mock_response = self._mock_json_response(200, content='{"name": "Dan"}')  # missing age

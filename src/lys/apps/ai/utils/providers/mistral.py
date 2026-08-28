@@ -557,12 +557,13 @@ class MistralProvider(AIProvider):
             completion_tokens, len(ai_response.content),
         )
 
-    @staticmethod
-    def _build_json_schema_response_format(schema: Type[T]) -> Dict[str, Any]:
+    @classmethod
+    def _build_json_schema_response_format(cls, schema: Type[T]) -> Dict[str, Any]:
         """Build the ``response_format`` payload for Mistral's native ``json_schema`` mode.
 
-        The Pydantic-generated schema is sent as-is. ``strict`` is enabled so that the decoder
-        enforces the schema constraint deterministically.
+        The Pydantic-generated schema is normalized for strict mode first (see
+        :meth:`_strictify_schema`), then sent with ``strict`` enabled so the decoder enforces
+        the schema constraint deterministically.
 
         Args:
             schema: Pydantic model class describing the expected response structure.
@@ -574,10 +575,60 @@ class MistralProvider(AIProvider):
             "type": "json_schema",
             "json_schema": {
                 "name": schema.__name__,
-                "schema": schema.model_json_schema(),
+                "schema": cls._strictify_schema(schema.model_json_schema()),
                 "strict": True,
             },
         }
+
+    @classmethod
+    def _strictify_schema(cls, node: Any) -> Any:
+        """Return a copy of a JSON schema that satisfies Mistral's strict-mode constraints.
+
+        Strict mode drives a constrained decoder that rejects anything it cannot compile.
+        A schema straight out of Pydantic breaks it: optional fields are absent from
+        ``required`` and carry a ``default``. The decoder then fails mid-generation and the
+        response comes back truncated with ``finish_reason="error"``, so the failure looks
+        like a model problem rather than a payload problem.
+
+        Three normalizations, applied recursively over every schema-object fragment:
+
+        - every object lists ALL its properties in ``required`` (optionality is already
+          carried by the ``anyOf: [T, null]`` shape Pydantic emits, which strict mode
+          accepts),
+        - every object sets ``additionalProperties: false``,
+        - ``default`` keys are dropped (unsupported, and meaningless once required).
+
+        ``properties`` and ``$defs`` are name -> schema maps, not schema objects themselves:
+        their keys are field/model names chosen by the caller, not JSON Schema keywords, so
+        they are recursed into without applying the ``default``-key filter to those names
+        (a field legitimately named ``default`` must survive).
+
+        Args:
+            node: A JSON schema fragment (dict, list or scalar).
+
+        Returns:
+            A new fragment; the input is left untouched.
+        """
+        if isinstance(node, list):
+            return [cls._strictify_schema(item) for item in node]
+        if not isinstance(node, dict):
+            return node
+
+        result = {}
+        for key, value in node.items():
+            if key == "default":
+                continue
+            if key in ("properties", "$defs") and isinstance(value, dict):
+                result[key] = {name: cls._strictify_schema(sub) for name, sub in value.items()}
+            else:
+                result[key] = cls._strictify_schema(value)
+
+        properties = result.get("properties")
+        if isinstance(properties, dict):
+            result["required"] = list(properties.keys())
+            result["additionalProperties"] = False
+
+        return result
 
     def _handle_error_status(self, response: httpx.Response) -> None:
         """Check response status and raise appropriate errors."""
