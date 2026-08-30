@@ -186,8 +186,15 @@ wheel — a guide that drifts from the code is a bug).
   lines, no agent-generated attribution footers.
 - Commit messages contain ONLY the conventional commit format with
   description.
-- **IMPORTANT**: NEVER commit changes unless explicitly asked by the user
-  with a "commit" instruction. Do not proactively stage or create commits.
+- **R3 — ⛔ NO COMMIT. NO PUSH. NO DB DELETE. NO DB MODIFY. ⛔**
+  **WITHOUT AN EXPLICIT, UNAMBIGUOUS "COMMIT" OR "PUSH" INSTRUCTION FROM THE USER.**
+  Implementing is NOT committing. A compliment is NOT a commit order.
+  A nod of approval is NOT a push order. A design agreement is NOT a push order.
+  If you are unsure whether the user just gave you permission to commit or
+  push: **ASK. DO NOT GUESS. DO NOT ASSUME.**
+  This rule has ZERO tolerance. Violating it is a breach of trust.
+  Applies to: git commit, git push, database DROP/DELETE/TRUNCATE/ALTER,
+  file deletion outside the current task scope.
 
 #### Commit process
 
@@ -272,3 +279,68 @@ python -c "import lys, pathlib; print(pathlib.Path(lys.__file__).parent / 'agent
 
 Project structure, migrations workflow and verification commands belong to
 the consuming project's own AGENTS.md, not here.
+
+## Quality bar — the three-lens review (MANDATORY)
+
+Every piece of code produced, every business rule implemented, every review
+delivered is held to **industry-grade standard** — not student-project level.
+When writing, reviewing, or discussing an implementation, evaluate through
+these three lenses, in this order:
+
+### Lens 1 — Cleanliness (structural quality)
+
+Does the code meet the structural standards of the industry and this framework?
+
+- Framework conventions respected (registration, app_manager access, naming,
+  no raw values — see the agent guides).
+- Industry code standards: PEP 8, separation of responsibilities,
+  single-responsibility functions, no dead code, no copy-paste duplication.
+- Architecture: the right concern in the right module, no lateral
+  dependencies between apps that should be independent.
+- A reviewer seeing this code in a premium product would not flag it.
+
+### Lens 2 — Correctness (industry-grade logic)
+
+Is the logic what the industry expects from a **paid, production-grade
+framework** — no more, no less?
+
+- **No simplistic shortcuts**: school-project patterns (hardcoded edge
+  cases, single-user assumptions, happy-path-only logic) are unacceptable.
+- **No over-engineering either**: speculative abstractions, unnecessary
+  configurability, gold-plating are equally unacceptable. The equilibrium
+  IS the industry standard.
+- **Use existing wheels**: if the language, the standard library, or an
+  established package already solves the problem, use it. Reinventing a
+  (worse) version of a solved problem is a defect, not a contribution.
+- **No atypical behavior**: the framework should behave the way a competent
+  practitioner expects it to. Surprising behavior (even if technically
+  correct) is a design flaw.
+- **If the developer (or agent) is drifting** toward either extreme
+  (naive or baroque), the review must say so explicitly.
+
+### Lens 3 — Safety (attack surface AND data integrity)
+
+Is the code safe against both malicious input AND its own failure paths?
+
+- **Attack surface**: the strict industry definition — injection, access
+  control, information leakage, authentication/authorization bypass. Every
+  input validated; every output that varies by user checked.
+- **Data integrity** (the one reviews forget): read the code as a sequence
+  of state changes and ask *"if an exception hits HERE, what does the
+  database look like?"*
+  - Is the ordering of writes correct? (Save A then B, not B then A.)
+  - Is there a window where half the data is saved and the other half
+    is lost?
+  - Does a rollback leave the system in a coherent state?
+  - Are concurrent accesses to the same data serialized or guarded?
+  - If the answer to any of these is "half the data is gone" or "both
+    halves written twice", that is a safety defect, not a style issue.
+
+### Applying the lenses
+
+| Situation | What to do |
+|-----------|------------|
+| Writing new code | Self-check all three lenses before reporting done |
+| Reviewing code | Evaluate through each lens explicitly; a review that only checks cleanliness is incomplete |
+| Designing a feature | Discuss correctness (lens 2) first; safety (lens 3) shapes the design; cleanliness (lens 1) shapes the implementation |
+| User asks "is this good?" | Answer per-lens, not with a global "yes" or "no" |

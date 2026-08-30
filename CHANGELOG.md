@@ -7,6 +7,9 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+- `AGENTS.md` hardens the commit/push guard rule (R3, now also covering database DROP/DELETE/TRUNCATE/ALTER and out-of-scope file deletion) and adds a mandatory three-lens review bar (cleanliness, correctness, safety) for all code and reviews
+
 ## [0.42.1] - 2026-08-28
 
 ### Fixed
