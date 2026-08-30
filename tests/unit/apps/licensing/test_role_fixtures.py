@@ -26,3 +26,4 @@ class TestLicenseAdminRoleWebservices:
     def test_contains_expected_webservices(self):
         assert "all_clients" in LICENSE_ADMIN_ROLE_WEBSERVICES
         assert "subscription" in LICENSE_ADMIN_ROLE_WEBSERVICES
+        assert "all_license_rules" in LICENSE_ADMIN_ROLE_WEBSERVICES

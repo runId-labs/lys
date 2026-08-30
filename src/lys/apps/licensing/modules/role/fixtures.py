@@ -20,6 +20,9 @@ LICENSE_ADMIN_ROLE_WEBSERVICES = [
     # Catalogue administration
     "all_license_plans",
     "all_license_plan_versions",
+    # Read before write: a version is published with the rules that exist, not
+    # with the ones the interface happens to know about
+    "all_license_rules",
     "create_license_plan_version",
     "set_license_plan_version_rule",
     "set_license_plan_version_enabled",
