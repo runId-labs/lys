@@ -216,7 +216,6 @@ class UserMutation(Mutation):
             mutation {
                 createUser(inputs: {
                     email: "john@example.com"
-                    password: "SecurePass123"
                     languageCode: "en"
                     firstName: "John"
                     lastName: "Doe"
@@ -248,12 +247,13 @@ class UserMutation(Mutation):
                 )
 
         # Create entity via service
+        inviter = await user_service.get_by_id(connected_user["sub"], session)
+
         user = await user_service.create_user(
             session=session,
             email=input_data.email,
-            password=input_data.password,
             language_id=input_data.language_code,
-            send_verification_email=True,
+            inviter=inviter,
             background_tasks=info.context.background_tasks,
             roles=input_data.role_codes,
             first_name=input_data.first_name,
@@ -673,12 +673,13 @@ async def create_user(self, inputs: CreateUserInput, info: Info):
     user_service = info.context.app_manager.get_service("user")
 
     # No role assignment
+    inviter = await user_service.get_by_id(info.context.connected_user["sub"], session)
+
     user = await user_service.create_user(
         session=session,
         email=input_data.email,
-        password=input_data.password,
         language_id=input_data.language_code,
-        send_verification_email=True,
+        inviter=inviter,
         background_tasks=info.context.background_tasks,
         first_name=input_data.first_name,
         last_name=input_data.last_name,
@@ -730,12 +731,13 @@ class UserMutation(Mutation):
                 )
 
         # Call service with roles parameter
+        inviter = await user_service.get_by_id(connected_user["sub"], session)
+
         user = await user_service.create_user(
             session=session,
             email=input_data.email,
-            password=input_data.password,
             language_id=input_data.language_code,
-            send_verification_email=True,
+            inviter=inviter,
             background_tasks=info.context.background_tasks,
             roles=input_data.role_codes,  # Additional parameter
             first_name=input_data.first_name,

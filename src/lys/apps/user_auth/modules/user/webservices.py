@@ -38,6 +38,7 @@ from lys.apps.user_auth.modules.user.nodes import (
     AnonymizedUserNode,
 )
 from lys.apps.user_auth.modules.user.services import UserService
+from lys.apps.user_auth.errors import INVITER_NOT_FOUND
 from lys.core.consts.webservices import INTERNAL_SERVICE_ACCESS_LEVEL, OWNER_ACCESS_LEVEL
 from lys.core.errors import LysError
 from lys.core.contexts import Info
@@ -517,7 +518,7 @@ class UserMutation(Mutation):
         ensure_type=UserNode,
         is_public=False,
         is_licenced=False,
-        description="Create a new super user. Required: email, password, language_code. Optional: first_name, last_name, gender_code. Super users only."
+        description="Create a new super user, invited by email. Required: email, language_code. Optional: first_name, last_name, gender_code. Super users only."
     )
     async def create_super_user(
         self,
@@ -533,7 +534,6 @@ class UserMutation(Mutation):
         Args:
             inputs: Input containing:
                 - email: Email address for the new super user
-                - password: Plain text password (will be hashed)
                 - language_id: Language ID for the user
                 - first_name: Optional first name (GDPR-protected)
                 - last_name: Optional last name (GDPR-protected)
@@ -549,13 +549,18 @@ class UserMutation(Mutation):
         session = info.context.session
         user_service = info.context.app_manager.get_service("user")
 
+        # Get inviter (connected user) for invitation email
+        inviter_id = info.context.connected_user["sub"]
+        inviter = await user_service.get_by_id(inviter_id, session)
+        if inviter is None:
+            raise LysError(INVITER_NOT_FOUND, f"Connected user {inviter_id} not found")
+
         # Delegate all business logic to the service
         user = await user_service.create_super_user(
             session=session,
             email=input_data.email,
-            password=input_data.password,
             language_id=input_data.language_code,
-            send_verification_email=True,
+            inviter=inviter,
             background_tasks=info.context.background_tasks,
             first_name=input_data.first_name,
             last_name=input_data.last_name,
@@ -570,7 +575,7 @@ class UserMutation(Mutation):
         ensure_type=UserNode,
         is_public=False,
         is_licenced=False,
-        description="Create a new regular user (not super user). Required: email, password, language_code. Optional: first_name, last_name, gender_code. Super users only."
+        description="Create a new regular user (not super user), invited by email. Required: email, language_code. Optional: first_name, last_name, gender_code. Super users only."
     )
     async def create_user(
         self,
@@ -586,7 +591,6 @@ class UserMutation(Mutation):
         Args:
             inputs: Input containing:
                 - email: Email address for the new user
-                - password: Plain text password (will be hashed)
                 - language_id: Language ID for the user
                 - first_name: Optional first name (GDPR-protected)
                 - last_name: Optional last name (GDPR-protected)
@@ -602,13 +606,18 @@ class UserMutation(Mutation):
         session = info.context.session
         user_service = info.context.app_manager.get_service("user")
 
+        # Get inviter (connected user) for invitation email
+        inviter_id = info.context.connected_user["sub"]
+        inviter = await user_service.get_by_id(inviter_id, session)
+        if inviter is None:
+            raise LysError(INVITER_NOT_FOUND, f"Connected user {inviter_id} not found")
+
         # Delegate all business logic to the service
         user = await user_service.create_user(
             session=session,
             email=input_data.email,
-            password=input_data.password,
             language_id=input_data.language_code,
-            send_verification_email=True,
+            inviter=inviter,
             background_tasks=info.context.background_tasks,
             first_name=input_data.first_name,
             last_name=input_data.last_name,

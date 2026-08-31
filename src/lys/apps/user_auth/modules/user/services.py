@@ -233,6 +233,7 @@ class UserService(EntityService[User]):
         language_id: str,
         is_super_user: bool = False,
         send_verification_email: bool = True,
+        inviter: "User | None" = None,
         background_tasks=None,
         first_name: str | None = None,
         last_name: str | None = None,
@@ -256,6 +257,8 @@ class UserService(EntityService[User]):
             language_id: Language ID (format validated)
             is_super_user: Whether to create a super user or regular user
             send_verification_email: Whether to send email verification email (default: True)
+            inviter: User who creates this account. When provided, an invitation email is
+                sent instead of the verification email, so the new user sets their own password
             background_tasks: FastAPI BackgroundTasks for scheduling email (optional)
             session: Database session
             first_name: Optional first name
@@ -291,8 +294,11 @@ class UserService(EntityService[User]):
             **kwargs
         )
 
-        # Send email verification if requested and background_tasks provided
-        if send_verification_email and background_tasks is not None:
+        # An invited user has no password yet: the invitation carries the activation link
+        # they use to set it, which also validates their email address.
+        if inviter is not None:
+            await cls.send_invitation_email(user, inviter, session, background_tasks)
+        elif send_verification_email and background_tasks is not None:
             await cls.send_email_verification(user, session, background_tasks)
 
         return user
@@ -302,9 +308,10 @@ class UserService(EntityService[User]):
         cls,
         session: AsyncSession,
         email: str,
-        password: str,
         language_id: str,
+        password: str | None = None,
         send_verification_email: bool = True,
+        inviter: "User | None" = None,
         background_tasks=None,
         first_name: str | None = None,
         last_name: str | None = None,
@@ -317,9 +324,12 @@ class UserService(EntityService[User]):
 
         Args:
             email: Email address (will be normalized)
-            password: Plain text password (will be hashed)
             language_id: Language ID (format validated)
+            password: Optional plain text password (will be hashed). Left empty for an invited
+                user, who sets it through the activation link
             send_verification_email: Whether to send email verification email (default: True)
+            inviter: User who creates this account. When provided, an invitation email replaces
+                the verification email
             background_tasks: FastAPI BackgroundTasks for scheduling email (optional)
             session: Database session
             first_name: Optional first name
@@ -339,6 +349,7 @@ class UserService(EntityService[User]):
             language_id=language_id,
             is_super_user=True,
             send_verification_email=send_verification_email,
+            inviter=inviter,
             background_tasks=background_tasks,
             first_name=first_name,
             last_name=last_name,
@@ -350,9 +361,10 @@ class UserService(EntityService[User]):
         cls,
         session: AsyncSession,
         email: str,
-        password: str | None,
         language_id: str,
+        password: str | None = None,
         send_verification_email: bool = True,
+        inviter: "User | None" = None,
         background_tasks=None,
         first_name: str | None = None,
         last_name: str | None = None,
@@ -365,9 +377,12 @@ class UserService(EntityService[User]):
 
         Args:
             email: Email address (will be normalized)
-            password: Plain text password (will be hashed)
             language_id: Language ID (format validated)
+            password: Optional plain text password (will be hashed). Left empty for an invited
+                user, who sets it through the activation link
             send_verification_email: Whether to send email verification email (default: True)
+            inviter: User who creates this account. When provided, an invitation email replaces
+                the verification email
             background_tasks: FastAPI BackgroundTasks for scheduling email (optional)
             session: Database session
             first_name: Optional first name
@@ -387,6 +402,7 @@ class UserService(EntityService[User]):
             language_id=language_id,
             is_super_user=False,
             send_verification_email=send_verification_email,
+            inviter=inviter,
             background_tasks=background_tasks,
             first_name=first_name,
             last_name=last_name,

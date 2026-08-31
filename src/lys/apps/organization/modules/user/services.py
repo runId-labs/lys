@@ -86,7 +86,6 @@ class UserService(UserRoleService):
         session: AsyncSession,
         client_id: str,
         email: str,
-        password: str,
         language_id: str,
         inviter: User | None = None,
         background_tasks=None,
@@ -107,7 +106,6 @@ class UserService(UserRoleService):
             session: Database session
             client_id: ID of the client to associate the user with
             email: Email address for the new user
-            password: Plain text password (will be hashed)
             language_id: Language ID for the user
             inviter: User who is inviting this new user (for invitation email)
             background_tasks: FastAPI BackgroundTasks for scheduling email
@@ -119,11 +117,11 @@ class UserService(UserRoleService):
         Returns:
             Created User entity with client_id set
         """
-        # Create the user without verification email (invitation email will be sent instead)
+        # Create the user without password: the invitation email below carries the
+        # activation link they use to set it.
         user = await cls.create_user(
             session=session,
             email=email,
-            password=password,
             language_id=language_id,
             send_verification_email=False,
             background_tasks=background_tasks,

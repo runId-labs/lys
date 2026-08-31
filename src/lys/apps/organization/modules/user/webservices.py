@@ -14,8 +14,10 @@ from lys.apps.organization.modules.user.inputs import (
     UpdateClientUserRolesInput
 )
 from lys.apps.organization.modules.user.nodes import UserNode
+from lys.apps.user_auth.errors import INVITER_NOT_FOUND
 from lys.apps.user_role.consts import ROLE_ACCESS_LEVEL
 from lys.core.contexts import Info
+from lys.core.errors import LysError
 from lys.core.graphql.connection import lys_connection
 from lys.core.graphql.create import lys_creation
 from lys.core.graphql.edit import lys_edition
@@ -369,7 +371,7 @@ class OrganizationUserMutation(Mutation):
         is_public=False,
         access_levels=[ROLE_ACCESS_LEVEL, ORGANIZATION_ROLE_ACCESS_LEVEL],
         is_licenced=False,
-        description="Create a new user in an organization. Required: client_id, email, password, language_code. Optional: first_name, last_name, gender_code, role_codes."
+        description="Create a new user in an organization, invited by email. Required: client_id, email, language_code. Optional: first_name, last_name, gender_code, role_codes."
     )
     async def create_client_user(
         self,
@@ -387,7 +389,6 @@ class OrganizationUserMutation(Mutation):
             inputs: Input containing:
                 - client_id: GlobalID of the client/organization to associate the user with
                 - email: Email address for the new user
-                - password: Password for the new user
                 - language_code: Language code for the user
                 - first_name: Optional first name (GDPR-protected)
                 - last_name: Optional last name (GDPR-protected)
@@ -406,12 +407,13 @@ class OrganizationUserMutation(Mutation):
         # Get inviter (connected user) for invitation email
         inviter_id = info.context.connected_user['sub']
         inviter = await user_service.get_by_id(inviter_id, session)
+        if inviter is None:
+            raise LysError(INVITER_NOT_FOUND, f"Connected user {inviter_id} not found")
 
         user = await user_service.create_client_user(
             session=session,
             client_id=input_data.client_id,
             email=input_data.email,
-            password=input_data.password,
             language_id=input_data.language_code,
             inviter=inviter,
             background_tasks=info.context.background_tasks,

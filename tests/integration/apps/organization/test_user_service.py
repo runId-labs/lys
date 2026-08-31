@@ -45,7 +45,6 @@ class TestUserServiceCreateClientUser:
                 session=session,
                 client_id=client.id,
                 email=f"user-cu-{uuid4().hex[:8]}@example.com",
-                password="Password123!",
                 language_id="en"
             )
 
@@ -75,7 +74,6 @@ class TestUserServiceCreateClientUser:
                 session=session,
                 client_id=client.id,
                 email=f"user-cr-{uuid4().hex[:8]}@example.com",
-                password="Password123!",
                 language_id="en",
                 role_codes=["NORMAL_ROLE"]
             )
@@ -108,7 +106,6 @@ class TestUserServiceCreateClientUser:
                     session=session,
                     client_id=client.id,
                     email=f"user-sf-{uuid4().hex[:8]}@example.com",
-                    password="Password123!",
                     language_id="en",
                     role_codes=["SUPERVISOR_ROLE"]
                 )
@@ -136,7 +133,6 @@ class TestUserServiceCreateClientUser:
                 session=session,
                 client_id=client.id,
                 email=f"user-pd-{uuid4().hex[:8]}@example.com",
-                password="Password123!",
                 language_id="fr",
                 first_name="Alice",
                 last_name="Martin",
@@ -173,7 +169,6 @@ class TestUserServiceUpdateClientUserRoles:
                 session=session,
                 client_id=client.id,
                 email=f"user-ar-{uuid4().hex[:8]}@example.com",
-                password="Password123!",
                 language_id="en"
             )
 
@@ -210,7 +205,6 @@ class TestUserServiceUpdateClientUserRoles:
                 session=session,
                 client_id=client.id,
                 email=f"user-rr-{uuid4().hex[:8]}@example.com",
-                password="Password123!",
                 language_id="en",
                 role_codes=["NORMAL_ROLE"]
             )
@@ -247,7 +241,6 @@ class TestUserServiceUpdateClientUserRoles:
                 session=session,
                 client_id=client.id,
                 email=f"user-sync-{uuid4().hex[:8]}@example.com",
-                password="Password123!",
                 language_id="en",
                 role_codes=["NORMAL_ROLE"]
             )
@@ -285,7 +278,6 @@ class TestUserServiceUpdateClientUserRoles:
                 session=session,
                 client_id=client.id,
                 email=f"user-sup-{uuid4().hex[:8]}@example.com",
-                password="Password123!",
                 language_id="en"
             )
 
@@ -321,7 +313,6 @@ class TestUserServiceOrganizationRoles:
                 session=session,
                 client_id=client.id,
                 email=f"user-gor-{uuid4().hex[:8]}@example.com",
-                password="Password123!",
                 language_id="en",
                 role_codes=["NORMAL_ROLE"]
             )
@@ -352,7 +343,6 @@ class TestUserServiceOrganizationRoles:
                 session=session,
                 client_id=client.id,
                 email=f"user-wsf-{uuid4().hex[:8]}@example.com",
-                password="Password123!",
                 language_id="en",
                 role_codes=["NORMAL_ROLE"]
             )
@@ -413,7 +403,6 @@ class TestUserServiceProperties:
                 session=session,
                 client_id=client.id,
                 email=f"user-prop-{uuid4().hex[:8]}@example.com",
-                password="Password123!",
                 language_id="en"
             )
 
@@ -446,14 +435,12 @@ class TestUserServiceAnonymizeUser:
                 session=session,
                 client_id=client.id,
                 email=f"target-anon-{uuid4().hex[:8]}@example.com",
-                password="Password123!",
                 language_id="en"
             )
             admin_user = await user_service.create_client_user(
                 session=session,
                 client_id=client.id,
                 email=f"admin-anon-{uuid4().hex[:8]}@example.com",
-                password="Password123!",
                 language_id="en"
             )
 

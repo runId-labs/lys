@@ -111,11 +111,11 @@ class TestCreateClientUserInputStructure:
         field_names = [f.name for f in CreateClientUserInput.__strawberry_definition__.fields]
         assert "email" in field_names
 
-    def test_has_password_field(self):
-        """Test input has password field."""
+    def test_has_no_password_field(self):
+        """Test the input carries no password: the user is invited and sets their own."""
         from lys.apps.organization.modules.user.inputs import CreateClientUserInput
         field_names = [f.name for f in CreateClientUserInput.__strawberry_definition__.fields]
-        assert "password" in field_names
+        assert "password" not in field_names
 
     def test_has_language_code_field(self):
         """Test input has language_code field."""

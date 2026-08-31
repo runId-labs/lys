@@ -39,7 +39,6 @@ async def _create_client_and_user(organization_app_manager, label: str):
             session=session,
             client_id=client.id,
             email=f"user-{label}-{uuid4().hex[:8]}@example.com",
-            password="Password123!",
             language_id="en"
         )
 

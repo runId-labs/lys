@@ -165,6 +165,16 @@ class TestRateLimitErrors:
         assert RATE_LIMIT_ERROR == (429, "RATE_LIMIT_ERROR")
 
 
+class TestInternalErrors:
+    """Tests for 500 Internal Server Error errors."""
+
+    def test_inviter_not_found_error(self):
+        """Test INVITER_NOT_FOUND is defined with 500 status."""
+        from lys.apps.user_auth.errors import INVITER_NOT_FOUND
+
+        assert INVITER_NOT_FOUND == (500, "INVITER_NOT_FOUND")
+
+
 class TestErrorTupleStructure:
     """Tests for error tuple structure consistency."""
 
@@ -182,7 +192,7 @@ class TestErrorTupleStructure:
             "MISSING_REFRESH_TOKEN_ERROR", "INVALID_CREDENTIALS_ERROR",
             "WRONG_REFRESH_TOKEN_ERROR", "BLOCKED_USER_ERROR",
             "INVALID_XSRF_TOKEN_ERROR", "ALREADY_CONNECTED_ERROR",
-            "USER_ALREADY_EXISTS", "RATE_LIMIT_ERROR"
+            "USER_ALREADY_EXISTS", "RATE_LIMIT_ERROR", "INVITER_NOT_FOUND"
         ]
 
         for name in error_names:
@@ -196,11 +206,11 @@ class TestErrorTupleStructure:
         """Test that all error codes are valid HTTP status codes."""
         from lys.apps.user_auth import errors
 
-        valid_status_codes = {400, 401, 403, 409, 429}
+        valid_status_codes = {400, 401, 403, 409, 429, 500}
 
         error_names = [
             "EMPTY_LOGIN_ERROR", "ACCESS_DENIED_ERROR", "BLOCKED_USER_ERROR",
-            "USER_ALREADY_EXISTS", "RATE_LIMIT_ERROR"
+            "USER_ALREADY_EXISTS", "RATE_LIMIT_ERROR", "INVITER_NOT_FOUND"
         ]
 
         for name in error_names:

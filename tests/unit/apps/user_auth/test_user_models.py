@@ -73,11 +73,9 @@ class TestCreateUserInputModel:
 
         model = CreateUserInputModel(
             email="test@example.com",
-            password="password123",
             language_code="en"
         )
         assert model.email == "test@example.com"
-        assert model.password == "password123"
         assert model.language_code == "en"
 
     def test_model_has_email_field(self):
@@ -85,22 +83,61 @@ class TestCreateUserInputModel:
         from lys.apps.user_auth.modules.user.models import CreateUserInputModel
         assert "email" in CreateUserInputModel.model_fields
 
-    def test_model_has_password_field(self):
-        """Test model has password field."""
+    def test_model_has_no_password_field(self):
+        """Test an administrative creation never carries a password."""
         from lys.apps.user_auth.modules.user.models import CreateUserInputModel
-        assert "password" in CreateUserInputModel.model_fields
+        assert "password" not in CreateUserInputModel.model_fields
 
     def test_model_has_language_code_field(self):
         """Test model has language_code field."""
         from lys.apps.user_auth.modules.user.models import CreateUserInputModel
         assert "language_code" in CreateUserInputModel.model_fields
 
-    def test_password_min_length_validation(self):
-        """Test password minimum length validation."""
+    def test_password_is_ignored(self):
+        """Test a password passed to an administrative creation is ignored."""
         from lys.apps.user_auth.modules.user.models import CreateUserInputModel
 
+        model = CreateUserInputModel(
+            email="test@example.com",
+            password="password123",
+            language_code="en"
+        )
+        assert not hasattr(model, "password")
+
+
+class TestCreateUserWithPasswordInputModel:
+    """Tests for CreateUserWithPasswordInputModel (self-registration)."""
+
+    def test_model_inherits_from_create_user(self):
+        """Test the self-registration model extends the administrative one."""
+        from lys.apps.user_auth.modules.user.models import (
+            CreateUserInputModel,
+            CreateUserWithPasswordInputModel
+        )
+        assert issubclass(CreateUserWithPasswordInputModel, CreateUserInputModel)
+
+    def test_model_has_password_field(self):
+        """Test model has password field."""
+        from lys.apps.user_auth.modules.user.models import CreateUserWithPasswordInputModel
+        assert "password" in CreateUserWithPasswordInputModel.model_fields
+
+    def test_model_accepts_valid_data(self):
+        """Test model accepts valid data."""
+        from lys.apps.user_auth.modules.user.models import CreateUserWithPasswordInputModel
+
+        model = CreateUserWithPasswordInputModel(
+            email="test@example.com",
+            password="password123",
+            language_code="en"
+        )
+        assert model.password == "password123"
+
+    def test_password_min_length_validation(self):
+        """Test password minimum length validation."""
+        from lys.apps.user_auth.modules.user.models import CreateUserWithPasswordInputModel
+
         with pytest.raises(ValidationError):
-            CreateUserInputModel(
+            CreateUserWithPasswordInputModel(
                 email="test@example.com",
                 password="short",  # Less than 8 chars
                 language_code="en"
@@ -332,6 +369,6 @@ class TestCreateSuperUserInputModel:
         from lys.apps.user_auth.modules.user.models import CreateSuperUserInputModel
         assert "email" in CreateSuperUserInputModel.model_fields
 
-    def test_has_password_field(self):
+    def test_has_no_password_field(self):
         from lys.apps.user_auth.modules.user.models import CreateSuperUserInputModel
-        assert "password" in CreateSuperUserInputModel.model_fields
+        assert "password" not in CreateSuperUserInputModel.model_fields

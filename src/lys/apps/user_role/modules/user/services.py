@@ -23,9 +23,10 @@ class UserService(AuthUserService):
         cls,
         session: AsyncSession,
         email: str,
-        password: str,
         language_id: str,
+        password: str | None = None,
         send_verification_email: bool = True,
+        inviter: "User | None" = None,
         background_tasks=None,
         roles: Optional[List[str]] = None,
         first_name: str | None = None,
@@ -41,9 +42,12 @@ class UserService(AuthUserService):
         Args:
             session: Database session for executing queries
             email: Email address for the new user (will be normalized to lowercase)
-            password: Plain text password (will be hashed)
             language_id: Language ID for the user
+            password: Optional plain text password (will be hashed). Left empty for an invited
+                user, who sets it through the activation link
             send_verification_email: Whether to send email verification email (default: True)
+            inviter: User who creates this account. When provided, an invitation email replaces
+                the verification email
             background_tasks: FastAPI BackgroundTasks for scheduling email (optional)
             roles: Optional list of role IDs to assign to the new user
             first_name: Optional first name (GDPR-protected)
@@ -74,6 +78,7 @@ class UserService(AuthUserService):
             language_id=language_id,
             is_super_user=False,
             send_verification_email=send_verification_email,
+            inviter=inviter,
             background_tasks=background_tasks,
             first_name=first_name,
             last_name=last_name,

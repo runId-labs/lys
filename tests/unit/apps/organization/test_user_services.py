@@ -76,7 +76,7 @@ class TestUserServiceCreateClientUser:
         assert "session" in sig.parameters
         assert "client_id" in sig.parameters
         assert "email" in sig.parameters
-        assert "password" in sig.parameters
+        assert "password" not in sig.parameters
         assert "language_id" in sig.parameters
         assert "inviter" in sig.parameters
         assert "background_tasks" in sig.parameters

@@ -7,6 +7,16 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.44.0] - 2026-08-31
+
+### Changed
+- Administrative user creation no longer carries a password: `createUser` (user_auth and user_role), `createSuperUser` and `createClientUser` drop the `password` input and send an invitation email instead, so the new user sets their own credentials through the existing activation flow and the administrator never knows them. `CreateUserInputModel` loses its `password` field; self-registration keeps it through the new `CreateUserWithPasswordInputModel`, which `CreateClientInputModel` (public `createClient` signup) now extends
+- `UserService.create_user` / `create_super_user` take `password` as an optional keyword and a new `inviter` argument; when an inviter is given the invitation email replaces the email-verification one. `UserService.create_client_user` (organization) drops `password` entirely
+
+### Fixed
+- The four administrative user-creation webservices (`user_auth` `createUser`/`createSuperUser`, `user_role` `createUser`, `organization` `createClientUser`) now raise `INVITER_NOT_FOUND` instead of silently creating a password-less, unrecoverable account when the connected user can no longer be resolved from the database
+- `user_role` `createUser` no longer fetches the connected user entity twice (role validation and invitation email now share the same lookup)
+
 ## [0.43.0] - 2026-08-30
 
 ### Added

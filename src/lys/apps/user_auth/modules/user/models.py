@@ -76,30 +76,25 @@ class UserPrivateDataInputModel(BaseModel):
 
 class CreateUserInputModel(UserPrivateDataInputModel):
     """
-    Input model for creating a regular user.
+    Input model for creating a user on behalf of someone else.
 
     Includes both authentication data and optional private GDPR-protected data.
     Inherits from UserPrivateDataInputModel for consistent validation.
-    Used by both user_auth and user_role create_user webservices.
+    Used by every administrative creation webservice (user_auth, user_role, organization).
+
+    No password field: a user created by an administrator receives an invitation email
+    and sets their own password through the activation flow, so that the administrator
+    never knows the credentials of the accounts they create. Self-registration uses
+    CreateUserWithPasswordInputModel instead.
     """
     email: EmailStr = Field(
         description="Email address for the new user (will be normalized to lowercase)"
-    )
-    password: str = Field(
-        min_length=8,
-        max_length=128,
-        description="Password (min 8 chars, must contain at least one letter and one digit)"
     )
     language_code: str = Field(
         min_length=2,
         max_length=5,
         description="Language code in format 'en' or 'en-US'"
     )
-
-    @field_validator('password')
-    @classmethod
-    def validate_password(cls, password: str | None, info: ValidationInfo) -> str | None:
-        return validate_password_for_creation(password)
 
     @field_validator('email')
     @classmethod
@@ -112,6 +107,25 @@ class CreateUserInputModel(UserPrivateDataInputModel):
     @classmethod
     def validate_language_code(cls, value: str | None, info: ValidationInfo) -> str | None:
         return validate_language_format(value)
+
+
+class CreateUserWithPasswordInputModel(CreateUserInputModel):
+    """
+    Input model for creating a user who chooses their own password up front.
+
+    Reserved for self-registration flows, where the person filling the form is the
+    person the account belongs to. Administrative creations use CreateUserInputModel.
+    """
+    password: str = Field(
+        min_length=8,
+        max_length=128,
+        description="Password (min 8 chars, must contain at least one letter and one digit)"
+    )
+
+    @field_validator('password')
+    @classmethod
+    def validate_password(cls, password: str | None, info: ValidationInfo) -> str | None:
+        return validate_password_for_creation(password)
 
 
 class CreateSuperUserInputModel(CreateUserInputModel):

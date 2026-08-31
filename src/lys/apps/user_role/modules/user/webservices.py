@@ -4,6 +4,7 @@ from typing import Annotated, Optional
 import strawberry
 from sqlalchemy import Select, select, or_
 
+from lys.apps.user_auth.errors import INVITER_NOT_FOUND
 from lys.apps.user_auth.modules.user.nodes import UserNode
 from lys.apps.user_role.consts import ROLE_ACCESS_LEVEL
 from lys.apps.user_role.errors import UNAUTHORIZED_ROLE_ASSIGNMENT
@@ -106,7 +107,7 @@ class UserMutation(Mutation):
         access_levels=[ROLE_ACCESS_LEVEL],
         is_licenced=False,
         allow_override=True,
-        description="Create a new user with global roles. Required: email, password, language_code. Optional: first_name, last_name, gender_code, role_codes."
+        description="Create a new user with global roles, invited by email. Required: email, language_code. Optional: first_name, last_name, gender_code, role_codes."
     )
     async def create_user(
         self,
@@ -122,7 +123,6 @@ class UserMutation(Mutation):
         Args:
             inputs: Input containing:
                 - email: Email address for the new user
-                - password: Plain text password (will be hashed)
                 - language_id: Language ID for the user
                 - first_name: Optional first name (GDPR-protected)
                 - last_name: Optional last name (GDPR-protected)
@@ -148,13 +148,15 @@ class UserMutation(Mutation):
         # Check if connected user is super user
         is_super_user = connected_user.get("is_super_user", False)
 
+        # Get the connected user entity: used both for role validation below and as inviter
+        inviter = await user_service.get_by_id(connected_user["sub"], session)
+        if inviter is None:
+            raise LysError(INVITER_NOT_FOUND, f"Connected user {connected_user['sub']} not found")
+
         # Validate role assignments
         if input_data.role_codes and not is_super_user:
-            # Get the connected user entity to access their roles
-            connected_user_entity = await user_service.get_by_id(connected_user["sub"], session)
-
             # Get role codes that the connected user has
-            connected_user_role_codes = {role.id for role in connected_user_entity.roles}
+            connected_user_role_codes = {role.id for role in inviter.roles}
 
             # Check if user is trying to assign roles they don't have
             requested_role_codes = set(input_data.role_codes)
@@ -166,13 +168,12 @@ class UserMutation(Mutation):
                     f"You cannot assign roles you don't have: {', '.join(unauthorized_roles)}"
                 )
 
-        # Create the user with roles
+        # Create the user with roles, invited by the connected user
         user = await user_service.create_user(
             session=session,
             email=input_data.email,
-            password=input_data.password,
             language_id=input_data.language_code,
-            send_verification_email=True,
+            inviter=inviter,
             background_tasks=info.context.background_tasks,
             roles=input_data.role_codes,
             first_name=input_data.first_name,

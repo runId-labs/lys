@@ -3,15 +3,16 @@ from typing import Optional
 from pydantic import BaseModel, Field, field_validator
 from pydantic_core.core_schema import ValidationInfo
 
-from lys.apps.user_auth.modules.user.models import CreateUserInputModel, UserPrivateDataInputModel
+from lys.apps.user_auth.modules.user.models import CreateUserWithPasswordInputModel, UserPrivateDataInputModel
 from lys.core.utils.validators import validate_language_format
 
 
-class CreateClientInputModel(CreateUserInputModel):
+class CreateClientInputModel(CreateUserWithPasswordInputModel):
     """
     Input model for creating a new client with an owner user.
 
-    This model extends CreateUserInputModel to include client information.
+    This model extends CreateUserWithPasswordInputModel to include client information:
+    self-registration, so the owner chooses their own password on the signup form.
     The user will be automatically set as the client owner and will have
     full administrative access to the client without requiring explicit roles.
     """

@@ -44,9 +44,6 @@ class CreateClientUserInput:
     email: strawberry.auto = strawberry.field(
         description="Email address for the new user (will be normalized to lowercase)"
     )
-    password: strawberry.auto = strawberry.field(
-        description="Password (min 8 chars, must contain at least one letter and one digit)"
-    )
     language_code: strawberry.auto = strawberry.field(
         description="Language code in format 'en' or 'en-US'"
     )
