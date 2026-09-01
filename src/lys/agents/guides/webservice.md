@@ -43,6 +43,11 @@ Common parameters: `ensure_type` (the node, positional), `is_public=False`,
 - **R6 — Frontend webservice_name gating**: private pages declare
   `mainWebserviceName` = this webservice's name; the JWT `webservices` claim and
   role webservice lists reference these exact names.
+- **R7 — A `ROLE` / `ORGANIZATION_ROLE` webservice is unreachable until a role
+  grants it**: the name must also appear in `role_webservices` of a role fixture,
+  and the server must restart for that fixture change to take effect
+  (`fixtures.md`). Nothing fails at build time — the symptom is a silent 403 /
+  empty screen. See `rules.md` for the "ask which role" process rule.
 
 ## PROCEDURE — query (connection)
 

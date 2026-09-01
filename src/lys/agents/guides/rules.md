@@ -54,6 +54,13 @@ an instantiation, a subclass) goes through the manager.
   (lys raises at startup otherwise).
 - A webservice name is a public contract (front `mainWebserviceName`, JWT
   claims) — never rename casually.
+- A `ROLE` / `ORGANIZATION_ROLE` webservice with no role granting it is
+  unreachable by anyone but client owners (`webservice.md` R7). When adding
+  one and the user hasn't named the role(s), ask before finishing — list the
+  existing roles, state which one you'd pick and why. Do not guess, and do
+  not ship it ungranted with a mention after the fact. Skip the question only
+  when the user named the roles, or the webservice is `INTERNAL_SERVICE` /
+  public / connected-only.
 
 ## Weakest spots to double-check (empirical)
 
