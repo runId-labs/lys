@@ -7,6 +7,11 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.44.1] - 2026-09-01
+
+### Fixed
+- `LICENSE_ADMIN_ROLE` no longer references the stale webservice names `create_checkout_session` / `create_billing_portal_session` (never valid GraphQL field names); grants `subscribe_to_plan` and `cancel_subscription` instead, so a `ROLE`/`ORGANIZATION_ROLE`-scoped license administrator can actually perform those two acts
+
 ## [0.44.0] - 2026-08-31
 
 ### Changed

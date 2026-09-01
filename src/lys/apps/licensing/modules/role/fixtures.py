@@ -13,10 +13,12 @@ LICENSE_ADMIN_ROLE_WEBSERVICES = [
     "all_clients",
     "client",
     "subscription",
-    "create_checkout_session",
-    "create_billing_portal_session",
     "add_client_user_to_subscription",
     "remove_client_user_from_subscription",
+    # Taking and dropping the subscription: the two acts of whoever manages the
+    # licence, alongside reading it.
+    "subscribe_to_plan",
+    "cancel_subscription",
     # Catalogue administration
     "all_license_plans",
     "all_license_plan_versions",

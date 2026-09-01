@@ -27,3 +27,9 @@ class TestLicenseAdminRoleWebservices:
         assert "all_clients" in LICENSE_ADMIN_ROLE_WEBSERVICES
         assert "subscription" in LICENSE_ADMIN_ROLE_WEBSERVICES
         assert "all_license_rules" in LICENSE_ADMIN_ROLE_WEBSERVICES
+        assert "subscribe_to_plan" in LICENSE_ADMIN_ROLE_WEBSERVICES
+        assert "cancel_subscription" in LICENSE_ADMIN_ROLE_WEBSERVICES
+
+    def test_does_not_contain_stale_webservice_names(self):
+        assert "create_checkout_session" not in LICENSE_ADMIN_ROLE_WEBSERVICES
+        assert "create_billing_portal_session" not in LICENSE_ADMIN_ROLE_WEBSERVICES
