@@ -298,6 +298,33 @@ class AIService(Service):
 
         return cls._chat_with_fallback_sync(messages, config, tools)
 
+    # ========== Embeddings ==========
+
+    @classmethod
+    async def embed_with_purpose(cls, texts: List[str], purpose: str) -> List[List[float]]:
+        """
+        Embed texts using a configured purpose.
+
+        No fallback chain, unlike chat: two providers do not embed into the same space, so
+        silently answering with a second one would return vectors that cannot be compared
+        with those already stored. A failure here has to surface.
+
+        Args:
+            texts: Texts to embed, in one call.
+            purpose: Purpose name (e.g. "embedding").
+
+        Returns:
+            One vector per input text, in the same order.
+        """
+        config = cls.get_endpoint(purpose)
+        return await cls.get_provider(config.provider).embed(texts, config)
+
+    @classmethod
+    def embed_with_purpose_sync(cls, texts: List[str], purpose: str) -> List[List[float]]:
+        """Synchronous version for Celery workers."""
+        config = cls.get_endpoint(purpose)
+        return cls.get_provider(config.provider).embed_sync(texts, config)
+
     # ========== Structured JSON Chat ==========
 
     @classmethod

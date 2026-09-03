@@ -7,6 +7,18 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.45.0] - 2026-09-03
+
+### Added
+- Conversation search: `search_conversation` tool merges full-text, trigram, and semantic (pgvector) matches by reciprocal rank fusion, offered to the model once a conversation has been compacted (`AIConversationService.search_messages`). Indexing runs off the request path via the periodic `index_pending_messages` Celery task, which also backfills messages predating the feature
+- Embeddings support: `AIProvider.embed`/`embed_sync`, `AIService.embed_with_purpose`/`embed_with_purpose_sync`, and a `MistralProvider` implementation against the `/embeddings` endpoint
+- Automatic conversation titling from the opening user message (`generate_conversation_title` Celery task, `AI_PURPOSE_CONVERSATION_TITLE`), enqueued once per conversation; a listing falls back to the truncated opening message until the title lands
+- `AIConversationQuery.all_ai_conversations` / `AIConversationMessageQuery.all_ai_conversation_messages` (list conversations and replay a conversation's messages) and `AIConversationMutation.update_ai_conversation_title` / `archive_ai_conversation` / `unarchive_ai_conversation`
+- `AIConversation.archived_at` is now timezone-aware; `AIConversation`/`AIMessage` gain `user_accessing_filters` for owner-scoped row access
+
+### Changed
+- `ai` extra now also requires `langdetect` (language detection for indexing) and `pgvector` (embedding column type)
+
 ## [0.44.1] - 2026-09-01
 
 ### Fixed

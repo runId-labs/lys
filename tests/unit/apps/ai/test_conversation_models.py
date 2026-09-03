@@ -41,15 +41,24 @@ class TestAIMessageInputModel:
         assert model.conversation_id is None
 
     def test_model_accepts_conversation_id(self):
-        """Test model accepts conversation_id."""
+        """Test model accepts a conversation GlobalID and stores the raw id."""
         from lys.apps.ai.modules.conversation.models import AIMessageInputModel
+        from lys.core.graphql.client import build_global_id
 
+        raw_id = "550e8400-e29b-41d4-a716-446655440000"
         model = AIMessageInputModel(
             message="Hello",
-            conversation_id="conv-123"
+            conversation_id=build_global_id("AIConversationNode", raw_id),
         )
         assert model.message == "Hello"
-        assert model.conversation_id == "conv-123"
+        assert model.conversation_id == raw_id
+
+    def test_model_rejects_non_global_id_conversation_id(self):
+        """A plain string that isn't a GlobalID must be refused, not silently accepted."""
+        from lys.apps.ai.modules.conversation.models import AIMessageInputModel
+
+        with pytest.raises(ValidationError):
+            AIMessageInputModel(message="Hello", conversation_id="conv-123")
 
     def test_model_requires_message(self):
         """Test message field is required."""
@@ -117,3 +126,73 @@ class TestAIToolResultModel:
 
         with pytest.raises(ValidationError):
             AIToolResultModel(tool_name="test", result="ok")
+
+
+class TestExtractConversationId:
+    """Tests for extract_conversation_id."""
+
+    def test_extracts_raw_id_from_global_id(self):
+        from lys.apps.ai.modules.conversation.models import extract_conversation_id
+        from lys.core.graphql.client import build_global_id
+
+        raw_id = "550e8400-e29b-41d4-a716-446655440000"
+        global_id = build_global_id("AIConversationNode", raw_id)
+
+        assert extract_conversation_id(global_id) == raw_id
+
+    def test_rejects_plain_string(self):
+        from lys.apps.ai.modules.conversation.models import extract_conversation_id
+
+        with pytest.raises(ValueError, match="Invalid conversation ID format"):
+            extract_conversation_id("conv-123")
+
+    def test_rejects_global_id_not_carrying_a_uuid(self):
+        """A well-formed GlobalID whose id part isn't a UUID must still be refused."""
+        from lys.apps.ai.modules.conversation.models import extract_conversation_id
+        from lys.core.graphql.client import build_global_id
+
+        global_id = build_global_id("AIConversationNode", "not-a-uuid")
+
+        with pytest.raises(ValueError, match="Invalid conversation ID format"):
+            extract_conversation_id(global_id)
+
+    def test_rejects_malformed_base64(self):
+        from lys.apps.ai.modules.conversation.models import extract_conversation_id
+
+        with pytest.raises(ValueError, match="Invalid conversation ID format"):
+            extract_conversation_id("not-valid-base64!!!")
+
+
+class TestUpdateAIConversationTitleInputModel:
+    """Tests for UpdateAIConversationTitleInputModel."""
+
+    def test_accepts_valid_title(self):
+        from lys.apps.ai.modules.conversation.models import UpdateAIConversationTitleInputModel
+
+        model = UpdateAIConversationTitleInputModel(title="Budget review")
+        assert model.title == "Budget review"
+
+    def test_strips_surrounding_whitespace(self):
+        from lys.apps.ai.modules.conversation.models import UpdateAIConversationTitleInputModel
+
+        model = UpdateAIConversationTitleInputModel(title="  Budget review  ")
+        assert model.title == "Budget review"
+
+    def test_rejects_blank_title(self):
+        from lys.apps.ai.modules.conversation.models import UpdateAIConversationTitleInputModel
+
+        with pytest.raises(ValidationError):
+            UpdateAIConversationTitleInputModel(title="   ")
+
+    def test_rejects_empty_title(self):
+        from lys.apps.ai.modules.conversation.models import UpdateAIConversationTitleInputModel
+
+        with pytest.raises(ValidationError):
+            UpdateAIConversationTitleInputModel(title="")
+
+    def test_rejects_title_over_max_length(self):
+        from lys.apps.ai.modules.conversation.models import UpdateAIConversationTitleInputModel
+        from lys.apps.ai.modules.conversation.consts import DISPLAY_TITLE_MAX_LENGTH
+
+        with pytest.raises(ValidationError):
+            UpdateAIConversationTitleInputModel(title="x" * (DISPLAY_TITLE_MAX_LENGTH + 1))

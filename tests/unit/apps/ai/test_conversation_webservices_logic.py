@@ -176,3 +176,103 @@ class TestSendAiMessageLogic:
             assert "authenticated" in result.content.lower()
         finally:
             AIMessageNode.__init__ = original_init
+
+
+def _get_edition_resolver(cls, method_name):
+    """Extract the raw business-logic function `lys_edition` wraps.
+
+    `_edition_resolver_generator` (lys/core/graphql/edit.py) closes over the original
+    method as `resolver`; the wrapper it produces (`inner_resolver`) does the id lookup
+    and access check, then awaits this raw resolver with the already-fetched `obj`. Same
+    technique as TestSendAiMessageLogic._get_resolver, applied to lys_edition instead of
+    lys_field.
+    """
+    wrapped = cls.__dict__[method_name]
+    idx = wrapped.__code__.co_freevars.index("resolver")
+    return wrapped.__closure__[idx].cell_contents
+
+
+class TestUpdateAIConversationTitleLogic:
+    """Tests for AIConversationMutation.update_ai_conversation_title() internal logic."""
+
+    def test_sets_title_from_the_pydantic_input_and_returns_the_object(self):
+        from lys.apps.ai.modules.conversation.webservices import AIConversationMutation
+
+        resolver = _get_edition_resolver(AIConversationMutation, "update_ai_conversation_title")
+
+        obj = MagicMock()
+        inputs = MagicMock()
+        inputs.to_pydantic.return_value.title = "Budget review"
+
+        loop = asyncio.new_event_loop()
+        try:
+            result = loop.run_until_complete(
+                resolver(None, obj=obj, inputs=inputs, info=MagicMock())
+            )
+        finally:
+            loop.close()
+
+        assert result is obj
+        assert obj.title == "Budget review"
+
+
+class TestArchiveAIConversationLogic:
+    """Tests for AIConversationMutation.archive_ai_conversation() internal logic."""
+
+    def test_sets_archived_at_when_not_already_archived(self):
+        from lys.apps.ai.modules.conversation.webservices import AIConversationMutation
+
+        resolver = _get_edition_resolver(AIConversationMutation, "archive_ai_conversation")
+
+        obj = MagicMock()
+        obj.archived_at = None
+
+        loop = asyncio.new_event_loop()
+        try:
+            result = loop.run_until_complete(resolver(None, obj=obj, info=MagicMock()))
+        finally:
+            loop.close()
+
+        assert result is obj
+        assert obj.archived_at is not None
+
+    def test_is_idempotent_and_keeps_the_original_archive_date(self):
+        """A second archive call must not overwrite when the conversation was archived."""
+        from lys.apps.ai.modules.conversation.webservices import AIConversationMutation
+        from datetime import datetime, UTC
+
+        resolver = _get_edition_resolver(AIConversationMutation, "archive_ai_conversation")
+
+        obj = MagicMock()
+        original_date = datetime(2026, 1, 1, tzinfo=UTC)
+        obj.archived_at = original_date
+
+        loop = asyncio.new_event_loop()
+        try:
+            loop.run_until_complete(resolver(None, obj=obj, info=MagicMock()))
+        finally:
+            loop.close()
+
+        assert obj.archived_at == original_date
+
+
+class TestUnarchiveAIConversationLogic:
+    """Tests for AIConversationMutation.unarchive_ai_conversation() internal logic."""
+
+    def test_clears_archived_at(self):
+        from lys.apps.ai.modules.conversation.webservices import AIConversationMutation
+        from datetime import datetime, UTC
+
+        resolver = _get_edition_resolver(AIConversationMutation, "unarchive_ai_conversation")
+
+        obj = MagicMock()
+        obj.archived_at = datetime(2026, 1, 1, tzinfo=UTC)
+
+        loop = asyncio.new_event_loop()
+        try:
+            result = loop.run_until_complete(resolver(None, obj=obj, info=MagicMock()))
+        finally:
+            loop.close()
+
+        assert result is obj
+        assert obj.archived_at is None

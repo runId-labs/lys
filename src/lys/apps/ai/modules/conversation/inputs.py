@@ -13,6 +13,7 @@ from lys.apps.ai.modules.conversation.models import (
     AIMessageInputModel,
     AIToolResultModel,
     PageContextModel,
+    UpdateAIConversationTitleInputModel,
 )
 
 
@@ -34,6 +35,14 @@ class AIMessageInput:
     message: strawberry.auto
     conversation_id: strawberry.auto
     context: Optional[PageContextInput] = None
+
+
+@strawberry.experimental.pydantic.input(model=UpdateAIConversationTitleInputModel)
+class UpdateAIConversationTitleInput:
+    """Input for renaming a conversation."""
+    title: strawberry.auto = strawberry.field(
+        description="New title of the conversation"
+    )
 
 
 @strawberry.experimental.pydantic.type(model=AIToolResultModel, all_fields=True)

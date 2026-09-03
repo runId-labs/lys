@@ -8,9 +8,12 @@ feedback and metrics, supporting analytics and fine-tuning data export.
 from datetime import datetime
 from typing import Optional, List
 
-from sqlalchemy import String, Text, ForeignKey, Integer, Uuid, JSON
+from sqlalchemy import String, Text, ForeignKey, Integer, Uuid, JSON, DateTime
+from pgvector.sqlalchemy import Vector
+from sqlalchemy.dialects.postgresql import TSVECTOR
 from sqlalchemy.orm import Mapped, mapped_column, relationship, declared_attr
 
+from lys.apps.ai.modules.conversation.consts import EMBEDDING_DIMENSIONS
 from lys.core.entities import Entity
 from lys.core.registries import register_entity
 
@@ -43,7 +46,11 @@ class AIConversation(Entity):
     )
     purpose: Mapped[str] = mapped_column(String(50), nullable=False, index=True)
     title: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
-    archived_at: Mapped[Optional[datetime]] = mapped_column(nullable=True)
+    # Timezone-aware like every other timestamp in the framework: the column records an
+    # instant, and a naive one cannot be compared across the deployments that read it.
+    archived_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True,
+    )
 
     @declared_attr
     def messages(cls):
@@ -70,6 +77,10 @@ class AIConversation(Entity):
 
     def accessing_organizations(self) -> dict[str, list[str]]:
         return {}
+
+    @classmethod
+    def user_accessing_filters(cls, stmt, user_id: str):
+        return stmt, [cls.user_id == user_id]
 
 
 @register_entity()
@@ -109,6 +120,37 @@ class AIMessage(Entity):
     cache_write_tokens: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     latency_ms: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
 
+    # Full-text search over the message content. Filled off the request path, so a message
+    # is searchable shortly after it is written rather than at write time; a row whose
+    # indexing has not run - or predates the feature - simply does not match, it never
+    # breaks a search.
+    #
+    # The configuration is stored beside the vector because a tsvector cannot be read
+    # without it: lexemes are stemmed by a given configuration, and a query stemmed by
+    # another one will not match them. Detected per message rather than set globally,
+    # since two users of the same instance legitimately write in two languages.
+    # Declared as Text with a PostgreSQL variant rather than TSVECTOR outright: the raw
+    # type compiles on no other dialect, and the framework's own integration tests build
+    # their schema on SQLite. The column is a plain TEXT there - searching it is a
+    # PostgreSQL matter either way, so nothing is lost that SQLite could have offered.
+    text_search_vector: Mapped[Optional[str]] = mapped_column(
+        Text().with_variant(TSVECTOR(), "postgresql"), nullable=True
+    )
+    text_search_config: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
+
+    # Semantic search over the message content, complementing the lexical one: full-text
+    # and trigrams both match on how a thing was written, and miss it entirely when the
+    # same idea comes back in other words.
+    #
+    # The model is stored beside the vector for the same reason the text search
+    # configuration is: vectors from two models live in unrelated spaces, and comparing
+    # across them returns confident nonsense rather than an error. Rows embedded with a
+    # retired model stay readable, and are re-embedded rather than silently mismatched.
+    embedding: Mapped[Optional[list]] = mapped_column(
+        Vector(EMBEDDING_DIMENSIONS), nullable=True
+    )
+    embedding_model: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+
     @declared_attr
     def conversation(cls):
         return relationship("ai_conversation", back_populates="messages")
@@ -128,6 +170,15 @@ class AIMessage(Entity):
 
     def accessing_organizations(self) -> dict[str, list[str]]:
         return {}
+
+    @classmethod
+    def user_accessing_filters(cls, stmt, user_id: str):
+        # Ownership lives on the parent conversation: a message belongs to the user its
+        # conversation belongs to. Goes through the mapped relationship rather than the
+        # entity class, which lys rebuilds through its registry - a direct class reference
+        # compiles to unresolved columns. `has()` emits a correlated EXISTS, leaving a
+        # caller's own joins and row count untouched.
+        return stmt, [cls.conversation.has(user_id=user_id)]
 
 
 @register_entity()

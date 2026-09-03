@@ -430,6 +430,79 @@ class MistralProvider(AIProvider):
         except httpx.TimeoutException:
             raise AITimeoutError(f"Request timed out after {config.timeout}s")
 
+    # ========== Embeddings ==========
+
+    def _embeddings_payload(self, texts: List[str], config: AIEndpointConfig) -> Dict[str, Any]:
+        return {"model": config.model, "input": texts}
+
+    def _parse_embeddings(self, response: httpx.Response, expected: int) -> List[List[float]]:
+        """
+        Read the vectors out of an embeddings response, in the order asked for.
+
+        Sorted by index rather than trusted as returned: the API documents an index per
+        item, and a silent reordering would attach every vector to the wrong message -
+        a corruption nothing downstream could detect.
+        """
+        self._handle_error_status(response)
+
+        data = response.json().get("data", [])
+        if len(data) != expected:
+            raise AIProviderError(
+                f"Embeddings response holds {len(data)} vector(s) for {expected} input(s)"
+            )
+
+        return [item["embedding"] for item in sorted(data, key=lambda item: item["index"])]
+
+    async def embed(
+        self,
+        texts: List[str],
+        config: AIEndpointConfig,
+    ) -> List[List[float]]:
+        """Embed texts through Mistral's embeddings endpoint."""
+        if not texts:
+            return []
+
+        try:
+            async with httpx.AsyncClient() as client:
+                response = await client.post(
+                    f"{self.get_base_url(config)}/embeddings",
+                    headers={
+                        "Authorization": f"Bearer {config.api_key}",
+                        "Content-Type": "application/json",
+                    },
+                    json=self._embeddings_payload(texts, config),
+                    timeout=config.timeout,
+                )
+        except httpx.TimeoutException:
+            raise AITimeoutError(f"Request timed out after {config.timeout}s")
+
+        return self._parse_embeddings(response, len(texts))
+
+    def embed_sync(
+        self,
+        texts: List[str],
+        config: AIEndpointConfig,
+    ) -> List[List[float]]:
+        """Synchronous version of :meth:`embed` for Celery workers."""
+        if not texts:
+            return []
+
+        try:
+            with httpx.Client() as client:
+                response = client.post(
+                    f"{self.get_base_url(config)}/embeddings",
+                    headers={
+                        "Authorization": f"Bearer {config.api_key}",
+                        "Content-Type": "application/json",
+                    },
+                    json=self._embeddings_payload(texts, config),
+                    timeout=config.timeout,
+                )
+        except httpx.TimeoutException:
+            raise AITimeoutError(f"Request timed out after {config.timeout}s")
+
+        return self._parse_embeddings(response, len(texts))
+
     # ========== OCR ==========
 
     def ocr_sync(

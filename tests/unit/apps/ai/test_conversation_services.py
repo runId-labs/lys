@@ -6,6 +6,8 @@ using mocks to avoid database dependencies.
 """
 
 import json
+from datetime import datetime
+
 import pytest
 from unittest.mock import MagicMock, AsyncMock, patch, PropertyMock
 
@@ -13,7 +15,13 @@ from lys.apps.ai.modules.conversation.consts import (
     AIMessageRole,
     AIFeedbackRating,
     AI_PURPOSE_CHATBOT,
+    AI_PURPOSE_CONVERSATION_TITLE,
+    DISPLAY_TITLE_MAX_LENGTH,
+    EMBEDDING_MAX_BATCH,
+    EMBEDDING_MAX_BATCH_CHARS,
+    EMBEDDING_MAX_CHARS,
 )
+from lys.apps.ai.utils.providers.exceptions import AIPurposeNotFoundError
 
 
 # Note: _build_messages tests are in integration tests because they require
@@ -1662,6 +1670,654 @@ class TestMaybeEnqueueCompaction:
     # The over-threshold enqueue path and the pending-summary guard build SQL range
     # predicates (created_at >= ...) over real columns; they are covered by integration
     # tests (tests/integration/apps/ai/test_conversation_service.py).
+
+
+class TestGetOpeningMessageContent:
+    """Tests for AIConversationService.get_opening_message_content."""
+
+    @pytest.mark.asyncio
+    async def test_returns_the_scalar_content(self):
+        from lys.apps.ai.modules.conversation import services as svc
+
+        session = AsyncMock()
+        session.execute.return_value = MagicMock(
+            scalar_one_or_none=MagicMock(return_value="What's our runway?")
+        )
+
+        with patch.object(svc, "select", MagicMock()):
+            result = await svc.AIConversationService.get_opening_message_content(
+                "conv-1", session
+            )
+
+        assert result == "What's our runway?"
+
+    @pytest.mark.asyncio
+    async def test_returns_none_when_no_user_message(self):
+        from lys.apps.ai.modules.conversation import services as svc
+
+        session = AsyncMock()
+        session.execute.return_value = MagicMock(scalar_one_or_none=MagicMock(return_value=None))
+
+        with patch.object(svc, "select", MagicMock()):
+            result = await svc.AIConversationService.get_opening_message_content(
+                "conv-1", session
+            )
+
+        assert result is None
+
+
+class TestSearchMessages:
+    """Tests for AIConversationService.search_messages (reciprocal rank fusion merge).
+
+    The three underlying sources (_search_ids_full_text/_search_ids_trigram/
+    _search_ids_semantic) build PostgreSQL-specific SQL (to_tsvector, unaccent,
+    cosine_distance) and are covered by integration tests against a real database.
+    What is unit-tested here is the merge itself: pure Python, and where a wrong
+    formula would silently misrank results without ever raising.
+    """
+
+    @pytest.mark.asyncio
+    async def test_message_found_by_two_sources_outranks_one_found_by_a_single_source(self):
+        from lys.apps.ai.modules.conversation import services as svc
+
+        with patch.object(svc.AIConversationService, "_search_ids_full_text", new=AsyncMock(return_value=["b"])), \
+             patch.object(svc.AIConversationService, "_search_ids_trigram", new=AsyncMock(return_value=["a", "b"])), \
+             patch.object(svc.AIConversationService, "_search_ids_semantic", new=AsyncMock(return_value=["a"])):
+            # "a": rank0 (trigram) + rank0 (semantic); "b": rank0 (full_text) + rank1 (trigram)
+            # -> "a" scores 2/60, "b" scores 1/60 + 1/61: "a" must win.
+            session = AsyncMock()
+            message_a = MagicMock(id="a")
+            message_b = MagicMock(id="b")
+            session.execute.return_value = MagicMock(
+                scalars=MagicMock(return_value=MagicMock(all=MagicMock(return_value=[message_b, message_a])))
+            )
+
+            with patch.object(svc, "select", MagicMock()):
+                result = await svc.AIConversationService.search_messages("conv-1", "query", session, limit=5)
+
+        assert [m.id for m in result] == ["a", "b"]
+
+    @pytest.mark.asyncio
+    async def test_no_source_returns_anything_yields_empty_without_querying_the_db(self):
+        from lys.apps.ai.modules.conversation import services as svc
+
+        with patch.object(svc.AIConversationService, "_search_ids_full_text", new=AsyncMock(return_value=[])), \
+             patch.object(svc.AIConversationService, "_search_ids_trigram", new=AsyncMock(return_value=[])), \
+             patch.object(svc.AIConversationService, "_search_ids_semantic", new=AsyncMock(return_value=[])):
+            session = AsyncMock()
+
+            result = await svc.AIConversationService.search_messages("conv-1", "query", session)
+
+        assert result == []
+        session.execute.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_asks_each_source_for_twice_the_final_limit(self):
+        from lys.apps.ai.modules.conversation import services as svc
+
+        full_text = AsyncMock(return_value=[])
+        trigram = AsyncMock(return_value=[])
+        semantic = AsyncMock(return_value=[])
+        with patch.object(svc.AIConversationService, "_search_ids_full_text", new=full_text), \
+             patch.object(svc.AIConversationService, "_search_ids_trigram", new=trigram), \
+             patch.object(svc.AIConversationService, "_search_ids_semantic", new=semantic):
+            session = AsyncMock()
+            await svc.AIConversationService.search_messages("conv-1", "query", session, limit=5)
+
+        full_text.assert_awaited_once_with("conv-1", "query", session, 10)
+        trigram.assert_awaited_once_with("conv-1", "query", session, 10)
+        semantic.assert_awaited_once_with("conv-1", "query", session, 10)
+
+    @pytest.mark.asyncio
+    async def test_truncates_to_the_requested_limit(self):
+        from lys.apps.ai.modules.conversation import services as svc
+
+        with patch.object(svc.AIConversationService, "_search_ids_full_text", new=AsyncMock(return_value=["a", "b", "c"])), \
+             patch.object(svc.AIConversationService, "_search_ids_trigram", new=AsyncMock(return_value=[])), \
+             patch.object(svc.AIConversationService, "_search_ids_semantic", new=AsyncMock(return_value=[])):
+            session = AsyncMock()
+            messages_by_id = {mid: MagicMock(id=mid) for mid in ("a", "b", "c")}
+            session.execute.return_value = MagicMock(
+                scalars=MagicMock(return_value=MagicMock(
+                    all=MagicMock(return_value=list(messages_by_id.values()))
+                ))
+            )
+
+            with patch.object(svc, "select", MagicMock()):
+                result = await svc.AIConversationService.search_messages(
+                    "conv-1", "query", session, limit=2
+                )
+
+        assert [m.id for m in result] == ["a", "b"]
+
+
+class TestAIConversationUserAccessingFilters:
+    """Tests for AIConversation.user_accessing_filters (row-level ownership scoping)."""
+
+    def test_scopes_to_the_given_user(self):
+        from lys.apps.ai.modules.conversation.entities import AIConversation
+
+        stmt = MagicMock()
+        result_stmt, filters = AIConversation.user_accessing_filters(stmt, "user-1")
+
+        assert result_stmt is stmt
+        assert len(filters) == 1
+
+
+class TestBuildSearchHandler:
+    """Tests for AIConversationService._build_search_handler (search_conversation tool)."""
+
+    @pytest.mark.asyncio
+    async def test_delegates_to_search_messages_and_formats_results(self):
+        from lys.apps.ai.modules.conversation.services import AIConversationService
+
+        message = MagicMock()
+        message.role = AIMessageRole.USER.value
+        message.content = "We agreed on a 5% discount"
+        message.created_at = datetime(2026, 1, 15, 10, 30)
+
+        session = AsyncMock()
+        with patch.object(
+            AIConversationService, "search_messages", new_callable=AsyncMock
+        ) as mock_search:
+            mock_search.return_value = [message]
+            handler = AIConversationService._build_search_handler("conv-1", session)
+            result = await handler({"query": "discount"}, {})
+
+        mock_search.assert_awaited_once_with("conv-1", "discount", session)
+        assert result == {
+            "results": [
+                {
+                    "role": AIMessageRole.USER.value,
+                    "content": "We agreed on a 5% discount",
+                    "date": "2026-01-15T10:30:00",
+                }
+            ]
+        }
+
+    @pytest.mark.asyncio
+    async def test_empty_query_returns_no_results_without_searching(self):
+        from lys.apps.ai.modules.conversation.services import AIConversationService
+
+        session = AsyncMock()
+        with patch.object(
+            AIConversationService, "search_messages", new_callable=AsyncMock
+        ) as mock_search:
+            handler = AIConversationService._build_search_handler("conv-1", session)
+            result = await handler({"query": ""}, {})
+
+        mock_search.assert_not_awaited()
+        assert result == {"results": []}
+
+    @pytest.mark.asyncio
+    async def test_whitespace_only_query_returns_no_results(self):
+        from lys.apps.ai.modules.conversation.services import AIConversationService
+
+        session = AsyncMock()
+        with patch.object(
+            AIConversationService, "search_messages", new_callable=AsyncMock
+        ) as mock_search:
+            handler = AIConversationService._build_search_handler("conv-1", session)
+            result = await handler({"query": "   "}, {})
+
+        mock_search.assert_not_awaited()
+        assert result == {"results": []}
+
+    @pytest.mark.asyncio
+    async def test_missing_query_argument_returns_no_results(self):
+        from lys.apps.ai.modules.conversation.services import AIConversationService
+
+        session = AsyncMock()
+        handler = AIConversationService._build_search_handler("conv-1", session)
+        result = await handler({}, {})
+
+        assert result == {"results": []}
+
+
+class TestChunkForEmbedding:
+    """Tests for AIConversationService._chunk_for_embedding."""
+
+    @staticmethod
+    def _msg(length):
+        m = MagicMock()
+        m.content = "x" * length
+        return m
+
+    def test_empty_list_returns_no_chunks(self):
+        from lys.apps.ai.modules.conversation.services import AIConversationService
+
+        assert AIConversationService._chunk_for_embedding([]) == []
+
+    def test_splits_when_batch_size_exceeded(self):
+        from lys.apps.ai.modules.conversation.services import AIConversationService
+
+        messages = [self._msg(10) for _ in range(EMBEDDING_MAX_BATCH + 5)]
+        chunks = AIConversationService._chunk_for_embedding(messages)
+
+        assert len(chunks) == 2
+        assert len(chunks[0]) == EMBEDDING_MAX_BATCH
+        assert len(chunks[1]) == 5
+
+    def test_splits_when_char_budget_exceeded(self):
+        from lys.apps.ai.modules.conversation.services import AIConversationService
+
+        # Each message contributes its full (capped) length; 5 of them breach the char
+        # budget well under the count cap, forcing a split before the 5th.
+        assert 4 * EMBEDDING_MAX_CHARS <= EMBEDDING_MAX_BATCH_CHARS < 5 * EMBEDDING_MAX_CHARS
+        messages = [self._msg(EMBEDDING_MAX_CHARS) for _ in range(5)]
+        chunks = AIConversationService._chunk_for_embedding(messages)
+
+        assert len(chunks) == 2
+        assert len(chunks[0]) == 4
+        assert len(chunks[1]) == 1
+
+    def test_a_message_longer_than_the_per_input_cap_counts_as_truncated(self):
+        """
+        A message over EMBEDDING_MAX_CHARS is embedded truncated (see _index_pending_embeddings),
+        so it must only weigh EMBEDDING_MAX_CHARS in the batching decision, not its full length.
+        """
+        from lys.apps.ai.modules.conversation.services import AIConversationService
+
+        oversized = self._msg(EMBEDDING_MAX_CHARS * 3)
+        small = self._msg(10)
+        chunks = AIConversationService._chunk_for_embedding([oversized, small])
+
+        assert len(chunks) == 1
+        assert chunks[0] == [oversized, small]
+
+
+class TestIsSearchable:
+    """Tests for AIConversationService._is_searchable."""
+
+    def test_user_message_with_content_is_searchable(self):
+        from lys.apps.ai.modules.conversation.services import AIConversationService
+
+        assert AIConversationService._is_searchable(
+            _role_msg(AIMessageRole.USER.value, content="hello")
+        ) is True
+
+    def test_assistant_message_with_content_is_searchable(self):
+        from lys.apps.ai.modules.conversation.services import AIConversationService
+
+        assert AIConversationService._is_searchable(
+            _role_msg(AIMessageRole.ASSISTANT.value, content="hello")
+        ) is True
+
+    def test_tool_message_is_not_searchable(self):
+        from lys.apps.ai.modules.conversation.services import AIConversationService
+
+        assert AIConversationService._is_searchable(
+            _role_msg(AIMessageRole.TOOL.value, content="hello")
+        ) is False
+
+    def test_message_without_content_is_not_searchable(self):
+        from lys.apps.ai.modules.conversation.services import AIConversationService
+
+        assert AIConversationService._is_searchable(
+            _role_msg(AIMessageRole.USER.value, content=None)
+        ) is False
+
+
+class TestIndexPendingTextSearch:
+    """Tests for AIConversationService._index_pending_text_search."""
+
+    def test_non_searchable_messages_are_marked_settled_but_not_counted(self):
+        from lys.apps.ai.modules.conversation import services as svc
+
+        app_manager = MagicMock()
+        app_manager.get_entity.return_value = MagicMock()
+        tool_msg = _role_msg(AIMessageRole.TOOL.value, content="irrelevant")
+
+        session = MagicMock()
+        session.execute.return_value.scalars.return_value.all.return_value = [tool_msg]
+
+        with patch.object(svc.AIConversationService, "app_manager", app_manager), \
+             patch.object(svc, "select", MagicMock()):
+            indexed = svc.AIConversationService._index_pending_text_search(session, 500)
+
+        assert indexed == 0
+        assert tool_msg.text_search_config == svc.DEFAULT_TEXT_SEARCH_CONFIG
+        session.add.assert_called_once_with(tool_msg)
+
+    def test_searchable_message_is_indexed_and_counted(self):
+        from lys.apps.ai.modules.conversation import services as svc
+
+        app_manager = MagicMock()
+        app_manager.get_entity.return_value = MagicMock()
+        # Short content: below MIN_CHARS_FOR_DETECTION, so resolve_text_search_config
+        # deterministically falls back to "simple" regardless of langdetect.
+        user_msg = _role_msg(AIMessageRole.USER.value, content="ok")
+
+        session = MagicMock()
+        session.execute.return_value.scalars.return_value.all.return_value = [user_msg]
+
+        with patch.object(svc.AIConversationService, "app_manager", app_manager), \
+             patch.object(svc, "select", MagicMock()):
+            indexed = svc.AIConversationService._index_pending_text_search(session, 500)
+
+        assert indexed == 1
+        assert user_msg.text_search_config == "simple"
+        assert user_msg.text_search_vector is not None
+        session.add.assert_called_once_with(user_msg)
+
+
+class TestIndexPendingEmbeddings:
+    """Tests for AIConversationService._index_pending_embeddings."""
+
+    def test_skips_when_no_embedding_endpoint_configured(self):
+        from lys.apps.ai.modules.conversation import services as svc
+
+        app_manager = MagicMock()
+        session = MagicMock()
+        ai_service = MagicMock()
+        ai_service.get_endpoint.side_effect = AIPurposeNotFoundError("no endpoint")
+
+        with patch.object(svc.AIConversationService, "app_manager", app_manager):
+            result = svc.AIConversationService._index_pending_embeddings(session, ai_service, 500)
+
+        assert result == 0
+        session.execute.assert_not_called()
+
+    def test_embeds_pending_messages_and_stamps_the_model(self):
+        from lys.apps.ai.modules.conversation import services as svc
+
+        app_manager = MagicMock()
+        app_manager.get_entity.return_value = MagicMock()
+        message = _role_msg(AIMessageRole.USER.value, content="hello")
+
+        session = MagicMock()
+        session.execute.return_value.scalars.return_value.all.return_value = [message]
+
+        ai_service = MagicMock()
+        endpoint = MagicMock()
+        endpoint.model = "mistral-embed"
+        ai_service.get_endpoint.return_value = endpoint
+        ai_service.embed_with_purpose_sync.return_value = [[0.1, 0.2]]
+
+        with patch.object(svc.AIConversationService, "app_manager", app_manager), \
+             patch.object(svc, "select", MagicMock()):
+            result = svc.AIConversationService._index_pending_embeddings(session, ai_service, 500)
+
+        assert result == 1
+        assert message.embedding == [0.1, 0.2]
+        assert message.embedding_model == "mistral-embed"
+        session.add.assert_called_once_with(message)
+
+    def test_a_failing_chunk_is_skipped_without_blocking_the_others(self):
+        from lys.apps.ai.modules.conversation import services as svc
+
+        app_manager = MagicMock()
+        app_manager.get_entity.return_value = MagicMock()
+        # Two messages far enough apart in size to land in two separate chunks isn't
+        # needed here: _chunk_for_embedding is exercised on its own; this test only
+        # needs _index_pending_embeddings to survive embed_with_purpose_sync raising.
+        message = _role_msg(AIMessageRole.USER.value, content="hello")
+
+        session = MagicMock()
+        session.execute.return_value.scalars.return_value.all.return_value = [message]
+
+        ai_service = MagicMock()
+        ai_service.get_endpoint.return_value = MagicMock(model="mistral-embed")
+        ai_service.embed_with_purpose_sync.side_effect = Exception("provider down")
+
+        with patch.object(svc.AIConversationService, "app_manager", app_manager), \
+             patch.object(svc, "select", MagicMock()):
+            # Must not raise - one unembeddable chunk must not block indexing progress.
+            result = svc.AIConversationService._index_pending_embeddings(session, ai_service, 500)
+
+        assert result == 0
+        session.add.assert_not_called()
+
+
+class TestIndexPendingMessages:
+    """Tests for AIConversationService.index_pending_messages (Celery task body)."""
+
+    def test_sums_lexical_and_semantic_counts(self):
+        from lys.apps.ai.modules.conversation.services import AIConversationService
+
+        session = MagicMock()
+        ai_service = MagicMock()
+
+        with patch.object(AIConversationService, "_index_pending_text_search", return_value=3), \
+             patch.object(AIConversationService, "_index_pending_embeddings", return_value=2):
+            result = AIConversationService.index_pending_messages(session, ai_service, 500)
+
+        assert result == 5
+
+
+class TestFillTitle:
+    """Tests for AIConversationService.fill_title (synchronous worker body)."""
+
+    def test_skips_when_no_title_endpoint_configured(self):
+        from lys.apps.ai.modules.conversation.services import AIConversationService
+
+        app_manager = MagicMock()
+        session = MagicMock()
+        ai_service = MagicMock()
+        ai_service.get_endpoint.side_effect = AIPurposeNotFoundError("no endpoint")
+
+        with patch.object(AIConversationService, "app_manager", app_manager):
+            AIConversationService.fill_title(session, ai_service, "conv-1")
+
+        ai_service.get_endpoint.assert_called_once_with(AI_PURPOSE_CONVERSATION_TITLE)
+        session.get.assert_not_called()
+        ai_service.chat_with_purpose_sync.assert_not_called()
+
+    def test_skips_when_conversation_missing_or_already_titled(self):
+        from lys.apps.ai.modules.conversation.services import AIConversationService
+
+        app_manager = MagicMock()
+        app_manager.get_entity.return_value = MagicMock()
+        session = MagicMock()
+        titled = MagicMock()
+        titled.title = "Already titled"
+        session.get.return_value = titled
+        ai_service = MagicMock()
+
+        with patch.object(AIConversationService, "app_manager", app_manager):
+            AIConversationService.fill_title(session, ai_service, "conv-1")
+
+        ai_service.chat_with_purpose_sync.assert_not_called()
+
+    def test_skips_when_no_opening_message(self):
+        from lys.apps.ai.modules.conversation import services as svc
+
+        app_manager = MagicMock()
+        conversation_entity = MagicMock()
+        message_entity = MagicMock()
+        app_manager.get_entity.side_effect = lambda n: {
+            "ai_conversation": conversation_entity,
+            "ai_message": message_entity,
+        }[n]
+
+        conversation = MagicMock()
+        conversation.title = None
+        session = MagicMock()
+        session.get.return_value = conversation
+        session.execute.return_value.scalar_one_or_none.return_value = None
+        ai_service = MagicMock()
+
+        with patch.object(svc.AIConversationService, "app_manager", app_manager), \
+             patch.object(svc, "select", MagicMock()):
+            svc.AIConversationService.fill_title(session, ai_service, "conv-1")
+
+        ai_service.chat_with_purpose_sync.assert_not_called()
+
+    def test_titles_from_opening_message_with_a_single_purpose_argument(self):
+        """
+        Regression test: a prior merge artifact passed a stray second positional argument
+        (AI_PURPOSE_EMBEDDING) to chat_with_purpose_sync, which silently became `tools` -
+        breaking every real titling call. Only (messages, purpose) must be passed.
+        """
+        from lys.apps.ai.modules.conversation import services as svc
+
+        app_manager = MagicMock()
+        conversation_entity = MagicMock()
+        message_entity = MagicMock()
+        app_manager.get_entity.side_effect = lambda n: {
+            "ai_conversation": conversation_entity,
+            "ai_message": message_entity,
+        }[n]
+
+        conversation = MagicMock()
+        conversation.title = None
+        session = MagicMock()
+        session.get.return_value = conversation
+        session.execute.return_value.scalar_one_or_none.return_value = "What's our runway?"
+
+        ai_service = MagicMock()
+        response = MagicMock()
+        response.content = '"Runway question"'
+        ai_service.chat_with_purpose_sync.return_value = response
+
+        with patch.object(svc.AIConversationService, "app_manager", app_manager), \
+             patch.object(svc, "select", MagicMock()):
+            svc.AIConversationService.fill_title(session, ai_service, "conv-1")
+
+        ai_service.chat_with_purpose_sync.assert_called_once_with(
+            [{"role": "user", "content": "What's our runway?"}],
+            AI_PURPOSE_CONVERSATION_TITLE,
+        )
+        assert conversation.title == "Runway question"
+        session.add.assert_called_once_with(conversation)
+
+    def test_truncates_title_to_display_max_length(self):
+        from lys.apps.ai.modules.conversation import services as svc
+
+        app_manager = MagicMock()
+        conversation_entity = MagicMock()
+        message_entity = MagicMock()
+        app_manager.get_entity.side_effect = lambda n: {
+            "ai_conversation": conversation_entity,
+            "ai_message": message_entity,
+        }[n]
+
+        conversation = MagicMock()
+        conversation.title = None
+        session = MagicMock()
+        session.get.return_value = conversation
+        session.execute.return_value.scalar_one_or_none.return_value = "opening message"
+
+        ai_service = MagicMock()
+        response = MagicMock()
+        response.content = "x" * (DISPLAY_TITLE_MAX_LENGTH + 50)
+        ai_service.chat_with_purpose_sync.return_value = response
+
+        with patch.object(svc.AIConversationService, "app_manager", app_manager), \
+             patch.object(svc, "select", MagicMock()):
+            svc.AIConversationService.fill_title(session, ai_service, "conv-1")
+
+        assert len(conversation.title) == DISPLAY_TITLE_MAX_LENGTH
+
+    def test_blank_model_response_leaves_conversation_untitled(self):
+        from lys.apps.ai.modules.conversation import services as svc
+
+        app_manager = MagicMock()
+        conversation_entity = MagicMock()
+        message_entity = MagicMock()
+        app_manager.get_entity.side_effect = lambda n: {
+            "ai_conversation": conversation_entity,
+            "ai_message": message_entity,
+        }[n]
+
+        conversation = MagicMock()
+        conversation.title = None
+        session = MagicMock()
+        session.get.return_value = conversation
+        session.execute.return_value.scalar_one_or_none.return_value = "opening message"
+
+        ai_service = MagicMock()
+        response = MagicMock()
+        response.content = '   ""  '
+        ai_service.chat_with_purpose_sync.return_value = response
+
+        with patch.object(svc.AIConversationService, "app_manager", app_manager), \
+             patch.object(svc, "select", MagicMock()):
+            svc.AIConversationService.fill_title(session, ai_service, "conv-1")
+
+        session.add.assert_not_called()
+
+
+class TestMaybeEnqueueTitle:
+    """Tests for AIConversationService.maybe_enqueue_title."""
+
+    @pytest.mark.asyncio
+    async def test_noop_when_conversation_already_titled(self):
+        from lys.apps.ai.modules.conversation.services import AIConversationService
+
+        conversation = MagicMock()
+        conversation.title = "Already titled"
+        session = AsyncMock()
+
+        with patch(
+            "lys.apps.ai.modules.conversation.services.generate_conversation_title"
+        ) as mock_task:
+            await AIConversationService.maybe_enqueue_title(conversation, session)
+
+        session.execute.assert_not_called()
+        mock_task.delay.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_noop_when_more_than_one_user_message(self):
+        from lys.apps.ai.modules.conversation import services as svc
+
+        conversation = MagicMock()
+        conversation.title = None
+        conversation.id = "conv-1"
+        app_manager = MagicMock()
+        app_manager.get_entity.return_value = MagicMock()
+
+        session = AsyncMock()
+        session.execute.return_value = MagicMock(scalar=MagicMock(return_value=2))
+
+        with patch.object(svc.AIConversationService, "app_manager", app_manager), \
+             patch.object(svc, "select", MagicMock()), \
+             patch.object(svc, "generate_conversation_title") as mock_task:
+            await svc.AIConversationService.maybe_enqueue_title(conversation, session)
+
+        session.commit.assert_not_awaited()
+        mock_task.delay.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_commits_then_enqueues_on_the_opening_message(self):
+        from lys.apps.ai.modules.conversation import services as svc
+
+        conversation = MagicMock()
+        conversation.title = None
+        conversation.id = "conv-1"
+        app_manager = MagicMock()
+        app_manager.get_entity.return_value = MagicMock()
+
+        session = AsyncMock()
+        session.execute.return_value = MagicMock(scalar=MagicMock(return_value=1))
+
+        with patch.object(svc.AIConversationService, "app_manager", app_manager), \
+             patch.object(svc, "select", MagicMock()), \
+             patch.object(svc, "generate_conversation_title") as mock_task:
+            await svc.AIConversationService.maybe_enqueue_title(conversation, session)
+
+        session.commit.assert_awaited_once()
+        mock_task.delay.assert_called_once_with("conv-1")
+
+    @pytest.mark.asyncio
+    async def test_broker_failure_does_not_propagate(self):
+        from lys.apps.ai.modules.conversation import services as svc
+
+        conversation = MagicMock()
+        conversation.title = None
+        conversation.id = "conv-1"
+        app_manager = MagicMock()
+        app_manager.get_entity.return_value = MagicMock()
+
+        session = AsyncMock()
+        session.execute.return_value = MagicMock(scalar=MagicMock(return_value=1))
+
+        with patch.object(svc.AIConversationService, "app_manager", app_manager), \
+             patch.object(svc, "select", MagicMock()), \
+             patch.object(svc, "generate_conversation_title") as mock_task:
+            mock_task.delay.side_effect = Exception("broker down")
+            # Must not raise — titling is cosmetic and never fails the user's turn.
+            await svc.AIConversationService.maybe_enqueue_title(conversation, session)
 
 
 class TestFillSummary:

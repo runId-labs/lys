@@ -209,6 +209,41 @@ class AIProvider(ABC):
         """Synchronous version of :meth:`ocr` for Celery workers."""
         raise NotImplementedError(f"{self.name} provider does not support OCR")
 
+    # ========== Embeddings ==========
+
+    async def embed(
+        self,
+        texts: List[str],
+        config: AIEndpointConfig,
+    ) -> List[List[float]]:
+        """
+        Turn texts into embedding vectors.
+
+        Optional capability, like OCR: a provider that does not embed raises
+        NotImplementedError rather than returning something empty, so a caller can tell
+        "this provider cannot" from "this text has no vector".
+
+        Args:
+            texts: Texts to embed, in one call - providers bill and rate-limit per
+                request, so batching is the caller's lever.
+            config: Endpoint configuration (carries api_key, base_url, model).
+
+        Returns:
+            One vector per input text, in the same order.
+
+        Raises:
+            NotImplementedError: If the provider does not support embeddings.
+        """
+        raise NotImplementedError(f"{self.name} provider does not support embeddings")
+
+    def embed_sync(
+        self,
+        texts: List[str],
+        config: AIEndpointConfig,
+    ) -> List[List[float]]:
+        """Synchronous version of :meth:`embed` for Celery workers."""
+        raise NotImplementedError(f"{self.name} provider does not support embeddings")
+
     # ========== Helpers ==========
 
     def get_base_url(self, config: AIEndpointConfig) -> str:

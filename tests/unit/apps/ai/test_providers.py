@@ -2621,6 +2621,122 @@ class TestMistralProviderOCR:
         assert provider._parse_ocr_response(response) == ""
 
 
+class TestMistralProviderEmbeddings:
+    """Tests for MistralProvider embeddings via the /embeddings endpoint."""
+
+    @pytest.fixture
+    def provider(self):
+        return MistralProvider()
+
+    @pytest.fixture
+    def config(self):
+        return AIEndpointConfig(
+            provider="mistral", model="mistral-embed", api_key="k", timeout=30,
+        )
+
+    @staticmethod
+    def _mock_embeddings_response(status_code, data=None):
+        response = MagicMock(spec=httpx.Response)
+        response.status_code = status_code
+        if status_code == 200:
+            response.json.return_value = {"data": data if data is not None else []}
+        else:
+            response.text = f"Error {status_code}"
+        return response
+
+    @pytest.mark.asyncio
+    async def test_embed_empty_input_returns_empty_without_a_request(self, provider, config):
+        with patch("httpx.AsyncClient") as mock_client:
+            result = await provider.embed([], config)
+        mock_client.assert_not_called()
+        assert result == []
+
+    def test_embed_sync_empty_input_returns_empty_without_a_request(self, provider, config):
+        with patch("httpx.Client") as mock_client:
+            result = provider.embed_sync([], config)
+        mock_client.assert_not_called()
+        assert result == []
+
+    @pytest.mark.asyncio
+    async def test_embed_success_returns_one_vector_per_input(self, provider, config):
+        mock_response = self._mock_embeddings_response(200, data=[
+            {"index": 0, "embedding": [0.1, 0.2]},
+            {"index": 1, "embedding": [0.3, 0.4]},
+        ])
+        with patch("httpx.AsyncClient") as mock_client:
+            mock_instance = AsyncMock()
+            mock_instance.post.return_value = mock_response
+            mock_client.return_value.__aenter__.return_value = mock_instance
+            result = await provider.embed(["hello", "world"], config)
+            payload = mock_instance.post.call_args[1]["json"]
+            url = mock_instance.post.call_args[0][0]
+        assert result == [[0.1, 0.2], [0.3, 0.4]]
+        assert url.endswith("/embeddings")
+        assert payload["model"] == "mistral-embed"
+        assert payload["input"] == ["hello", "world"]
+
+    @pytest.mark.asyncio
+    async def test_embed_sorts_vectors_by_index_regardless_of_response_order(self, provider, config):
+        """The API documents an index per item; a reordered response must not silently
+        attach a vector to the wrong input."""
+        mock_response = self._mock_embeddings_response(200, data=[
+            {"index": 1, "embedding": [0.3, 0.4]},
+            {"index": 0, "embedding": [0.1, 0.2]},
+        ])
+        with patch("httpx.AsyncClient") as mock_client:
+            mock_instance = AsyncMock()
+            mock_instance.post.return_value = mock_response
+            mock_client.return_value.__aenter__.return_value = mock_instance
+            result = await provider.embed(["hello", "world"], config)
+        assert result == [[0.1, 0.2], [0.3, 0.4]]
+
+    @pytest.mark.asyncio
+    async def test_embed_mismatched_vector_count_raises(self, provider, config):
+        mock_response = self._mock_embeddings_response(200, data=[{"index": 0, "embedding": [0.1]}])
+        with patch("httpx.AsyncClient") as mock_client:
+            mock_instance = AsyncMock()
+            mock_instance.post.return_value = mock_response
+            mock_client.return_value.__aenter__.return_value = mock_instance
+            with pytest.raises(AIProviderError):
+                await provider.embed(["hello", "world"], config)
+
+    def test_embed_sync_success(self, provider, config):
+        mock_response = self._mock_embeddings_response(200, data=[{"index": 0, "embedding": [0.5]}])
+        with patch("httpx.Client") as mock_client:
+            mock_instance = MagicMock()
+            mock_instance.post.return_value = mock_response
+            mock_client.return_value.__enter__.return_value = mock_instance
+            result = provider.embed_sync(["hello"], config)
+        assert result == [[0.5]]
+
+    @pytest.mark.asyncio
+    async def test_embed_error_status_raises(self, provider, config):
+        mock_response = self._mock_embeddings_response(401)
+        with patch("httpx.AsyncClient") as mock_client:
+            mock_instance = AsyncMock()
+            mock_instance.post.return_value = mock_response
+            mock_client.return_value.__aenter__.return_value = mock_instance
+            with pytest.raises(AIAuthError):
+                await provider.embed(["hello"], config)
+
+    @pytest.mark.asyncio
+    async def test_embed_timeout(self, provider, config):
+        with patch("httpx.AsyncClient") as mock_client:
+            mock_instance = AsyncMock()
+            mock_instance.post.side_effect = httpx.TimeoutException("Timeout")
+            mock_client.return_value.__aenter__.return_value = mock_instance
+            with pytest.raises(AITimeoutError):
+                await provider.embed(["hello"], config)
+
+    def test_embed_sync_timeout(self, provider, config):
+        with patch("httpx.Client") as mock_client:
+            mock_instance = MagicMock()
+            mock_instance.post.side_effect = httpx.TimeoutException("Timeout")
+            mock_client.return_value.__enter__.return_value = mock_instance
+            with pytest.raises(AITimeoutError):
+                provider.embed_sync(["hello"], config)
+
+
 class TestProviderOCRDefault:
     """The base AIProvider raises NotImplementedError for OCR (optional capability)."""
 
@@ -2638,6 +2754,25 @@ class TestProviderOCRDefault:
     def test_anthropic_ocr_sync_not_implemented(self, config):
         with pytest.raises(NotImplementedError):
             AnthropicProvider().ocr_sync(b"x", "application/pdf", config)
+
+
+class TestProviderEmbedDefault:
+    """The base AIProvider raises NotImplementedError for embeddings (optional capability)."""
+
+    @pytest.fixture
+    def config(self):
+        return AIEndpointConfig(
+            provider="anthropic", model="claude-opus-4-8", api_key="k", timeout=30,
+        )
+
+    @pytest.mark.asyncio
+    async def test_anthropic_embed_async_not_implemented(self, config):
+        with pytest.raises(NotImplementedError):
+            await AnthropicProvider().embed(["x"], config)
+
+    def test_anthropic_embed_sync_not_implemented(self, config):
+        with pytest.raises(NotImplementedError):
+            AnthropicProvider().embed_sync(["x"], config)
 
 
 class _StubProvider(AIProvider):
@@ -2737,3 +2872,52 @@ class TestAIServiceOCR:
         finally:
             del AIService._providers["noocr_a"]
             del AIService._providers["okocr_a"]
+
+
+class TestAIServiceEmbedWithPurpose:
+    """Tests for AIService.embed_with_purpose / embed_with_purpose_sync.
+
+    Unlike chat, embeddings have no fallback chain: two providers do not embed into the
+    same space, so a failure must surface rather than silently switch provider.
+    """
+
+    def _config(self, provider_name="mistral"):
+        return AIEndpointConfig(provider=provider_name, model="mistral-embed", api_key="k", timeout=30)
+
+    @pytest.mark.asyncio
+    async def test_delegates_to_the_configured_provider(self):
+        config = self._config()
+        provider = MagicMock()
+        provider.embed = AsyncMock(return_value=[[0.1, 0.2]])
+
+        with patch.object(AIService, "get_endpoint", return_value=config), \
+             patch.object(AIService, "get_provider", return_value=provider) as mock_get_provider:
+            result = await AIService.embed_with_purpose(["hello"], "embedding")
+
+        mock_get_provider.assert_called_once_with("mistral")
+        provider.embed.assert_awaited_once_with(["hello"], config)
+        assert result == [[0.1, 0.2]]
+
+    def test_sync_delegates_to_the_configured_provider(self):
+        config = self._config()
+        provider = MagicMock()
+        provider.embed_sync = MagicMock(return_value=[[0.5]])
+
+        with patch.object(AIService, "get_endpoint", return_value=config), \
+             patch.object(AIService, "get_provider", return_value=provider) as mock_get_provider:
+            result = AIService.embed_with_purpose_sync(["hello"], "embedding")
+
+        mock_get_provider.assert_called_once_with("mistral")
+        provider.embed_sync.assert_called_once_with(["hello"], config)
+        assert result == [[0.5]]
+
+    @pytest.mark.asyncio
+    async def test_provider_error_propagates_without_fallback(self):
+        config = self._config()
+        provider = MagicMock()
+        provider.embed = AsyncMock(side_effect=AIProviderError("provider down"))
+
+        with patch.object(AIService, "get_endpoint", return_value=config), \
+             patch.object(AIService, "get_provider", return_value=provider):
+            with pytest.raises(AIProviderError):
+                await AIService.embed_with_purpose(["hello"], "embedding")

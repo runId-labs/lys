@@ -17,6 +17,31 @@ project changes.
   are already wired.
 - Keys in `_keys` (mistral/anthropic); never hardcode a key.
 
+## Conversation search (`search_conversation`)
+
+Past the compaction threshold the older turns leave the prompt and survive only as the
+summary. `search_conversation` reaches back into the messages themselves. It is offered to
+the model **only once a completed summary exists** — before that the whole exchange is
+still in the prompt — and it is bound to the current conversation, so no id travels and no
+other conversation can be reached.
+
+- **Indexing is periodic, not per message.** `lys.apps.ai.tasks.index_pending_messages`
+  fills whatever carries no vector yet: schedule it in the worker's `beat_schedule`
+  (~10 min). It also picks up messages that predate the feature, so no backfill is needed.
+- **Three sources, merged by reciprocal rank**: full-text (stemmed words), trigram
+  (accents, typos — needs `pg_trgm` and `unaccent`, both trusted, so a migration may create
+  them) and semantic (`pgvector` + an `embedding` purpose). Each degrades on its own: with
+  no embedding endpoint configured the search runs on the other two.
+- **`vector` is NOT a trusted extension.** Only a superuser may create it, and the
+  application user is usually not one on a deployed cluster. Install it per environment
+  before the migration adding the `embedding` column runs; creating it from a migration
+  works locally, where the container user happens to be superuser, and fails once deployed.
+- **⚠️ Overriding `chatbot.summary_header` drops the tool's mention.** The default header
+  tells the model the summary is not the whole story and that `search_conversation`
+  retrieves the messages. A project that replaces the header — to translate it, typically —
+  must carry that sentence over, or the model is never told the tool exists beyond its own
+  description.
+
 ## Exposing a webservice as a chatbot TOOL
 
 Any `lys_getter` / `lys_connection` / `lys_creation` query can become a tool

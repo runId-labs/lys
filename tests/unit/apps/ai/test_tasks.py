@@ -11,7 +11,11 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from lys.apps.ai.tasks import summarize_conversation
+from lys.apps.ai.tasks import (
+    generate_conversation_title,
+    index_pending_messages,
+    summarize_conversation,
+)
 
 
 def _mock_current_app():
@@ -87,3 +91,68 @@ class TestSummarizeConversationTask:
             if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
                 if node.func.id == "print":
                     pytest.fail("Found print() call in ai/tasks.py - should use logger")
+
+
+class TestGenerateConversationTitleTask:
+    """Tests for the generate_conversation_title Celery task."""
+
+    def test_is_shared_task(self):
+        assert hasattr(generate_conversation_title, "delay")
+        assert hasattr(generate_conversation_title, "apply_async")
+
+    def test_takes_conversation_id_parameter(self):
+        sig = inspect.signature(generate_conversation_title)
+        assert "conversation_id" in sig.parameters
+
+    def test_success_fills_title_commits_and_returns_true(self):
+        current_app, conv_service, ai_service, session = _mock_current_app()
+
+        with patch("lys.apps.ai.tasks.current_app", current_app):
+            result = generate_conversation_title("conv-1")
+
+        assert result is True
+        conv_service.fill_title.assert_called_once_with(session, ai_service, "conv-1")
+        session.commit.assert_called_once()
+
+    def test_failure_is_logged_and_returns_false_without_raising(self):
+        current_app, conv_service, ai_service, session = _mock_current_app()
+        conv_service.fill_title.side_effect = Exception("provider down")
+
+        with patch("lys.apps.ai.tasks.current_app", current_app):
+            result = generate_conversation_title("conv-1")
+
+        assert result is False
+        session.commit.assert_not_called()
+
+
+class TestIndexPendingMessagesTask:
+    """Tests for the index_pending_messages Celery task."""
+
+    def test_is_shared_task(self):
+        assert hasattr(index_pending_messages, "delay")
+        assert hasattr(index_pending_messages, "apply_async")
+
+    def test_takes_batch_size_parameter_with_a_default(self):
+        sig = inspect.signature(index_pending_messages)
+        assert sig.parameters["batch_size"].default == 500
+
+    def test_success_indexes_commits_and_returns_count(self):
+        current_app, conv_service, ai_service, session = _mock_current_app()
+        conv_service.index_pending_messages.return_value = 7
+
+        with patch("lys.apps.ai.tasks.current_app", current_app):
+            result = index_pending_messages(batch_size=100)
+
+        assert result == 7
+        conv_service.index_pending_messages.assert_called_once_with(session, ai_service, 100)
+        session.commit.assert_called_once()
+
+    def test_failure_is_logged_and_returns_zero_without_raising(self):
+        current_app, conv_service, ai_service, session = _mock_current_app()
+        conv_service.index_pending_messages.side_effect = Exception("db gone")
+
+        with patch("lys.apps.ai.tasks.current_app", current_app):
+            result = index_pending_messages()
+
+        assert result == 0
+        session.commit.assert_not_called()

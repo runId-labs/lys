@@ -1,6 +1,6 @@
 [project]
 name = "runid-lys"
-version = "0.44.1"
+version = "0.45.0"
 description = "A modular FastAPI framework for building GraphQL APIs with SQLAlchemy, featuring component-based architecture, JWT authentication, and multi-tenant permissions."
 authors = [
   { name="THEVENIN Anthony", email = "labs@runid.fr" },
@@ -39,12 +39,13 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest", "pytest-asyncio", "pytest-cov", "pytest-forked", "aiosqlite", "fakeredis"]
+dev = ["pytest", "pytest-asyncio", "pytest-cov", "pytest-forked", "aiosqlite", "fakeredis",
+       "langdetect>=1.0.9", "pgvector>=0.3.0"]
 mollie = ["mollie-api-python>=3.0.0"]
 storage = ["aioboto3>=12.0.0"]
-ai = ["mistralai"]
+ai = ["mistralai", "langdetect>=1.0.9", "pgvector>=0.3.0"]
 pdf = ["weasyprint>=62", "markdown>=3.6"]
-all = ["mollie-api-python>=3.0.0", "aioboto3>=12.0.0", "mistralai", "weasyprint>=62", "markdown>=3.6"]
+all = ["mollie-api-python>=3.0.0", "aioboto3>=12.0.0", "mistralai", "langdetect>=1.0.9", "pgvector>=0.3.0", "weasyprint>=62", "markdown>=3.6"]
 test = [
     "pytest",
     "pytest-asyncio",
@@ -56,6 +57,10 @@ test = [
     "aioboto3>=12.0.0",
     "weasyprint>=62",
     "markdown>=3.6",
+    # The ai app imports both at module level - pgvector in entities.py, langdetect in
+    # utils/search.py - so the schema cannot even be built without them.
+    "langdetect>=1.0.9",
+    "pgvector>=0.3.0",
 ]
 
 [project.urls]

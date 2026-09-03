@@ -10,20 +10,32 @@ import time
 from datetime import datetime, timedelta, UTC
 from typing import AsyncGenerator, Optional, List, Dict, Any
 
-from sqlalchemy import select, tuple_
+from sqlalchemy import cast, func, select, tuple_
+from sqlalchemy.dialects.postgresql import REGCONFIG
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Session
 
 from lys.apps.ai.modules.conversation.consts import (
     AIFeedbackRating,
     AIMessageRole,
+    AI_CONVERSATION_NODE_NAME,
     AI_PURPOSE_CHATBOT,
     AI_PURPOSE_CONVERSATION_SUMMARY,
+    AI_PURPOSE_CONVERSATION_TITLE,
+    AI_PURPOSE_EMBEDDING,
     DEFAULT_COMPACTION_PENDING_TTL_SECONDS,
     DEFAULT_COMPACTION_TOKEN_THRESHOLD,
     DEFAULT_COMPACTION_WINDOW_MESSAGES,
     DEFAULT_DYNAMIC_CONTEXT_HEADER,
+    DEFAULT_SEARCH_RESULTS,
     DEFAULT_SUMMARY_HEADER,
+    DISPLAY_TITLE_MAX_LENGTH,
+    EMBEDDING_MAX_BATCH,
+    EMBEDDING_MAX_BATCH_CHARS,
+    EMBEDDING_MAX_CHARS,
+    MAX_SEMANTIC_DISTANCE,
+    RANK_FUSION_CONSTANT,
+    TRIGRAM_SIMILARITY_THRESHOLD,
 )
 from lys.apps.ai.modules.conversation.entities import (
     AIConversation,
@@ -33,8 +45,15 @@ from lys.apps.ai.modules.conversation.entities import (
 from lys.apps.ai.modules.conversation.models import PageContextModel
 from lys.apps.ai.modules.core.executors import GraphQLToolExecutor
 from lys.apps.ai.modules.core.services import AIToolService
-from lys.apps.ai.tasks import summarize_conversation
+from lys.apps.ai.tasks import generate_conversation_title, summarize_conversation
 from lys.apps.ai.utils.guardrails import CONFIRM_ACTION_TOOL
+from lys.apps.ai.utils.providers.exceptions import AIPurposeNotFoundError
+from lys.apps.ai.utils.search import (
+    DEFAULT_TEXT_SEARCH_CONFIG,
+    SEARCH_CONVERSATION_TOOL,
+    resolve_text_search_config,
+)
+from lys.core.graphql.client import build_global_id
 from lys.apps.ai.utils.providers.config import parse_plugin_config
 from lys.core.registries import register_service
 from lys.core.services import EntityService
@@ -244,6 +263,33 @@ class AIConversationService(EntityService[AIConversation]):
         return assistant_message
 
     @classmethod
+    async def get_opening_message_content(
+        cls,
+        conversation_id: str,
+        session: AsyncSession,
+    ) -> Optional[str]:
+        """
+        Return the content of the message that opened a conversation, or None.
+
+        The opening message is the earliest ``user`` row: assistant and tool rows
+        are answers to it, and a system row is never persisted (the system prompt
+        is assembled per turn). Ordered by ``(created_at, id)`` — the id tie-break
+        keeps ordering deterministic when two rows share a created_at.
+        """
+        message_entity = cls.app_manager.get_entity("ai_message")
+        result = await session.execute(
+            select(message_entity.content)
+            .where(
+                message_entity.conversation_id == conversation_id,
+                message_entity.role == AIMessageRole.USER.value,
+            )
+            .order_by(message_entity.created_at, message_entity.id)
+            .limit(1)
+        )
+
+        return result.scalar_one_or_none()
+
+    @classmethod
     async def _load_current_summary(
         cls,
         conversation_id: str,
@@ -298,6 +344,464 @@ class AIConversationService(EntityService[AIConversation]):
                     if names:
                         lines.append(f"Assistant [used tools: {names}]")
         return "\n".join(lines)
+
+    @classmethod
+    def index_pending_messages(cls, session: Session, ai_service: Any, batch_size: int) -> int:
+        """
+        Index the messages left without a search vector (background task body).
+
+        SYNCHRONOUS - runs in the Celery worker on a sync session, like the other task
+        bodies. Does not commit; the caller owns the transaction.
+
+        Lexical and semantic indexing are selected independently rather than in one pass:
+        they fail on different things - one is local and always succeeds, the other depends
+        on a provider being reachable - and tying them together would mean a momentary
+        outage cost a message its embedding for good, since it would never be looked at
+        again once its text vector was in.
+
+        Returns:
+            The number of messages touched in this pass.
+        """
+        lexical = cls._index_pending_text_search(session, batch_size)
+        semantic = cls._index_pending_embeddings(session, ai_service, batch_size)
+
+        return lexical + semantic
+
+    @classmethod
+    def _index_pending_text_search(cls, session: Session, batch_size: int) -> int:
+        """
+        Fill the text search vectors left empty.
+
+        Only the exchanged turns are indexed. Tool rows and the tool-call-only assistant
+        rows carry the machinery of an answer, not the answer itself: they are never shown
+        to the user and never searched for, so they are marked as handled rather than
+        indexed - otherwise every run would pick them up again forever.
+
+        The vector is built by PostgreSQL rather than in Python: a tsvector is the
+        database's own representation, and only the server can produce lexemes its
+        operators will match. The configuration is stored alongside, because a vector
+        cannot be queried without knowing how it was stemmed.
+        """
+        message_entity = cls.app_manager.get_entity("ai_message")
+
+        messages = session.execute(
+            select(message_entity)
+            .where(message_entity.text_search_config.is_(None))
+            .order_by(message_entity.created_at, message_entity.id)
+            .limit(batch_size)
+        ).scalars().all()
+
+        indexed = 0
+        for message in messages:
+            if not cls._is_searchable(message):
+                # Marked with the neutral configuration and no vector: the row is settled,
+                # and the next run will not look at it again.
+                message.text_search_config = DEFAULT_TEXT_SEARCH_CONFIG
+                session.add(message)
+                continue
+
+            config = resolve_text_search_config(message.content)
+            message.text_search_config = config
+            message.text_search_vector = func.to_tsvector(config, message.content)
+            session.add(message)
+            indexed += 1
+
+        return indexed
+
+    @classmethod
+    def _index_pending_embeddings(
+        cls, session: Session, ai_service: Any, batch_size: int
+    ) -> int:
+        """
+        Fill the semantic vectors left empty.
+
+        Optional by design: with no endpoint configured for the purpose, messages keep
+        their text vector and search runs on two sources instead of three. Semantic search
+        refines the lexical one, it is never its precondition.
+
+        Sent in chunks the provider accepts rather than in one call: Mistral caps a request
+        at 128 inputs and 16384 tokens, and a single oversized request fails whole. A chunk
+        that fails is logged and skipped, leaving the others to land - one unembeddable
+        message must not hold up the rest.
+        """
+        try:
+            endpoint = ai_service.get_endpoint(AI_PURPOSE_EMBEDDING)
+        except AIPurposeNotFoundError:
+            logger.info(
+                "Semantic indexing skipped: no '%s' endpoint configured", AI_PURPOSE_EMBEDDING
+            )
+            return 0
+
+        message_entity = cls.app_manager.get_entity("ai_message")
+
+        messages = session.execute(
+            select(message_entity)
+            .where(
+                message_entity.embedding.is_(None),
+                message_entity.content.isnot(None),
+                message_entity.content != "",
+                message_entity.role.in_(
+                    [AIMessageRole.USER.value, AIMessageRole.ASSISTANT.value]
+                ),
+            )
+            .order_by(message_entity.created_at, message_entity.id)
+            .limit(batch_size)
+        ).scalars().all()
+
+        embedded = 0
+        for chunk in cls._chunk_for_embedding(messages):
+            texts = [message.content[:EMBEDDING_MAX_CHARS] for message in chunk]
+
+            try:
+                vectors = ai_service.embed_with_purpose_sync(texts, AI_PURPOSE_EMBEDDING)
+            except Exception as e:
+                logger.warning(f"Semantic indexing failed for {len(chunk)} message(s): {e}")
+                continue
+
+            for message, vector in zip(chunk, vectors):
+                message.embedding = vector
+                message.embedding_model = endpoint.model
+                session.add(message)
+                embedded += 1
+
+        return embedded
+
+    @staticmethod
+    def _is_searchable(message) -> bool:
+        """Whether a message holds something a user would ever search for."""
+        return bool(message.content) and message.role in (
+            AIMessageRole.USER.value,
+            AIMessageRole.ASSISTANT.value,
+        )
+
+    @staticmethod
+    def _chunk_for_embedding(messages: List["AIMessage"]) -> List[List["AIMessage"]]:
+        """
+        Split messages into requests the provider will accept.
+
+        Bounded on both counts at once: a run of short turns breaches the input count long
+        before the token budget, a pasted document does the opposite.
+        """
+        chunks: List[List["AIMessage"]] = []
+        current: List["AIMessage"] = []
+        current_chars = 0
+
+        for message in messages:
+            length = min(len(message.content), EMBEDDING_MAX_CHARS)
+
+            if current and (
+                len(current) >= EMBEDDING_MAX_BATCH
+                or current_chars + length > EMBEDDING_MAX_BATCH_CHARS
+            ):
+                chunks.append(current)
+                current, current_chars = [], 0
+
+            current.append(message)
+            current_chars += length
+
+        if current:
+            chunks.append(current)
+
+        return chunks
+
+    @classmethod
+    async def _search_ids_full_text(
+        cls, conversation_id: str, query: str, session: AsyncSession, limit: int
+    ) -> List[str]:
+        """
+        Message ids matching on stemmed words, best first.
+
+        Each row is matched with the configuration that indexed it, read from the row
+        itself: a vector stemmed by one configuration will not match a query stemmed by
+        another, and a conversation legitimately holds rows in several - a French exchange
+        with a long English report pasted into it.
+        """
+        message_entity = cls.app_manager.get_entity("ai_message")
+
+        ts_query = func.websearch_to_tsquery(
+            cast(message_entity.text_search_config, REGCONFIG), query
+        )
+
+        result = await session.execute(
+            select(message_entity.id)
+            .where(
+                message_entity.conversation_id == conversation_id,
+                message_entity.text_search_vector.isnot(None),
+                message_entity.text_search_vector.op("@@")(ts_query),
+            )
+            .order_by(func.ts_rank(message_entity.text_search_vector, ts_query).desc())
+            .limit(limit)
+        )
+
+        return list(result.scalars().all())
+
+    @classmethod
+    async def _search_ids_trigram(
+        cls, conversation_id: str, query: str, session: AsyncSession, limit: int
+    ) -> List[str]:
+        """
+        Message ids matching approximately, best first.
+
+        Catches what stemming cannot: an accent left out, a misspelled name, a truncated
+        word. Compares the query against the closest run of words rather than the whole
+        message - plain similarity between a three-word query and a sixty-word answer is
+        near zero whatever they share - and on unaccented text, so "tresorerie" reaches
+        "trésorerie".
+        """
+        message_entity = cls.app_manager.get_entity("ai_message")
+
+        content = func.unaccent(message_entity.content)
+        score = func.word_similarity(query, content)
+
+        result = await session.execute(
+            select(message_entity.id)
+            .where(
+                message_entity.conversation_id == conversation_id,
+                message_entity.content.isnot(None),
+                message_entity.role.in_(
+                    [AIMessageRole.USER.value, AIMessageRole.ASSISTANT.value]
+                ),
+                score > TRIGRAM_SIMILARITY_THRESHOLD,
+            )
+            .order_by(score.desc())
+            .limit(limit)
+        )
+
+        return list(result.scalars().all())
+
+    @classmethod
+    async def _search_ids_semantic(
+        cls, conversation_id: str, query: str, session: AsyncSession, limit: int
+    ) -> List[str]:
+        """
+        Message ids closest in meaning, best first.
+
+        Catches what neither lexical source can: the same idea said in other words. Costs
+        one embedding call, on the query - the messages were embedded when they were
+        indexed.
+
+        Returns nothing rather than raising when semantic search is unavailable: no
+        endpoint configured, a provider that is down, a conversation whose rows carry no
+        vector. The other two sources answer, and the search degrades instead of failing.
+
+        Only rows embedded with the model now configured are considered: vectors from two
+        models live in unrelated spaces, and comparing across them returns a confident
+        ranking of nonsense.
+        """
+        message_entity = cls.app_manager.get_entity("ai_message")
+        ai_service = cls.app_manager.get_service("ai")
+
+        try:
+            endpoint = ai_service.get_endpoint(AI_PURPOSE_EMBEDDING)
+            vectors = await ai_service.embed_with_purpose([query], AI_PURPOSE_EMBEDDING)
+        except AIPurposeNotFoundError:
+            return []
+        except Exception as e:
+            logger.warning(f"Semantic search unavailable for {conversation_id}: {e}")
+            return []
+
+        if not vectors:
+            return []
+
+        distance = message_entity.embedding.cosine_distance(vectors[0])
+
+        result = await session.execute(
+            select(message_entity.id)
+            .where(
+                message_entity.conversation_id == conversation_id,
+                message_entity.embedding.isnot(None),
+                message_entity.embedding_model == endpoint.model,
+                # Without this the source always returns its nearest rows, however far
+                # they are, and an unrelated query would still cast a vote.
+                distance < MAX_SEMANTIC_DISTANCE,
+            )
+            .order_by(distance)
+            .limit(limit)
+        )
+
+        return list(result.scalars().all())
+
+    @classmethod
+    async def search_messages(
+        cls,
+        conversation_id: str,
+        query: str,
+        session: AsyncSession,
+        limit: int = DEFAULT_SEARCH_RESULTS,
+    ) -> List["AIMessage"]:
+        """
+        Find the messages of a conversation that match a query, best first.
+
+        Three ways of matching, merged rather than chosen between: full-text finds the
+        stemmed words, trigrams find what was written approximately, embeddings find what
+        was meant. They fail on different things - a stemmed index is blind to a typo, a
+        trigram to a synonym, an embedding to an exact identifier - so a result any of them
+        finds is worth returning.
+
+        Merged by reciprocal rank: each source contributes 1/(k + rank), which needs no
+        comparison between a ts_rank, a similarity and a cosine distance - three scores on
+        unrelated scales - and rewards a message several of them agree on. A source that
+        returns nothing, because it is unavailable or unconfigured, simply does not vote.
+
+        Args:
+            conversation_id: Conversation to search within.
+            query: What to look for. Full-text reads it with websearch syntax, so quotes,
+                OR and a leading minus all work - the query comes from a model, which can
+                be precise.
+            limit: Most results to return.
+
+        Returns:
+            The matching messages, most relevant first.
+        """
+        message_entity = cls.app_manager.get_entity("ai_message")
+
+        # Each source is asked for more than the final count: a message ranked fourth by
+        # both sources should be able to overtake one ranked first by a single source.
+        per_source = limit * 2
+
+        ranked_sources = [
+            await cls._search_ids_full_text(conversation_id, query, session, per_source),
+            await cls._search_ids_trigram(conversation_id, query, session, per_source),
+            await cls._search_ids_semantic(conversation_id, query, session, per_source),
+        ]
+
+        scores: Dict[str, float] = {}
+        for ids in ranked_sources:
+            for rank, message_id in enumerate(ids):
+                scores[message_id] = scores.get(message_id, 0.0) + 1.0 / (
+                    RANK_FUSION_CONSTANT + rank
+                )
+
+        if not scores:
+            return []
+
+        best_ids = sorted(scores, key=scores.get, reverse=True)[:limit]
+
+        result = await session.execute(
+            select(message_entity).where(message_entity.id.in_(best_ids))
+        )
+        by_id = {message.id: message for message in result.scalars().all()}
+
+        return [by_id[message_id] for message_id in best_ids if message_id in by_id]
+
+    @classmethod
+    def _build_search_handler(cls, conversation_id: str, session: AsyncSession):
+        """
+        Build the special-tool handler backing ``search_conversation`` for one turn.
+
+        Bound to this conversation and this request's session, since the executor calls
+        handlers as ``(arguments, context) -> dict`` with no room to pass either through.
+        """
+        async def handler(arguments: Dict[str, Any], context: Dict[str, Any]) -> Dict[str, Any]:
+            query = (arguments or {}).get("query") or ""
+            if not query.strip():
+                return {"results": []}
+
+            messages = await cls.search_messages(conversation_id, query, session)
+
+            return {
+                "results": [
+                    {
+                        "role": message.role,
+                        "content": message.content,
+                        # The tool exists to place a past turn in time ("you told me
+                        # this three weeks ago"); without it the model knows what was
+                        # said but not when, and cannot anchor it.
+                        "date": message.created_at.isoformat(),
+                    }
+                    for message in messages
+                ]
+            }
+
+        return handler
+
+    @classmethod
+    async def maybe_enqueue_title(cls, conversation: "AIConversation", session: AsyncSession) -> None:
+        """
+        Enqueue titling when a conversation has just received its opening message.
+
+        Fires at most once per conversation: the trigger is the opening user message
+        being the only one, so a later turn cannot re-enqueue even if titling failed.
+        The listing keeps falling back to that message in the meantime, which is what
+        makes not retrying acceptable.
+        """
+        if conversation.title:
+            return
+
+        message_entity = cls.app_manager.get_entity("ai_message")
+        user_message_count = (await session.execute(
+            select(func.count())
+            .select_from(message_entity)
+            .where(
+                message_entity.conversation_id == conversation.id,
+                message_entity.role == AIMessageRole.USER.value,
+            )
+        )).scalar() or 0
+        if user_message_count != 1:
+            return
+
+        # The worker runs in a separate session: the opening message must be committed
+        # before it is enqueued. A later request-end commit is then a harmless no-op.
+        await session.commit()
+
+        try:
+            generate_conversation_title.delay(conversation.id)
+        except Exception as e:
+            # Titling is cosmetic — a broker failure must not fail the user's turn.
+            logger.warning(f"Failed to enqueue titling for conversation {conversation.id}: {e}")
+
+    @classmethod
+    def fill_title(cls, session: Session, ai_service: Any, conversation_id: str) -> None:
+        """
+        Title a conversation from its opening message (background task body).
+
+        SYNCHRONOUS — runs in the Celery worker on a sync session, like ``fill_summary``.
+        Does not commit — the caller owns the transaction. A conversation titled in the
+        meantime is left alone, so a user edit is never overwritten.
+
+        Titling is opt-in: with no endpoint configured for the purpose, this returns
+        without calling a provider. The check belongs here rather than at enqueue time
+        because the endpoint is configured on the worker, not on the API that enqueues.
+        """
+        try:
+            ai_service.get_endpoint(AI_PURPOSE_CONVERSATION_TITLE)
+        except AIPurposeNotFoundError:
+            logger.info(
+                "Conversation titling skipped: no '%s' endpoint configured",
+                AI_PURPOSE_CONVERSATION_TITLE,
+            )
+            return
+
+        conversation_entity = cls.app_manager.get_entity("ai_conversation")
+        message_entity = cls.app_manager.get_entity("ai_message")
+
+        conversation = session.get(conversation_entity, conversation_id)
+        if conversation is None or conversation.title:
+            return
+
+        opening = session.execute(
+            select(message_entity.content)
+            .where(
+                message_entity.conversation_id == conversation_id,
+                message_entity.role == AIMessageRole.USER.value,
+            )
+            .order_by(message_entity.created_at, message_entity.id)
+            .limit(1)
+        ).scalar_one_or_none()
+        if not opening:
+            return
+
+        response = ai_service.chat_with_purpose_sync(
+            [{"role": "user", "content": opening}],
+            AI_PURPOSE_CONVERSATION_TITLE,
+        )
+
+        title = (response.content or "").strip().strip('"').strip()
+        if not title:
+            return
+
+        conversation.title = title[:DISPLAY_TITLE_MAX_LENGTH]
+        session.add(conversation)
 
     @classmethod
     def fill_summary(cls, session: Session, ai_service: Any, summary_id: str) -> None:
@@ -846,8 +1350,23 @@ class AIConversationService(EntityService[AIConversation]):
         )
         logger.debug(f"[SystemPrompt] Built {len(system_segments)} segment(s)")
 
+        # Searching the conversation only makes sense once part of it has left the prompt.
+        # Before compaction the whole exchange is already there to read, and offering the
+        # tool would invite the model to spend a turn rediscovering what it can already see.
+        if current_summary is not None:
+            tools.append(SEARCH_CONVERSATION_TOOL)
+
         # Get the appropriate executor based on config
         executor = await cls._get_tool_executor(tools, info, accessible_routes, page_context)
+
+        # Registered here rather than in the executor factory: the handler needs this
+        # conversation and this session, and the factory is overridden by consumers that
+        # add their own tools - registering after the call leaves those untouched.
+        if current_summary is not None:
+            executor.register_special_tool(
+                "search_conversation",
+                cls._build_search_handler(conversation.id, session),
+            )
 
         message_service = app_manager.get_service("ai_message")
         ai_service = app_manager.get_service("ai")
@@ -885,6 +1404,10 @@ class AIConversationService(EntityService[AIConversation]):
             role=AIMessageRole.USER.value,
             content=content,
         )
+
+        # Title the conversation off the request path, from this message when it is the
+        # opening one. Never blocks or fails the turn.
+        await cls.maybe_enqueue_title(conversation, session)
 
         return {
             "tools": tools,
@@ -1224,7 +1747,10 @@ class AIConversationService(EntityService[AIConversation]):
                 frontend_actions = list(getattr(info.context, "frontend_actions", []))
 
                 result = {
-                    "conversationId": conversation.id,
+                    # Clients only ever handle GlobalIDs: the conversation listing returns
+                    # them, so the stream must hand out the same reference or a resumed
+                    # conversation and a fresh one would carry two different formats.
+                    "conversationId": build_global_id(AI_CONVERSATION_NODE_NAME, conversation.id),
                     "toolCallsCount": tool_calls_count,
                     "frontendActions": frontend_actions if frontend_actions else None,
                 }
