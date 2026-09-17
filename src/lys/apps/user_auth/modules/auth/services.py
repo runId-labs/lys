@@ -1,12 +1,12 @@
 import bcrypt
 import logging
 import os
-from datetime import timedelta
+from datetime import datetime, timedelta
 from typing import Optional, Type
 
-from sqlalchemy import select, ColumnElement, or_, func
+from sqlalchemy import select, ColumnElement, or_, func, delete
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import Relationship, ColumnProperty, InstrumentedAttribute
+from sqlalchemy.orm import Relationship, ColumnProperty, InstrumentedAttribute, Session
 from starlette.requests import Request
 from starlette.responses import Response
 
@@ -42,6 +42,28 @@ _DUMMY_HASH = bcrypt.hashpw(b"dummy-password-for-timing", bcrypt.gensalt()).deco
 @register_service()
 class LoginAttemptStatusService(EntityService[LoginAttemptStatus]):
     pass
+
+
+@register_service()
+class UserLoginAttemptService(EntityService[UserLoginAttempt]):
+
+    @classmethod
+    def purge_expired(
+        cls, retention_days: int, *, session: Session, now: Optional[datetime] = None
+    ) -> int:
+        """Delete login attempts whose retention has lapsed (GDPR - 869e7tjpn, 1 year).
+
+        **Synchronous** (run from the Celery purge task via a sync session, same
+        convention as UserRefreshTokenService.purge_expired).
+
+        CNIL recommends a 1-year retention for connection/security logs, counted
+        from the recording date - there is no secondary "dead" event to prefer
+        here (unlike the token purges), so `created_at` is the only anchor.
+        """
+        now = now or now_utc()
+        cutoff = now - timedelta(days=retention_days)
+        result = session.execute(delete(cls.entity_class).where(cls.entity_class.created_at < cutoff))
+        return result.rowcount or 0
 
 
 @register_service()
