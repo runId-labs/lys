@@ -7,6 +7,12 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.45.1] - 2026-09-17
+
+### Fixed
+- `AbstractImportService.perform_import` now purges the source file (when `delete_file_after_import` is enabled) on a failed import too, not only on `COMPLETED` — a failed import was previously the one case where the uploaded file was kept forever, since a retry is a new upload and the content-hash idempotency check ignores `FAILED` imports anyway
+- The purge is gated on the import outcome being durably committed: if the failure-path `session.commit()` itself fails, the file is left in place instead of being deleted while the database still doesn't reflect the failure
+
 ## [0.45.0] - 2026-09-03
 
 ### Added

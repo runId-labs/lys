@@ -3,6 +3,8 @@ Unit tests for FileImportService.update_progress() logic.
 """
 from unittest.mock import Mock, patch
 
+import pytest
+
 
 class TestUpdateProgress:
     """Tests for FileImportService.update_progress() — in-place mutation, no DB."""
@@ -147,7 +149,8 @@ class TestPerformImportReRaises:
 class TestPerformImportPurgesSourceFile:
     """Tests the post-import purge in perform_import (delete_file_after_import)."""
 
-    def _run(self, *, delete_after_import, purge_error=None, status="COMPLETED"):
+    def _run(self, *, delete_after_import, purge_error=None, status="COMPLETED", process_error=None,
+             commit_error=None):
         """Drive perform_import over a successful import; return the mocked collaborators."""
         from lys.apps.file_management.modules.file_import.services import AbstractImportService
 
@@ -161,6 +164,8 @@ class TestPerformImportPurgesSourceFile:
         mock_session.get.return_value = mock_file_import
         mock_session.__enter__ = Mock(return_value=mock_session)
         mock_session.__exit__ = Mock(return_value=False)
+        if commit_error is not None:
+            mock_session.commit.side_effect = commit_error
 
         mock_file_import_service = Mock()
         mock_file_import_service.entity_class = Mock
@@ -195,9 +200,19 @@ class TestPerformImportPurgesSourceFile:
                 return df
 
             def _process_dataframe(self, file_import, df, report, session):
+                if process_error is not None:
+                    raise process_error
                 return None
 
-        ConcreteImportService(mock_app_manager).perform_import("test-id")
+        service = ConcreteImportService(mock_app_manager)
+        # A commit_error raised from the except block's own session.commit() pre-empts
+        # the original process_error: it propagates instead, before the `raise ex` line.
+        expected_error = commit_error or process_error
+        if expected_error is not None:
+            with pytest.raises(type(expected_error)):
+                service.perform_import("test-id")
+        else:
+            service.perform_import("test-id")
         return mock_stored_file_service, mock_file_import_service, mock_session
 
     def test_soft_deletes_the_source_file(self):
@@ -212,8 +227,25 @@ class TestPerformImportPurgesSourceFile:
 
         stored_file_service.soft_delete_file_sync.assert_not_called()
 
-    def test_no_purge_when_import_did_not_complete(self):
+    def test_purges_when_the_import_ended_failed(self):
+        """A failed import keeps no source file either: it is the case where the bytes
+        would otherwise be kept forever, and nothing re-reads them (a retry is a new
+        upload)."""
         stored_file_service, _, _ = self._run(delete_after_import=True, status="FAILED")
+
+        stored_file_service.soft_delete_file_sync.assert_called_once()
+
+    def test_purges_when_the_import_raised(self):
+        """Same for the error path, which re-raises after recording FAILED."""
+        stored_file_service, _, _ = self._run(
+            delete_after_import=True,
+            process_error=RuntimeError("parser exploded"),
+        )
+
+        stored_file_service.soft_delete_file_sync.assert_called_once()
+
+    def test_no_purge_when_disabled_even_on_failure(self):
+        stored_file_service, _, _ = self._run(delete_after_import=False, status="FAILED")
 
         stored_file_service.soft_delete_file_sync.assert_not_called()
 
@@ -231,3 +263,15 @@ class TestPerformImportPurgesSourceFile:
         stored_file_service.soft_delete_file_sync.assert_called_once()
         # No status update at all: the import stays COMPLETED.
         file_import_service.update_progress.assert_not_called()
+
+    def test_no_purge_when_the_failure_commit_itself_fails(self):
+        """If the except block's own session.commit() fails, the FAILED status was
+        never persisted: purging the file here would delete it while the DB still
+        doesn't reflect the failure. The file must be left alone in that case."""
+        stored_file_service, _, _ = self._run(
+            delete_after_import=True,
+            process_error=ValueError("parser exploded"),
+            commit_error=RuntimeError("DB unavailable"),
+        )
+
+        stored_file_service.soft_delete_file_sync.assert_not_called()

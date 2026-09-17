@@ -839,6 +839,7 @@ class AbstractImportService(abc.ABC):
                 session.commit()
                 return
 
+            outcome_committed = False
             try:
                 # Download raw file content
                 raw_content = stored_file_service.download_sync(file_import.stored_file)
@@ -855,21 +856,7 @@ class AbstractImportService(abc.ABC):
                 # Process the data
                 self._process_dataframe(file_import, df, report, session)
                 session.commit()
-
-                # Purge the source file after successful import if enabled.
-                # Soft delete: the S3 bytes are removed, the row is kept as a tombstone
-                # (content hash for dedup, plus audit trail).
-                # The import data is already committed at this point, so a purge failure
-                # must NOT flip the import to FAILED: it is logged and swallowed. Marking a
-                # committed import FAILED would also let a re-import bypass the content-hash
-                # idempotency check (FAILED imports are ignored there) and duplicate the data.
-                if self.delete_file_after_import and file_import.status_id == FILE_IMPORT_STATUS_COMPLETED:
-                    if file_import.stored_file:
-                        try:
-                            stored_file_service.soft_delete_file_sync(file_import.stored_file)
-                            logger.info(f"Purged source file after import (soft delete): {file_import_id}")
-                        except Exception as ex:
-                            logger.error(f"Failed to purge source file after import {file_import_id}: {ex}")
+                outcome_committed = True
 
             except Exception as ex:
                 logger.error(f"Import error for {file_import_id}: {ex}")
@@ -880,4 +867,30 @@ class AbstractImportService(abc.ABC):
                     report=report,
                 )
                 session.commit()
+                outcome_committed = True
                 raise
+
+            finally:
+                # Purge the source file once the import outcome (success or FAILED) is
+                # durably committed. Soft delete: the stored bytes are removed, the row
+                # is kept as a tombstone (content hash for dedup, plus audit trail).
+                #
+                # Outcome-independent on purpose: a service that opts into the purge keeps
+                # no source file, and a failed import is precisely the case where the file
+                # would otherwise be kept forever. Nothing re-reads it — a retry is a new
+                # upload, which the idempotency check allows since it ignores FAILED imports.
+                #
+                # Gated on outcome_committed: if the except block's own session.commit()
+                # fails (e.g. DB unavailable), the FAILED status was never persisted, so
+                # purging the file here would delete it while the DB still doesn't reflect
+                # the failure — an inconsistent state. In that case, leave the file alone.
+                #
+                # Once the outcome IS committed, a purge failure must NOT change it: it is
+                # logged and swallowed. Marking a committed import FAILED would also let a
+                # re-import bypass the content-hash idempotency check and duplicate the data.
+                if outcome_committed and self.delete_file_after_import and file_import.stored_file:
+                    try:
+                        stored_file_service.soft_delete_file_sync(file_import.stored_file)
+                        logger.info(f"Purged source file after import (soft delete): {file_import_id}")
+                    except Exception as ex:
+                        logger.error(f"Failed to purge source file after import {file_import_id}: {ex}")
