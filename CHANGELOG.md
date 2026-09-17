@@ -7,6 +7,12 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.49.0] - 2026-09-21
+
+### Added
+- `UserRefreshTokenService.purge_expired` and `OneTimeTokenService.purge_expired` (reusable on any `OneTimeToken` subclass, e.g. `UserOneTimeTokenService`), plus two Celery tasks (`lys.apps.user_auth.modules.user.tasks.purge_expired_refresh_tokens` / `purge_expired_one_time_tokens`) — GDPR retention for expired/consumed tokens, 30 days after expiration or consumption. A refresh token's anchor is `revoked_at` if set, else `connection_expire_at`; a one-time token's is `used_at` if set, else its computed `expires_at` (`created_at + type.duration`)
+- `lys.core.utils.datetime.ensure_utc` — normalizes a possibly-naive datetime (e.g. round-tripped through SQLite, which has no native timezone-aware type) to UTC-aware, so it can be compared against an aware one without raising. Also adopted by `OneTimeToken.expires_at`, replacing its own inline copy of the same normalization
+
 ## [0.48.0] - 2026-09-20
 
 ### Added

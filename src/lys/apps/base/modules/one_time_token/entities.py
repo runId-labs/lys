@@ -10,7 +10,7 @@ from sqlalchemy.orm import Mapped, mapped_column, declared_attr, relationship
 from lys.apps.base.modules.one_time_token.consts import PENDING_TOKEN_STATUS
 from lys.core.entities import Entity, ParametricEntity
 from lys.core.registries import register_entity
-from lys.core.utils.datetime import now_utc
+from lys.core.utils.datetime import now_utc, ensure_utc
 
 
 @register_entity()
@@ -74,13 +74,7 @@ class OneTimeToken(Entity):
     @property
     def expires_at(self) -> datetime:
         """Calculate token expiration time based on created_at and type duration."""
-        from datetime import timezone
-        # Ensure created_at has timezone info for comparison
-        created = self.created_at
-        if created.tzinfo is None:
-            # If naive, assume UTC
-            created = created.replace(tzinfo=timezone.utc)
-        return created + timedelta(minutes=self.type.duration)
+        return ensure_utc(self.created_at) + timedelta(minutes=self.type.duration)
 
     @property
     def is_expired(self) -> bool:

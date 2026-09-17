@@ -1,10 +1,12 @@
 import logging
 import uuid
 from datetime import datetime, timedelta, timezone
+from typing import Optional
 
 import bcrypt
-from sqlalchemy import update, select, or_, func
+from sqlalchemy import update, select, or_, func, delete
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import Session
 
 from lys.apps.user_auth.modules.emailing.consts import (
     USER_PASSWORD_RESET_EMAILING_TYPE,
@@ -1187,6 +1189,29 @@ class UserRefreshTokenService(EntityService[UserRefreshToken]):
         new_token: UserRefreshToken = await cls.generate(refresh_token.user, session=session)
 
         return new_token
+
+    @classmethod
+    def purge_expired(
+        cls, retention_days: int, *, session: Session, now: Optional[datetime] = None
+    ) -> int:
+        """Delete refresh tokens whose retention has lapsed (GDPR - 869e7tjpn, 30 days).
+
+        **Synchronous** (run from the Celery purge task via a sync session, same
+        convention as lys.apps.legal's purge_expired).
+
+        A token is "dead" the moment `revoked_at` is set (explicit logout/refresh:
+        `revoke()` always fires before its `connection_expire_at` is reached - that's
+        what makes it a revocation rather than a natural expiry), or otherwise at its
+        `connection_expire_at`. `COALESCE(revoked_at, connection_expire_at) < cutoff`
+        captures both paths in one portable comparison: whichever anchor applies,
+        reaching it already implies the token is dead, so no separate "is dead" guard
+        is needed on top.
+        """
+        now = now or datetime.now(timezone.utc)
+        cutoff = now - timedelta(days=retention_days)
+        anchor = func.coalesce(cls.entity_class.revoked_at, cls.entity_class.connection_expire_at)
+        result = session.execute(delete(cls.entity_class).where(anchor < cutoff))
+        return result.rowcount or 0
 
 @register_service()
 class UserOneTimeTokenService(EntityService[UserOneTimeToken], OneTimeTokenService):
