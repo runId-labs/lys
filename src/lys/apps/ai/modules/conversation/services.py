@@ -16,6 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Session
 
 from lys.apps.ai.modules.conversation.consts import (
+    MESSAGE_TIMESTAMP_FORMAT,
     AIFeedbackRating,
     AIMessageRole,
     AI_CONVERSATION_NODE_NAME,
@@ -1020,25 +1021,72 @@ class AIConversationService(EntityService[AIConversation]):
         messages = []
         for msg in db_messages:
             if msg.role == AIMessageRole.TOOL.value:
-                messages.append({
+                built = {
                     "role": msg.role,
                     "content": str(msg.tool_result) if msg.tool_result else "",
                     "tool_call_id": msg.tool_call_id,
-                })
+                }
             elif msg.role == AIMessageRole.ASSISTANT.value and msg.tool_calls:
                 # Include tool_calls for assistant messages that made tool calls
-                messages.append({
+                built = {
                     "role": msg.role,
                     "content": msg.content or "",
                     "tool_calls": msg.tool_calls,
-                })
+                }
             else:
-                messages.append({
+                built = {
                     "role": msg.role,
                     "content": msg.content or "",
-                })
+                }
+            messages.append(cls._format_message(built, msg))
 
         return messages
+
+    @classmethod
+    def _format_message(cls, message: Dict[str, Any], entity: "AIMessage") -> Dict[str, Any]:
+        """
+        Last chance to shape a stored message before the model reads it.
+
+        Single seam for everything the model should see but the row should not carry. The
+        framework stamps two roles, so a conversation resumed months later does not read as
+        if it happened now: a user turn with the time it was SENT, a tool result with the
+        time it was READ. Both are tags rather than bare prefixes, so the model neither
+        answers them nor echoes them back.
+
+        Neither says how old the DATA is — a reading taken today can rest on figures imported
+        six months ago. That distinction belongs to the tool's own output and to the
+        consumer's prompt, and both must make it.
+
+        The timestamp MUST come from ``created_at`` and never from the current time.
+        ``created_at`` is immutable, so a past turn renders identically on every send and
+        the history stays a stable prompt-cache prefix. Stamping "now" instead would
+        rewrite every past message on every turn and miss the cache on the whole history.
+
+        Nothing is written to the database and no extra key is added: what leaves here goes
+        to the provider as-is, so a stray key could never reach the API.
+
+        Overriding this is how a consumer drops the stamp (return ``message`` untouched),
+        changes its wording, or adds metadata of its own from any column of ``entity``. The
+        dict arrives fully shaped: return the role's own keys intact — dropping a
+        ``tool_call_id`` unpairs the result from its call, and the sanitizer then replaces
+        it with an interrupted-tool marker.
+        """
+        at = getattr(entity, "created_at", None)
+        if at is None or not message.get("content"):
+            return message
+        role = message.get("role")
+        if role == AIMessageRole.USER.value:
+            tag = "sent_at"
+        elif role == AIMessageRole.TOOL.value:
+            # A tool result is a reading of live data taken at one instant. Undated, it reads
+            # as current forever: a conversation resumed months later would quote figures the
+            # model believes it just fetched. The tool's own output says which period the data
+            # covers and when it was imported; this says when the tool was run.
+            tag = "read_at"
+        else:
+            return message
+        message["content"] = f"<{tag}>{at.strftime(MESSAGE_TIMESTAMP_FORMAT)}</{tag}>\n{message['content']}"
+        return message
 
     @classmethod
     async def archive(cls, conversation_id: str, session: AsyncSession) -> bool:
@@ -1055,16 +1103,22 @@ class AIConversationService(EntityService[AIConversation]):
         info: Any,
     ) -> Optional[str]:
         """
-        Session-stable, cacheable layer-A context, injected before the page prompt.
+        Cacheable dynamic context, injected before the page prompt.
 
-        Base framework returns nothing. A consumer overrides this to push a session-stable
-        context layer. Must be byte-deterministic so the downstream prompt cache hits, and
+        Carries what stays identical across the turns of a session. It is marked
+        cacheable, which places the prompt-cache breakpoint AFTER it: every preceding
+        segment is then served from the cache. Returning content that changes from one
+        turn to the next therefore busts the cache for the whole prefix — such content
+        belongs in ``_get_volatile_context``.
+
+        Base framework returns nothing. A consumer overrides this to push its own stable
+        layer. Must be byte-deterministic so the downstream prompt cache hits, and
         cheap/cached since it runs on every turn.
         """
         return None
 
     @classmethod
-    async def _get_focus_context(
+    async def _get_volatile_context(
         cls,
         session: AsyncSession,
         connected_user: Optional[Dict[str, Any]],
@@ -1072,13 +1126,67 @@ class AIConversationService(EntityService[AIConversation]):
         info: Any,
     ) -> Optional[str]:
         """
-        Per-turn focus marker — the small, volatile layer-C anchor describing what the user
-        is currently looking at (e.g. the focus entity + period). It makes any focus change
-        loud and gives the model an explicit default. Base framework returns nothing; a
-        consumer overrides it. NOT cached (changes every turn); placed after the cacheable
-        layers so it never busts their cache.
+        Non-cacheable dynamic context, injected after the cacheable layers.
+
+        Carries what legitimately changes from one turn to the next — typically the entity
+        and period the user is currently looking at, and the current date. It is marked
+        uncached, which places NO breakpoint after it: the stable prefix above keeps being
+        served from the cache whatever this segment contains. Keeping volatile content here
+        rather than in ``_get_stable_context`` is what makes the cache work at all.
+
+        Base framework returns nothing; a consumer overrides it. Small by design: it is
+        re-sent in full on every turn.
         """
         return None
+
+    @classmethod
+    def _build_request_context(
+        cls,
+        page_context: Optional[PageContextModel],
+        llm_tools: List[Dict[str, Any]],
+        volatile_context: Optional[str],
+        ai_service: Any,
+    ) -> Dict[str, Any]:
+        """
+        Assemble what varied for this turn, for later replay and evaluation.
+
+        Best-effort by contract: a turn must never fail because its trace could not be
+        built, so anything unavailable is simply absent from the dict.
+        """
+        context: Dict[str, Any] = {}
+
+        if page_context is not None:
+            # Stored as received. Its keys are the consumer's vocabulary; the framework
+            # neither reads nor validates them.
+            context["page_context"] = {
+                "page_name": page_context.page_name,
+                "params": page_context.params or {},
+            }
+
+        # Names only: the schemas are large, repeated every turn, and belong to the prompt
+        # version rather than to the turn. What varies from one turn to the next is WHICH
+        # tools were offered, and that is what a replay needs.
+        names = [
+            tool["function"]["name"]
+            for tool in llm_tools or []
+            if isinstance(tool, dict) and isinstance(tool.get("function"), dict)
+            and tool["function"].get("name")
+        ]
+        if names:
+            context["tools"] = names
+
+        try:
+            endpoint = ai_service.get_endpoint(AI_PURPOSE_CHATBOT)
+        except Exception as e:
+            logger.warning(f"[RequestContext] Could not resolve chatbot endpoint: {e}")
+            endpoint = None
+        if endpoint is not None and getattr(endpoint, "options", None):
+            context["options"] = dict(endpoint.options)
+
+        if volatile_context:
+            context["volatile_context"] = volatile_context
+
+        return context
 
     @classmethod
     async def _build_system_prompt(
@@ -1087,7 +1195,7 @@ class AIConversationService(EntityService[AIConversation]):
         context_data: Optional[Dict[str, str]] = None,
         conversation_summary: Optional[str] = None,
         stable_context: Optional[str] = None,
-        focus_context: Optional[str] = None,
+        volatile_context: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
         """
         Build the system prompt as ordered cacheable / volatile segments.
@@ -1114,8 +1222,8 @@ class AIConversationService(EntityService[AIConversation]):
 
         segments: List[Dict[str, Any]] = []
 
-        # Layer A — session-stable context layer. Most stable → cacheable, placed before the
-        # page so a page change does not bust it (per-layer breakpoints).
+        # Cacheable layer — session-stable. Placed before the page so a page change does not
+        # bust it (per-layer breakpoints).
         if stable_context:
             segments.append({"content": stable_context, "cache": True})
 
@@ -1123,10 +1231,10 @@ class AIConversationService(EntityService[AIConversation]):
         if page_behaviour and page_behaviour.get("prompt"):
             segments.append({"content": page_behaviour["prompt"], "cache": True})
 
-        # Layer C — per-turn focus marker (the current anchor). Volatile → not cached; placed
-        # first among the volatile segments so it frames the summary and the per-turn context.
-        if focus_context:
-            segments.append({"content": focus_context, "cache": False})
+        # Volatile layer — what changes from one turn to the next. Not cached; placed first
+        # among the volatile segments so it frames the summary and the per-turn context.
+        if volatile_context:
+            segments.append({"content": volatile_context, "cache": False})
 
         # Compaction summary of older turns — volatile (changes on each re-summary) →
         # not cached. Placed after the cacheable page prefix, before the per-turn context.
@@ -1337,16 +1445,16 @@ class AIConversationService(EntityService[AIConversation]):
         conversation = await cls.get_or_create(user_id, session, conversation_id, client_id=client_id)
         current_summary = await cls._load_current_summary(conversation.id, session)
         stable_context = await cls._get_stable_context(session, connected_user, page_context, info)
-        focus_context = await cls._get_focus_context(session, connected_user, page_context, info)
+        volatile_context = await cls._get_volatile_context(session, connected_user, page_context, info)
 
         # Build system prompt (cheap: only the summary/stable-context loads hit the DB/cache;
-        # stable layer + page prompt + focus marker + past-conversation summary + fetched context).
+        # stable layer + page prompt + volatile layer + past-conversation summary + fetched context).
         system_segments = await cls._build_system_prompt(
             page_behaviour=page_behaviour,
             context_data=context_data,
             conversation_summary=current_summary.summary if current_summary else None,
             stable_context=stable_context,
-            focus_context=focus_context,
+            volatile_context=volatile_context,
         )
         logger.debug(f"[SystemPrompt] Built {len(system_segments)} segment(s)")
 
@@ -1394,16 +1502,28 @@ class AIConversationService(EntityService[AIConversation]):
             if msg.get("role") != "system":
                 messages.append(msg)
 
-        # Add new user message
-        messages.append({"role": "user", "content": content})
-
-        # Save user message to DB
+        # Save user message to DB, carrying what varied for this turn. Recorded here rather
+        # than on the assistant side because a turn has exactly one user row and may have
+        # several assistant ones (agent loop), and because everything it needs is assembled
+        # above. See AIMessage.request_context for what each key holds.
         user_message = await message_service.create(
             session,
             conversation_id=conversation.id,
             role=AIMessageRole.USER.value,
             content=content,
+            request_context=cls._build_request_context(
+                page_context=page_context,
+                llm_tools=llm_tools,
+                volatile_context=volatile_context,
+                ai_service=ai_service,
+            ),
         )
+
+        # Through the same hook as the history, and from the row that was just written, so
+        # this turn reads exactly as it will when replayed from the database later.
+        messages.append(cls._format_message(
+            {"role": AIMessageRole.USER.value, "content": content}, user_message
+        ))
 
         # Title the conversation off the request path, from this message when it is the
         # opening one. Never blocks or fails the turn.
@@ -1470,7 +1590,10 @@ class AIConversationService(EntityService[AIConversation]):
             response = await ai_service.chat_with_purpose(
                 messages,
                 AI_PURPOSE_CHATBOT,
-                llm_tools if llm_tools else None
+                llm_tools if llm_tools else None,
+                # The exchange names its own cache bucket: what the provider reuses is this
+                # conversation's growing prefix, and nothing else shares it.
+                cache_key=conversation.id,
             )
             latency_ms = int((time.perf_counter() - start_time) * 1000)
 
@@ -1679,10 +1802,12 @@ class AIConversationService(EntityService[AIConversation]):
             last_usage = None
             last_model = None
             last_provider = None
+            start_time = time.perf_counter()
 
             try:
                 async for chunk in ai_service.chat_stream_with_purpose(
-                    messages, AI_PURPOSE_CHATBOT, llm_tools if llm_tools else None
+                    messages, AI_PURPOSE_CHATBOT, llm_tools if llm_tools else None,
+                    cache_key=conversation.id,
                 ):
                     # A reasoning model can spend tens of seconds before its first answer
                     # token, and the reasoning stream is the only thing moving meanwhile.
@@ -1729,6 +1854,12 @@ class AIConversationService(EntityService[AIConversation]):
                 })
                 return
 
+            # Time to the LAST token, not to a complete response: the two paths measure
+            # different things under the same name (see AIMessage.latency_ms). Taken after
+            # the stream is exhausted and before any tool runs, so tool time is excluded —
+            # matching what the non-streaming path times.
+            latency_ms = int((time.perf_counter() - start_time) * 1000)
+
             # Build finalized tool_calls list from accumulator
             finalized_tool_calls = _finalize_tool_calls(tool_calls_accumulator)
 
@@ -1741,6 +1872,7 @@ class AIConversationService(EntityService[AIConversation]):
                     content=accumulated_content,
                     provider=last_provider,
                     model=last_model,
+                    latency_ms=latency_ms,
                     **cls._usage_fields(last_usage),
                 )
 
@@ -1784,6 +1916,7 @@ class AIConversationService(EntityService[AIConversation]):
                 tool_calls=finalized_tool_calls,
                 provider=last_provider,
                 model=last_model,
+                latency_ms=latency_ms,
                 **cls._usage_fields(last_usage),
             )
 

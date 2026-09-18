@@ -9,7 +9,7 @@ import json
 from datetime import datetime
 
 import pytest
-from unittest.mock import MagicMock, AsyncMock, patch, PropertyMock
+from unittest.mock import ANY, MagicMock, AsyncMock, patch, PropertyMock
 
 from lys.apps.ai.modules.conversation.consts import (
     AIMessageRole,
@@ -413,7 +413,7 @@ class TestAIConversationServiceBuildSystemPrompt:
 
 
     @pytest.mark.asyncio
-    async def test_build_system_prompt_focus_context_is_volatile_before_summary(self, mock_session):
+    async def test_build_system_prompt_volatile_context_is_before_summary(self, mock_session):
         """The focus marker is volatile and ordered ahead of summary and dynamic context."""
         from lys.apps.ai.modules.conversation.services import AIConversationService
 
@@ -422,7 +422,7 @@ class TestAIConversationServiceBuildSystemPrompt:
             conversation_summary="Earlier summary.",
             context_data={"Order": "Order #12345"},
             stable_context="Stable map.",
-            focus_context="Focus: ACME / 2024.",
+            volatile_context="Focus: ACME / 2024.",
         )
 
         contents = [seg["content"] for seg in result]
@@ -437,7 +437,7 @@ class TestAIConversationServiceBuildSystemPrompt:
 
 
 class TestAIConversationServiceGetStableContext:
-    """Tests for the _get_stable_context / _get_focus_context extension hooks."""
+    """Tests for the _get_stable_context / _get_volatile_context extension hooks."""
 
     @pytest.mark.asyncio
     async def test_stable_context_base_returns_none(self):
@@ -450,11 +450,11 @@ class TestAIConversationServiceGetStableContext:
         assert result is None
 
     @pytest.mark.asyncio
-    async def test_focus_context_base_returns_none(self):
+    async def test_volatile_context_base_returns_none(self):
         """The base framework injects no focus marker; consumers override this hook."""
         from lys.apps.ai.modules.conversation.services import AIConversationService
 
-        result = await AIConversationService._get_focus_context(
+        result = await AIConversationService._get_volatile_context(
             AsyncMock(), {"sub": "user-1"}, None, MagicMock()
         )
         assert result is None
@@ -721,7 +721,69 @@ class TestPrepareChatContext:
         # The cache flag from the segment is carried onto the system message.
         assert messages[0]["cache"] is True
         assert messages[-1]["role"] == "user"
-        assert messages[-1]["content"] == "What can you do?"
+        # Stamped with its send time; the question itself is untouched.
+        assert messages[-1]["content"].endswith("What can you do?")
+
+    @pytest.mark.asyncio
+    async def test_user_turns_are_stamped_with_their_send_time(self):
+        """A user turn reaches the model tagged with when it was sent."""
+        from lys.apps.ai.modules.conversation.services import AIConversationService
+
+        entity = MagicMock(created_at=datetime(2026, 3, 12, 9, 50))
+        out = AIConversationService._format_message(
+            {"role": "user", "content": "Comment va ma tresorerie ?"}, entity
+        )
+
+        assert out["content"] == "<sent_at>2026-03-12 09:50</sent_at>\nComment va ma tresorerie ?"
+        # No extra key may exist: whatever leaves here is sent to the provider as-is.
+        assert set(out) == {"role", "content"}
+
+    @pytest.mark.asyncio
+    async def test_tool_results_are_stamped_with_their_read_time(self):
+        """A tool result says WHEN it was read, and keeps what pairs it to its call.
+
+        Undated, a reading quoted months later reads as if it had just been taken.
+        """
+        from lys.apps.ai.modules.conversation.services import AIConversationService
+
+        entity = MagicMock(created_at=datetime(2026, 3, 12, 9, 50))
+        row = AIConversationService._format_message(
+            {"role": "tool", "content": "{}", "tool_call_id": "call-1"}, entity
+        )
+
+        assert row["content"] == "<read_at>2026-03-12 09:50</read_at>\n{}"
+        # Dropping this would unpair the result from its call, and the sanitizer would
+        # replace it with an interrupted-tool marker.
+        assert row["tool_call_id"] == "call-1"
+
+    @pytest.mark.asyncio
+    async def test_assistant_rows_are_untouched(self):
+        """Only the two roles the framework dates are rewritten."""
+        from lys.apps.ai.modules.conversation.services import AIConversationService
+
+        entity = MagicMock(created_at=datetime(2026, 3, 12, 9, 50))
+        row = AIConversationService._format_message(
+            {"role": "assistant", "content": "Voici"}, entity
+        )
+        assert row["content"] == "Voici"
+
+    @pytest.mark.asyncio
+    async def test_stamp_is_stable_across_sends(self):
+        """The stamp comes from created_at, so a past turn renders identically every time.
+
+        Stamping the current time instead would rewrite the whole history on every turn and
+        miss the prompt cache on all of it.
+        """
+        from lys.apps.ai.modules.conversation.services import AIConversationService
+
+        entity = MagicMock(created_at=datetime(2026, 3, 12, 9, 50))
+        first = AIConversationService._format_message(
+            {"role": "user", "content": "Bonjour"}, entity
+        )["content"]
+        second = AIConversationService._format_message(
+            {"role": "user", "content": "Bonjour"}, entity
+        )["content"]
+        assert first == second
 
     @pytest.mark.asyncio
     async def test_saves_user_message_to_db(self, connected_user, mock_session, mock_info, _setup_mocks):
@@ -742,7 +804,30 @@ class TestPrepareChatContext:
             conversation_id="conv-123",
             role=AIMessageRole.USER.value,
             content="Test message",
+            request_context=ANY,
         )
+
+    @pytest.mark.asyncio
+    async def test_user_message_carries_request_context(
+        self, connected_user, mock_session, mock_info, _setup_mocks
+    ):
+        """The turn's varying inputs are recorded on the user row, tools by name only."""
+        from lys.apps.ai.modules.conversation.services import AIConversationService
+
+        mocks = _setup_mocks
+        await AIConversationService._prepare_chat_context(
+            user_id="user-123",
+            content="Test message",
+            session=mock_session,
+            connected_user=connected_user,
+            info=mock_info,
+        )
+
+        recorded = mocks["mock_message_service"].create.call_args.kwargs["request_context"]
+        assert isinstance(recorded, dict)
+        # Names, never schemas: a schema belongs to the prompt version, not to the turn.
+        for name in recorded.get("tools", []):
+            assert isinstance(name, str)
 
     @pytest.mark.asyncio
     async def test_llm_tools_extracts_definitions(self, connected_user, mock_session, mock_info, _setup_mocks):
@@ -1131,6 +1216,42 @@ class TestChatWithToolsStreaming:
         # Verify provider is dynamic, not hardcoded
         create_call = mock_msg_service.create.call_args
         assert create_call.kwargs.get("provider") == "mistral" or create_call[1].get("provider") == "mistral"
+
+    @pytest.mark.asyncio
+    async def test_streaming_records_latency(self, mock_session, connected_user):
+        """The streaming path records latency_ms, like the non-streaming one."""
+        from lys.apps.ai.modules.conversation.services import AIConversationService
+        from lys.apps.ai.utils.providers.abstracts import AIStreamChunk
+
+        mock_msg_service = AsyncMock()
+
+        async def fake_stream(*args, **kwargs):
+            yield AIStreamChunk(content="Hi", finish_reason="stop", model="m1", provider="mistral")
+
+        mock_ai_service = MagicMock()
+        mock_ai_service.chat_stream_with_purpose = fake_stream
+
+        ctx = {
+            "executor": MagicMock(),
+            "conversation": MagicMock(id="conv-1"),
+            "message_service": mock_msg_service,
+            "ai_service": mock_ai_service,
+            "llm_tools": [],
+            "messages": [{"role": "user", "content": "Hi"}],
+            "info": MagicMock(),
+            "user_message_id": "user-msg-1",
+        }
+
+        with patch.object(AIConversationService, "_prepare_chat_context", new_callable=AsyncMock, return_value=ctx):
+            async for _ in AIConversationService.chat_with_tools_streaming(
+                user_id="user-123", content="Hi", session=mock_session,
+                connected_user=connected_user, access_token="tok",
+            ):
+                pass
+
+        latency = mock_msg_service.create.call_args.kwargs.get("latency_ms")
+        assert latency is not None
+        assert latency >= 0
 
     @staticmethod
     def _reasoning_ctx():

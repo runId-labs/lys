@@ -57,14 +57,15 @@ class MistralProvider(AIProvider):
     }
 
     @staticmethod
-    def _cache_key_field(messages: List[Dict[str, Any]]) -> Dict[str, str]:
+    def _cache_key_field(messages: List[Dict[str, Any]],
+                         config: Optional[AIEndpointConfig] = None) -> Dict[str, str]:
         """Stable ``prompt_cache_key`` derived from the CACHEABLE system segments only.
 
         Mistral caches on the shared request prefix; the key groups requests that share
         that prefix (cached input tokens are billed at ~10%). It must therefore ignore the
-        volatile segments — focus marker, current date, conversation summary, per-turn tool
-        context — otherwise every turn lands in its own cache bucket and nothing is ever
-        reused.
+        volatile segments — the consumer's volatile context layer, conversation summary,
+        per-turn tool context — otherwise every turn lands in its own cache bucket and
+        nothing is ever reused.
 
         Call this BEFORE :meth:`_flatten_system`: once flattened, the stable and volatile
         segments are one string and cannot be told apart.
@@ -74,6 +75,12 @@ class MistralProvider(AIProvider):
         turns of a conversation — hashing anything volatile sends every turn to its own
         cache bucket, which is what produced an alternating 0%/90% hit rate.
         """
+        if config is not None and config.cache_key:
+            # A caller that knows which exchange this is wins over anything inferred from the
+            # text: it stays constant across the turns of that exchange, which is exactly what
+            # the key has to do.
+            return {"prompt_cache_key": f"conv-{config.cache_key}"}
+
         stable_parts: List[str] = []
         for message in messages:
             if message.get("role") != "system":
@@ -134,7 +141,7 @@ class MistralProvider(AIProvider):
         tools: Optional[List[Dict[str, Any]]] = None,
     ) -> AIResponse:
         """Send a chat request to Mistral API."""
-        cache_field = self._cache_key_field(messages)
+        cache_field = self._cache_key_field(messages, config)
         messages = self._flatten_system(messages)
         base_url = self.get_base_url(config)
 
@@ -183,7 +190,7 @@ class MistralProvider(AIProvider):
         tools: Optional[List[Dict[str, Any]]] = None,
     ) -> AIResponse:
         """Synchronous version using httpx sync client."""
-        cache_field = self._cache_key_field(messages)
+        cache_field = self._cache_key_field(messages, config)
         messages = self._flatten_system(messages)
         base_url = self.get_base_url(config)
 
@@ -234,7 +241,7 @@ class MistralProvider(AIProvider):
         tools: Optional[List[Dict[str, Any]]] = None,
     ) -> AsyncGenerator[AIStreamChunk, None]:
         """Stream a chat response from Mistral API, yielding chunks."""
-        cache_field = self._cache_key_field(messages)
+        cache_field = self._cache_key_field(messages, config)
         messages = self._flatten_system(messages)
         base_url = self.get_base_url(config)
 
@@ -337,7 +344,7 @@ class MistralProvider(AIProvider):
             AITimeoutError: Request exceeded ``config.timeout``.
             AIValidationError: Response could not be validated against ``schema``.
         """
-        cache_field = self._cache_key_field(messages)
+        cache_field = self._cache_key_field(messages, config)
         messages = self._flatten_system(messages)
         base_url = self.get_base_url(config)
 
@@ -389,7 +396,7 @@ class MistralProvider(AIProvider):
         Uses Mistral's native ``response_format: {"type": "json_schema", ...}`` mode.
         See :meth:`chat_json` for details on parameters, return value, and exceptions.
         """
-        cache_field = self._cache_key_field(messages)
+        cache_field = self._cache_key_field(messages, config)
         messages = self._flatten_system(messages)
         base_url = self.get_base_url(config)
 

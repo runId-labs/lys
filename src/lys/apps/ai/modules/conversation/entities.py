@@ -109,6 +109,18 @@ class AIMessage(Entity):
     tool_call_id: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
     tool_result: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
 
+    # What varied for this turn, recorded because it cannot be reconstructed afterwards:
+    # the system prompt is assembled per turn and never persisted, the caller's page context
+    # is transient, and the offered tool list depends on rights held at that moment. Written
+    # on the user row - one per turn, whereas an agent loop writes several assistant rows.
+    #
+    # Framework-defined keys: "options" (endpoint options actually used), "tools" (names
+    # offered to the model, never their schemas - those are large and versioned elsewhere),
+    # "volatile_context" (the uncached system segment as sent). "page_context" keeps the
+    # framework's own envelope - page name and params - while the params themselves are
+    # stored as received: their keys are the consumer's vocabulary, never read here.
+    request_context: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
+
     # Metrics (role=assistant only)
     provider: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
     model: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
@@ -118,6 +130,10 @@ class AIMessage(Entity):
     # tokens, currently dropped by the providers). Lets us measure cache effectiveness.
     cache_read_tokens: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     cache_write_tokens: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    # Deliberately measures two different things, one per call path, because neither has a
+    # counterpart on the other: the non-streaming path times a complete request/response,
+    # the streaming path times up to the LAST token. Tool execution is excluded from both.
+    # Compare within a path, never across.
     latency_ms: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
 
     # Full-text search over the message content. Filled off the request path, so a message

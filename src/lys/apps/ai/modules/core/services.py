@@ -184,6 +184,7 @@ class AIService(Service):
         messages: List[Dict[str, Any]],
         purpose: str,
         tools: Optional[List[Dict[str, Any]]] = None,
+        cache_key: Optional[str] = None,
     ) -> AIResponse:
         """
         Chat using a configured purpose.
@@ -197,6 +198,8 @@ class AIService(Service):
             AIResponse
         """
         config = cls.get_endpoint(purpose)
+        if cache_key:
+            config = config.with_cache_key(cache_key)
         return await cls.chat(messages, config, tools)
 
     @classmethod
@@ -216,6 +219,7 @@ class AIService(Service):
         messages: List[Dict[str, Any]],
         purpose: str,
         tools: Optional[List[Dict[str, Any]]] = None,
+        cache_key: Optional[str] = None,
     ) -> AsyncGenerator[AIStreamChunk, None]:
         """
         Stream a chat response using a configured purpose.
@@ -231,6 +235,8 @@ class AIService(Service):
             AIStreamChunk for each piece of the response
         """
         endpoint = cls.get_endpoint(purpose)
+        if cache_key:
+            endpoint = endpoint.with_cache_key(cache_key)
 
         if endpoint.system_prompt:
             messages = [{"role": "system", "content": endpoint.system_prompt}] + messages
@@ -858,9 +864,9 @@ class ContextToolService(Service):
 
         results = await context_tool_service.execute_all(
             context_tools={"questions": "get_contextual_questions"},
-            company_id=company_id,
-            year=year,
             session=session,
+            access_token=access_token,
+            **page_params,
         )
 
     Usage:
@@ -881,7 +887,9 @@ class ContextToolService(Service):
 
         Args:
             name: Function name as referenced in routes manifest context_tools
-            func: Async callable that accepts (company_id, year, session) and returns str
+            func: Async callable returning str. It receives ``session`` and ``access_token``
+                plus the page params as keyword arguments, so it accepts ``**kwargs`` and
+                reads only the keys it needs - the framework does not fix that set.
         """
         cls._registry[name] = func
         logger.info(f"ContextToolService: registered '{name}'")

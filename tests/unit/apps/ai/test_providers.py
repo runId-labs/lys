@@ -2921,3 +2921,70 @@ class TestAIServiceEmbedWithPurpose:
              patch.object(AIService, "get_provider", return_value=provider):
             with pytest.raises(AIProviderError):
                 await AIService.embed_with_purpose(["hello"], "embedding")
+
+
+class TestCacheKeyIdentifiesTheExchange:
+    """The cache key must name the conversation, never its contents."""
+
+    @staticmethod
+    def _config(**kw):
+        from lys.apps.ai.utils.providers.config import AIEndpointConfig
+        return AIEndpointConfig(provider="mistral", model="m", **kw)
+
+    def test_caller_key_wins_over_any_text(self):
+        """A supplied key is used as-is: constant across the turns of one exchange."""
+        from lys.apps.ai.utils.providers.mistral import MistralProvider
+
+        field = MistralProvider._cache_key_field(
+            [{"role": "system", "content": "anything", "cache": True}],
+            self._config(cache_key="c-123"),
+        )
+        assert field == {"prompt_cache_key": "conv-c-123"}
+
+    def test_key_does_not_move_when_the_cacheable_text_does(self):
+        """Business text moving must not move the bucket.
+
+        Deriving the key from content is what silently disabled caching for whole
+        conversations the day that content was removed.
+        """
+        from lys.apps.ai.utils.providers.mistral import MistralProvider
+
+        cfg = self._config(cache_key="c-123")
+        a = MistralProvider._cache_key_field([{"role": "system", "content": "A", "cache": True}], cfg)
+        b = MistralProvider._cache_key_field([{"role": "system", "content": "B", "cache": True}], cfg)
+        assert a == b
+
+    def test_absent_cacheable_text_no_longer_costs_the_cache(self):
+        """No cacheable segment at all used to mean no key, so no caching."""
+        from lys.apps.ai.utils.providers.mistral import MistralProvider
+
+        messages = [{"role": "system", "content": "volatile"}, {"role": "user", "content": "hi"}]
+        assert MistralProvider._cache_key_field(messages, self._config(cache_key="c-123")) == {
+            "prompt_cache_key": "conv-c-123"
+        }
+
+    def test_without_a_caller_key_the_previous_behaviour_stands(self):
+        """Consumers that pass nothing keep deriving the key from the stable segments."""
+        from lys.apps.ai.utils.providers.mistral import MistralProvider
+
+        field = MistralProvider._cache_key_field(
+            [{"role": "system", "content": "stable", "cache": True}], self._config()
+        )
+        assert field["prompt_cache_key"].startswith("sys-")
+
+    def test_with_cache_key_propagates_through_the_whole_fallback_chain(self):
+        """Failing over to the fallback endpoint must not lose the exchange's key.
+
+        A plain dataclasses.replace only touches the top-level endpoint, leaving the
+        fallback pointed at the original, unkeyed object - the failover would then
+        silently drop back to the content-derived key.
+        """
+        from lys.apps.ai.utils.providers.config import AIEndpointConfig
+
+        fallback = AIEndpointConfig(provider="anthropic", model="fallback-model")
+        primary = self._config(fallback=fallback)
+
+        kept = primary.with_cache_key("c-123")
+
+        assert kept.cache_key == "c-123"
+        assert kept.fallback.cache_key == "c-123"

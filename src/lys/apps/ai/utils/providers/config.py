@@ -5,7 +5,7 @@ This module defines configuration dataclasses for AI endpoints,
 supporting purpose-based configuration with API key resolution.
 """
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace as dataclass_replace
 from typing import Optional, Dict, Any
 
 from lys.apps.ai.utils.providers.exceptions import AIPurposeNotFoundError
@@ -21,8 +21,29 @@ class AIEndpointConfig:
     base_url: Optional[str] = None
     timeout: int = 30
     system_prompt: Optional[str] = None
+    # Names the cache bucket this request belongs to. What a provider caches is the shared
+    # REQUEST PREFIX - system segments then earlier turns - and the key only says which
+    # requests are worth comparing. It must therefore identify the exchange, not its
+    # contents: derived from business text it changes whenever that text does, and vanishes
+    # when there is none, silently disabling the cache for the whole conversation.
+    # Per request, so it is set with with_cache_key rather than declared in settings.
+    cache_key: Optional[str] = None
     options: Dict[str, Any] = field(default_factory=dict)
     fallback: Optional["AIEndpointConfig"] = None
+
+    def with_cache_key(self, cache_key: str) -> "AIEndpointConfig":
+        """
+        Return a copy of this endpoint, and of its whole fallback chain, tagged with
+        ``cache_key``.
+
+        A plain ``dataclasses.replace`` only touches the top-level endpoint: the fallback
+        it carries is a reference to the original, unkeyed object. Failing over to it would
+        then silently drop back to the content-derived cache key - the exact bug this field
+        exists to avoid. Recursing here keeps every provider in the chain identifying the
+        same exchange.
+        """
+        fallback = self.fallback.with_cache_key(cache_key) if self.fallback else None
+        return dataclass_replace(self, cache_key=cache_key, fallback=fallback)
 
 
 @dataclass

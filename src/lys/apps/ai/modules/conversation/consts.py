@@ -81,6 +81,11 @@ DEFAULT_SUMMARY_HEADER = (
     "retrieves the messages themselves, when that tool is available to you."
 )
 
+# Format of the timestamp stamped onto user turns by
+# AIConversationService._format_message. Minute precision: the model reasons about days and
+# months, and a second-level stamp would only add noise to every turn.
+MESSAGE_TIMESTAMP_FORMAT = "%Y-%m-%d %H:%M"
+
 
 # Conversation compaction. Defaults are locale-neutral and overridable via the ai plugin
 # config: the `conversation_summary` endpoint (provider / model / system_prompt) and

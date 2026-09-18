@@ -42,8 +42,12 @@ class PageContextModel(BaseModel):
 
     Used to send current page information with chatbot messages for:
     - Tool filtering by page (only expose tools relevant to the current page)
-    - Secure mutations (inject page params like company_id, year)
+    - Secure mutations (page params are injected as tool-argument defaults)
     - Reduce hallucinations (chatbot knows what data user is viewing)
+
+    The envelope is the framework's and is validated as such; ``params`` is free-form and
+    its keys belong to the consumer. Nothing here reads them by name - the only generic
+    rule applied to them is the ``*_id`` suffix handling in the tool executors.
     """
     page_name: str
     params: Optional[Dict[str, Any]] = None

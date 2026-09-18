@@ -7,6 +7,20 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.46.0] - 2026-09-18
+
+### Added
+- `AIMessage.request_context`: records, on the user row of each turn, what varied for that call — the page context, the tools offered (names only), the endpoint options in effect, and the volatile system-prompt segment — for later replay and evaluation. Best-effort: a turn is never failed because its trace could not be built
+- User turns and tool results are now stamped, when sent to the model, with `<sent_at>`/`<read_at>` tags derived from `AIMessage.created_at` — so a conversation resumed long after it happened doesn't read as current, while the stamp stays stable across sends (prompt-cache-friendly since it never depends on "now")
+- `AIMessage.latency_ms` is now also recorded on the streaming chat path (time to the last token), matching what the non-streaming path already measured
+
+### Changed
+- `AIConversationService._get_focus_context` renamed to `_get_volatile_context` (and `_build_system_prompt`'s `focus_context` parameter to `volatile_context`) to describe what the hook actually carries: whatever legitimately changes from one turn to the next, not only a focus marker
+
+### Fixed
+- The per-conversation Mistral `prompt_cache_key` is now propagated through the whole provider fallback chain (`AIEndpointConfig.with_cache_key`); previously, failing over to a fallback provider silently dropped back to the older content-derived key, defeating the fix it was meant to provide
+- Resolving the chatbot endpoint for `request_context` now logs a warning on failure instead of silently discarding the error
+
 ## [0.45.1] - 2026-09-17
 
 ### Fixed

@@ -163,7 +163,8 @@ class TestAIConversationServiceBuildMessages:
 
             assert len(messages) == 2
             assert messages[0]["role"] == "user"
-            assert messages[0]["content"] == "Hello"
+            # User turns are stamped with their send time (see AIConversationService._format_message).
+            assert messages[0]["content"].endswith("Hello")
             assert messages[1]["role"] == "assistant"
             assert messages[1]["content"] == "Hi there!"
 
@@ -301,7 +302,8 @@ class TestAIConversationServiceCompaction:
             await session.flush()
 
             built = await conversation_service._build_messages(conv, session, current_summary=summary)
-            assert [b["content"] for b in built] == ["m3", "m4", "m5"]
+            # m4 is a user turn (alternating roles) and is stamped with its send time.
+            assert [b["content"].split("\n")[-1] for b in built] == ["m3", "m4", "m5"]
 
     @pytest.mark.asyncio
     async def test_maybe_enqueue_compaction_creates_pending_and_dispatches(self, ai_app_manager):
