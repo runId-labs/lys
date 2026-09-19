@@ -1139,6 +1139,18 @@ class AIConversationService(EntityService[AIConversation]):
         """
         return None
 
+    @staticmethod
+    def _valid_provider_options(ai_service: Any, endpoint: Any) -> Optional[set]:
+        """Option names the endpoint's provider accepts, or None when it cannot be resolved.
+
+        Best-effort like everything on this path: an unresolved provider must never cost the
+        turn, it only costs the filtering it would have allowed.
+        """
+        try:
+            return getattr(ai_service.get_provider(endpoint.provider), "VALID_OPTIONS", None)
+        except Exception:
+            return None
+
     @classmethod
     def _build_request_context(
         cls,
@@ -1181,7 +1193,17 @@ class AIConversationService(EntityService[AIConversation]):
             logger.warning(f"[RequestContext] Could not resolve chatbot endpoint: {e}")
             endpoint = None
         if endpoint is not None and getattr(endpoint, "options", None):
-            context["options"] = dict(endpoint.options)
+            # Only the options the provider actually sends. An endpoint's ``options`` dict is
+            # also where a consumer parks its own settings, and those reach neither the model
+            # nor a replay: recording them writes application configuration — a filesystem
+            # path, an internal URL — onto every user row, in a table built to be read back
+            # and exported. The provider already declares what it accepts; that declaration
+            # is the filter.
+            valid = cls._valid_provider_options(ai_service, endpoint)
+            options = dict(endpoint.options)
+            context["options"] = (
+                {k: v for k, v in options.items() if k in valid} if valid is not None else options
+            )
 
         if volatile_context:
             context["volatile_context"] = volatile_context

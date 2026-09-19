@@ -7,6 +7,12 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.46.2] - 2026-09-19
+
+### Fixed
+- `AIMessage.request_context["options"]` now only records the option names the resolved provider actually sends (`AIProvider.VALID_OPTIONS`), instead of the endpoint's raw `options` dict — a consumer can park its own settings there (a filesystem path, an internal URL) that never reach the model but would otherwise be persisted, on every user row, in a table built to be read back and exported
+- Fixed a falsy-set trap in that filtering: a provider declaring an explicit, empty `VALID_OPTIONS` now correctly records no options, instead of falling back to recording all of them
+
 ## [0.46.1] - 2026-09-19
 
 ### Fixed

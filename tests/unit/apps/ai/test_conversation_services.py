@@ -7,6 +7,7 @@ using mocks to avoid database dependencies.
 
 import json
 from datetime import datetime
+from types import SimpleNamespace
 
 import pytest
 from unittest.mock import ANY, MagicMock, AsyncMock, patch, PropertyMock
@@ -2531,3 +2532,101 @@ class TestDiscardPendingSummary:
             AIConversationService.discard_pending_summary_sync(session, "s1")
 
         session.delete.assert_called_once_with(row)
+
+
+class TestBuildRequestContext:
+    """What a turn records about itself, for replay and evaluation."""
+
+    @staticmethod
+    def _ai_service(options, provider="mistral", valid_options=None):
+        endpoint = SimpleNamespace(options=options, provider=provider)
+        provider_obj = SimpleNamespace()
+        if valid_options is not None:
+            provider_obj.VALID_OPTIONS = valid_options
+        service = MagicMock()
+        service.get_endpoint.return_value = endpoint
+        service.get_provider.return_value = provider_obj
+        return service
+
+    def test_records_only_the_options_the_provider_sends(self):
+        """An endpoint's options dict also holds consumer settings; they are not the turn.
+
+        Recording them writes application configuration — here a filesystem path — onto
+        every user row of a table meant to be read back and exported.
+        """
+        from lys.apps.ai.modules.conversation.services import AIConversationService
+
+        context = AIConversationService._build_request_context(
+            page_context=None,
+            llm_tools=[],
+            volatile_context=None,
+            ai_service=self._ai_service(
+                {"temperature": 0.3, "routes_manifest_path": "/srv/app/routes.json"},
+                valid_options={"temperature", "top_p"},
+            ),
+        )
+
+        assert context["options"] == {"temperature": 0.3}
+        assert "routes_manifest_path" not in context["options"]
+
+    def test_keeps_every_option_when_the_provider_declares_none(self):
+        """No declaration to filter on: record everything rather than silently drop what ran."""
+        from lys.apps.ai.modules.conversation.services import AIConversationService
+
+        context = AIConversationService._build_request_context(
+            page_context=None,
+            llm_tools=[],
+            volatile_context=None,
+            ai_service=self._ai_service({"temperature": 0.3, "custom": "x"}),
+        )
+
+        assert context["options"] == {"temperature": 0.3, "custom": "x"}
+
+    def test_records_nothing_when_the_provider_declares_an_empty_set(self):
+        """An explicit, empty declaration means the provider sends none: filter to nothing.
+
+        A falsy-set check here would treat this the same as "no declaration" and record
+        every raw option instead - the exact leak the filtering exists to prevent.
+        """
+        from lys.apps.ai.modules.conversation.services import AIConversationService
+
+        context = AIConversationService._build_request_context(
+            page_context=None,
+            llm_tools=[],
+            volatile_context=None,
+            ai_service=self._ai_service({"temperature": 0.3}, valid_options=set()),
+        )
+
+        assert context["options"] == {}
+
+    def test_unresolvable_provider_never_costs_the_turn(self):
+        """Best-effort by contract: a turn must not fail because its trace could not be built."""
+        from lys.apps.ai.modules.conversation.services import AIConversationService
+
+        service = self._ai_service({"temperature": 0.3})
+        service.get_provider.side_effect = ValueError("Unknown AI provider: nope")
+
+        context = AIConversationService._build_request_context(
+            page_context=None,
+            llm_tools=[],
+            volatile_context=None,
+            ai_service=service,
+        )
+
+        assert context["options"] == {"temperature": 0.3}
+
+    def test_records_tool_names_never_their_schemas(self):
+        """The schemas are large and belong to the prompt version; the names are the turn."""
+        from lys.apps.ai.modules.conversation.services import AIConversationService
+
+        context = AIConversationService._build_request_context(
+            page_context=None,
+            llm_tools=[
+                {"type": "function", "function": {"name": "get_irs_context", "parameters": {}}},
+                {"type": "function", "function": {"name": "navigate", "parameters": {}}},
+            ],
+            volatile_context=None,
+            ai_service=self._ai_service({}),
+        )
+
+        assert context["tools"] == ["get_irs_context", "navigate"]
