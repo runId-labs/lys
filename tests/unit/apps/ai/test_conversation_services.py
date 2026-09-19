@@ -344,96 +344,70 @@ class TestAIConversationServiceBuildSystemPrompt:
         assert result == []
 
     @pytest.mark.asyncio
-    async def test_build_system_prompt_page_segment_is_cacheable(self, mock_session):
-        """The page-specific prompt becomes a single cacheable segment."""
-        from lys.apps.ai.modules.conversation.services import AIConversationService
-
-        page_behaviour = {
-            "prompt": "Focus on helping with customer support tasks."
-        }
-
-        result = await AIConversationService._build_system_prompt(
-            page_behaviour=page_behaviour
-        )
-
-        assert result == [
-            {"content": "Focus on helping with customer support tasks.", "cache": True}
-        ]
-
-    @pytest.mark.asyncio
-    async def test_build_system_prompt_context_segment_is_volatile(self, mock_session):
-        """Dynamic context becomes a single non-cacheable segment."""
-        from lys.apps.ai.modules.conversation.services import AIConversationService
-
-        context_data = {
-            "Current Order": "Order #12345 - Status: Pending"
-        }
-
-        result = await AIConversationService._build_system_prompt(
-            context_data=context_data
-        )
-
-        assert len(result) == 1
-        segment = result[0]
-        assert segment["cache"] is False
-        assert "Dynamic context" in segment["content"]
-        assert "Current Order" in segment["content"]
-        assert "Order #12345" in segment["content"]
-
-    @pytest.mark.asyncio
-    async def test_build_system_prompt_orders_cacheable_before_volatile(self, mock_session):
-        """The stable page segment precedes the volatile context segment."""
+    async def test_build_system_prompt_keeps_only_stable_context_and_summary(self, mock_session):
+        """The leading block carries what does not change during a conversation."""
         from lys.apps.ai.modules.conversation.services import AIConversationService
 
         result = await AIConversationService._build_system_prompt(
-            page_behaviour={"prompt": "Page prompt."},
-            context_data={"Order": "Order #12345"},
-        )
-
-        assert [seg["cache"] for seg in result] == [True, False]
-        assert result[0]["content"] == "Page prompt."
-        assert "Order #12345" in result[1]["content"]
-
-    @pytest.mark.asyncio
-    async def test_build_system_prompt_stable_context_is_cacheable_first_segment(self, mock_session):
-        """The stable context layer is cacheable and ordered before the page prompt."""
-        from lys.apps.ai.modules.conversation.services import AIConversationService
-
-        result = await AIConversationService._build_system_prompt(
-            page_behaviour={"prompt": "Page prompt."},
-            context_data={"Order": "Order #12345"},
             stable_context="Stable session map.",
+            conversation_summary="Earlier summary.",
         )
 
-        # Layer A (stable) -> page (stable) -> dynamic context (volatile).
         assert result[0] == {"content": "Stable session map.", "cache": True}
-        assert result[1] == {"content": "Page prompt.", "cache": True}
-        assert result[2]["cache"] is False
-        assert [seg["cache"] for seg in result] == [True, True, False]
-
+        assert "Earlier summary." in result[1]["content"]
+        assert result[1]["cache"] is False
+        assert len(result) == 2
 
     @pytest.mark.asyncio
-    async def test_build_system_prompt_volatile_context_is_before_summary(self, mock_session):
-        """The focus marker is volatile and ordered ahead of summary and dynamic context."""
+    async def test_build_turn_context_returns_no_segments_without_inputs(self, mock_session):
+        """Nothing to say about this turn produces nothing."""
         from lys.apps.ai.modules.conversation.services import AIConversationService
 
-        result = await AIConversationService._build_system_prompt(
+        assert await AIConversationService._build_turn_context() == []
+
+    @pytest.mark.asyncio
+    async def test_build_turn_context_orders_page_then_volatile_then_data(self, mock_session):
+        """Most stable first: the page outlives the focus, which outlives the turn data."""
+        from lys.apps.ai.modules.conversation.services import AIConversationService
+
+        result = await AIConversationService._build_turn_context(
             page_behaviour={"prompt": "Page prompt."},
-            conversation_summary="Earlier summary.",
-            context_data={"Order": "Order #12345"},
-            stable_context="Stable map.",
             volatile_context="Focus: ACME / 2024.",
+            context_data={"Order": "Order #12345"},
         )
 
         contents = [seg["content"] for seg in result]
-        caches = [seg["cache"] for seg in result]
-        # Layer A (stable) -> page (stable) -> focus (volatile) -> summary -> dynamic context.
-        assert contents[0] == "Stable map."
-        assert contents[1] == "Page prompt."
-        assert contents[2] == "Focus: ACME / 2024."
-        assert "Earlier summary." in contents[3]      # focus precedes the summary
-        assert "Order #12345" in contents[4]           # ... and the dynamic context
-        assert caches == [True, True, False, False, False]
+        assert contents[0] == "Page prompt."
+        assert contents[1] == "Focus: ACME / 2024."
+        assert "Dynamic context" in contents[2]
+        assert "Order #12345" in contents[2]
+
+    @pytest.mark.asyncio
+    async def test_build_turn_context_carries_no_cache_flag(self, mock_session):
+        """These segments never reach a cache breakpoint: they sit after the history."""
+        from lys.apps.ai.modules.conversation.services import AIConversationService
+
+        result = await AIConversationService._build_turn_context(
+            page_behaviour={"prompt": "Page prompt."},
+        )
+
+        assert result == [{"content": "Page prompt."}]
+
+    @pytest.mark.asyncio
+    async def test_page_prompt_is_not_in_the_leading_block(self, mock_session):
+        """Regression: a page change must not invalidate the history.
+
+        The page prompt used to sit in front of the history, so navigating re-billed the
+        whole conversation. It belongs to the turn context now.
+        """
+        from lys.apps.ai.modules.conversation.services import AIConversationService
+
+        result = await AIConversationService._build_system_prompt(
+            stable_context="Stable map.",
+            conversation_summary="Earlier summary.",
+        )
+
+        assert all("Page prompt." not in seg["content"] for seg in result)
 
 
 class TestAIConversationServiceGetStableContext:

@@ -1191,66 +1191,98 @@ class AIConversationService(EntityService[AIConversation]):
     @classmethod
     async def _build_system_prompt(
         cls,
-        page_behaviour: Optional[Dict[str, Any]] = None,
-        context_data: Optional[Dict[str, str]] = None,
         conversation_summary: Optional[str] = None,
         stable_context: Optional[str] = None,
-        volatile_context: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
         """
-        Build the system prompt as ordered cacheable / volatile segments.
+        Build the leading system block: what does NOT change during a conversation.
 
-        Args:
-            page_behaviour: Optional page-specific chatbot behaviour from manifest
-            context_data: Optional context data from executing context_tools
+        A provider reuses the longest byte-identical prefix of the previous request, so
+        anything placed here sits in front of the whole history: one changed character and
+        the entire conversation is re-billed. Only two things qualify — the consumer's
+        stable layer, and the compaction summary, which changes once per compaction rather
+        than once per turn.
+
+        Everything that varies within a conversation (the page prompt, the volatile layer,
+        the per-turn context) belongs to :meth:`_build_turn_context`, which is emitted
+        AFTER the history.
 
         Returns:
             Ordered list of {"content", "cache"} segments. The base prompt is injected
-            separately by the AIService entry point (endpoint.system_prompt). The page
-            prompt is stable per page (cacheable); the compaction summary and the per-turn
-            context are volatile and marked uncached, so a provider can place the cache
-            breakpoint between the stable prefix and the volatile tail and stop the tail
-            from busting the stable prefix. Segment headers default to English and are
-            overridable via the ai plugin config (chatbot.summary_header /
-            chatbot.dynamic_context_header).
+            separately by the AIService entry point (endpoint.system_prompt) and sits
+            before these. The summary header defaults to English and is overridable via
+            the ai plugin config (chatbot.summary_header).
         """
         chatbot_config = (cls.app_manager.settings.get_plugin_config("ai") or {}).get("chatbot", {})
         summary_header = chatbot_config.get("summary_header", DEFAULT_SUMMARY_HEADER)
-        dynamic_context_header = chatbot_config.get(
-            "dynamic_context_header", DEFAULT_DYNAMIC_CONTEXT_HEADER
-        )
 
         segments: List[Dict[str, Any]] = []
 
-        # Cacheable layer — session-stable. Placed before the page so a page change does not
-        # bust it (per-layer breakpoints).
+        # Session-stable layer, cacheable.
         if stable_context:
             segments.append({"content": stable_context, "cache": True})
 
-        # Page-specific prompt — stable per page → cacheable.
-        if page_behaviour and page_behaviour.get("prompt"):
-            segments.append({"content": page_behaviour["prompt"], "cache": True})
-
-        # Volatile layer — what changes from one turn to the next. Not cached; placed first
-        # among the volatile segments so it frames the summary and the per-turn context.
-        if volatile_context:
-            segments.append({"content": volatile_context, "cache": False})
-
-        # Compaction summary of older turns — volatile (changes on each re-summary) →
-        # not cached. Placed after the cacheable page prefix, before the per-turn context.
+        # Compaction summary of older turns. It replaces those turns, so it must stay in
+        # front of the verbatim window it precedes. Not marked cacheable: a new summary
+        # invalidates it, and a provider placing a breakpoint here would cache a value with
+        # a shorter life than the layers above it.
         if conversation_summary:
             segments.append({
                 "content": f"{summary_header}\n{conversation_summary}",
                 "cache": False,
             })
 
-        # Per-turn context from context_tools — volatile → not cached.
+        return segments
+
+    @classmethod
+    async def _build_turn_context(
+        cls,
+        page_behaviour: Optional[Dict[str, Any]] = None,
+        volatile_context: Optional[str] = None,
+        context_data: Optional[Dict[str, str]] = None,
+    ) -> List[Dict[str, Any]]:
+        """
+        Build the segments emitted AFTER the history, just before the user's message.
+
+        These are the three things that change while a conversation is still running: the
+        page the user is on, the consumer's volatile layer (focus, current date), and the
+        data fetched by the context_tools for this turn. In front of the history, each of
+        them would drop the whole conversation out of the prompt cache — a page change, a
+        change of the selected record, or simply the next turn.
+
+        Placed last, they also land where an instruction is best followed: a model adheres
+        to what sits next to the question, not to what is buried before a long history.
+
+        Emitted as system messages so they keep their authority. A provider that only
+        accepts a leading system block (Anthropic) hoists them back to the front, which
+        costs the cache benefit but never correctness.
+
+        Returns:
+            Ordered list of {"content"} segments, most stable first.
+        """
+        chatbot_config = (cls.app_manager.settings.get_plugin_config("ai") or {}).get("chatbot", {})
+        dynamic_context_header = chatbot_config.get(
+            "dynamic_context_header", DEFAULT_DYNAMIC_CONTEXT_HEADER
+        )
+
+        segments: List[Dict[str, Any]] = []
+
+        # Page-specific prompt: stable until the user navigates.
+        if page_behaviour and page_behaviour.get("prompt"):
+            segments.append({"content": page_behaviour["prompt"]})
+
+        # Consumer's volatile layer.
+        if volatile_context:
+            segments.append({"content": volatile_context})
+
+        # Per-turn context from context_tools: re-read on every turn by construction, so it
+        # comes last of all.
         if context_data:
             parts = [dynamic_context_header]
             for label, data in context_data.items():
                 parts.append(f"\n### {label}")
                 parts.append(data)
-            segments.append({"content": "\n".join(parts), "cache": False})
+            segments.append({"content": "\n".join(parts)})
 
         return segments
 
@@ -1450,11 +1482,13 @@ class AIConversationService(EntityService[AIConversation]):
         # Build system prompt (cheap: only the summary/stable-context loads hit the DB/cache;
         # stable layer + page prompt + volatile layer + past-conversation summary + fetched context).
         system_segments = await cls._build_system_prompt(
-            page_behaviour=page_behaviour,
-            context_data=context_data,
             conversation_summary=current_summary.summary if current_summary else None,
             stable_context=stable_context,
+        )
+        turn_segments = await cls._build_turn_context(
+            page_behaviour=page_behaviour,
             volatile_context=volatile_context,
+            context_data=context_data,
         )
         logger.debug(f"[SystemPrompt] Built {len(system_segments)} segment(s)")
 
@@ -1490,8 +1524,7 @@ class AIConversationService(EntityService[AIConversation]):
         # boundary); the older turns are carried by the summary system segment above.
         history = await cls._build_messages(conversation, session, current_summary=current_summary)
         # One system message per segment, carrying its cache flag. The base prompt is
-        # prepended (uncached) by the AIService entry point; sitting before the cacheable
-        # page segment, it is still covered by the breakpoint placed after that segment.
+        # prepended (uncached) by the AIService entry point and sits before these.
         messages = [
             {"role": "system", "content": seg["content"], "cache": seg["cache"]}
             for seg in system_segments
@@ -1501,6 +1534,11 @@ class AIConversationService(EntityService[AIConversation]):
         for msg in history:
             if msg.get("role") != "system":
                 messages.append(msg)
+
+        # Turn-scoped segments go AFTER the history: what changes while the conversation
+        # runs must never sit in front of it, or every change re-bills the whole exchange.
+        for seg in turn_segments:
+            messages.append({"role": "system", "content": seg["content"]})
 
         # Save user message to DB, carrying what varied for this turn. Recorded here rather
         # than on the assistant side because a turn has exactly one user row and may have

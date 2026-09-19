@@ -7,6 +7,12 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.46.1] - 2026-09-19
+
+### Fixed
+- The page prompt, the consumer's volatile context layer, and the per-turn `context_tools` data are now emitted as system segments placed AFTER the conversation history instead of in front of it (`AIConversationService._build_turn_context`), so a page change or a per-turn data refresh no longer busts the prompt cache on the whole history — only the cacheable stable-context/summary block stays ahead of it (`_build_system_prompt`)
+- `message_sanitizer.sanitize_llm_messages` no longer hoists a `system` message placed after the history to the leading header: it is kept in place and rebuilt as an explicitly non-cacheable segment (`[{"text": ..., "cache": False}]`), so a provider that infers cacheability from plain-string content (Anthropic) never marks turn-scoped, ever-changing content as cacheable by accident
+
 ## [0.46.0] - 2026-09-18
 
 ### Added

@@ -1813,6 +1813,28 @@ class TestAnthropicProviderTranslation:
         system, _ = AnthropicProvider._translate_messages([{"role": "user", "content": "x"}])
         assert system is None
 
+    def test_translate_messages_late_system_message_is_not_cacheable(self, provider):
+        """A turn-scoped system message placed after the history must not default to
+        cacheable: it changes every turn, so caching it burns the write premium for a
+        cache entry that will not be read back.
+
+        The sanitizer rebuilds such messages as an explicit non-cacheable segment
+        (``[{"text": ..., "cache": False}]``) precisely so this branch never falls back
+        to the plain-string default of ``cache: True``.
+        """
+        system, msgs = AnthropicProvider._translate_messages([
+            {"role": "system", "content": "Base prompt."},
+            {"role": "user", "content": "hi"},
+            {"role": "assistant", "content": "yo"},
+            {"role": "system", "content": [{"text": "Page prompt, per turn.", "cache": False}]},
+            {"role": "user", "content": "now what"},
+        ])
+        assert system == [
+            {"text": "Base prompt.", "cache": True},
+            {"text": "Page prompt, per turn.", "cache": False},
+        ]
+        assert [m["role"] for m in msgs] == ["user", "assistant", "user"]
+
     def test_translate_messages_assistant_tool_calls(self, provider):
         """Assistant tool_calls become tool_use blocks with parsed input."""
         _, msgs = AnthropicProvider._translate_messages([

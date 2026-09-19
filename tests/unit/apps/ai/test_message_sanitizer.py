@@ -22,13 +22,13 @@ class TestSystemPositioning:
         ]
         assert sanitize_llm_messages(messages) == messages
 
-    def test_multiple_system_messages_are_merged_preserving_order(self):
+    def test_leading_system_messages_are_merged_preserving_order(self):
         # Real-world case: endpoint.system_prompt prepended on top of a
         # conversation-built system prompt. Both contents must survive.
         messages = [
             {"role": "system", "content": "sys1"},
-            {"role": "user", "content": "hi"},
             {"role": "system", "content": "sys2"},
+            {"role": "user", "content": "hi"},
         ]
         result = sanitize_llm_messages(messages)
         assert [m["role"] for m in result] == ["system", "user"]
@@ -36,6 +36,34 @@ class TestSystemPositioning:
             {"text": "sys1", "cache": False},
             {"text": "sys2", "cache": False},
         ]
+
+    def test_system_after_history_stays_in_place(self):
+        # A system message placed after the history is turn-scoped context. Hoisting it
+        # would move volatile text in front of the history and drop the whole conversation
+        # out of the provider's prompt cache, which is the reason it was placed late.
+        messages = [
+            {"role": "system", "content": "sys1"},
+            {"role": "user", "content": "hi"},
+            {"role": "assistant", "content": "yo"},
+            {"role": "system", "content": "focus"},
+            {"role": "user", "content": "now what"},
+        ]
+        result = sanitize_llm_messages(messages)
+        assert [m["role"] for m in result] == ["system", "user", "assistant", "system", "user"]
+        assert result[0]["content"] == "sys1"
+        assert result[3] == {"role": "system", "content": [{"text": "focus", "cache": False}]}
+
+    def test_late_system_message_is_rebuilt_as_explicitly_non_cacheable(self):
+        # A bare string would let a provider default it to cacheable by accident
+        # (Anthropic does, for plain-string system content) - the exact thing
+        # placing it after the history is meant to avoid.
+        messages = [
+            {"role": "system", "content": "sys1"},
+            {"role": "user", "content": "hi"},
+            {"role": "system", "content": "focus", "cache": True},
+        ]
+        result = sanitize_llm_messages(messages)
+        assert result[-1] == {"role": "system", "content": [{"text": "focus", "cache": False}]}
 
     def test_system_with_empty_content_is_skipped_when_merging(self):
         # Falsy system content must not introduce dangling "\n\n" separators
@@ -43,8 +71,8 @@ class TestSystemPositioning:
         messages = [
             {"role": "system", "content": "sys1"},
             {"role": "system", "content": ""},
-            {"role": "user", "content": "hi"},
             {"role": "system", "content": "sys2"},
+            {"role": "user", "content": "hi"},
         ]
         result = sanitize_llm_messages(messages)
         assert [m["role"] for m in result] == ["system", "user"]
@@ -53,14 +81,24 @@ class TestSystemPositioning:
             {"text": "sys2", "cache": False},
         ]
 
-    def test_system_not_first_is_moved_to_index_zero(self):
+    def test_empty_late_system_message_is_dropped(self):
+        messages = [
+            {"role": "system", "content": "sys1"},
+            {"role": "user", "content": "hi"},
+            {"role": "system", "content": ""},
+        ]
+        result = sanitize_llm_messages(messages)
+        assert [m["role"] for m in result] == ["system", "user"]
+
+    def test_system_with_no_leading_system_stays_where_it_is(self):
+        # No leading system block at all: there is nothing to hoist it into, and moving it
+        # would change the order the caller chose.
         messages = [
             {"role": "user", "content": "hi"},
             {"role": "system", "content": "sys"},
         ]
         result = sanitize_llm_messages(messages)
-        assert result[0]["role"] == "system"
-        assert result[1]["role"] == "user"
+        assert [m["role"] for m in result] == ["user", "system"]
 
     def test_cache_flag_preserves_segment_boundaries(self):
         # When any system message is marked cacheable, boundaries are kept as an
