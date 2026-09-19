@@ -630,6 +630,13 @@ class TestPrepareChatContext:
         mock_conversation.id = "conv-123"
         mock_message_service = AsyncMock()
         mock_ai_service = AsyncMock()
+        # These three are plain sync classmethods on AIService, not awaitables -
+        # left as AsyncMock they'd return coroutines instead of the values _prepare_chat_context
+        # iterates/branches on.
+        mock_ai_service.get_routes_manifest = MagicMock(return_value={})
+        mock_ai_service.get_page_webservices = MagicMock(return_value=set())
+        mock_ai_service.get_page_chatbot_behaviour = MagicMock(return_value=None)
+        mock_ai_service.get_prompt_version_id = MagicMock(return_value="version-123")
 
         mock_app_manager = MagicMock()
         mock_app_manager.settings.get_plugin_config.return_value = {"chatbot": {}}
@@ -639,7 +646,6 @@ class TestPrepareChatContext:
         }.get(name, MagicMock())
 
         with patch.object(AIToolService, "get_accessible_tools", new_callable=AsyncMock) as mock_tools, \
-             patch.object(AIConversationService, "_get_routes_manifest", return_value=None), \
              patch.object(AIConversationService, "_build_system_prompt", new_callable=AsyncMock,
                           return_value=[{"content": "sys prompt", "cache": True}]), \
              patch.object(AIConversationService, "_load_current_summary", new_callable=AsyncMock, return_value=None), \
@@ -779,6 +785,7 @@ class TestPrepareChatContext:
             conversation_id="conv-123",
             role=AIMessageRole.USER.value,
             content="Test message",
+            prompt_version_id="version-123",
             request_context=ANY,
         )
 
@@ -803,6 +810,25 @@ class TestPrepareChatContext:
         # Names, never schemas: a schema belongs to the prompt version, not to the turn.
         for name in recorded.get("tools", []):
             assert isinstance(name, str)
+
+    @pytest.mark.asyncio
+    async def test_user_message_is_stamped_with_the_prompt_version_id(
+        self, connected_user, mock_session, mock_info, _setup_mocks
+    ):
+        """The user row is linked to the prompt version in force for the conversation's purpose."""
+        from lys.apps.ai.modules.conversation.services import AIConversationService
+
+        mocks = _setup_mocks
+        await AIConversationService._prepare_chat_context(
+            user_id="user-123",
+            content="Test message",
+            session=mock_session,
+            connected_user=connected_user,
+            info=mock_info,
+        )
+
+        mocks["mock_ai_service"].get_prompt_version_id.assert_called_once_with(mocks["mock_conversation"].purpose)
+        assert mocks["mock_message_service"].create.call_args.kwargs["prompt_version_id"] == "version-123"
 
     @pytest.mark.asyncio
     async def test_llm_tools_extracts_definitions(self, connected_user, mock_session, mock_info, _setup_mocks):

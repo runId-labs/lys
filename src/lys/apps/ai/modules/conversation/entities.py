@@ -121,6 +121,20 @@ class AIMessage(Entity):
     # stored as received: their keys are the consumer's vocabulary, never read here.
     request_context: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
 
+    # The prompt version that produced this message. Points to an immutable row in
+    # ai_prompt_version, so any past response can be traced back to the exact system
+    # prompt that generated it. Written on the user row for the same reason as
+    # request_context: one per turn, on the line that starts it.
+    prompt_version_id: Mapped[Optional[str]] = mapped_column(
+        ForeignKey("ai_prompt_version.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+
+    @declared_attr
+    def prompt_version(cls):
+        return relationship("ai_prompt_version", lazy="selectin")
+
     # Metrics (role=assistant only)
     provider: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
     model: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)

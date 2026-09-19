@@ -46,7 +46,7 @@ Names used with `app_manager.get_entity(name)` and `app_manager.get_service(name
 - **user_role**: `role`, `role_webservice`
 - **organization**: `client`, `client_user_role`
 - **file_management**: `stored_file_type`, `stored_file`, `file_import_type`, `file_import_status`, `file_import`
-- **ai**: `ai_conversation`, `ai_message`, `ai_message_feedback`
+- **ai**: `ai_conversation`, `ai_message`, `ai_message_feedback`, `ai_prompt_version`
 - **licensing**: `license_application`, `license_rule`, `license_plan`, `license_plan_version`, `license_plan_version_rule`, `license_currency`, `license_price_period`, `license_plan_version_price`, `subscription`
 
 Adding/removing/renaming a registry name = update this list IN THE SAME commit.

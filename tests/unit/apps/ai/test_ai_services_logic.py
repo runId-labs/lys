@@ -628,3 +628,185 @@ class TestContextToolService:
             assert ContextToolService._registry == {}
         finally:
             ContextToolService._registry = original_registry
+
+
+class TestRoutesManifest:
+    """Tests for AIService.get_routes_manifest / get_page_webservices /
+    get_page_chatbot_behaviour (moved here from AIConversationService)."""
+
+    def test_get_routes_manifest_caches_after_first_load(self):
+        from lys.apps.ai.modules.core.services import AIService
+
+        original_cache = AIService._routes_manifest_cache
+        try:
+            AIService._routes_manifest_cache = None
+            with patch.object(AIService, "app_manager", create=True) as mock_am, \
+                 patch("lys.apps.ai.modules.core.services.load_routes_manifest") as mock_load:
+                mock_am.settings.get_plugin_config.return_value = {
+                    "chatbot": {"options": {"routes_manifest_path": "/some/path.json"}}
+                }
+                mock_load.return_value = {"routes": [{"name": "HomePage"}]}
+
+                first = AIService.get_routes_manifest()
+                second = AIService.get_routes_manifest()
+
+            assert first == {"routes": [{"name": "HomePage"}]}
+            assert second is first
+            mock_load.assert_called_once_with("/some/path.json")
+        finally:
+            AIService._routes_manifest_cache = original_cache
+
+    def test_get_routes_manifest_returns_empty_dict_when_not_configured(self):
+        from lys.apps.ai.modules.core.services import AIService
+
+        original_cache = AIService._routes_manifest_cache
+        try:
+            AIService._routes_manifest_cache = None
+            with patch.object(AIService, "app_manager", create=True) as mock_am:
+                mock_am.settings.get_plugin_config.return_value = {"chatbot": {}}
+                result = AIService.get_routes_manifest()
+
+            assert result == {}
+        finally:
+            AIService._routes_manifest_cache = original_cache
+
+    def test_get_routes_manifest_tolerates_a_non_dict_chatbot_config(self):
+        """A malformed plugin config ({"chatbot": "oops"}) must not raise - it just
+        yields no manifest, same as no chatbot config at all."""
+        from lys.apps.ai.modules.core.services import AIService
+
+        original_cache = AIService._routes_manifest_cache
+        try:
+            AIService._routes_manifest_cache = None
+            with patch.object(AIService, "app_manager", create=True) as mock_am:
+                mock_am.settings.get_plugin_config.return_value = {"chatbot": "oops"}
+                result = AIService.get_routes_manifest()
+
+            assert result == {}
+        finally:
+            AIService._routes_manifest_cache = original_cache
+
+    def test_get_page_webservices_merges_global_and_page_specific(self):
+        from lys.apps.ai.modules.core.services import AIService
+
+        original_cache = AIService._routes_manifest_cache
+        try:
+            AIService._routes_manifest_cache = {
+                "globalWebservices": ["GlobalService"],
+                "routes": [
+                    {"name": "HomePage", "webservices": ["HomeService"]},
+                    {"name": "OtherPage", "webservices": ["OtherService"]},
+                ],
+            }
+
+            result = AIService.get_page_webservices("HomePage")
+
+            assert result == {"global_service", "home_service"}
+        finally:
+            AIService._routes_manifest_cache = original_cache
+
+    def test_get_page_webservices_unknown_page_returns_only_global(self):
+        from lys.apps.ai.modules.core.services import AIService
+
+        original_cache = AIService._routes_manifest_cache
+        try:
+            AIService._routes_manifest_cache = {
+                "globalWebservices": ["GlobalService"],
+                "routes": [{"name": "HomePage", "webservices": ["HomeService"]}],
+            }
+
+            result = AIService.get_page_webservices("NoSuchPage")
+
+            assert result == {"global_service"}
+        finally:
+            AIService._routes_manifest_cache = original_cache
+
+    def test_get_page_webservices_no_manifest_returns_empty_set(self):
+        from lys.apps.ai.modules.core.services import AIService
+
+        original_cache = AIService._routes_manifest_cache
+        try:
+            AIService._routes_manifest_cache = {}
+            assert AIService.get_page_webservices("HomePage") == set()
+        finally:
+            AIService._routes_manifest_cache = original_cache
+
+    def test_get_page_chatbot_behaviour_returns_matching_route(self):
+        from lys.apps.ai.modules.core.services import AIService
+
+        original_cache = AIService._routes_manifest_cache
+        try:
+            behaviour = {"prompt": "Be terse.", "context_tools": ["ctx_a"]}
+            AIService._routes_manifest_cache = {
+                "routes": [{"name": "HomePage", "chatbot_behaviour": behaviour}],
+            }
+
+            assert AIService.get_page_chatbot_behaviour("HomePage") == behaviour
+        finally:
+            AIService._routes_manifest_cache = original_cache
+
+    def test_get_page_chatbot_behaviour_unknown_page_returns_none(self):
+        from lys.apps.ai.modules.core.services import AIService
+
+        original_cache = AIService._routes_manifest_cache
+        try:
+            AIService._routes_manifest_cache = {
+                "routes": [{"name": "OtherPage", "chatbot_behaviour": {"prompt": "irrelevant"}}],
+            }
+            assert AIService.get_page_chatbot_behaviour("NoSuchPage") is None
+        finally:
+            AIService._routes_manifest_cache = original_cache
+
+    def test_get_page_chatbot_behaviour_no_manifest_returns_none(self):
+        from lys.apps.ai.modules.core.services import AIService
+
+        original_cache = AIService._routes_manifest_cache
+        try:
+            AIService._routes_manifest_cache = {}
+            assert AIService.get_page_chatbot_behaviour("HomePage") is None
+        finally:
+            AIService._routes_manifest_cache = original_cache
+
+
+class TestPromptVersionCacheHelpers:
+    """Tests for AIService.get_prompt_version_id() and the cache reset in
+    clear_config_cache() — the boot-time lookup consumed by AIConversationService
+    when stamping AIMessage.prompt_version_id."""
+
+    def test_get_prompt_version_id_returns_cached_value(self):
+        from lys.apps.ai.modules.core.services import AIService
+
+        original = AIService._prompt_version_ids
+        try:
+            AIService._prompt_version_ids = {"chatbot": "version-1"}
+            assert AIService.get_prompt_version_id("chatbot") == "version-1"
+        finally:
+            AIService._prompt_version_ids = original
+
+    def test_get_prompt_version_id_unknown_purpose_returns_none(self):
+        from lys.apps.ai.modules.core.services import AIService
+
+        original = AIService._prompt_version_ids
+        try:
+            AIService._prompt_version_ids = {}
+            assert AIService.get_prompt_version_id("unknown") is None
+        finally:
+            AIService._prompt_version_ids = original
+
+    def test_clear_config_cache_also_clears_prompt_version_ids(self):
+        from lys.apps.ai.modules.core.services import AIService
+        from lys.apps.ai.utils.providers.config import AIConfig
+
+        original_config = AIService._config_cache
+        original_versions = AIService._prompt_version_ids
+        try:
+            AIService._config_cache = AIConfig()
+            AIService._prompt_version_ids = {"chatbot": "version-1"}
+
+            AIService.clear_config_cache()
+
+            assert AIService._config_cache is None
+            assert AIService._prompt_version_ids == {}
+        finally:
+            AIService._config_cache = original_config
+            AIService._prompt_version_ids = original_versions

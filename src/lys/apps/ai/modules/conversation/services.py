@@ -58,8 +58,7 @@ from lys.core.graphql.client import build_global_id
 from lys.apps.ai.utils.providers.config import parse_plugin_config
 from lys.core.registries import register_service
 from lys.core.services import EntityService
-from lys.core.utils.routes import filter_routes_by_permissions, build_navigate_tool, load_routes_manifest
-from lys.core.utils.strings import to_snake_case
+from lys.core.utils.routes import filter_routes_by_permissions, build_navigate_tool
 
 logger = logging.getLogger(__name__)
 
@@ -67,8 +66,6 @@ logger = logging.getLogger(__name__)
 @register_service()
 class AIConversationService(EntityService[AIConversation]):
     """Service for managing AI conversations."""
-
-    _routes_manifest_cache: Optional[Dict[str, Any]] = None
 
     @staticmethod
     def _usage_fields(usage: Optional[Dict[str, Any]]) -> Dict[str, Optional[int]]:
@@ -80,83 +77,6 @@ class AIConversationService(EntityService[AIConversation]):
             "cache_read_tokens": usage.get("cache_read_tokens"),
             "cache_write_tokens": usage.get("cache_write_tokens"),
         }
-
-    @classmethod
-    def _get_routes_manifest(cls) -> Optional[Dict[str, Any]]:
-        """
-        Get cached routes manifest, loading once if needed.
-
-        Returns:
-            Routes manifest dict or None if not configured
-        """
-        if cls._routes_manifest_cache is not None:
-            return cls._routes_manifest_cache
-
-        ai_plugin_config = cls.app_manager.settings.get_plugin_config("ai") or {}
-        chatbot_config = ai_plugin_config.get("chatbot", {})
-        routes_manifest_path = None
-        if isinstance(chatbot_config, dict):
-            routes_manifest_path = chatbot_config.get("options", {}).get("routes_manifest_path")
-
-        if routes_manifest_path:
-            cls._routes_manifest_cache = load_routes_manifest(routes_manifest_path)
-        else:
-            cls._routes_manifest_cache = {}
-
-        return cls._routes_manifest_cache
-
-    @classmethod
-    def _get_page_webservices(cls, page_name: str) -> set[str]:
-        """
-        Get webservices available on a specific page.
-
-        Args:
-            page_name: Name of the page (e.g., "FinancialDashboardPage")
-
-        Returns:
-            Set of webservice names available on the page (in snake_case)
-        """
-        manifest = cls._get_routes_manifest()
-        if not manifest:
-            return set()
-
-        # Include global webservices (always available)
-        # Convert from camelCase (manifest) to snake_case (backend)
-        global_webservices = {
-            to_snake_case(ws) for ws in manifest.get("globalWebservices", [])
-        }
-
-        # Find page-specific webservices
-        for route in manifest.get("routes", []):
-            if route.get("name") == page_name:
-                page_webservices = {
-                    to_snake_case(ws) for ws in route.get("webservices", [])
-                }
-                return global_webservices | page_webservices
-
-        # Page not found, return only global webservices
-        return global_webservices
-
-    @classmethod
-    def _get_page_chatbot_behaviour(cls, page_name: str) -> Optional[Dict[str, Any]]:
-        """
-        Get chatbot behaviour configuration for a specific page.
-
-        Args:
-            page_name: Name of the page (e.g., "FinancialDashboardPage")
-
-        Returns:
-            Chatbot behaviour dict with 'prompt' and 'context_tools', or None
-        """
-        manifest = cls._get_routes_manifest()
-        if not manifest:
-            return None
-
-        for route in manifest.get("routes", []):
-            if route.get("name") == page_name:
-                return route.get("chatbot_behaviour")
-
-        return None
 
     @classmethod
     def _process_response(cls, result: dict) -> None:
@@ -232,12 +152,14 @@ class AIConversationService(EntityService[AIConversation]):
         message_service = cls.app_manager.get_service("ai_message")
         ai_service = cls.app_manager.get_service("ai")
 
-        # Save user message
+        # Save user message, linked to the prompt version that will produce the
+        # answer (from the boot cache; None leaves the FK unset rather than failing).
         await message_service.create(
             session,
             conversation_id=conversation.id,
             role=AIMessageRole.USER.value,
             content=content,
+            prompt_version_id=ai_service.get_prompt_version_id(conversation.purpose),
         )
 
         # Build messages list from conversation history
@@ -1409,7 +1331,7 @@ class AIConversationService(EntityService[AIConversation]):
                 f"[PageContext] Received context: page_name='{page_context.page_name}', "
                 f"params={page_context.params}"
             )
-            page_webservices = cls._get_page_webservices(page_context.page_name)
+            page_webservices = cls.app_manager.get_service("ai").get_page_webservices(page_context.page_name)
             logger.debug(
                 f"[PageContext] Page webservices for '{page_context.page_name}': {page_webservices}"
             )
@@ -1437,7 +1359,7 @@ class AIConversationService(EntityService[AIConversation]):
 
         # Note: Routes manifest is loaded once and cached at class level
         accessible_routes = []
-        manifest = cls._get_routes_manifest()
+        manifest = cls.app_manager.get_service("ai").get_routes_manifest()
         is_super_user = connected_user.get("is_super_user", False) if connected_user else False
 
         if manifest and "routes" in manifest:
@@ -1471,7 +1393,7 @@ class AIConversationService(EntityService[AIConversation]):
         page_behaviour = None
         context_data = {}
         if page_context and page_context.page_name:
-            page_behaviour = cls._get_page_chatbot_behaviour(page_context.page_name)
+            page_behaviour = cls.app_manager.get_service("ai").get_page_chatbot_behaviour(page_context.page_name)
             if page_behaviour:
                 logger.debug(
                     f"[ChatbotBehaviour] Found behaviour for page '{page_context.page_name}'"
@@ -1565,12 +1487,15 @@ class AIConversationService(EntityService[AIConversation]):
         # Save user message to DB, carrying what varied for this turn. Recorded here rather
         # than on the assistant side because a turn has exactly one user row and may have
         # several assistant ones (agent loop), and because everything it needs is assembled
-        # above. See AIMessage.request_context for what each key holds.
+        # above. See AIMessage.request_context for what each key holds. The prompt version
+        # comes from the boot cache (best-effort: None leaves the FK unset rather than
+        # failing the turn).
         user_message = await message_service.create(
             session,
             conversation_id=conversation.id,
             role=AIMessageRole.USER.value,
             content=content,
+            prompt_version_id=ai_service.get_prompt_version_id(conversation.purpose),
             request_context=cls._build_request_context(
                 page_context=page_context,
                 llm_tools=llm_tools,

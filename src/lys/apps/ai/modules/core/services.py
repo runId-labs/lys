@@ -7,13 +7,18 @@ for managing AI tool definitions.
 """
 
 import asyncio
+import hashlib
+import json
 import logging
 import time
-from typing import AsyncGenerator, List, Dict, Any, Optional, Type, TypeVar
+from typing import AsyncGenerator, List, Dict, Any, Optional, Type, TypeVar, TYPE_CHECKING
 
 import httpx
 from pydantic import BaseModel
+from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 
+from lys.apps.ai.modules.core.consts import AI_PLUGIN_NAME, ROUTES_MANIFEST_PURPOSE
 from lys.apps.ai.utils.providers.abstracts import AIProvider, AIResponse, AIStreamChunk
 from lys.apps.ai.utils.providers.config import AIEndpointConfig, parse_plugin_config, AIConfig
 from lys.apps.ai.utils.providers.exceptions import (
@@ -30,13 +35,15 @@ from lys.core.consts.ai import ToolRiskLevel
 from lys.core.graphql.client import GraphQLClient
 from lys.core.registries import register_service
 from lys.core.services import Service
+from lys.core.utils.routes import load_routes_manifest
+from lys.core.utils.strings import to_snake_case
+
+if TYPE_CHECKING:
+    from lys.apps.ai.modules.core.entities import AIPromptVersion
 
 logger = logging.getLogger(__name__)
 
 T = TypeVar("T", bound=BaseModel)
-
-# Plugin name for AI configuration
-AI_PLUGIN_NAME = "ai"
 
 
 @register_service()
@@ -93,6 +100,15 @@ class AIService(Service):
     # Cached config
     _config_cache: Optional[AIConfig] = None
 
+    # Prompt-version id per purpose, populated at boot by on_initialize (None when the
+    # endpoint has no system_prompt). Settings are fixed for the process lifetime and
+    # version rows are immutable, so the mapping never changes between boots — message
+    # turns read it straight from memory instead of querying.
+    _prompt_version_ids: Dict[str, Optional[str]] = {}
+
+    # Cached routes manifest (loaded once from the chatbot config)
+    _routes_manifest_cache: Optional[Dict[str, Any]] = None
+
     # Provider registry - can be overridden via inheritance
     _providers: Dict[str, Type[AIProvider]] = {
         "mistral": MistralProvider,
@@ -100,6 +116,174 @@ class AIService(Service):
     }
 
     # ========== Provider Registry ==========
+
+    # ========== Routes Manifest ==========
+
+    @classmethod
+    def get_routes_manifest(cls) -> Optional[Dict[str, Any]]:
+        """Get cached routes manifest, loading once if needed.
+
+        Reads the ``routes_manifest_path`` from the chatbot endpoint's options.
+        Returns an empty dict (not None) when no path is configured, so callers
+        can iterate ``manifest.get("routes", [])`` without a None check.
+        """
+        if cls._routes_manifest_cache is not None:
+            return cls._routes_manifest_cache
+
+        ai_plugin_config = cls.app_manager.settings.get_plugin_config(AI_PLUGIN_NAME) or {}
+        chatbot_config = ai_plugin_config.get("chatbot", {})
+        routes_manifest_path = None
+        if isinstance(chatbot_config, dict):
+            routes_manifest_path = chatbot_config.get("options", {}).get("routes_manifest_path")
+
+        if routes_manifest_path:
+            cls._routes_manifest_cache = load_routes_manifest(routes_manifest_path)
+        else:
+            cls._routes_manifest_cache = {}
+
+        return cls._routes_manifest_cache
+
+    @classmethod
+    def get_page_webservices(cls, page_name: str) -> set[str]:
+        """Get webservices available on a specific page.
+
+        Includes global webservices (always available) plus page-specific ones.
+        Names are converted from camelCase (manifest) to snake_case (backend).
+        """
+        manifest = cls.get_routes_manifest()
+        if not manifest:
+            return set()
+
+        global_webservices = {
+            to_snake_case(ws) for ws in manifest.get("globalWebservices", [])
+        }
+
+        for route in manifest.get("routes", []):
+            if route.get("name") == page_name:
+                page_webservices = {
+                    to_snake_case(ws) for ws in route.get("webservices", [])
+                }
+                return global_webservices | page_webservices
+
+        return global_webservices
+
+    @classmethod
+    def get_page_chatbot_behaviour(cls, page_name: str) -> Optional[Dict[str, Any]]:
+        """Get chatbot behaviour configuration for a specific page.
+
+        Returns the ``chatbot_behaviour`` dict (with 'prompt', 'context_tools',
+        'special_tools') or None if the page is not in the manifest.
+        """
+        manifest = cls.get_routes_manifest()
+        if not manifest:
+            return None
+
+        for route in manifest.get("routes", []):
+            if route.get("name") == page_name:
+                return route.get("chatbot_behaviour")
+
+        return None
+
+    # ========== Prompt Versioning ==========
+
+    @classmethod
+    async def on_initialize(cls) -> None:
+        """Version configured system prompts and the routes manifest at boot.
+
+        Two sources are versioned into ``ai_prompt_version``:
+
+        1. **Endpoint prompts** — each endpoint's ``system_prompt`` from the AI
+           plugin config, keyed by ``purpose`` (e.g. "chatbot", "analysis").
+        2. **The routes manifest** — the whole document, registered with its
+           hash as a single row under ``ROUTES_MANIFEST_PURPOSE``. The page
+           prompts it carries are part of the document: any change to one of
+           them creates a new manifest version.
+
+        A version already known (same hash) is not re-registered. Fault-tolerant
+        per entry: a failure on one does not prevent the others, and the whole
+        hook never aborts startup (errors are logged).
+
+        The concurrent boot race (multiple processes booting in parallel) is
+        handled by the unique constraint on ``(purpose, hash)`` inside a
+        SAVEPOINT — same pattern as ``LegalDocumentVersionService.publish``.
+        """
+        try:
+            config = cls.get_config()
+        except ValueError:
+            logger.warning("AIService: AI plugin not configured, skipping prompt versioning")
+            return
+
+        for purpose, endpoint in config.endpoints.items():
+            if not endpoint.system_prompt:
+                cls._prompt_version_ids[purpose] = None
+                continue
+            try:
+                async with cls.app_manager.database.get_session() as session:
+                    version = await cls._upsert_prompt_version(purpose, endpoint.system_prompt, session=session)
+                cls._prompt_version_ids[purpose] = version.id
+            except Exception as exc:
+                logger.error("AIService: failed to version prompt for purpose '%s': %s", purpose, exc)
+
+        # The routes manifest — one version row for the whole document. Serialized
+        # with sorted keys so the hash is stable across boots and processes.
+        manifest = cls.get_routes_manifest()
+        if not manifest:
+            return
+
+        try:
+            async with cls.app_manager.database.get_session() as session:
+                await cls._upsert_prompt_version(
+                    ROUTES_MANIFEST_PURPOSE,
+                    json.dumps(manifest, sort_keys=True),
+                    session=session,
+                )
+        except Exception as exc:
+            logger.error("AIService: failed to version the routes manifest: %s", exc)
+
+    @classmethod
+    async def _upsert_prompt_version(
+        cls,
+        purpose: str,
+        content: str,
+        *,
+        session,
+    ) -> "AIPromptVersion":
+        """Idempotently insert a prompt version row.
+
+        Checks by hash first; on a concurrent insert the unique constraint fires
+        inside a SAVEPOINT and the winning row is returned.
+        """
+        entity = cls.app_manager.get_entity("ai_prompt_version")
+        prompt_hash = hashlib.sha256(content.encode("utf-8")).hexdigest()
+        existing_stmt = select(entity).where(
+            entity.purpose == purpose,
+            entity.hash == prompt_hash,
+        )
+        existing = (await session.execute(existing_stmt)).scalar_one_or_none()
+        if existing is not None:
+            return existing
+
+        instance = entity(
+            purpose=purpose,
+            content=content,
+            hash=prompt_hash,
+        )
+        try:
+            async with session.begin_nested():
+                session.add(instance)
+        except IntegrityError:
+            return (await session.execute(existing_stmt)).scalar_one()
+        return instance
+
+    @classmethod
+    def get_prompt_version_id(cls, purpose: str) -> Optional[str]:
+        """The id of the prompt version in force for a purpose, from the boot cache.
+
+        Best-effort by contract: None when the purpose has no endpoint, no system
+        prompt, or its version could not be registered at boot — the caller then
+        leaves the FK unset rather than failing the turn.
+        """
+        return cls._prompt_version_ids.get(purpose)
 
     @classmethod
     def get_provider(cls, name: str) -> AIProvider:
@@ -173,8 +357,14 @@ class AIService(Service):
 
     @classmethod
     def clear_config_cache(cls):
-        """Clear the config cache to force reload."""
+        """Clear the config cache to force reload.
+
+        Also clears the boot-time prompt-version cache: it is derived from the
+        config (a reloaded config may carry different prompts), and re-populating
+        it is on_initialize's job, not the request path's.
+        """
         cls._config_cache = None
+        cls._prompt_version_ids = {}
 
     # ========== Purpose-based Chat (convenience) ==========
 

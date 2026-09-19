@@ -7,6 +7,14 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.47.0] - 2026-09-19
+
+### Added
+- `AIMessage.prompt_version_id`: links each user turn to the exact system-prompt version that produced its answer, via a new `ai_prompt_version` entity (immutable, append-only, deduplicated per purpose by content hash). Populated at boot by `AIService.on_initialize`, which versions both each endpoint's `system_prompt` and the routes manifest (as a single document); the lookup used when stamping a turn (`AIService.get_prompt_version_id`) is best-effort and never fails the turn
+
+### Changed
+- Routes-manifest helpers (`get_routes_manifest`, `get_page_webservices`, `get_page_chatbot_behaviour`) moved from `AIConversationService` to `AIService`, which now also needs them for the prompt-versioning boot hook
+
 ## [0.46.2] - 2026-09-19
 
 ### Fixed
