@@ -35,7 +35,12 @@ schedule in `worker/settings.py`.
   automatic: schedule defensively (idempotent tasks).
 - **R5 — Tasks are thin**: same rule as webservices — resolve services through
   the app manager, keep invariants in services so api and worker share them.
-- **R6 — Execution tracking (optional)**: lys's base job entities
+- **R6 — Worker boot runs `on_initialize`**: a Celery worker runs every
+  service's `on_initialize` once in its main process (`worker_init` signal,
+  before prefork), like the api lifespan. A raising hook aborts the worker
+  boot; hooks must be idempotent (each worker replica runs them). Beat and
+  the api's own Celery client do not run them.
+- **R7 — Execution tracking (optional)**: lys's base job entities
   (`cron_job_execution`, `migration_job_execution`) + `JobMixin` track runs of
   scheduled jobs — use them when a scheduled task needs an audit trail, not
   for fire-and-forget work.

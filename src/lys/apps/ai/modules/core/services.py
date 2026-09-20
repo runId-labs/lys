@@ -188,13 +188,18 @@ class AIService(Service):
 
     @classmethod
     async def on_initialize(cls) -> None:
-        """Version configured system prompts and the routes manifest at boot.
+        """Version configured system prompts, prompt segments and the routes manifest.
 
-        Two sources are versioned into ``ai_prompt_version``:
+        Three sources are versioned into ``ai_prompt_version``:
 
         1. **Endpoint prompts** — each endpoint's ``system_prompt`` from the AI
            plugin config, keyed by ``purpose`` (e.g. "chatbot", "analysis").
-        2. **The routes manifest** — the whole document, registered with its
+        2. **Prompt segments** — config keys of an endpoint declared by the
+           consumer under ``prompt_segments`` (e.g. the conversation segment
+           headers ``summary_header`` / ``dynamic_context_header``), keyed by
+           ``"<purpose>:<key>"``. The consumer declares what is prompt text;
+           tuning keys (options, compaction) never appear there.
+        3. **The routes manifest** — the whole document, registered with its
            hash as a single row under ``ROUTES_MANIFEST_PURPOSE``. The page
            prompts it carries are part of the document: any change to one of
            them creates a new manifest version.
@@ -216,13 +221,12 @@ class AIService(Service):
         for purpose, endpoint in config.endpoints.items():
             if not endpoint.system_prompt:
                 cls._prompt_version_ids[purpose] = None
-                continue
-            try:
-                async with cls.app_manager.database.get_session() as session:
-                    version = await cls._upsert_prompt_version(purpose, endpoint.system_prompt, session=session)
-                cls._prompt_version_ids[purpose] = version.id
-            except Exception as exc:
-                logger.error("AIService: failed to version prompt for purpose '%s': %s", purpose, exc)
+            else:
+                version = await cls._version_prompt(purpose, endpoint.system_prompt)
+                if version is not None:
+                    cls._prompt_version_ids[purpose] = version.id
+
+            await cls._version_prompt_segments(purpose)
 
         # The routes manifest — one version row for the whole document. Serialized
         # with sorted keys so the hash is stable across boots and processes.
@@ -239,6 +243,50 @@ class AIService(Service):
                 )
         except Exception as exc:
             logger.error("AIService: failed to version the routes manifest: %s", exc)
+
+    @classmethod
+    def _get_endpoint_raw_config(cls, purpose: str) -> Dict[str, Any]:
+        """The raw plugin-config dict of an endpoint, or an empty dict when absent or malformed."""
+        plugin_config = cls.app_manager.settings.get_plugin_config(AI_PLUGIN_NAME) or {}
+        raw = plugin_config.get(purpose)
+        return raw if isinstance(raw, dict) else {}
+
+    @classmethod
+    async def _version_prompt(cls, purpose: str, content: str) -> Optional["AIPromptVersion"]:
+        """Version one prompt in its own session; log and return None on failure."""
+        try:
+            async with cls.app_manager.database.get_session() as session:
+                return await cls._upsert_prompt_version(purpose, content, session=session)
+        except Exception as exc:
+            logger.error("AIService: failed to version prompt for purpose '%s': %s", purpose, exc)
+            return None
+
+    @classmethod
+    async def _version_prompt_segments(cls, purpose: str) -> None:
+        """Version the prompt segments an endpoint declares under ``prompt_segments``.
+
+        A malformed declaration or a declared key that is missing (typo, removal) or
+        not a string warns at boot rather than silently versioning nothing.
+        """
+        raw = cls._get_endpoint_raw_config(purpose)
+        declared = raw.get("prompt_segments")
+        if declared is None:
+            return
+        if not isinstance(declared, (list, tuple)):
+            logger.warning(
+                "AIService: 'prompt_segments' for purpose '%s' must be a list of keys — ignored", purpose
+            )
+            return
+
+        for key in declared:
+            value = raw.get(key)
+            if not isinstance(value, str) or not value:
+                logger.warning(
+                    "AIService: prompt segment '%s' declared for purpose '%s' but "
+                    "missing or not a string — not versioned", key, purpose,
+                )
+                continue
+            await cls._version_prompt(f"{purpose}:{key}", value)
 
     @classmethod
     async def _upsert_prompt_version(
@@ -284,6 +332,16 @@ class AIService(Service):
         leaves the FK unset rather than failing the turn.
         """
         return cls._prompt_version_ids.get(purpose)
+
+    @classmethod
+    def get_prompt_segment(cls, purpose: str, key: str) -> Optional[str]:
+        """A prompt segment declared on an endpoint's config (see ``prompt_segments``).
+
+        Returns None when the purpose, the key or the value is absent or not a
+        string — the caller decides whether that is fatal for its use.
+        """
+        value = cls._get_endpoint_raw_config(purpose).get(key)
+        return value if isinstance(value, str) else None
 
     @classmethod
     def get_provider(cls, name: str) -> AIProvider:

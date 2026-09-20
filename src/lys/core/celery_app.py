@@ -1,3 +1,5 @@
+import asyncio
+
 from celery import Celery, current_app, signals
 
 from lys.core.consts.component_types import AppComponentTypeEnum
@@ -81,6 +83,30 @@ def create_celery_app(settings, app_manager=None, component_types=None) -> Celer
     celery_app.app_manager.load_all_components()
 
     return celery_app
+
+
+async def _initialize_services_and_release_database(app_manager) -> None:
+    """Run the services' ``on_initialize`` hooks, then dispose the engine they used."""
+    try:
+        await app_manager.registry.initialize_services()
+    finally:
+        await app_manager.database.close()
+
+
+@signals.worker_init.connect
+def init_worker(**kwargs):
+    """
+    Run the services' ``on_initialize`` hooks once per worker, in the main process.
+
+    Celery never runs the API's ``_app_lifespan``, so without this the hooks (prompt
+    versioning, legal document publication, ...) would not run in any worker. A raising
+    hook aborts the worker boot, the same fail-fast contract as the API. The async
+    engine the hooks opened is disposed before prefork children exist, so they never
+    inherit pooled connections; each child then builds its own in ``worker_process_init``.
+    """
+    app_manager = getattr(current_app, 'app_manager', None)
+    if app_manager is not None:
+        asyncio.run(_initialize_services_and_release_database(app_manager))
 
 
 @signals.worker_process_init.connect

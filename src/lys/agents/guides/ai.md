@@ -16,6 +16,14 @@ project changes.
   `routes_manifest_path` (navigation tool — resolved from the front manifest)
   are already wired.
 - Keys in `_keys` (mistral/anthropic); never hardcode a key.
+- **Prompt versioning**: at boot, each endpoint's `system_prompt` and the
+  routes manifest are versioned into `ai_prompt_version`. Other prompt text
+  kept in an endpoint's config (e.g. `summary_header`,
+  `dynamic_context_header`) is versioned only if the endpoint lists its key
+  under `prompt_segments` (stored as `"<purpose>:<key>"`); tuning keys must
+  not be listed. A listed key that is missing or not a string logs a warning
+  at boot. Read a segment with `AIService.get_prompt_segment(purpose, key)`.
+  The boot hook runs in the api lifespan and in every Celery worker.
 
 ## Conversation search (`search_conversation`)
 

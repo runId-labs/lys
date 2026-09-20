@@ -424,3 +424,77 @@ class TestPromptVersionMessageWiring:
             user_row = (await session.execute(stmt)).scalar_one()
 
         assert user_row.prompt_version_id == version_id
+
+
+class TestPromptSegments:
+    """Endpoint config keys declared under ``prompt_segments`` are versioned as ``<purpose>:<key>``."""
+
+    @staticmethod
+    def _configure(ai_app_manager, monkeypatch, raw_endpoint):
+        from lys.apps.ai.modules.core.consts import AI_PLUGIN_NAME
+
+        ai_service = ai_app_manager.get_service("ai")
+        monkeypatch.setitem(ai_app_manager.settings.plugins, AI_PLUGIN_NAME, {"chatbot": raw_endpoint})
+        ai_service._config_cache = AIConfig(endpoints={
+            "chatbot": AIEndpointConfig(provider="mistral", model="m", api_key="k"),
+        })
+        return ai_service
+
+    @staticmethod
+    async def _purposes(ai_app_manager):
+        entity = ai_app_manager.get_entity("ai_prompt_version")
+        async with ai_app_manager.database.get_session() as session:
+            rows = (await session.execute(select(entity))).scalars().all()
+        return {row.purpose: row.content for row in rows}
+
+    @pytest.mark.asyncio
+    async def test_declared_segments_are_versioned(self, ai_app_manager, monkeypatch):
+        ai_service = self._configure(ai_app_manager, monkeypatch, {
+            "prompt_segments": ["summary_header", "dynamic_context_header"],
+            "summary_header": "Summary:",
+            "dynamic_context_header": "Context:",
+            "compaction_threshold": 10,
+        })
+
+        await ai_service.on_initialize()
+
+        assert await self._purposes(ai_app_manager) == {
+            "chatbot:summary_header": "Summary:",
+            "chatbot:dynamic_context_header": "Context:",
+        }
+
+    @pytest.mark.asyncio
+    async def test_missing_or_non_string_segment_warns_and_is_skipped(self, ai_app_manager, monkeypatch, caplog):
+        ai_service = self._configure(ai_app_manager, monkeypatch, {
+            "prompt_segments": ["absent", "not_a_string", "ok"],
+            "not_a_string": 3,
+            "ok": "Fine",
+        })
+
+        with caplog.at_level("WARNING"):
+            await ai_service.on_initialize()
+
+        assert await self._purposes(ai_app_manager) == {"chatbot:ok": "Fine"}
+        assert "'absent'" in caplog.text and "'not_a_string'" in caplog.text
+
+    @pytest.mark.asyncio
+    async def test_malformed_declaration_warns_and_versions_nothing(self, ai_app_manager, monkeypatch, caplog):
+        ai_service = self._configure(ai_app_manager, monkeypatch, {
+            "prompt_segments": "summary_header",
+            "summary_header": "Summary:",
+        })
+
+        with caplog.at_level("WARNING"):
+            await ai_service.on_initialize()
+
+        assert await self._purposes(ai_app_manager) == {}
+        assert "must be a list of keys" in caplog.text
+
+    @pytest.mark.asyncio
+    async def test_get_prompt_segment_returns_strings_only(self, ai_app_manager, monkeypatch):
+        ai_service = self._configure(ai_app_manager, monkeypatch, {"summary_header": "Summary:", "limit": 3})
+
+        assert ai_service.get_prompt_segment("chatbot", "summary_header") == "Summary:"
+        assert ai_service.get_prompt_segment("chatbot", "limit") is None
+        assert ai_service.get_prompt_segment("chatbot", "absent") is None
+        assert ai_service.get_prompt_segment("unknown_purpose", "summary_header") is None

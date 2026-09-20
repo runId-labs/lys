@@ -7,6 +7,14 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.48.0] - 2026-09-20
+
+### Added
+- `AIService` versions the endpoint config keys a consumer lists under `prompt_segments` (e.g. conversation segment headers) into `ai_prompt_version` as `"<purpose>:<key>"`; a missing or non-string key, or a malformed declaration, warns at boot. `AIService.get_prompt_segment(purpose, key)` reads a segment
+
+### Fixed
+- Celery workers now run the services' `on_initialize` hooks once at boot (`worker_init`, main process), as the API lifespan does; previously prompt versioning, legal document publication and other hooks never ran in workers. The async engine used by the hooks is disposed before prefork so children do not inherit pooled connections
+
 ## [0.47.0] - 2026-09-19
 
 ### Added
