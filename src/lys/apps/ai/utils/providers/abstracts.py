@@ -7,7 +7,7 @@ allowing consistent usage across different LLM providers.
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import AsyncGenerator, List, Dict, Any, Optional, TypeVar, Type
+from typing import AsyncGenerator, List, Dict, Any, Generic, Optional, TypeVar, Type
 
 from pydantic import BaseModel
 
@@ -30,6 +30,20 @@ class AIResponse:
     model: Optional[str] = None
     provider: Optional[str] = None
     finish_reason: Optional[str] = None  # "stop" | "length" | "tool_calls" | ...
+
+
+@dataclass
+class AIJsonResponse(Generic[T]):
+    """
+    Validated structured response, tagged with the endpoint that actually produced it.
+
+    When the fallback chain was walked, ``model`` and ``provider`` name the fallback
+    endpoint, not the primary one the caller configured.
+    """
+
+    data: T
+    model: str
+    provider: str
 
 
 @dataclass

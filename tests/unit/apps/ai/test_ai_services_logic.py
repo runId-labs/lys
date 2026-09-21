@@ -238,7 +238,7 @@ class TestChatJsonFallbackRetryPolicy:
                     [{"role": "user", "content": "hi"}], primary_endpoint, Mock
                 )
 
-        assert result is sentinel
+        assert result.data is sentinel
         assert mock_primary.chat_json.call_count == AIService.MAX_RETRIES
 
     @pytest.mark.asyncio
@@ -263,7 +263,7 @@ class TestChatJsonFallbackRetryPolicy:
                     [{"role": "user", "content": "hi"}], primary_endpoint, Mock
                 )
 
-        assert result is sentinel
+        assert result.data is sentinel
         assert mock_primary.chat_json.call_count == 1
 
     def test_sync_validation_error_is_retried_then_falls_back(self):
@@ -287,7 +287,7 @@ class TestChatJsonFallbackRetryPolicy:
                     [{"role": "user", "content": "hi"}], primary_endpoint, Mock
                 )
 
-        assert result is sentinel
+        assert result.data is sentinel
         assert mock_primary.chat_json_sync.call_count == AIService.MAX_RETRIES
 
     def test_sync_truncation_falls_back_without_retrying(self):
@@ -311,7 +311,7 @@ class TestChatJsonFallbackRetryPolicy:
                     [{"role": "user", "content": "hi"}], primary_endpoint, Mock
                 )
 
-        assert result is sentinel
+        assert result.data is sentinel
         assert mock_primary.chat_json_sync.call_count == 1
 
     @pytest.mark.asyncio
@@ -332,6 +332,165 @@ class TestChatJsonFallbackRetryPolicy:
                     )
 
         # One call per endpoint in the chain, no retry on either.
+        assert mock_provider.chat_json.call_count == 2
+
+
+class TestChatJsonWithMetadata:
+    """chat_json_with_metadata reports the endpoint that actually answered."""
+
+    @staticmethod
+    def _endpoints():
+        from lys.apps.ai.utils.providers.config import AIEndpointConfig
+
+        fallback = AIEndpointConfig(provider="fallback", model="fb-model", api_key="k")
+        primary = AIEndpointConfig(
+            provider="mistral", model="primary-model", api_key="k", fallback=fallback
+        )
+        return primary, fallback
+
+    @pytest.mark.asyncio
+    async def test_primary_answer_reports_primary_endpoint(self):
+        from lys.apps.ai.modules.core.services import AIService
+
+        primary_endpoint, _ = self._endpoints()
+        sentinel = object()
+        mock_primary = AsyncMock()
+        mock_primary.chat_json = AsyncMock(return_value=sentinel)
+
+        with patch.object(AIService, "get_provider", return_value=mock_primary):
+            result = await AIService.chat_json_with_metadata(
+                [{"role": "user", "content": "hi"}], primary_endpoint, Mock
+            )
+
+        assert result.data is sentinel
+        assert (result.provider, result.model) == ("mistral", "primary-model")
+
+    @pytest.mark.asyncio
+    async def test_fallback_answer_reports_fallback_endpoint(self):
+        from lys.apps.ai.modules.core.services import AIService
+        from lys.apps.ai.utils.providers.exceptions import AITimeoutError
+
+        primary_endpoint, _ = self._endpoints()
+        sentinel = object()
+        mock_primary = AsyncMock()
+        mock_primary.chat_json = AsyncMock(side_effect=AITimeoutError("too slow"))
+        mock_fallback = AsyncMock()
+        mock_fallback.chat_json = AsyncMock(return_value=sentinel)
+
+        def get_provider(name):
+            return mock_primary if name == "mistral" else mock_fallback
+
+        with patch.object(AIService, "get_provider", side_effect=get_provider):
+            result = await AIService.chat_json_with_metadata(
+                [{"role": "user", "content": "hi"}], primary_endpoint, Mock
+            )
+
+        assert result.data is sentinel
+        assert (result.provider, result.model) == ("fallback", "fb-model")
+
+    def test_sync_fallback_answer_reports_fallback_endpoint(self):
+        from lys.apps.ai.modules.core.services import AIService
+        from lys.apps.ai.utils.providers.exceptions import AITimeoutError
+
+        primary_endpoint, _ = self._endpoints()
+        sentinel = object()
+        mock_primary = Mock()
+        mock_primary.chat_json_sync = Mock(side_effect=AITimeoutError("too slow"))
+        mock_fallback = Mock()
+        mock_fallback.chat_json_sync = Mock(return_value=sentinel)
+
+        def get_provider(name):
+            return mock_primary if name == "mistral" else mock_fallback
+
+        with patch.object(AIService, "get_provider", side_effect=get_provider):
+            result = AIService.chat_json_with_metadata_sync(
+                [{"role": "user", "content": "hi"}], primary_endpoint, Mock
+            )
+
+        assert result.data is sentinel
+        assert (result.provider, result.model) == ("fallback", "fb-model")
+        assert mock_primary.chat_json_sync.call_count == 1
+
+    def test_sync_chat_json_still_returns_bare_data(self):
+        from lys.apps.ai.modules.core.services import AIService
+
+        primary_endpoint, _ = self._endpoints()
+        sentinel = object()
+        mock_primary = Mock()
+        mock_primary.chat_json_sync = Mock(return_value=sentinel)
+
+        with patch.object(AIService, "get_provider", return_value=mock_primary):
+            result = AIService.chat_json_sync(
+                [{"role": "user", "content": "hi"}], primary_endpoint, Mock
+            )
+
+        assert result is sentinel
+
+    def test_system_prompt_is_prepended(self):
+        from lys.apps.ai.modules.core.services import AIService
+        from lys.apps.ai.utils.providers.config import AIEndpointConfig
+
+        endpoint = AIEndpointConfig(
+            provider="mistral", model="m", api_key="k", system_prompt="be precise"
+        )
+        mock_provider = Mock()
+        mock_provider.chat_json_sync = Mock(return_value=object())
+
+        with patch.object(AIService, "get_provider", return_value=mock_provider):
+            AIService.chat_json_with_metadata_sync(
+                [{"role": "user", "content": "hi"}], endpoint, Mock
+            )
+
+        sent_messages = mock_provider.chat_json_sync.call_args[0][0]
+        assert sent_messages[0] == {"role": "system", "content": "be precise"}
+
+    def test_sync_field_at_max_length_falls_back_without_retrying(self):
+        # Constrained decoding cuts a field at its maxLength: that answer must not be returned.
+        from pydantic import BaseModel, Field
+        from lys.apps.ai.modules.core.services import AIService
+
+        class Capped(BaseModel):
+            text: str = Field(..., json_schema_extra={"maxLength": 5})
+
+        primary_endpoint, _ = self._endpoints()
+        mock_primary = Mock()
+        mock_primary.chat_json_sync = Mock(return_value=Capped(text="abcde"))
+        mock_fallback = Mock()
+        mock_fallback.chat_json_sync = Mock(return_value=Capped(text="ok"))
+
+        def get_provider(name):
+            return mock_primary if name == "mistral" else mock_fallback
+
+        with patch.object(AIService, "get_provider", side_effect=get_provider):
+            result = AIService.chat_json_with_metadata_sync(
+                [{"role": "user", "content": "hi"}], primary_endpoint, Capped
+            )
+
+        assert result.data.text == "ok"
+        assert result.model == "fb-model"
+        assert mock_primary.chat_json_sync.call_count == 1
+
+    @pytest.mark.asyncio
+    async def test_field_at_max_length_on_every_endpoint_raises(self):
+        from pydantic import BaseModel, Field
+        from lys.apps.ai.modules.core.services import AIService
+        from lys.apps.ai.utils.providers.exceptions import AIError, AIResponseTruncatedError
+
+        class Capped(BaseModel):
+            text: str = Field(..., json_schema_extra={"maxLength": 5})
+
+        primary_endpoint, _ = self._endpoints()
+        mock_provider = AsyncMock()
+        mock_provider.chat_json = AsyncMock(return_value=Capped(text="abcde"))
+
+        with patch.object(AIService, "get_provider", return_value=mock_provider):
+            with pytest.raises(AIError) as exc_info:
+                await AIService.chat_json_with_metadata(
+                    [{"role": "user", "content": "hi"}], primary_endpoint, Capped
+                )
+
+        assert isinstance(exc_info.value.__cause__, AIResponseTruncatedError)
+        assert "text" in str(exc_info.value)
         assert mock_provider.chat_json.call_count == 2
 
 

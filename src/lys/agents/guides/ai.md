@@ -24,6 +24,19 @@ project changes.
   not be listed. A listed key that is missing or not a string logs a warning
   at boot. Read a segment with `AIService.get_prompt_segment(purpose, key)`.
   The boot hook runs in the api lifespan and in every Celery worker.
+- **Structured output** (`chat_json` / `chat_json_sync`) walks the endpoint's
+  `fallback` chain. When the caller stores which model authored a result, use
+  `chat_json_with_metadata(_sync)`: it returns `data` plus the `model` /
+  `provider` that actually answered — `config.model` still names the primary
+  after a fallback.
+- **`maxLength` is a safety net, not a target**: a string field that reaches
+  its schema `maxLength` counts as truncated (constrained decoding cut it) and
+  triggers the fallback. Size each bound well above the length the prompt asks
+  for; on an `Optional[str]`, declare it on the string branch
+  (`Optional[Annotated[str, Field(json_schema_extra={"maxLength": N})]]`),
+  otherwise the decoder ignores it. Detection walks objects, lists, `dict`
+  values and `anyOf` / `oneOf` unions; tuples (`prefixItems`) and `allOf` are
+  not checked.
 
 ## Conversation search (`search_conversation`)
 

@@ -7,6 +7,15 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.49.0] - 2026-09-21
+
+### Added
+- `AIService.chat_json_with_metadata` / `chat_json_with_metadata_sync`: same as `chat_json`, but return an `AIJsonResponse` (`data`, `model`, `provider`) naming the endpoint that actually answered — after a fallback, the caller's `config.model` names the primary, not the model that produced the result. `chat_json` / `chat_json_sync` are unchanged
+- The sync structured-output fallback chain now logs which endpoint it falls back to, as the async one does
+
+### Changed
+- Structured output (`chat_json*`) treats a string field whose length reaches its schema `maxLength` (declared through `max_length` or `json_schema_extra`, including on the string branch of an `Optional`, in `dict` values and in `anyOf` / `oneOf` union branches selected by their `Literal` constants) as a truncation: constrained decoding cuts such a field mid-word while the JSON stays valid. The chain raises `AIResponseTruncatedError` and falls back without retrying, instead of returning the cut text. Detection lives in `lys.apps.ai.utils.schema_limits.find_fields_at_max_length`
+
 ## [0.48.0] - 2026-09-20
 
 ### Added

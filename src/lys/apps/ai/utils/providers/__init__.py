@@ -5,7 +5,7 @@ This module exports provider classes and related types.
 Provider registration is handled by AIService for better flexibility.
 """
 
-from lys.apps.ai.utils.providers.abstracts import AIProvider, AIResponse
+from lys.apps.ai.utils.providers.abstracts import AIJsonResponse, AIProvider, AIResponse
 from lys.apps.ai.utils.providers.config import AIConfig, AIEndpointConfig, parse_plugin_config
 from lys.apps.ai.utils.providers.exceptions import (
     AIError,
@@ -26,6 +26,7 @@ __all__ = [
     # Core classes
     "AIProvider",
     "AIResponse",
+    "AIJsonResponse",
     "AIConfig",
     "AIEndpointConfig",
     "parse_plugin_config",

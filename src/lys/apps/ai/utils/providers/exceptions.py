@@ -47,9 +47,10 @@ class AIValidationError(AIError):
 
 
 class AIResponseTruncatedError(AIValidationError):
-    """Response was cut off by the output token limit before it could be validated.
+    """Response was cut off: by the output token limit before it could be validated, or
+    by a schema ``maxLength`` that stopped a text field mid-word.
 
-    Unlike a plain schema mismatch, this is deterministic: the same request on the
-    same endpoint truncates again. Callers must fall back instead of retrying.
+    Unlike a plain schema mismatch, the same request on the same endpoint truncates again.
+    Callers must fall back instead of retrying.
     """
     pass

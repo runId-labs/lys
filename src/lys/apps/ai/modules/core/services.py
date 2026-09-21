@@ -19,7 +19,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 
 from lys.apps.ai.modules.core.consts import AI_PLUGIN_NAME, ROUTES_MANIFEST_PURPOSE
-from lys.apps.ai.utils.providers.abstracts import AIProvider, AIResponse, AIStreamChunk
+from lys.apps.ai.utils.providers.abstracts import AIJsonResponse, AIProvider, AIResponse, AIStreamChunk
 from lys.apps.ai.utils.providers.config import AIEndpointConfig, parse_plugin_config, AIConfig
 from lys.apps.ai.utils.providers.exceptions import (
     AIError,
@@ -29,6 +29,7 @@ from lys.apps.ai.utils.providers.exceptions import (
     AIValidationError,
 )
 from lys.apps.ai.utils.message_sanitizer import sanitize_llm_messages
+from lys.apps.ai.utils.schema_limits import find_fields_at_max_length
 from lys.apps.ai.utils.providers.anthropic import AnthropicProvider
 from lys.apps.ai.utils.providers.mistral import MistralProvider
 from lys.core.consts.ai import ToolRiskLevel
@@ -604,11 +605,7 @@ class AIService(Service):
                 The message carries the last provider error (schema mismatch,
                 truncation, rate limit, ...), which is also chained as ``__cause__``.
         """
-        if config.system_prompt:
-            messages = [{"role": "system", "content": config.system_prompt}] + messages
-        messages = sanitize_llm_messages(messages)
-
-        return await cls._chat_json_with_fallback(messages, config, schema)
+        return (await cls.chat_json_with_metadata(messages, config, schema)).data
 
     @classmethod
     def chat_json_sync(
@@ -618,11 +615,63 @@ class AIService(Service):
         schema: Type[T],
     ) -> T:
         """Synchronous version for Celery workers."""
+        return cls.chat_json_with_metadata_sync(messages, config, schema).data
+
+    @classmethod
+    async def chat_json_with_metadata(
+        cls,
+        messages: List[Dict[str, Any]],
+        config: AIEndpointConfig,
+        schema: Type[T],
+    ) -> AIJsonResponse[T]:
+        """
+        Same as ``chat_json``, but also returns the endpoint that produced the response.
+
+        Use it when the caller stores which model authored a result: after a fallback,
+        ``config.model`` names the primary endpoint, not the one that answered.
+
+        Raises:
+            AIError: No endpoint in the fallback chain produced a valid response.
+        """
+        messages = cls._prepare_json_messages(messages, config)
+        return await cls._chat_json_with_fallback(messages, config, schema)
+
+    @classmethod
+    def chat_json_with_metadata_sync(
+        cls,
+        messages: List[Dict[str, Any]],
+        config: AIEndpointConfig,
+        schema: Type[T],
+    ) -> AIJsonResponse[T]:
+        """Synchronous version of ``chat_json_with_metadata`` for Celery workers."""
+        messages = cls._prepare_json_messages(messages, config)
+        return cls._chat_json_with_fallback_sync(messages, config, schema)
+
+    @staticmethod
+    def _prepare_json_messages(
+        messages: List[Dict[str, Any]],
+        config: AIEndpointConfig,
+    ) -> List[Dict[str, Any]]:
+        """Prepend the endpoint system prompt and sanitize the conversation."""
         if config.system_prompt:
             messages = [{"role": "system", "content": config.system_prompt}] + messages
-        messages = sanitize_llm_messages(messages)
+        return sanitize_llm_messages(messages)
 
-        return cls._chat_json_with_fallback_sync(messages, config, schema)
+    @staticmethod
+    def _raise_if_capped(data: Any, endpoint: AIEndpointConfig) -> None:
+        """
+        Reject a structured response whose text fields reached their schema ``maxLength``.
+
+        Constrained decoding cuts such a field mid-word while the JSON stays valid; the
+        cut is raised as a truncation so the chain falls back instead of returning it.
+        """
+        if not isinstance(data, BaseModel):
+            return
+        capped = find_fields_at_max_length(data)
+        if capped:
+            raise AIResponseTruncatedError(
+                f"{endpoint.provider}/{endpoint.model} reached maxLength on: {', '.join(capped)}"
+            )
 
     # ========== OCR ==========
 
@@ -793,8 +842,8 @@ class AIService(Service):
         messages: List[Dict[str, Any]],
         endpoint: AIEndpointConfig,
         schema: Type[T],
-    ) -> T:
-        """Execute chat_json with retry and fallback logic."""
+    ) -> AIJsonResponse[T]:
+        """Retry and fallback logic for chat_json, keeping track of the answering endpoint."""
         current_endpoint = endpoint
         last_error: Optional[Exception] = None
 
@@ -803,7 +852,13 @@ class AIService(Service):
 
             for retry in range(cls.MAX_RETRIES):
                 try:
-                    return await provider.chat_json(messages, current_endpoint, schema)
+                    data = await provider.chat_json(messages, current_endpoint, schema)
+                    cls._raise_if_capped(data, current_endpoint)
+                    return AIJsonResponse(
+                        data=data,
+                        model=current_endpoint.model,
+                        provider=current_endpoint.provider,
+                    )
 
                 except AIRateLimitError as e:
                     logger.warning(
@@ -857,8 +912,8 @@ class AIService(Service):
         messages: List[Dict[str, Any]],
         endpoint: AIEndpointConfig,
         schema: Type[T],
-    ) -> T:
-        """Synchronous fallback logic for chat_json."""
+    ) -> AIJsonResponse[T]:
+        """Synchronous twin of ``_chat_json_with_fallback``."""
         current_endpoint = endpoint
         last_error: Optional[Exception] = None
 
@@ -867,7 +922,13 @@ class AIService(Service):
 
             for retry in range(cls.MAX_RETRIES):
                 try:
-                    return provider.chat_json_sync(messages, current_endpoint, schema)
+                    data = provider.chat_json_sync(messages, current_endpoint, schema)
+                    cls._raise_if_capped(data, current_endpoint)
+                    return AIJsonResponse(
+                        data=data,
+                        model=current_endpoint.model,
+                        provider=current_endpoint.provider,
+                    )
 
                 except AIRateLimitError as e:
                     last_error = e
@@ -890,6 +951,10 @@ class AIService(Service):
                     break
 
             current_endpoint = current_endpoint.fallback
+            if current_endpoint:
+                logger.info(
+                    f"Falling back to {current_endpoint.provider}/{current_endpoint.model}: {last_error}"
+                )
 
         if last_error:
             logger.error(f"All providers failed: {last_error}")
