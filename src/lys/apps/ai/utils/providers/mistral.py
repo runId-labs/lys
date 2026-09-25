@@ -46,6 +46,7 @@ class MistralProvider(AIProvider):
         "mistral-small-latest",
         "codestral-latest",
         "mistral-embed",
+        "voxtral-mini-latest",
     ]
 
     # Valid options that can be passed to Mistral API
@@ -54,6 +55,13 @@ class MistralProvider(AIProvider):
         "stream", "stop", "random_seed", "safe_prompt",
         "response_format", "presence_penalty", "frequency_penalty",
         "reasoning_effort",
+    }
+
+    # Form fields the transcriptions endpoint accepts besides the file and the
+    # model. Filtered like VALID_OPTIONS so a chat-only option in an endpoint
+    # config cannot leak into a multipart transcription request.
+    VALID_TRANSCRIPTION_OPTIONS = {
+        "language", "diarize", "context_bias", "timestamp_granularities",
     }
 
     @staticmethod
@@ -590,6 +598,87 @@ class MistralProvider(AIProvider):
         data = response.json()
         pages = data.get("pages", [])
         return "\n\n".join(p.get("markdown", "") for p in pages).strip()
+
+    # ========== Transcription ==========
+
+    def _transcription_data(
+        self,
+        config: AIEndpointConfig,
+        language: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Build the multipart form fields for the transcriptions endpoint.
+
+        The audio and its filename travel as the file part, not here. An explicit
+        ``language`` argument wins over an option of the same name: the caller
+        passing the language is the stronger, per-request signal.
+        """
+        data: Dict[str, Any] = {"model": config.model}
+        data.update(
+            {k: v for k, v in config.options.items() if k in self.VALID_TRANSCRIPTION_OPTIONS}
+        )
+        if language:
+            data["language"] = language
+        return data
+
+    def _parse_transcription_response(self, response: httpx.Response) -> str:
+        """Validate the transcription response and return its text.
+
+        The endpoint is OpenAI-shaped: ``{"text": "..."}``. A 200 without a
+        ``text`` key degrades to "" — an audio of silence transcribes to the
+        same thing, and guessing between the two would invent an error.
+        """
+        self._handle_error_status(response)
+        return response.json().get("text", "")
+
+    async def transcribe(
+        self,
+        content: bytes,
+        filename: str,
+        config: AIEndpointConfig,
+        language: Optional[str] = None,
+    ) -> str:
+        """Async transcription via Mistral's ``/audio/transcriptions`` endpoint.
+
+        The audio is sent as a multipart file part (httpx derives the boundary
+        and the part content type from the filename), the response is
+        OpenAI-shaped: ``{"text": "..."}``.
+        """
+        # No Content-Type header: httpx sets the multipart boundary itself.
+        headers = {"Authorization": f"Bearer {config.api_key}"}
+        try:
+            async with httpx.AsyncClient() as client:
+                response = await client.post(
+                    f"{self.get_base_url(config)}/audio/transcriptions",
+                    headers=headers,
+                    data=self._transcription_data(config, language),
+                    files={"file": (filename, content)},
+                    timeout=config.timeout,
+                )
+        except httpx.TimeoutException:
+            raise AITimeoutError(f"Request timed out after {config.timeout}s")
+        return self._parse_transcription_response(response)
+
+    def transcribe_sync(
+        self,
+        content: bytes,
+        filename: str,
+        config: AIEndpointConfig,
+        language: Optional[str] = None,
+    ) -> str:
+        """Synchronous version of :meth:`transcribe` for Celery workers."""
+        headers = {"Authorization": f"Bearer {config.api_key}"}
+        try:
+            with httpx.Client() as client:
+                response = client.post(
+                    f"{self.get_base_url(config)}/audio/transcriptions",
+                    headers=headers,
+                    data=self._transcription_data(config, language),
+                    files={"file": (filename, content)},
+                    timeout=config.timeout,
+                )
+        except httpx.TimeoutException:
+            raise AITimeoutError(f"Request timed out after {config.timeout}s")
+        return self._parse_transcription_response(response)
 
     # ========== Helpers ==========
 

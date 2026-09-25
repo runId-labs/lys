@@ -63,6 +63,23 @@ other conversation can be reached.
   must carry that sentence over, or the model is never told the tool exists beyond its own
   description.
 
+## Speech transcription
+
+`AIService.transcribe(content, filename, config, language=None)` (and
+`transcribe_sync`) turns raw audio bytes into text through the provider that
+supports the capability — Mistral's `/audio/transcriptions` endpoint, whose
+response is OpenAI-shaped (`{"text": "..."}`). Like OCR, it is an optional
+provider capability and the fallback chain walks on `NotImplementedError`.
+
+Configure a purpose as usual — e.g. `TRANSCRIPTION_PROVIDER` /
+`TRANSCRIPTION_MODEL` (`voxtral-mini-latest`) — and resolve it with
+`get_endpoint("transcription")`. An explicit `language` argument (ISO code)
+improves accuracy when the language is known; endpoint `options` may carry
+`diarize`, `context_bias`, `timestamp_granularities` or `language` (the
+argument wins over the option). A 200 response without a `text` key
+transcribes to `""` — the same result as silence, and guessing between the
+two would invent an error.
+
 ## Exposing a webservice as a chatbot TOOL
 
 Any `lys_getter` / `lys_connection` / `lys_creation` query can become a tool

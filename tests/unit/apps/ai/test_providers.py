@@ -3010,3 +3010,235 @@ class TestCacheKeyIdentifiesTheExchange:
 
         assert kept.cache_key == "c-123"
         assert kept.fallback.cache_key == "c-123"
+
+
+class TestMistralProviderTranscription:
+    """Tests for MistralProvider transcription via the /audio/transcriptions endpoint."""
+
+    @pytest.fixture
+    def provider(self):
+        return MistralProvider()
+
+    @pytest.fixture
+    def config(self):
+        return AIEndpointConfig(
+            provider="mistral", model="voxtral-mini-latest", api_key="k", timeout=30,
+        )
+
+    @staticmethod
+    def _mock_transcription_response(status_code, text="Hello world"):
+        response = MagicMock(spec=httpx.Response)
+        response.status_code = status_code
+        if status_code == 200:
+            response.json.return_value = {"text": text}
+        else:
+            response.text = f"Error {status_code}"
+        return response
+
+    @pytest.mark.asyncio
+    async def test_transcribe_success_returns_text(self, provider, config):
+        mock_response = self._mock_transcription_response(200)
+        with patch("httpx.AsyncClient") as mock_client:
+            mock_instance = AsyncMock()
+            mock_instance.post.return_value = mock_response
+            mock_client.return_value.__aenter__.return_value = mock_instance
+            result = await provider.transcribe(b"audio", "audio.webm", config)
+            url = mock_instance.post.call_args[0][0]
+            kwargs = mock_instance.post.call_args[1]
+        assert result == "Hello world"
+        assert url.endswith("/audio/transcriptions")
+        assert kwargs["data"]["model"] == "voxtral-mini-latest"
+        assert kwargs["files"] == {"file": ("audio.webm", b"audio")}
+        assert "language" not in kwargs["data"]
+        # Multipart: the boundary is httpx's job, no Content-Type header is forced.
+        assert "Content-Type" not in kwargs["headers"]
+
+    @pytest.mark.asyncio
+    async def test_transcribe_explicit_language_is_sent(self, provider, config):
+        mock_response = self._mock_transcription_response(200)
+        with patch("httpx.AsyncClient") as mock_client:
+            mock_instance = AsyncMock()
+            mock_instance.post.return_value = mock_response
+            mock_client.return_value.__aenter__.return_value = mock_instance
+            await provider.transcribe(b"audio", "audio.webm", config, language="fr")
+            kwargs = mock_instance.post.call_args[1]
+        assert kwargs["data"]["language"] == "fr"
+
+    @pytest.mark.asyncio
+    async def test_transcribe_explicit_language_wins_over_the_option(self, provider, config):
+        config = AIEndpointConfig(
+            provider="mistral", model="voxtral-mini-latest", api_key="k", timeout=30,
+            options={"language": "en"},
+        )
+        mock_response = self._mock_transcription_response(200)
+        with patch("httpx.AsyncClient") as mock_client:
+            mock_instance = AsyncMock()
+            mock_instance.post.return_value = mock_response
+            mock_client.return_value.__aenter__.return_value = mock_instance
+            await provider.transcribe(b"audio", "audio.webm", config, language="fr")
+            kwargs = mock_instance.post.call_args[1]
+        assert kwargs["data"]["language"] == "fr"
+
+    @pytest.mark.asyncio
+    async def test_transcribe_filters_options_to_transcription_fields(self, provider, config):
+        config = AIEndpointConfig(
+            provider="mistral", model="voxtral-mini-latest", api_key="k", timeout=30,
+            options={"temperature": 0.5, "diarize": True},
+        )
+        mock_response = self._mock_transcription_response(200)
+        with patch("httpx.AsyncClient") as mock_client:
+            mock_instance = AsyncMock()
+            mock_instance.post.return_value = mock_response
+            mock_client.return_value.__aenter__.return_value = mock_instance
+            await provider.transcribe(b"audio", "audio.webm", config)
+            kwargs = mock_instance.post.call_args[1]
+        assert kwargs["data"]["diarize"] is True
+        assert "temperature" not in kwargs["data"]
+
+    def test_transcribe_sync_success(self, provider, config):
+        mock_response = self._mock_transcription_response(200, text="Sync text")
+        with patch("httpx.Client") as mock_client:
+            mock_instance = MagicMock()
+            mock_instance.post.return_value = mock_response
+            mock_client.return_value.__enter__.return_value = mock_instance
+            result = provider.transcribe_sync(b"audio", "audio.webm", config)
+            url = mock_instance.post.call_args[0][0]
+            kwargs = mock_instance.post.call_args[1]
+        assert result == "Sync text"
+        assert url.endswith("/audio/transcriptions")
+        assert kwargs["data"]["model"] == "voxtral-mini-latest"
+
+    @pytest.mark.asyncio
+    async def test_transcribe_error_status_raises(self, provider, config):
+        mock_response = self._mock_transcription_response(401)
+        with patch("httpx.AsyncClient") as mock_client:
+            mock_instance = AsyncMock()
+            mock_instance.post.return_value = mock_response
+            mock_client.return_value.__aenter__.return_value = mock_instance
+            with pytest.raises(AIAuthError):
+                await provider.transcribe(b"audio", "audio.webm", config)
+
+    @pytest.mark.asyncio
+    async def test_transcribe_timeout(self, provider, config):
+        with patch("httpx.AsyncClient") as mock_client:
+            mock_instance = AsyncMock()
+            mock_instance.post.side_effect = httpx.TimeoutException("Timeout")
+            mock_client.return_value.__aenter__.return_value = mock_instance
+            with pytest.raises(AITimeoutError):
+                await provider.transcribe(b"audio", "audio.webm", config)
+
+    def test_transcribe_sync_timeout(self, provider, config):
+        with patch("httpx.Client") as mock_client:
+            mock_instance = MagicMock()
+            mock_instance.post.side_effect = httpx.TimeoutException("Timeout")
+            mock_client.return_value.__enter__.return_value = mock_instance
+            with pytest.raises(AITimeoutError):
+                provider.transcribe_sync(b"audio", "audio.webm", config)
+
+    def test_parse_transcription_response_without_text_key_degrades_to_empty(self, provider):
+        """A 200 without a text key is indistinguishable from silence: return "", not a guess."""
+        response = MagicMock(spec=httpx.Response)
+        response.status_code = 200
+        response.json.return_value = {}
+        assert provider._parse_transcription_response(response) == ""
+
+
+class TestProviderTranscribeDefault:
+    """The base AIProvider raises NotImplementedError for transcription (optional capability)."""
+
+    @pytest.fixture
+    def config(self):
+        return AIEndpointConfig(
+            provider="anthropic", model="claude-opus-4-8", api_key="k", timeout=30,
+        )
+
+    @pytest.mark.asyncio
+    async def test_anthropic_transcribe_async_not_implemented(self, config):
+        with pytest.raises(NotImplementedError):
+            await AnthropicProvider().transcribe(b"x", "audio.webm", config)
+
+    def test_anthropic_transcribe_sync_not_implemented(self, config):
+        with pytest.raises(NotImplementedError):
+            AnthropicProvider().transcribe_sync(b"x", "audio.webm", config)
+
+
+class TestAIServiceTranscription:
+    """Tests for AIService.transcribe / transcribe_sync fallback chain."""
+
+    def _config(self, provider_name, fallback=None):
+        return AIEndpointConfig(
+            provider=provider_name, model="m", api_key="k", timeout=30, fallback=fallback,
+        )
+
+    def test_transcribe_sync_falls_back_on_not_implemented(self):
+        class _NoTranscribe(_StubProvider):
+            name = "notranscribe"
+
+        class _OkTranscribe(_StubProvider):
+            name = "oktranscribe"
+
+            def transcribe_sync(self, content, filename, config, language=None):
+                return "TRANSCRIBED"
+
+        AIService.register_provider("notranscribe", _NoTranscribe)
+        AIService.register_provider("oktranscribe", _OkTranscribe)
+        try:
+            config = self._config("notranscribe", fallback=self._config("oktranscribe"))
+            assert AIService.transcribe_sync(b"x", "audio.webm", config) == "TRANSCRIBED"
+        finally:
+            del AIService._providers["notranscribe"]
+            del AIService._providers["oktranscribe"]
+
+    def test_transcribe_sync_falls_back_on_provider_error(self):
+        class _FailingTranscribe(_StubProvider):
+            name = "failtranscribe"
+
+            def transcribe_sync(self, content, filename, config, language=None):
+                raise AIProviderError("boom")
+
+        class _OkTranscribe(_StubProvider):
+            name = "oktranscribe2"
+
+            def transcribe_sync(self, content, filename, config, language=None):
+                return "OK"
+
+        AIService.register_provider("failtranscribe", _FailingTranscribe)
+        AIService.register_provider("oktranscribe2", _OkTranscribe)
+        try:
+            config = self._config("failtranscribe", fallback=self._config("oktranscribe2"))
+            assert AIService.transcribe_sync(b"x", "audio.webm", config) == "OK"
+        finally:
+            del AIService._providers["failtranscribe"]
+            del AIService._providers["oktranscribe2"]
+
+    def test_transcribe_sync_all_fail_raises_aierror(self):
+        AIService.register_provider(
+            "notranscribe3", type("_N", (_StubProvider,), {"name": "notranscribe3"})
+        )
+        try:
+            config = self._config("notranscribe3")
+            with pytest.raises(AIError):
+                AIService.transcribe_sync(b"x", "audio.webm", config)
+        finally:
+            del AIService._providers["notranscribe3"]
+
+    @pytest.mark.asyncio
+    async def test_transcribe_async_falls_back_and_forwards_language(self):
+        class _NoTranscribe(_StubProvider):
+            name = "notranscribe_a"
+
+        class _OkTranscribe(_StubProvider):
+            name = "oktranscribe_a"
+
+            async def transcribe(self, content, filename, config, language=None):
+                return f"ASYNC_OK:{language}"
+
+        AIService.register_provider("notranscribe_a", _NoTranscribe)
+        AIService.register_provider("oktranscribe_a", _OkTranscribe)
+        try:
+            config = self._config("notranscribe_a", fallback=self._config("oktranscribe_a"))
+            result = await AIService.transcribe(b"x", "audio.webm", config, language="fr")
+            assert result == "ASYNC_OK:fr"
+        finally:
+            del AIService._providers["notranscribe_a"]
+            del AIService._providers["oktranscribe_a"]

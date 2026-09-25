@@ -258,6 +258,49 @@ class AIProvider(ABC):
         """Synchronous version of :meth:`embed` for Celery workers."""
         raise NotImplementedError(f"{self.name} provider does not support embeddings")
 
+    # ========== Transcription ==========
+
+    async def transcribe(
+        self,
+        content: bytes,
+        filename: str,
+        config: AIEndpointConfig,
+        language: Optional[str] = None,
+    ) -> str:
+        """
+        Transcribe speech audio into text.
+
+        Optional capability, like OCR and embeddings: a provider that does not
+        transcribe raises NotImplementedError rather than returning something
+        empty, so a caller can tell "this provider cannot" from "this audio has
+        no speech".
+
+        Args:
+            content: Raw audio bytes (e.g. MP3, WAV, OGG).
+            filename: File name carrying the audio extension; providers derive
+                the upload part name and content type from it.
+            config: Endpoint configuration (carries api_key, base_url, model).
+            language: Optional ISO language code (e.g. "fr") when the language
+                is already known — improves accuracy over detection.
+
+        Returns:
+            The transcribed text.
+
+        Raises:
+            NotImplementedError: If the provider does not support transcription.
+        """
+        raise NotImplementedError(f"{self.name} provider does not support transcription")
+
+    def transcribe_sync(
+        self,
+        content: bytes,
+        filename: str,
+        config: AIEndpointConfig,
+        language: Optional[str] = None,
+    ) -> str:
+        """Synchronous version of :meth:`transcribe` for Celery workers."""
+        raise NotImplementedError(f"{self.name} provider does not support transcription")
+
     # ========== Helpers ==========
 
     def get_base_url(self, config: AIEndpointConfig) -> str:

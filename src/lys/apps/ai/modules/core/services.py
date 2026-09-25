@@ -737,6 +737,73 @@ class AIService(Service):
             current = current.fallback
         raise AIError(f"OCR failed: no provider in the chain succeeded ({last_error})")
 
+    # ========== Transcription ==========
+
+    @classmethod
+    async def transcribe(
+        cls,
+        content: bytes,
+        filename: str,
+        config: AIEndpointConfig,
+        language: Optional[str] = None,
+    ) -> str:
+        """
+        Transcribe speech audio into text.
+
+        Walks the fallback chain: if a provider does not support transcription
+        (NotImplementedError) or errors, the next endpoint is tried.
+
+        Args:
+            content: Raw audio bytes (e.g. MP3, WAV, OGG).
+            filename: File name carrying the audio extension.
+            config: Endpoint configuration (e.g. from ``get_endpoint("transcription")``).
+            language: Optional ISO language code (e.g. "fr") when already known.
+
+        Returns:
+            The transcribed text.
+
+        Raises:
+            AIError: No provider in the chain succeeded.
+        """
+        current: Optional[AIEndpointConfig] = config
+        last_error: Optional[Exception] = None
+        while current is not None:
+            provider = cls.get_provider(current.provider)
+            try:
+                return await provider.transcribe(content, filename, current, language)
+            except NotImplementedError as e:
+                last_error = e
+                logger.warning(f"Provider '{current.provider}' does not support transcription; trying fallback")
+            except AIError as e:
+                last_error = e
+                logger.error(f"Transcription failed on '{current.provider}': {e}")
+            current = current.fallback
+        raise AIError(f"Transcription failed: no provider in the chain succeeded ({last_error})")
+
+    @classmethod
+    def transcribe_sync(
+        cls,
+        content: bytes,
+        filename: str,
+        config: AIEndpointConfig,
+        language: Optional[str] = None,
+    ) -> str:
+        """Synchronous version of :meth:`transcribe` for Celery workers."""
+        current: Optional[AIEndpointConfig] = config
+        last_error: Optional[Exception] = None
+        while current is not None:
+            provider = cls.get_provider(current.provider)
+            try:
+                return provider.transcribe_sync(content, filename, current, language)
+            except NotImplementedError as e:
+                last_error = e
+                logger.warning(f"Provider '{current.provider}' does not support transcription; trying fallback")
+            except AIError as e:
+                last_error = e
+                logger.error(f"Transcription failed on '{current.provider}': {e}")
+            current = current.fallback
+        raise AIError(f"Transcription failed: no provider in the chain succeeded ({last_error})")
+
     # ========== Fallback Logic ==========
 
     @classmethod
