@@ -40,9 +40,19 @@ class ProductNode(EntityNode["ProductService"], relay.Node):
 - **R5 — No DB sessions inside node resolvers**: fetch through services
   (`info.context.app_manager`) — resolvers may open `info.context.session`
   usage via services only.
-- **R6 — Register** with `@register_node()`; never import a node from another
-  module (same registry rule as services — reference by class inside the same
-  module or by string name).
+- **R6 — Register** with `@register_node()`. Unlike entities and services,
+  **importing a node class from another module is fine** — and it is how a
+  resolver types its return value, which a registry lookup cannot do. The
+  import does not pin an implementation: `from_obj()` starts by calling
+  `get_effective_node()`, which resolves the class by name through the
+  registry, so an override registered by another app still wins. The imported
+  class is a nominal entry point, not the object you end up with; the same
+  holds for `_lazy_load_relation` / `_lazy_load_relation_list`, which go
+  through `from_obj()`.
+  What does bypass the registry, and is therefore forbidden: **instantiating
+  a node class directly** (`OtherNode(...)`) or testing `isinstance` against
+  it — both ignore an override. Import the node, never the other module's
+  entities or services (the import-linter contract, see R-ext4).
 
 ## Parametric node (one-liner)
 
@@ -111,4 +121,5 @@ RULES:
 | `relay.GlobalID("ClientNode", self._entity.client_id)` | Returning the raw UUID string for a cross-entity reference |
 | Subclass the base node + schema diff against the previous export | Copy-pasting the whole node body to add one field (drift) |
 | `_lazy_load_relation_list("reviews", ReviewNode, info)` | A JOIN baked into every parent fetch |
+| `OtherNode.from_obj(entity)` — the registry resolves any override | `OtherNode(...)` / `isinstance(x, OtherNode)` — pins the base class |
 | `order_by_attribute_map` on nodes exposed in lists | Front-side sorting of a full unpaginated list |
