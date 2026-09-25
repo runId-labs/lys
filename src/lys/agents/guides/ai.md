@@ -107,6 +107,43 @@ RULES:
 - **R4 — Don't leak internals**: the system prompt must forbid naming tools
   or the model/provider (mirror the boilerplate placeholder).
 
+## Special tools (handlers that do not go through GraphQL)
+
+A tool can run locally instead of resolving to a GraphQL operation:
+`executor.register_special_tool(name, handler)`, with
+`handler(arguments, context) -> dict` (sync or async). Register from your
+`_get_tool_executor` override, after `super()`.
+
+The `context` carries `session`, `info` and `conversation_id`. Read the
+conversation from `conversation_id` rather than closing a handler over one:
+the factory consumers override runs once per turn but does not receive the
+conversation, and a handler bound to a single conversation cannot be
+registered there at all.
+
+RULES:
+
+- **R1 — Gate what must be gated.** A tool the model may call from anywhere is
+  registered unconditionally; one that only makes sense on a given screen is
+  gated on the page's `special_tools` (routes manifest). Register the handler
+  **and** expose the definition under the same condition — a handler left
+  registered is reachable by a model pattern-matching on earlier turns.
+- **R2 — Errors belong to the model.** A tool naming something that does not
+  exist is a miss the model can act on, not an incident: return it, do not
+  raise through the turn.
+
+### Whiteboard app (`lys.apps.ai_whiteboard`)
+
+Optional app: the chatbot draws on an Excalidraw board with `draw_on_whiteboard` /
+`read_whiteboard` (semantic patches, elements addressed by name), the user edits it by
+hand. Load it after `lys.apps.ai`; a consumer override of `AIConversationService` must
+inherit from the app's, or the tools are silently absent.
+
+- Writes go through `WhiteboardService` only: it locks the row, checks `expected_revision`
+  on editor saves, validates the scene and bumps `revision`.
+- The scene size limit is the `ai_whiteboard.max_scene_bytes` plugin setting.
+- A named `whiteboard_id` that is not the user's is refused (`WHITEBOARD_NOT_FOUND`), never
+  redirected to the conversation's own board.
+
 ## Frontend proposals (chatbot-initiated actions)
 
 The framework's `FrontendAction` stream lets the LLM propose actions

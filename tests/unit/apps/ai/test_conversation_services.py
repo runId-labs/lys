@@ -2656,3 +2656,15 @@ class TestBuildRequestContext:
         )
 
         assert context["tools"] == ["get_irs_context", "navigate"]
+
+
+class TestToolContext:
+    """The context every tool call of a turn receives."""
+
+    def test_carries_the_conversation_id(self):
+        from lys.apps.ai.modules.conversation.services import AIConversationService
+
+        session, info = MagicMock(), MagicMock()
+        context = AIConversationService._tool_context(session, info, SimpleNamespace(id="conv-1"))
+
+        assert context == {"session": session, "info": info, "conversation_id": "conv-1"}

@@ -31,6 +31,7 @@ authentication, and permission systems.
 | `organization` | access_level, auth, user, client, notification, role, webservice | abstracts, permissions, consts |
 | `file_management` | file_import, stored_file | — |
 | `ai` | core, conversation, text_improvement | tasks |
+| `ai_whiteboard` | whiteboard, conversation | errors |
 | `licensing` | application, rule, plan, auth, checker, client, mollie, role, subscription, user, event, emailing, webservice | registries, tasks, consts, errors |
 
 Each module lives at `src/lys/apps/{app}/modules/{module}/` and can contain:
@@ -47,6 +48,7 @@ Names used with `app_manager.get_entity(name)` and `app_manager.get_service(name
 - **organization**: `client`, `client_user_role`
 - **file_management**: `stored_file_type`, `stored_file`, `file_import_type`, `file_import_status`, `file_import`
 - **ai**: `ai_conversation`, `ai_message`, `ai_message_feedback`, `ai_prompt_version`
+- **ai_whiteboard**: `whiteboard` (also extends `ai_conversation` with `whiteboard_id`)
 - **licensing**: `license_application`, `license_rule`, `license_plan`, `license_plan_version`, `license_plan_version_rule`, `license_currency`, `license_price_period`, `license_plan_version_price`, `subscription`
 
 Adding/removing/renaming a registry name = update this list IN THE SAME commit.

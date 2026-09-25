@@ -1230,6 +1230,18 @@ class AIConversationService(EntityService[AIConversation]):
 
         return segments
 
+    @staticmethod
+    def _tool_context(session: AsyncSession, info: Any, conversation: Any) -> Dict[str, Any]:
+        """
+        Execution context handed to every tool call of a turn.
+
+        ``conversation_id`` lets a special tool reach the conversation it was called from
+        without being bound to it at registration time: the executor factory consumers
+        override does not have the conversation, and a handler closed over one
+        conversation cannot be registered once.
+        """
+        return {"session": session, "info": info, "conversation_id": conversation.id}
+
     @classmethod
     async def _get_tool_executor(
         cls,
@@ -1646,7 +1658,7 @@ class AIConversationService(EntityService[AIConversation]):
                     result = await executor.execute(
                         tool_name=tool_name,
                         arguments=tool_args,
-                        context={"session": session, "info": info},
+                        context=cls._tool_context(session, info, conversation),
                     )
                     tool_results.append({
                         "tool_name": tool_name,
@@ -1918,7 +1930,7 @@ class AIConversationService(EntityService[AIConversation]):
                     result = await executor.execute(
                         tool_name=tool_name,
                         arguments=tool_args,
-                        context={"session": session, "info": info},
+                        context=cls._tool_context(session, info, conversation),
                     )
                     tool_results.append({
                         "tool_name": tool_name,

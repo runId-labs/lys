@@ -7,6 +7,12 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.50.0] - 2026-09-25
+
+### Added
+- `lys.apps.ai_whiteboard`: an Excalidraw whiteboard the chatbot draws on and the user edits by hand. `whiteboard` entity (owner, scene, revision), `draw_on_whiteboard` / `read_whiteboard` chatbot tools applying semantic patches (notes, shapes, arrows, frames, tables, charts), `whiteboard` / `allWhiteboards` queries, `saveWhiteboardScene` (optimistic revision check) and `deleteWhiteboard` mutations, `WHITEBOARD_UPDATED` signal published after commit, and `AIConversation.whiteboard_id`. Scenes saved by the editor are validated and bounded by `ai_whiteboard.max_scene_bytes` (default 10 MiB); writes lock the row so concurrent writers cannot overwrite each other
+- Special tool handlers receive `conversation_id` in their execution context (`AIConversationService._tool_context`)
+
 ## [0.49.0] - 2026-09-21
 
 ### Added
