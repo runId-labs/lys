@@ -7,11 +7,21 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
-## [0.50.0] - 2026-09-25
+## [0.50.0] - 2026-09-26
 
 ### Added
 - `lys.apps.ai_whiteboard`: an Excalidraw whiteboard the chatbot draws on and the user edits by hand. `whiteboard` entity (owner, scene, revision), `draw_on_whiteboard` / `read_whiteboard` chatbot tools applying semantic patches (notes, shapes, arrows, frames, tables, charts), `whiteboard` / `allWhiteboards` queries, `saveWhiteboardScene` (optimistic revision check) and `deleteWhiteboard` mutations, `WHITEBOARD_UPDATED` signal published after commit, and `AIConversation.whiteboard_id`. Scenes saved by the editor are validated and bounded by `ai_whiteboard.max_scene_bytes` (default 10 MiB); writes lock the row so concurrent writers cannot overwrite each other
 - Special tool handlers receive `conversation_id` in their execution context (`AIConversationService._tool_context`)
+- Spoken blocks: a chatbot answer can carry a written and a spoken rendition in the model's single output channel, the spoken one wrapped in configurable tags (`chatbot.spoken_block`, `[VOICE]`/`[/VOICE]` by default, prompt overridable). `lys.apps.ai.modules.conversation.spoken_block` splits a stream or a complete answer; `AIMessage.spoken_content` stores the spoken rendition and `content` stays free of tags, so history, search and compaction never see them. Absent or disabled configuration leaves every existing behaviour unchanged
+- `chat_with_tools_streaming(voice=True)` speaks the answer while it generates: `voice_token` SSE events carry the spoken text and `voice` events base64 PCM audio synthesized sentence by sentence, from a `tts` endpoint naming a voice in its `options`. `voice` events may follow `done`. A voice the deployment cannot serve (unconfigured purpose, unresolvable API key, no voice named) is dropped and logged — it never fails the turn
+- Spoken-block drift repair: a voice turn whose answer carries no block regenerates the spoken rendition through the new `spoken_repair` purpose, falling back to the sanitized opening of the written answer when the repair itself fails
+- Speech synthesis in the provider contract: `AIProvider.synthesize` / `synthesize_sync` / `synthesize_stream` (optional, `NotImplementedError` by default), implemented for Mistral (`/audio/speech`, plus its SSE stream of `speech.audio.delta` PCM chunks). `AIService.synthesize*` walk the fallback chain; the streaming variant does not retry a provider that already yielded audio, so two voices cannot be spliced mid-word
+- Page params are declared, and only what is declared reaches the prompt. A route in the routes manifest declares its params under `params` with a type (`global_id`, `uuid`, `int`, `bool`, `date`, `enum`, `text`, any of them `multiple`); `lys.apps.ai.utils.page_params.validate_page_params` keeps only what matches and `AIService.get_page_params_schema` reads the declaration. Fails closed everywhere — undeclared page, undeclared key, unknown type, unparsable value — and a dropped param is logged by key, never by value
+- `AIConversationService._page_params_context` renders the declared params as a generic volatile segment ahead of `_get_volatile_context`, composed by `_composed_volatile_context`, so a consumer override cannot lose them. `text` is the only type that can carry prose and requires an explicit `max_length`; the segment header frames the JSON as data, not instructions, and is not configurable
+- `lys.core.graphql.client.decode_global_id`: the strict, non-raising GlobalID decoder, now the single place stating the `"TypeName:id"` shape
+
+### Changed
+- **BREAKING** — the GraphQL tool executor rejects an id argument that is not a GlobalID instead of wrapping a raw uuid with a type prefix guessed from the parameter name. That coercion fabricated ids the caller never had (a company uuid passed as `client_id` read back as an empty result, with no error to recover from). The tool now returns an LLM-actionable error dict. A consuming project whose tools or page context pass raw uuids must pass GlobalIDs
 
 ## [0.49.0] - 2026-09-21
 

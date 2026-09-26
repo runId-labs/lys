@@ -680,6 +680,132 @@ class MistralProvider(AIProvider):
             raise AITimeoutError(f"Request timed out after {config.timeout}s")
         return self._parse_transcription_response(response)
 
+    # ========== Synthesis (text-to-speech) ==========
+
+    def _parse_synthesis_response(self, response: httpx.Response) -> bytes:
+        """
+        Validate the speech response and return its audio bytes.
+
+        The endpoint returns ``{"audio_data": "<base64 audio>"}`` — the base64
+        payload, not the JSON, is what the caller hands to its HTTP client. A
+        200 without ``audio_data`` cannot be degraded to empty bytes the way
+        silent audio degrades to "": an empty sound file is never a valid
+        answer to a non-empty text, so it is an error.
+        """
+        self._handle_error_status(response)
+        audio_data = response.json().get("audio_data")
+        if not audio_data:
+            raise AIValidationError("Synthesis response has no audio_data")
+        return base64.b64decode(audio_data)
+
+    async def synthesize(
+        self,
+        text: str,
+        config: AIEndpointConfig,
+        voice: str,
+        response_format: str = "mp3",
+    ) -> bytes:
+        """Async speech synthesis via Mistral's ``/audio/speech`` endpoint.
+
+        The voice is part of the request body, never optional: the API has no
+        default voice ("Either ref_audio or voice must be provided"), so an
+        empty ``voice`` reaching this method is a caller bug, surfaced by the
+        API rather than silently worked around here.
+        """
+        headers = {"Authorization": f"Bearer {config.api_key}"}
+        try:
+            async with httpx.AsyncClient() as client:
+                response = await client.post(
+                    f"{self.get_base_url(config)}/audio/speech",
+                    headers=headers,
+                    json={
+                        "model": config.model,
+                        "input": text,
+                        "voice": voice,
+                        "response_format": response_format,
+                    },
+                    timeout=config.timeout,
+                )
+        except httpx.TimeoutException:
+            raise AITimeoutError(f"Request timed out after {config.timeout}s")
+        return self._parse_synthesis_response(response)
+
+    def synthesize_sync(
+        self,
+        text: str,
+        config: AIEndpointConfig,
+        voice: str,
+        response_format: str = "mp3",
+    ) -> bytes:
+        """Synchronous version of :meth:`synthesize` for Celery workers."""
+        headers = {"Authorization": f"Bearer {config.api_key}"}
+        try:
+            with httpx.Client() as client:
+                response = client.post(
+                    f"{self.get_base_url(config)}/audio/speech",
+                    headers=headers,
+                    json={
+                        "model": config.model,
+                        "input": text,
+                        "voice": voice,
+                        "response_format": response_format,
+                    },
+                    timeout=config.timeout,
+                )
+        except httpx.TimeoutException:
+            raise AITimeoutError(f"Request timed out after {config.timeout}s")
+        return self._parse_synthesis_response(response)
+
+    async def synthesize_stream(
+        self,
+        text: str,
+        config: AIEndpointConfig,
+        voice: str,
+    ) -> AsyncGenerator[bytes, None]:
+        """Stream speech synthesis via Mistral's ``/audio/speech`` SSE endpoint.
+
+        The audio arrives as Server-Sent Events — ``speech.audio.delta`` chunks
+        carrying base64 float32 LE PCM at the provider's 24 kHz, closed by
+        ``speech.stream.done``. The format is deliberately not configurable:
+        raw PCM is the point of a stream (a container header would force the
+        caller to buffer it back into one piece).
+        """
+        headers = {
+            "Authorization": f"Bearer {config.api_key}",
+            "Accept": "text/event-stream",
+        }
+        try:
+            async with httpx.AsyncClient() as client:
+                async with client.stream(
+                    "POST",
+                    f"{self.get_base_url(config)}/audio/speech",
+                    headers=headers,
+                    json={
+                        "model": config.model,
+                        "input": text,
+                        "voice": voice,
+                        "response_format": "pcm",
+                        "stream": True,
+                    },
+                    timeout=config.timeout,
+                ) as response:
+                    self._handle_error_status(response)
+                    async for line in response.aiter_lines():
+                        if not line.startswith("data:"):
+                            continue
+                        payload = line[len("data:"):].strip()
+                        if not payload:
+                            continue
+                        try:
+                            event = json.loads(payload)
+                        except json.JSONDecodeError:
+                            logger.warning(f"Mistral speech stream: invalid JSON: {payload}")
+                            continue
+                        if event.get("type") == "speech.audio.delta" and event.get("audio_data"):
+                            yield base64.b64decode(event["audio_data"])
+        except httpx.TimeoutException:
+            raise AITimeoutError(f"Request timed out after {config.timeout}s")
+
     # ========== Helpers ==========
 
     @staticmethod

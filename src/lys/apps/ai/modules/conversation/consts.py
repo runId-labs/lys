@@ -8,6 +8,12 @@ from enum import Enum
 # Purpose for conversation-based AI interactions
 AI_PURPOSE_CHATBOT = "chatbot"
 
+# Repair of a drifted spoken block: the turn carried the voice, the model
+# wrote no block — a focused chat call regenerates the spoken rendition from
+# the written answer. A distinct purpose so its prompt is configured and
+# versioned like every other endpoint's.
+AI_PURPOSE_SPOKEN_REPAIR = "spoken_repair"
+
 # GraphQL node type a conversation GlobalID carries. Clients only ever handle GlobalIDs,
 # so the chat stream hands one out under this type and the entry points decode it back.
 AI_CONVERSATION_NODE_NAME = "AIConversationNode"

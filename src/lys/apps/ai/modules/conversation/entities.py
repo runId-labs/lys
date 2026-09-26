@@ -102,6 +102,14 @@ class AIMessage(Entity):
     role: Mapped[str] = mapped_column(String(20), nullable=False)
     content: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
 
+    # The answer's spoken rendition, as produced by the model inside the
+    # spoken-block tags (chatbot.spoken_block). The written rendition above is
+    # stored WITHOUT the blocks: history, search and compaction never see the
+    # tags, and the model is never fed its own spoken text on a later turn.
+    # Null when the feature is off, or when the model wrote no block — the
+    # drift the fallback voice and the corpus accounting both key on.
+    spoken_content: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+
     # For tool calls (role=assistant)
     tool_calls: Mapped[Optional[List[dict]]] = mapped_column(JSON, nullable=True)
 

@@ -185,6 +185,29 @@ class AIService(Service):
 
         return None
 
+    @classmethod
+    def get_page_params_schema(cls, page_name: str) -> Optional[Dict[str, Any]]:
+        """Get the declared URL params of a page, or None when it declares none.
+
+        The declaration is the boundary that makes client-supplied params readable by
+        the model: only what it covers is rendered into the prompt (see
+        ``validate_page_params``). It lives in the routes manifest — server-side and
+        versioned — so the client cannot widen it.
+
+        Returns the route's ``params`` dict, mapping each param name to its spec
+        (``{"type": ..., ...}``).
+        """
+        manifest = cls.get_routes_manifest()
+        if not manifest:
+            return None
+
+        for route in manifest.get("routes", []):
+            if route.get("name") == page_name:
+                params_schema = route.get("params")
+                return params_schema if isinstance(params_schema, dict) else None
+
+        return None
+
     # ========== Prompt Versioning ==========
 
     @classmethod
@@ -803,6 +826,126 @@ class AIService(Service):
                 logger.error(f"Transcription failed on '{current.provider}': {e}")
             current = current.fallback
         raise AIError(f"Transcription failed: no provider in the chain succeeded ({last_error})")
+
+    # ========== Synthesis (text-to-speech) ==========
+
+    @classmethod
+    async def synthesize(
+        cls,
+        text: str,
+        config: AIEndpointConfig,
+        voice: str,
+        response_format: str = "mp3",
+    ) -> bytes:
+        """
+        Synthesize text into speech audio.
+
+        Walks the fallback chain: if a provider does not support synthesis
+        (NotImplementedError) or errors, the next endpoint is tried.
+
+        Args:
+            text: The text to speak.
+            config: Endpoint configuration (e.g. from ``get_endpoint("tts")``).
+            voice: Voice identifier — the provider API has no default, so the
+                caller resolves one (endpoint ``options["voice"]`` unless the
+                request overrides it).
+            response_format: Audio container ("mp3", "wav", "flac", "opus").
+
+        Returns:
+            The audio bytes in the requested format.
+
+        Raises:
+            AIError: No provider in the chain succeeded.
+        """
+        current: Optional[AIEndpointConfig] = config
+        last_error: Optional[Exception] = None
+        while current is not None:
+            provider = cls.get_provider(current.provider)
+            try:
+                return await provider.synthesize(text, current, voice, response_format)
+            except NotImplementedError as e:
+                last_error = e
+                logger.warning(f"Provider '{current.provider}' does not support synthesis; trying fallback")
+            except AIError as e:
+                last_error = e
+                logger.error(f"Synthesis failed on '{current.provider}': {e}")
+            current = current.fallback
+        raise AIError(f"Synthesis failed: no provider in the chain succeeded ({last_error})")
+
+    @classmethod
+    def synthesize_sync(
+        cls,
+        text: str,
+        config: AIEndpointConfig,
+        voice: str,
+        response_format: str = "mp3",
+    ) -> bytes:
+        """Synchronous version of :meth:`synthesize` for Celery workers."""
+        current: Optional[AIEndpointConfig] = config
+        last_error: Optional[Exception] = None
+        while current is not None:
+            provider = cls.get_provider(current.provider)
+            try:
+                return provider.synthesize_sync(text, current, voice, response_format)
+            except NotImplementedError as e:
+                last_error = e
+                logger.warning(f"Provider '{current.provider}' does not support synthesis; trying fallback")
+            except AIError as e:
+                last_error = e
+                logger.error(f"Synthesis failed on '{current.provider}': {e}")
+            current = current.fallback
+        raise AIError(f"Synthesis failed: no provider in the chain succeeded ({last_error})")
+
+    @classmethod
+    async def synthesize_stream(
+        cls,
+        text: str,
+        config: AIEndpointConfig,
+        voice: str,
+    ) -> AsyncGenerator[bytes, None]:
+        """
+        Stream speech synthesis as raw PCM audio chunks.
+
+        Walks the fallback chain with one streaming-specific rule: a provider
+        that fails AFTER the first chunk was yielded is not retried — the
+        caller has already played that audio, and silently restarting the
+        sentence on another voice would splice two voices mid-word. Only a
+        provider that fails before producing anything falls through.
+
+        Args:
+            text: The text to speak.
+            config: Endpoint configuration (e.g. from ``get_endpoint("tts")``).
+            voice: Voice identifier — the provider API has no default, so the
+                caller resolves one (endpoint ``options["voice"]`` unless the
+                request overrides it).
+
+        Yields:
+            Raw PCM audio bytes, in generation order.
+
+        Raises:
+            AIError: No provider in the chain succeeded.
+        """
+        current: Optional[AIEndpointConfig] = config
+        last_error: Optional[Exception] = None
+        while current is not None:
+            provider = cls.get_provider(current.provider)
+            emitted = False
+            try:
+                async for chunk in provider.synthesize_stream(text, current, voice):
+                    emitted = True
+                    yield chunk
+                return
+            except NotImplementedError as e:
+                last_error = e
+                logger.warning(f"Provider '{current.provider}' does not support streaming synthesis; trying fallback")
+            except AIError as e:
+                if emitted:
+                    # Mid-stream failure: audio already left this generator.
+                    raise
+                last_error = e
+                logger.error(f"Streaming synthesis failed on '{current.provider}': {e}")
+            current = current.fallback
+        raise AIError(f"Streaming synthesis failed: no provider in the chain succeeded ({last_error})")
 
     # ========== Fallback Logic ==========
 

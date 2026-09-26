@@ -4,6 +4,7 @@ GraphQL client for service-to-service communication.
 
 import base64
 import logging
+import re
 from typing import Dict, Any, Optional
 
 import httpx
@@ -11,6 +12,39 @@ import httpx
 from lys.core.utils.auth import ServiceAuthUtils
 
 logger = logging.getLogger(__name__)
+
+# A Relay GlobalID is base64("TypeName:id"): a non-empty type prefix, a colon, then
+# the id. Anything else - a raw uuid, a truncated base64, a plain string - is not an
+# id the platform ever emitted. The shape lives here, with the builder, so every
+# boundary that must recognise a GlobalID (tool executor, page params) reads the same
+# rule instead of restating it.
+_GLOBAL_ID_SHAPE = re.compile(r"^[A-Za-z0-9_]+:.+$")
+
+
+def decode_global_id(value: Any) -> Optional[str]:
+    """
+    Decode a GlobalID to its "TypeName:id" form, or None when it is not one.
+
+    The strict, non-raising counterpart of :func:`extract_id_from_global_id`: it
+    answers "is this a GlobalID" without the caller having to guard a decode. A raw
+    uuid never matches - it either fails base64 validation or decodes to bytes
+    carrying no type prefix.
+
+    Args:
+        value: The candidate GlobalID.
+
+    Returns:
+        The decoded "TypeName:id" string, or None when value is not a GlobalID.
+    """
+    if not isinstance(value, str) or not value:
+        return None
+
+    try:
+        decoded = base64.b64decode(value, validate=True).decode("utf-8")
+    except Exception:
+        return None
+
+    return decoded if _GLOBAL_ID_SHAPE.match(decoded) else None
 
 
 def build_global_id(type_name: str, node_id: str) -> str:

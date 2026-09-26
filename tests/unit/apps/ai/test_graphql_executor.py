@@ -93,11 +93,14 @@ class TestGraphQLToolExecutorBuildOperation:
 
     def test_build_operation_with_mixed_arguments(self, executor):
         """Test operation with both wrapped and non-wrapped arguments."""
+        import base64
+
+        user_gid = base64.b64encode(b"UserNode:user-123").decode()
         query, variables = executor._build_operation(
             operation_type="mutation",
             operation_name="updateUser",
             arguments={
-                "id": "user-123",
+                "id": user_gid,
                 "bio": "Updated bio",
                 "first_name": "Jane",
             },
@@ -125,6 +128,7 @@ class TestGraphQLToolExecutorBuildOperation:
 
         # Variables should have both id and inputs
         assert "id" in variables
+        assert variables["id"] == user_gid
         assert "inputs" in variables
         assert variables["inputs"]["bio"] == "Updated bio"
         assert variables["inputs"]["firstName"] == "Jane"
@@ -226,7 +230,7 @@ class TestGraphQLToolExecutorBuildOperation:
 
 
 class TestGraphQLToolExecutorGlobalID:
-    """Tests for GlobalID conversion in GraphQLToolExecutor."""
+    """Tests for GlobalID validation in GraphQLToolExecutor."""
 
     @pytest.fixture
     def executor(self):
@@ -240,61 +244,72 @@ class TestGraphQLToolExecutorGlobalID:
             )
             return executor
 
-    def test_to_global_id_encodes_uuid(self, executor):
-        """Test that raw UUIDs are encoded to GlobalID format."""
+    @staticmethod
+    def _global_id(type_name: str, raw_id: str) -> str:
         import base64
+
+        return base64.b64encode(f"{type_name}:{raw_id}".encode()).decode()
+
+    def test_to_global_id_passes_valid_global_id_through(self, executor):
+        """A well-formed GlobalID is returned unchanged, whatever the param name."""
+        global_id = self._global_id("UserNode", "550e8400-e29b-41d4-a716-446655440000")
 
         result = executor._to_global_id(
             param_name="user_id",
-            value="550e8400-e29b-41d4-a716-446655440000",
-            node_type="UserNode"
+            value=global_id,
+            node_type="UserNode",
         )
 
-        # Decode and verify
-        decoded = base64.b64decode(result).decode()
-        assert decoded == "UserNode:550e8400-e29b-41d4-a716-446655440000"
+        assert result == global_id
 
-    def test_to_global_id_skips_already_encoded(self, executor):
-        """Test that already-encoded GlobalIDs are not double-encoded."""
-        import base64
-
-        # Pre-encode a GlobalID
-        original = "UserNode:550e8400-e29b-41d4-a716-446655440000"
-        already_encoded = base64.b64encode(original.encode()).decode()
+    def test_to_global_id_passes_valid_global_id_of_another_type(self, executor):
+        """The executor checks the FORMAT only: entity semantics belong to the webservice."""
+        global_id = self._global_id("CompanyNode", "3cc6ec4d-0b2e-4c5f-9820-434c0745b800")
 
         result = executor._to_global_id(
-            param_name="user_id",
-            value=already_encoded,
-            node_type="UserNode"
+            param_name="client_id",
+            value=global_id,
+            node_type=None,
         )
 
-        # Should return the same value
-        assert result == already_encoded
+        assert result == global_id
 
-    def test_to_global_id_derives_type_from_param_name(self, executor):
-        """Test that node type is derived from param name if not provided."""
-        import base64
+    def test_to_global_id_rejects_raw_uuid(self, executor):
+        """A raw uuid is never wrapped with a guessed type prefix — that fabricates an id."""
+        from lys.apps.ai.modules.core.executors.graphql import GlobalIDFormatError
 
-        result = executor._to_global_id(
-            param_name="organization_id",
-            value="org-123",
-            node_type=None  # Not provided
-        )
+        with pytest.raises(GlobalIDFormatError) as exc_info:
+            executor._to_global_id(
+                param_name="client_id",
+                value="3cc6ec4d-0b2e-4c5f-9820-434c0745b800",
+                node_type=None,
+            )
 
-        # Should derive OrganizationNode from organization_id
-        decoded = base64.b64decode(result).decode()
-        assert decoded == "OrganizationNode:org-123"
+        # The message is LLM-actionable: it names the parameter and says what to do.
+        assert "client_id" in str(exc_info.value)
+        assert "GlobalID" in str(exc_info.value)
 
-    def test_build_operation_converts_ids_in_wrapped_fields(self, executor):
-        """Test that IDs in input wrappers are converted to GlobalID."""
-        import base64
+    def test_to_global_id_rejects_plain_string(self, executor):
+        from lys.apps.ai.modules.core.executors.graphql import GlobalIDFormatError
+
+        with pytest.raises(GlobalIDFormatError):
+            executor._to_global_id(
+                param_name="id",
+                value="user-123",
+                node_type="UserNode",
+            )
+
+    def test_build_operation_keeps_global_ids_in_wrapped_fields(self, executor):
+        """IDs in input wrappers pass through unchanged when already GlobalIDs."""
+        user_gid = self._global_id("UserNode", "user-uuid-123")
+        role_gid = self._global_id("RoleNode", "role-uuid-456")
 
         query, variables = executor._build_operation(
             operation_type="mutation",
             operation_name="assignRole",
             arguments={
-                "user_id": "user-uuid-123",
-                "role_id": "role-uuid-456",
+                "user_id": user_gid,
+                "role_id": role_gid,
             },
             return_fields="id",
             properties={
@@ -309,12 +324,33 @@ class TestGraphQLToolExecutorGlobalID:
             }],
         )
 
-        # Both IDs should be GlobalID encoded
-        user_id_decoded = base64.b64decode(variables["inputs"]["userId"]).decode()
-        role_id_decoded = base64.b64decode(variables["inputs"]["roleId"]).decode()
+        assert variables["inputs"]["userId"] == user_gid
+        assert variables["inputs"]["roleId"] == role_gid
 
-        assert "UserNode:user-uuid-123" == user_id_decoded
-        assert "UserNode:role-uuid-456" == role_id_decoded
+    def test_build_operation_rejects_raw_uuid_in_wrapped_fields(self, executor):
+        """A raw uuid inside an input wrapper raises, instead of being silently wrapped."""
+        from lys.apps.ai.modules.core.executors.graphql import GlobalIDFormatError
+
+        with pytest.raises(GlobalIDFormatError):
+            executor._build_operation(
+                operation_type="mutation",
+                operation_name="assignRole",
+                arguments={
+                    "user_id": "user-uuid-123",
+                    "role_id": "role-uuid-456",
+                },
+                return_fields="id",
+                properties={
+                    "user_id": {"type": "string", "_graphql_type": "ID!"},
+                    "role_id": {"type": "string", "_graphql_type": "ID!"},
+                },
+                node_type="UserNode",
+                input_wrappers=[{
+                    "param_name": "inputs",
+                    "graphql_type": "AssignRoleInput!",
+                    "fields": ["user_id", "role_id"],
+                }],
+            )
 
 
 class TestGraphQLToolExecutorVerifySSL:
@@ -441,6 +477,10 @@ class TestGraphQLToolExecutorExecute:
                             "parameters": {
                                 "type": "object",
                                 "properties": {
+                                    "id": {
+                                        "type": "string",
+                                        "_graphql_type": "ID!",
+                                    },
                                     "bio": {"type": "string"},
                                     "first_name": {"type": "string"},
                                 },
@@ -494,6 +534,21 @@ class TestGraphQLToolExecutorExecute:
         assert "inputs" in variables
         assert variables["inputs"]["bio"] == "Updated bio"
         assert variables["inputs"]["firstName"] == "John"
+
+    @pytest.mark.asyncio
+    async def test_execute_returns_error_for_raw_uuid_id(self, executor):
+        """A raw uuid passed where a GlobalID is expected is an error returned to
+        the model — never silently wrapped with a guessed type prefix."""
+        result = await executor.execute(
+            tool_name="update_user",
+            arguments={"id": "550e8400-e29b-41d4-a716-446655440000", "bio": "x"},
+            context={},
+        )
+
+        assert result["status"] == "error"
+        assert "id" in result["message"]
+        # No GraphQL call is made — the id never reaches the gateway.
+        executor._client.execute.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_execute_raises_if_not_initialized(self):

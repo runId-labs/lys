@@ -8,7 +8,7 @@ import json
 import logging
 import time
 from datetime import datetime, timedelta, UTC
-from typing import AsyncGenerator, Optional, List, Dict, Any
+from typing import AsyncGenerator, AsyncIterator, Optional, List, Dict, Any, Tuple
 
 from sqlalchemy import cast, func, select, tuple_
 from sqlalchemy.dialects.postgresql import REGCONFIG
@@ -24,6 +24,7 @@ from lys.apps.ai.modules.conversation.consts import (
     AI_PURPOSE_CONVERSATION_SUMMARY,
     AI_PURPOSE_CONVERSATION_TITLE,
     AI_PURPOSE_EMBEDDING,
+    AI_PURPOSE_SPOKEN_REPAIR,
     DEFAULT_COMPACTION_PENDING_TTL_SECONDS,
     DEFAULT_COMPACTION_TOKEN_THRESHOLD,
     DEFAULT_COMPACTION_WINDOW_MESSAGES,
@@ -44,11 +45,21 @@ from lys.apps.ai.modules.conversation.entities import (
     AIMessageFeedback,
 )
 from lys.apps.ai.modules.conversation.models import PageContextModel
+from lys.apps.ai.modules.conversation.spoken_block import (
+    SpokenBlockConfig,
+    SpokenBlockPipeline,
+    SpokenBlockSplitter,
+    split_spoken_blocks,
+    spoken_fallback_opening,
+    strip_markdown_for_speech,
+    strip_spoken_tags,
+)
 from lys.apps.ai.modules.core.executors import GraphQLToolExecutor
 from lys.apps.ai.modules.core.services import AIToolService
 from lys.apps.ai.tasks import generate_conversation_title, summarize_conversation
 from lys.apps.ai.utils.guardrails import CONFIRM_ACTION_TOOL
-from lys.apps.ai.utils.providers.exceptions import AIPurposeNotFoundError
+from lys.apps.ai.utils.page_params import PAGE_PARAMS_HEADER, validate_page_params
+from lys.apps.ai.utils.providers.exceptions import AIPurposeNotFoundError, AIError
 from lys.apps.ai.utils.search import (
     DEFAULT_TEXT_SEARCH_CONFIG,
     SEARCH_CONVERSATION_TOOL,
@@ -908,6 +919,84 @@ class AIConversationService(EntityService[AIConversation]):
             logger.warning(f"Compaction enqueue skipped for conversation {conversation.id}: {e}")
 
     @classmethod
+    def _build_voice_pipeline(cls, ai_service: Any) -> Optional["SpokenBlockPipeline"]:
+        """
+        Build the turn's synthesis pipeline, or None when the voice cannot be served.
+
+        A voice the deployment cannot serve costs the voice, never the chat: every way
+        the tts endpoint can be unusable — absent purpose, no API key, no voice named
+        in its options — returns None and lets the text stream carry on alone. The
+        ``ValueError`` is not incidental: an endpoint configured without a resolvable
+        API key raises it from ``_resolve_api_key``, and it is exactly the
+        misconfiguration most likely to reach production.
+
+        Args:
+            ai_service: The AIService entry point.
+
+        Returns:
+            A pipeline ready to be fed spoken pieces, or None.
+        """
+        try:
+            tts_config = ai_service.get_endpoint("tts")
+        except (AIError, ValueError) as e:
+            logger.warning(f"Voice requested but the tts endpoint is unavailable: {e}")
+            return None
+
+        tts_voice = tts_config.options.get("voice")
+        if not tts_voice:
+            logger.warning("Voice requested but the tts endpoint names no voice")
+            return None
+
+        async def _synthesize(sentence: str) -> AsyncIterator[bytes]:
+            async for chunk in ai_service.synthesize_stream(sentence, tts_config, tts_voice):
+                yield chunk
+
+        return SpokenBlockPipeline(_synthesize)
+
+    @classmethod
+    async def _repair_spoken_rendition(
+        cls,
+        ai_service: Any,
+        written_answer: str,
+        spoken_config: SpokenBlockConfig,
+    ) -> Optional[str]:
+        """
+        Repair a drifted spoken block with a focused chat call.
+
+        The model skipped the block; a second, single-task call regenerates the
+        spoken rendition from the written answer. The repair instructions are
+        the ``spoken_repair`` endpoint's system_prompt — configured and
+        versioned in ``ai_prompt_version`` like every endpoint's — injected
+        automatically by :meth:`chat_with_purpose`.
+
+        Args:
+            ai_service: The AIService entry point.
+            written_answer: The turn's written rendition, the repair's input.
+            spoken_config: The spoken-block configuration, for the tag strip.
+
+        Returns:
+            The repaired spoken rendition, or None when the repair cannot
+            happen (endpoint unconfigured, provider error, empty output) —
+            the caller then uses its last-resort fallback. The voice degrades
+            alone; the chat is never dragged down with it.
+        """
+        try:
+            response = await ai_service.chat_with_purpose(
+                [{"role": "user", "content": written_answer}],
+                AI_PURPOSE_SPOKEN_REPAIR,
+            )
+        except AIError as e:
+            logger.warning(f"Spoken repair call failed: {e}")
+            return None
+        if not response.content or not response.content.strip():
+            return None
+        # The repair prompt forbids tags, but a model that just missed the
+        # block convention once is not trusted twice on a second instruction:
+        # the strip is one line, a spoken "[VOICE]" aloud is a bug the
+        # listener hears.
+        return strip_spoken_tags(response.content, spoken_config).strip()
+
+    @classmethod
     async def _build_messages(
         cls,
         conversation: "AIConversation",
@@ -1057,9 +1146,69 @@ class AIConversationService(EntityService[AIConversation]):
         rather than in ``_get_stable_context`` is what makes the cache work at all.
 
         Base framework returns nothing; a consumer overrides it. Small by design: it is
-        re-sent in full on every turn.
+        re-sent in full on every turn. The page's URL params are NOT the consumer's to
+        render — the base emits them generically (see ``_page_params_context``), so an
+        override cannot lose them.
         """
         return None
+
+    @classmethod
+    def _page_params_context(cls, page_context: Optional[PageContextModel]) -> Optional[str]:
+        """
+        Generic volatile segment: the page's DECLARED URL params, as JSON.
+
+        The params are what the user is looking at — filters, the dossier, the focused
+        record. They are the chatbot's eyes on the user's screen state, and they are
+        rendered HERE, generically, so no consumer override can lose them: a consumer
+        hook replacing them with its own prose is how a model ends up instructed to
+        "read the parameters" it cannot see (observed: the model invented "no dossier
+        selected" rather than call a tool whose required id it had no way to know).
+
+        They are also the only client-controlled part of the system prompt, so they
+        pass the declared-schema boundary first: the page declares its params in the
+        routes manifest and only what matches is rendered (see ``validate_page_params``).
+        A page that declares none exposes none — the failure is loud in the logs, never
+        a silently widened surface. The header frames the segment as data, and
+        ``json.dumps`` keeps every value inside its own JSON string: a value cannot
+        forge a section heading of its own.
+
+        Only what the URL carries is shown: an absent key is the page's documented
+        default, and each key's MEANING is the page prompt's to document — an
+        undocumented key is unreadable to the model. Deterministic (sorted keys) so
+        unchanged params render byte-identical across turns.
+        """
+        if not page_context or not page_context.params:
+            return None
+
+        schema = cls.app_manager.get_service("ai").get_page_params_schema(page_context.page_name)
+        params = validate_page_params(page_context.params, schema, page_context.page_name)
+        if not params:
+            return None
+
+        params_json = json.dumps(params, ensure_ascii=False, sort_keys=True)
+        return f"{PAGE_PARAMS_HEADER}\n{params_json}"
+
+    @classmethod
+    async def _composed_volatile_context(
+        cls,
+        session: AsyncSession,
+        connected_user: Optional[Dict[str, Any]],
+        page_context: Optional[PageContextModel],
+        info: Any,
+    ) -> Optional[str]:
+        """
+        The volatile layer as sent to the model: generic params segment, then the
+        consumer's prose.
+
+        The generic segment comes first — machine-readable state before its
+        interpretation — and is composed here rather than left to each consumer,
+        so the contract holds for every product built on the framework.
+        """
+        params_segment = cls._page_params_context(page_context)
+        consumer_segment = await cls._get_volatile_context(session, connected_user, page_context, info)
+        if params_segment and consumer_segment:
+            return f"{params_segment}\n\n{consumer_segment}"
+        return params_segment or consumer_segment
 
     @staticmethod
     def _valid_provider_options(ai_service: Any, endpoint: Any) -> Optional[set]:
@@ -1165,6 +1314,15 @@ class AIConversationService(EntityService[AIConversation]):
         # Session-stable layer, cacheable.
         if stable_context:
             segments.append({"content": stable_context, "cache": True})
+
+        # Spoken-block convention (chatbot.spoken_block): how the model wraps the
+        # spoken rendition of its answers. Injected whenever the feature is on —
+        # the block is part of the model's answer style, whether this turn's
+        # voice plays it or not. Cacheable like the layer above it: the
+        # convention never changes within a conversation.
+        spoken_config = SpokenBlockConfig.from_plugin_config(chatbot_config)
+        if spoken_config.enabled:
+            segments.append({"content": spoken_config.prompt, "cache": True})
 
         # Compaction summary of older turns. It replaces those turns, so it must stay in
         # front of the verbatim window it precedes. Not marked cacheable: a new summary
@@ -1433,7 +1591,7 @@ class AIConversationService(EntityService[AIConversation]):
         conversation = await cls.get_or_create(user_id, session, conversation_id, client_id=client_id)
         current_summary = await cls._load_current_summary(conversation.id, session)
         stable_context = await cls._get_stable_context(session, connected_user, page_context, info)
-        volatile_context = await cls._get_volatile_context(session, connected_user, page_context, info)
+        volatile_context = await cls._composed_volatile_context(session, connected_user, page_context, info)
 
         # Build system prompt (cheap: only the summary/stable-context loads hit the DB/cache;
         # stable layer + page prompt + volatile layer + past-conversation summary + fetched context).
@@ -1577,6 +1735,11 @@ class AIConversationService(EntityService[AIConversation]):
         ai_service = ctx["ai_service"]
         llm_tools = ctx["llm_tools"]
         messages = ctx["messages"]
+        # The spoken-block convention decides how the answer is PERSISTED here —
+        # this path has no voice to serve, only rows to keep clean.
+        spoken_config = SpokenBlockConfig.from_plugin_config(
+            (cls.app_manager.settings.get_plugin_config("ai") or {}).get("chatbot", {})
+        )
 
         tool_results = []
         tool_calls_count = 0
@@ -1598,12 +1761,19 @@ class AIConversationService(EntityService[AIConversation]):
             tool_calls = response.tool_calls or []
 
             if not tool_calls:
-                # No tool calls, save and return the response
+                # No tool calls, save and return the response. Split like the
+                # streaming path: the written answer in content, the spoken
+                # rendition in spoken_content, the tags in neither.
+                if spoken_config.enabled:
+                    written_content, spoken_content = split_spoken_blocks(response.content or "", spoken_config)
+                else:
+                    written_content, spoken_content = response.content, None
                 await message_service.create(
                     session,
                     conversation_id=conversation.id,
                     role=AIMessageRole.ASSISTANT.value,
-                    content=response.content,
+                    content=written_content,
+                    spoken_content=spoken_content,
                     provider=response.provider,
                     model=response.model,
                     latency_ms=latency_ms,
@@ -1634,12 +1804,18 @@ class AIConversationService(EntityService[AIConversation]):
             }
             messages.append(assistant_msg)
 
-            # Save assistant message with tool calls
+            # Save assistant message with tool calls — split like the final
+            # answer: a spoken ack before the calls is voice content, not text.
+            if spoken_config.enabled:
+                tool_written, tool_spoken = split_spoken_blocks(response.content or "", spoken_config)
+            else:
+                tool_written, tool_spoken = response.content, None
             await message_service.create(
                 session,
                 conversation_id=conversation.id,
                 role=AIMessageRole.ASSISTANT.value,
-                content=response.content,
+                content=tool_written,
+                spoken_content=tool_spoken,
                 tool_calls=tool_calls,
                 provider=response.provider,
                 model=response.model,
@@ -1734,6 +1910,7 @@ class AIConversationService(EntityService[AIConversation]):
         conversation_id: Optional[str] = None,
         page_context: Optional[PageContextModel] = None,
         max_tool_iterations: int = 10,
+        voice: bool = False,
     ) -> AsyncGenerator[str, None]:
         """
         Streaming version of chat_with_tools. Yields SSE-formatted strings.
@@ -1747,11 +1924,26 @@ class AIConversationService(EntityService[AIConversation]):
             conversation_id: Optional conversation ID to continue
             page_context: Optional page context
             max_tool_iterations: Maximum tool call iterations
+            voice: Speak the answer's spoken rendition — per turn, stateless:
+                the server keeps no voice session, a message without the flag
+                is text-only. Only does anything when the app enables the
+                spoken blocks (chatbot.spoken_block) and configures a "tts"
+                endpoint naming a voice; a voice it cannot serve is dropped
+                silently on the wire and logged server-side — the text stream
+                is never failed for it, and no ``voice`` event is emitted.
 
         Yields:
             SSE-formatted event strings. Event names: ``token``, ``tool_start``,
             ``tool_result``, ``reasoning_progress``, ``done``, ``error``, plus ``reasoning``
             when the AI plugin sets ``chatbot.expose_reasoning`` (default ``False``).
+
+            With the spoken blocks enabled, the written and spoken renditions
+            separate: ``token`` carries the written answer only (the blocks are
+            never forwarded as text), ``voice_token`` carries the blocks' content
+            as it streams (a bubble showing what is being said), and ``voice``
+            carries base64 PCM audio chunks synthesized sentence by sentence —
+            only when ``voice`` is set. ``voice`` events may follow ``done``:
+            the text is complete, the reading of it is not.
 
             ``reasoning_progress`` carries only ``characters``, the running size of the
             reasoning trace for the current LLM call — it restarts at 0 on each tool
@@ -1790,208 +1982,315 @@ class AIConversationService(EntityService[AIConversation]):
             .get("expose_reasoning", False)
         )
 
-        # Agent loop
-        for iteration in range(max_tool_iterations):
-            accumulated_content = ""
-            reasoning_characters = 0
-            tool_calls_accumulator: Dict[int, Dict[str, Any]] = {}
-            last_finish_reason = None
-            last_usage = None
-            last_model = None
-            last_provider = None
-            start_time = time.perf_counter()
+        # The spoken blocks: tags routed out of the written stream, and — when
+        # this turn carries the voice flag — a pipeline synthesizing them
+        # sentence by sentence while the answer is still generating. The blocks
+        # exist whenever the app enables the feature; the audio exists only
+        # when the tts endpoint says which voice to use.
+        spoken_config = SpokenBlockConfig.from_plugin_config(
+            (cls.app_manager.settings.get_plugin_config("ai") or {}).get("chatbot", {})
+        )
+        spoken_splitter = SpokenBlockSplitter(spoken_config) if spoken_config.enabled else None
+        voice_pipeline = (
+            cls._build_voice_pipeline(ai_service) if voice and spoken_config.enabled else None
+        )
 
-            try:
-                async for chunk in ai_service.chat_stream_with_purpose(
-                    messages, AI_PURPOSE_CHATBOT, llm_tools if llm_tools else None,
-                    cache_key=conversation.id,
-                ):
-                    # A reasoning model can spend tens of seconds before its first answer
-                    # token, and the reasoning stream is the only thing moving meanwhile.
-                    # Its SIZE is safe to publish and enough for a client to prove liveness —
-                    # unlike elapsed time, it only grows when data actually arrives. The trace
-                    # ITSELF is a draft naming internal tools and scoring vocabulary a system
-                    # prompt may forbid showing, so it stays behind chatbot.expose_reasoning.
-                    if chunk.reasoning:
-                        reasoning_characters += len(chunk.reasoning)
-                        yield _format_sse(
-                            "reasoning_progress", {"characters": reasoning_characters}
-                        )
-                        if expose_reasoning:
-                            yield _format_sse("reasoning", {"content": chunk.reasoning})
+        # One turn, one routing helper: the pieces the splitter releases become
+        # events here, so both the mid-stream and the flush paths behave alike.
 
-                    if chunk.content:
-                        accumulated_content += chunk.content
-                        yield _format_sse("token", {"content": chunk.content})
+        def _route_spoken_pieces(pieces: List[Tuple[str, str]]) -> List[str]:
+            """Token pieces out — the caller yields them (and the audio drain)."""
+            events = []
+            for kind, piece in pieces:
+                if kind == "voice":
+                    if voice_pipeline is not None:
+                        voice_pipeline.feed(piece)
+                    events.append(_format_sse("voice_token", {"content": piece}))
+                else:
+                    events.append(_format_sse("token", {"content": piece}))
+            return events
 
-                    # Accumulate tool calls from partial chunks
-                    if chunk.tool_calls:
-                        _accumulate_tool_calls(tool_calls_accumulator, chunk.tool_calls)
+        try:
 
-                    if chunk.finish_reason:
-                        last_finish_reason = chunk.finish_reason
-                    if chunk.usage:
-                        last_usage = chunk.usage
-                    if chunk.model:
-                        last_model = chunk.model
-                    if chunk.provider:
-                        last_provider = chunk.provider
+            # Agent loop
+            for iteration in range(max_tool_iterations):
+                accumulated_content = ""
+                reasoning_characters = 0
+                tool_calls_accumulator: Dict[int, Dict[str, Any]] = {}
+                last_finish_reason = None
+                last_usage = None
+                last_model = None
+                last_provider = None
+                start_time = time.perf_counter()
 
-            except Exception as e:
-                logger.error(f"Streaming provider error: {e}")
-                # Delete the orphaned user message to keep conversation history valid
-                if iteration == 0:
-                    try:
-                        await message_service.delete(user_message_id, session)
-                    except Exception as del_err:
-                        logger.error(f"Failed to delete orphaned user message {user_message_id}: {del_err}")
-                yield _format_sse("error", {
-                    "message": "An error occurred while generating the response.",
-                    "code": "PROVIDER_ERROR",
-                })
-                return
+                try:
+                    async for chunk in ai_service.chat_stream_with_purpose(
+                        messages, AI_PURPOSE_CHATBOT, llm_tools if llm_tools else None,
+                        cache_key=conversation.id,
+                    ):
+                        # A reasoning model can spend tens of seconds before its first answer
+                        # token, and the reasoning stream is the only thing moving meanwhile.
+                        # Its SIZE is safe to publish and enough for a client to prove liveness —
+                        # unlike elapsed time, it only grows when data actually arrives. The trace
+                        # ITSELF is a draft naming internal tools and scoring vocabulary a system
+                        # prompt may forbid showing, so it stays behind chatbot.expose_reasoning.
+                        if chunk.reasoning:
+                            reasoning_characters += len(chunk.reasoning)
+                            yield _format_sse(
+                                "reasoning_progress", {"characters": reasoning_characters}
+                            )
+                            if expose_reasoning:
+                                yield _format_sse("reasoning", {"content": chunk.reasoning})
 
-            # Time to the LAST token, not to a complete response: the two paths measure
-            # different things under the same name (see AIMessage.latency_ms). Taken after
-            # the stream is exhausted and before any tool runs, so tool time is excluded —
-            # matching what the non-streaming path times.
-            latency_ms = int((time.perf_counter() - start_time) * 1000)
+                        if chunk.content:
+                            accumulated_content += chunk.content
+                            if spoken_splitter is not None:
+                                # The block tags route the text: what is inside goes
+                                # to the voice (and the saying bubble), what is
+                                # outside goes to the written stream. The tags are
+                                # consumed here — no client ever sees them.
+                                for voice_event in _route_spoken_pieces(spoken_splitter.feed(chunk.content)):
+                                    yield voice_event
+                            else:
+                                yield _format_sse("token", {"content": chunk.content})
+                            # Audio produced while the tokens were streaming comes
+                            # out right away: the voice must not lag behind the
+                            # text it belongs to.
+                            if voice_pipeline is not None:
+                                async for voice_event in voice_pipeline.drain():
+                                    yield voice_event
 
-            # Build finalized tool_calls list from accumulator
-            finalized_tool_calls = _finalize_tool_calls(tool_calls_accumulator)
+                        # Accumulate tool calls from partial chunks
+                        if chunk.tool_calls:
+                            _accumulate_tool_calls(tool_calls_accumulator, chunk.tool_calls)
 
-            if not finalized_tool_calls:
-                # No tool calls — final response
+                        if chunk.finish_reason:
+                            last_finish_reason = chunk.finish_reason
+                        if chunk.usage:
+                            last_usage = chunk.usage
+                        if chunk.model:
+                            last_model = chunk.model
+                        if chunk.provider:
+                            last_provider = chunk.provider
+
+                except Exception as e:
+                    logger.error(f"Streaming provider error: {e}")
+                    # Delete the orphaned user message to keep conversation history valid
+                    if iteration == 0:
+                        try:
+                            await message_service.delete(user_message_id, session)
+                        except Exception as del_err:
+                            logger.error(f"Failed to delete orphaned user message {user_message_id}: {del_err}")
+                    yield _format_sse("error", {
+                        "message": "An error occurred while generating the response.",
+                        "code": "PROVIDER_ERROR",
+                    })
+                    return
+
+                # The provider stream ended: whatever the splitter held back on
+                # the chance it became a tag is released now — this iteration
+                # will never send more text to decide it.
+                if spoken_splitter is not None:
+                    for voice_event in _route_spoken_pieces(spoken_splitter.flush()):
+                        yield voice_event
+                    if voice_pipeline is not None:
+                        async for voice_event in voice_pipeline.drain():
+                            yield voice_event
+
+                # Time to the LAST token, not to a complete response: the two paths measure
+                # different things under the same name (see AIMessage.latency_ms). Taken after
+                # the stream is exhausted and before any tool runs, so tool time is excluded —
+                # matching what the non-streaming path times.
+                latency_ms = int((time.perf_counter() - start_time) * 1000)
+
+                # Build finalized tool_calls list from accumulator
+                finalized_tool_calls = _finalize_tool_calls(tool_calls_accumulator)
+
+                if not finalized_tool_calls:
+                    # No tool calls — final response. The persisted row carries
+                    # the two renditions split: content is the written answer
+                    # the search, the compaction and the next turn's history
+                    # read; spoken_content is what the voice said, kept for
+                    # replay and the corpus. The tags live in neither.
+                    if spoken_config.enabled:
+                        final_written, final_spoken = split_spoken_blocks(accumulated_content, spoken_config)
+                    else:
+                        final_written, final_spoken = accumulated_content, None
+
+                    await message_service.create(
+                        session,
+                        conversation_id=conversation.id,
+                        role=AIMessageRole.ASSISTANT.value,
+                        content=final_written,
+                        spoken_content=final_spoken,
+                        provider=last_provider,
+                        model=last_model,
+                        latency_ms=latency_ms,
+                        **cls._usage_fields(last_usage),
+                    )
+
+                    frontend_actions = list(getattr(info.context, "frontend_actions", []))
+
+                    result = {
+                        # Clients only ever handle GlobalIDs: the conversation listing returns
+                        # them, so the stream must hand out the same reference or a resumed
+                        # conversation and a fresh one would carry two different formats.
+                        "conversationId": build_global_id(AI_CONVERSATION_NODE_NAME, conversation.id),
+                        "toolCallsCount": tool_calls_count,
+                        "frontendActions": frontend_actions if frontend_actions else None,
+                    }
+                    cls._process_response({
+                        "content": accumulated_content,
+                        "conversation_id": conversation.id,
+                        "tool_calls_count": tool_calls_count,
+                        "tool_results": tool_results,
+                        "frontend_actions": frontend_actions if frontend_actions else None,
+                    })
+                    await cls.maybe_enqueue_compaction(conversation, session, last_usage)
+                    yield _format_sse("done", result)
+
+                    if voice_pipeline is not None:
+                        # Drift: the voice was asked for and the final answer
+                        # carried no block. A focused chat call REPAIRS the
+                        # spoken rendition the model skipped; the mechanical
+                        # opening remains the last resort, for a repair that
+                        # itself fails. Never mute, never raw markdown.
+                        if final_spoken is None and final_written:
+                            logger.warning(
+                                "Spoken block drift on conversation %s: repairing the spoken rendition",
+                                conversation.id,
+                            )
+                            repaired = await cls._repair_spoken_rendition(
+                                ai_service, final_written, spoken_config
+                            )
+                            if repaired:
+                                voice_pipeline.feed(repaired)
+                            else:
+                                voice_pipeline.feed(
+                                    spoken_fallback_opening(strip_markdown_for_speech(final_written))
+                                )
+                        # The reading of the answer may outlive its "done": the
+                        # client has its text, the audio tail keeps streaming.
+                        async for voice_event in voice_pipeline.finish():
+                            yield voice_event
+                    return
+
+                # Tool calls detected — execute them
+                tool_calls_count += len(finalized_tool_calls)
+
+                # Save assistant message with tool calls. An iteration's text
+                # can carry a spoken block ("what I am looking at") before its
+                # calls: persisted split like the final answer — content clean,
+                # the spoken ack in spoken_content. The in-turn history below
+                # keeps the RAW content instead: the model reads back exactly
+                # what it wrote, tags included, within this same turn.
+                if spoken_config.enabled:
+                    iteration_written, iteration_spoken = split_spoken_blocks(accumulated_content, spoken_config)
+                else:
+                    iteration_written, iteration_spoken = accumulated_content, None
+
+                assistant_msg = {
+                    "role": "assistant",
+                    "content": accumulated_content,
+                    "tool_calls": finalized_tool_calls,
+                }
+                messages.append(assistant_msg)
+
                 await message_service.create(
                     session,
                     conversation_id=conversation.id,
                     role=AIMessageRole.ASSISTANT.value,
-                    content=accumulated_content,
+                    content=iteration_written,
+                    spoken_content=iteration_spoken,
+                    tool_calls=finalized_tool_calls,
                     provider=last_provider,
                     model=last_model,
                     latency_ms=latency_ms,
                     **cls._usage_fields(last_usage),
                 )
 
-                frontend_actions = list(getattr(info.context, "frontend_actions", []))
+                # Execute each tool
+                for tool_call in finalized_tool_calls:
+                    tool_name = tool_call.get("function", {}).get("name", "")
+                    tool_args_str = tool_call.get("function", {}).get("arguments", "{}")
+                    tool_call_id = tool_call.get("id", "")
 
-                result = {
-                    # Clients only ever handle GlobalIDs: the conversation listing returns
-                    # them, so the stream must hand out the same reference or a resumed
-                    # conversation and a fresh one would carry two different formats.
-                    "conversationId": build_global_id(AI_CONVERSATION_NODE_NAME, conversation.id),
-                    "toolCallsCount": tool_calls_count,
-                    "frontendActions": frontend_actions if frontend_actions else None,
-                }
-                cls._process_response({
-                    "content": accumulated_content,
-                    "conversation_id": conversation.id,
-                    "tool_calls_count": tool_calls_count,
-                    "tool_results": tool_results,
-                    "frontend_actions": frontend_actions if frontend_actions else None,
-                })
-                await cls.maybe_enqueue_compaction(conversation, session, last_usage)
-                yield _format_sse("done", result)
-                return
+                    yield _format_sse("tool_start", {"name": tool_name, "arguments": tool_args_str})
 
-            # Tool calls detected — execute them
-            tool_calls_count += len(finalized_tool_calls)
-
-            # Save assistant message with tool calls
-            assistant_msg = {
-                "role": "assistant",
-                "content": accumulated_content,
-                "tool_calls": finalized_tool_calls,
-            }
-            messages.append(assistant_msg)
-
-            await message_service.create(
-                session,
-                conversation_id=conversation.id,
-                role=AIMessageRole.ASSISTANT.value,
-                content=accumulated_content,
-                tool_calls=finalized_tool_calls,
-                provider=last_provider,
-                model=last_model,
-                latency_ms=latency_ms,
-                **cls._usage_fields(last_usage),
-            )
-
-            # Execute each tool
-            for tool_call in finalized_tool_calls:
-                tool_name = tool_call.get("function", {}).get("name", "")
-                tool_args_str = tool_call.get("function", {}).get("arguments", "{}")
-                tool_call_id = tool_call.get("id", "")
-
-                yield _format_sse("tool_start", {"name": tool_name, "arguments": tool_args_str})
-
-                try:
-                    tool_args = json.loads(tool_args_str) if isinstance(tool_args_str, str) else tool_args_str
-                    result = await executor.execute(
-                        tool_name=tool_name,
-                        arguments=tool_args,
-                        context=cls._tool_context(session, info, conversation),
-                    )
-                    tool_results.append({
-                        "tool_name": tool_name,
-                        "result": str(result),
-                        "success": True,
-                    })
-
-                    yield _format_sse("tool_result", {
-                        "name": tool_name,
-                        "result": result if isinstance(result, dict) else {"result": str(result)},
-                        "success": True,
-                    })
-
-                    tool_msg = {
-                        "role": "tool",
-                        "tool_call_id": tool_call_id,
-                        "content": json.dumps(result) if not isinstance(result, str) else result,
-                    }
-                    messages.append(tool_msg)
-
-                    await message_service.add_tool_result(
-                        conversation.id, tool_call_id,
-                        result if isinstance(result, dict) else {"result": result},
-                        session,
-                    )
-
-                except Exception as e:
-                    logger.error(f"Tool '{tool_name}' execution failed: {e}")
-                    safe_error_msg = f"Tool '{tool_name}' failed to execute."
-                    tool_results.append({
-                        "tool_name": tool_name,
-                        "result": safe_error_msg,
-                        "success": False,
-                    })
-
-                    yield _format_sse("tool_result", {
-                        "name": tool_name,
-                        "result": {"error": safe_error_msg},
-                        "success": False,
-                    })
-
-                    messages.append({
-                        "role": "tool",
-                        "tool_call_id": tool_call_id,
-                        "content": json.dumps({"error": safe_error_msg}),
-                    })
-
-                    # Save error to DB (protected to avoid cascade failure)
                     try:
+                        tool_args = json.loads(tool_args_str) if isinstance(tool_args_str, str) else tool_args_str
+                        result = await executor.execute(
+                            tool_name=tool_name,
+                            arguments=tool_args,
+                            context=cls._tool_context(session, info, conversation),
+                        )
+                        tool_results.append({
+                            "tool_name": tool_name,
+                            "result": str(result),
+                            "success": True,
+                        })
+
+                        yield _format_sse("tool_result", {
+                            "name": tool_name,
+                            "result": result if isinstance(result, dict) else {"result": str(result)},
+                            "success": True,
+                        })
+
+                        tool_msg = {
+                            "role": "tool",
+                            "tool_call_id": tool_call_id,
+                            "content": json.dumps(result) if not isinstance(result, str) else result,
+                        }
+                        messages.append(tool_msg)
+
                         await message_service.add_tool_result(
                             conversation.id, tool_call_id,
-                            {"error": safe_error_msg}, session,
+                            result if isinstance(result, dict) else {"result": result},
+                            session,
                         )
-                    except Exception as db_err:
-                        logger.error(f"Failed to save tool error to DB: {db_err}")
 
-        # Max iterations reached
-        yield _format_sse("error", {
-            "message": "Maximum tool iterations reached.",
-            "code": "MAX_ITERATIONS",
-        })
+                    except Exception as e:
+                        logger.error(f"Tool '{tool_name}' execution failed: {e}")
+                        safe_error_msg = f"Tool '{tool_name}' failed to execute."
+                        tool_results.append({
+                            "tool_name": tool_name,
+                            "result": safe_error_msg,
+                            "success": False,
+                        })
+
+                        yield _format_sse("tool_result", {
+                            "name": tool_name,
+                            "result": {"error": safe_error_msg},
+                            "success": False,
+                        })
+
+                        messages.append({
+                            "role": "tool",
+                            "tool_call_id": tool_call_id,
+                            "content": json.dumps({"error": safe_error_msg}),
+                        })
+
+                        # Save error to DB (protected to avoid cascade failure)
+                        try:
+                            await message_service.add_tool_result(
+                                conversation.id, tool_call_id,
+                                {"error": safe_error_msg}, session,
+                            )
+                        except Exception as db_err:
+                            logger.error(f"Failed to save tool error to DB: {db_err}")
+
+            # Max iterations reached
+            yield _format_sse("error", {
+                "message": "Maximum tool iterations reached.",
+                "code": "MAX_ITERATIONS",
+            })
+
+        finally:
+            # The client may be gone mid-answer: a voice still synthesizing to a
+            # dead stream is a leaked worker, not a feature. finish() is the happy
+            # path's own closer; abort() is safe to call when it already ran.
+            if voice_pipeline is not None:
+                await voice_pipeline.abort()
 
 
 # ========== Streaming Helpers ==========

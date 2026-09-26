@@ -38,6 +38,81 @@ project changes.
   values and `anyOf` / `oneOf` unions; tuples (`prefixItems`) and `allOf` are
   not checked.
 
+## Dynamic context (stable / volatile hooks)
+
+Two consumer hooks shape what the model knows about the session state:
+
+- `_get_stable_context` — cacheable, byte-deterministic, injected BEFORE the
+  page prompt (the prompt-cache breakpoint sits after it).
+- `_get_volatile_context` — non-cacheable, re-sent in full every turn
+  (current date, focus record...). Keep it small by design.
+
+The page's URL params are NOT the consumer's to render: the base emits them
+generically as a JSON segment (`_page_params_context`) ahead of the consumer's
+prose, via `_composed_volatile_context` — an override cannot lose them. Only
+what the URL carries is shown (an absent key is the page's documented default),
+and each key's MEANING lives in the page prompt — an undocumented key is
+unreadable to the model. A consumer that renders the params itself duplicates
+the base.
+
+## Page params are declared in the routes manifest
+
+The params are the only part of the system prompt the CLIENT controls. A param
+arriving as free prose reaches the model among its instructions, and a crafted
+deep link sent to another user runs with THAT user's privileges. So the boundary
+is a declaration, not a filter: **each page declares its params under the route's
+`params` key, and only what matches a declaration is rendered.**
+
+```json
+{
+  "name": "dossierDetail",
+  "path": "/dossiers/:id",
+  "webservices": ["dossierById"],
+  "params": {
+    "dossierId": {"type": "global_id"},
+    "statuses":  {"type": "enum", "values": ["draft", "sent", "paid"], "multiple": true},
+    "since":     {"type": "date"},
+    "search":    {"type": "text", "max_length": 80}
+  }
+}
+```
+
+| Type | Accepts |
+|------|---------|
+| `global_id` | a Relay GlobalID, unchanged — the rule for entity refs |
+| `uuid` | a raw uuid, normalised. Legacy front routes only; `global_id` is the rule |
+| `int` | an integer, or the digits a URL carries as a string |
+| `bool` | a boolean, or `"true"` / `"false"` / `"1"` / `"0"` |
+| `date` | an ISO date, normalised to `YYYY-MM-DD` |
+| `enum` | one of `values`, exactly. No `values` → accepts nothing |
+| `text` | free text up to `max_length`. **No default cap**: no `max_length` → accepts nothing |
+
+`"multiple": true` on any type takes a list instead of a scalar, capped by
+`max_items` (framework default 50). One invalid item invalidates the whole list —
+a silently shortened filter would read to the model as a narrower selection than
+the user's screen shows.
+
+RULES:
+
+- **Fails closed, everywhere.** No `params` on the route, an undeclared key, an
+  unknown type, a value that does not parse: nothing is rendered. A page that
+  forgets its declaration loses the segment and says so in the logs
+  (`[PageParams]`) — it never falls back to sending raw client input.
+- **Prefer a closed type.** `global_id`, `enum`, `date`, `int`, `bool` are
+  structurally incapable of carrying prose. `text` is the only opening, and it
+  costs an explicit cap — declare it only for a genuine free-text control
+  (a search box), sized to what the page produces.
+- **Never widen the declaration to make a param appear.** A param the model needs
+  but that does not fit a closed type is a signal the value belongs in a tool
+  result, not in the prompt.
+- **The `## Page params` header is not configurable.** It frames the segment as
+  data, not instructions: a safety control, not a voice choice. `json.dumps`
+  keeps every value inside its own JSON string, so a value cannot forge a section
+  heading of its own.
+- The declaration bounds what the model READS. What a tool DOES with a param is
+  the webservice's permission chain — an injection cannot exceed the connected
+  user's own rights, and mutations still pass `CONFIRM_ACTION_TOOL`.
+
 ## Conversation search (`search_conversation`)
 
 Past the compaction threshold the older turns leave the prompt and survive only as the
@@ -130,6 +205,10 @@ RULES:
 - **R2 — Errors belong to the model.** A tool naming something that does not
   exist is a miss the model can act on, not an incident: return it, do not
   raise through the turn.
+- **R3 — Entity id arguments are GlobalIDs.** The ids a handler receives are
+  the opaque GlobalIDs the tool results and the page context carry (see
+  `rules.md` — "Entity ids at the API boundary"). Validate them at the handler
+  entry and return an error dict on a raw uuid — never wrap, never rewrite.
 
 ### Whiteboard app (`lys.apps.ai_whiteboard`)
 

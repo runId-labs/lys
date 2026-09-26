@@ -301,6 +301,86 @@ class AIProvider(ABC):
         """Synchronous version of :meth:`transcribe` for Celery workers."""
         raise NotImplementedError(f"{self.name} provider does not support transcription")
 
+    # ========== Synthesis (text-to-speech) ==========
+
+    async def synthesize(
+        self,
+        text: str,
+        config: AIEndpointConfig,
+        voice: str,
+        response_format: str = "mp3",
+    ) -> bytes:
+        """
+        Synthesize text into speech audio.
+
+        Optional capability, like transcription: a provider that does not
+        synthesize raises NotImplementedError, so a caller can tell "this
+        provider cannot" from "this text has no audio".
+
+        ``voice`` is explicit rather than defaulted: the Mistral speech API
+        rejects a request without one ("Either ref_audio or voice must be
+        provided"), so the endpoint configuration owns the default (its
+        ``options["voice"]``) and the caller resolves it — the provider never
+        guesses a voice.
+
+        Args:
+            text: The text to speak.
+            config: Endpoint configuration (carries api_key, base_url, model).
+            voice: Voice identifier (provider slug or saved-voice UUID).
+            response_format: Audio container ("mp3", "wav", "flac", "opus").
+
+        Returns:
+            The audio bytes in the requested format.
+
+        Raises:
+            NotImplementedError: If the provider does not support synthesis.
+        """
+        raise NotImplementedError(f"{self.name} provider does not support speech synthesis")
+
+    def synthesize_sync(
+        self,
+        text: str,
+        config: AIEndpointConfig,
+        voice: str,
+        response_format: str = "mp3",
+    ) -> bytes:
+        """Synchronous version of :meth:`synthesize` for Celery workers."""
+        raise NotImplementedError(f"{self.name} provider does not support speech synthesis")
+
+    async def synthesize_stream(
+        self,
+        text: str,
+        config: AIEndpointConfig,
+        voice: str,
+    ) -> AsyncGenerator[bytes, None]:
+        """
+        Stream speech synthesis as raw PCM audio chunks.
+
+        The streaming counterpart of :meth:`synthesize`: instead of one
+        buffered container, the provider yields audio as it is produced —
+        the caller plays the chunks while the rest is still generating.
+        The chunks are raw float32 LE PCM samples; the sample rate is the
+        provider's (Mistral: 24 kHz), not negotiated here.
+
+        Like the other optional capabilities, a provider that does not
+        stream synthesis raises NotImplementedError — surfaced on the first
+        chunk, so a fallback chain learns it at iteration time.
+
+        Args:
+            text: The text to speak.
+            config: Endpoint configuration (carries api_key, base_url, model).
+            voice: Voice identifier (provider slug or saved-voice UUID).
+
+        Yields:
+            Raw PCM audio bytes, in generation order.
+
+        Raises:
+            NotImplementedError: If the provider does not support streaming
+                synthesis — on the first iteration.
+        """
+        raise NotImplementedError(f"{self.name} provider does not support streaming speech synthesis")
+        yield b""  # pragma: no cover — makes this an async generator
+
     # ========== Helpers ==========
 
     def get_base_url(self, config: AIEndpointConfig) -> str:

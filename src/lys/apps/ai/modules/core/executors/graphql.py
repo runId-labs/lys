@@ -4,7 +4,6 @@ GraphQL Tool Executor.
 Executes tools via GraphQL calls to Apollo Gateway (microservice mode).
 """
 
-import base64
 import inspect
 import logging
 from typing import Dict, Any, List, Optional
@@ -12,10 +11,32 @@ from typing import Dict, Any, List, Optional
 import httpx
 
 from lys.apps.ai.modules.core.executors.abstracts import ToolExecutor
-from lys.core.graphql.client import GraphQLClient
+from lys.core.graphql.client import GraphQLClient, decode_global_id
 from lys.core.utils.strings import to_camel_case, to_snake_case
 
 logger = logging.getLogger(__name__)
+
+# Message returned to the LLM when an id argument is not a GlobalID. The model
+# cannot guess the encoding: point it back at the ids a tool result or the page
+# context already carry, so it copies one instead of fabricating one.
+_INVALID_GLOBAL_ID_MESSAGE = (
+    "'{param_name}' must be an entity GlobalID exactly as a previous tool result "
+    "or the page context returned it (the opaque base64 id of a 'TypeName:uuid' "
+    "Relay id). A raw uuid or an altered id is not accepted. Re-read the id from "
+    "a tool result and pass it unchanged."
+)
+
+
+class GlobalIDFormatError(Exception):
+    """
+    A tool argument that must be an entity GlobalID is not one.
+
+    Raised by the executor instead of silently wrapping a raw uuid with a type
+    prefix guessed from the parameter name: that coercion turned a wrong id
+    into a wrong-but-valid one (a company id passed as a client id reads back
+    as an empty result instead of an error). The message is LLM-actionable —
+    the model can recover by re-reading the id from a tool result.
+    """
 
 
 class GraphQLToolExecutor(ToolExecutor):
@@ -240,15 +261,24 @@ class GraphQLToolExecutor(ToolExecutor):
         # Build GraphQL operation
         node_type = gql_meta.get("node_type")
         input_wrappers = gql_meta.get("input_wrappers")
-        query, variables = self._build_operation(
-            operation_type=operation_type,
-            operation_name=operation_name,
-            arguments=arguments,
-            return_fields=return_fields,
-            properties=properties,
-            node_type=node_type,
-            input_wrappers=input_wrappers,
-        )
+        try:
+            query, variables = self._build_operation(
+                operation_type=operation_type,
+                operation_name=operation_name,
+                arguments=arguments,
+                return_fields=return_fields,
+                properties=properties,
+                node_type=node_type,
+                input_wrappers=input_wrappers,
+            )
+        except GlobalIDFormatError as exc:
+            # An id the model passed is not a GlobalID: a miss the model can act
+            # on (re-read the id from a tool result), not an incident.
+            logger.warning(f"Tool '{tool_name}' rejected a non-GlobalID id: {exc}")
+            return {
+                "status": "error",
+                "message": str(exc),
+            }
 
         logger.info(f"Executing tool {tool_name} via GraphQL: {operation_name}")
         logger.debug(f"Query: {query}")
@@ -323,7 +353,7 @@ class GraphQLToolExecutor(ToolExecutor):
             prop_schema = properties.get(key, {})
             graphql_type = prop_schema.get("_graphql_type", "")
 
-            # Convert raw UUIDs to GlobalID for ID! types
+            # Validate entity ids (ID!-typed args must be GlobalIDs)
             if "ID" in graphql_type and isinstance(value, str):
                 value = self._to_global_id(key, value, node_type)
 
@@ -352,7 +382,6 @@ class GraphQLToolExecutor(ToolExecutor):
                         graphql_type = prop_schema.get("_graphql_type", "")
                         if "ID" in graphql_type and isinstance(value, str):
                             value = self._to_global_id(field_name, value, node_type)
-
                         input_obj[camel_field] = value
 
                 if input_obj:
@@ -459,42 +488,40 @@ class GraphQLToolExecutor(ToolExecutor):
 
     def _to_global_id(self, param_name: str, value: str, node_type: str = None) -> str:
         """
-        Convert a raw UUID to Relay GlobalID format (base64 encoded).
+        Validate that an id argument is an entity GlobalID, and return it unchanged.
 
-        If the value is already a valid GlobalID, returns it unchanged.
+        Entity ids crossing the tool boundary are typed GlobalIDs (base64
+        "TypeName:uuid") — the ids the tool results and the page context already
+        carry. A raw uuid is NOT accepted: the id's type is part of its meaning,
+        and wrapping a raw uuid with a type prefix guessed from the parameter
+        name fabricates an id the caller never had (observed: a company uuid
+        passed as ``client_id`` wrapped as ``ClientNode:<company uuid>`` and read
+        back as an empty result, with no error to recover from).
+
+        The node type is a transport concern only. Whether a well-formed id
+        refers to the right KIND of entity is a semantic question the called
+        webservice answers (existence check, permission check) — not something
+        this executor can decide from a parameter name.
 
         Args:
-            param_name: Parameter name (e.g., "id", "user_id")
-            value: Raw UUID string or existing GlobalID
-            node_type: GraphQL node type name (e.g., "UserNode")
+            param_name: Parameter name (e.g., "client_id") — used in the error
+                message so the model knows which argument to fix
+            value: Argument value
+            node_type: Kept for signature compatibility; deliberately unused
+                (it is the tool's RETURN type, which says nothing about the
+                parameter's expected type)
 
         Returns:
-            Base64 encoded GlobalID string
+            The GlobalID, unchanged
+
+        Raises:
+            GlobalIDFormatError: value is not a well-formed GlobalID
         """
-        # Check if value is already a GlobalID (base64 encoded TypeName:uuid)
-        try:
-            decoded = base64.b64decode(value).decode()
-            if ":" in decoded and "Node" in decoded:
-                # Already a valid GlobalID, return as-is
-                logger.debug(f"Value {param_name}={value} is already a GlobalID, skipping encoding")
-                return value
-        except Exception:
-            # Not a valid base64 string, proceed with encoding
-            pass
-
-        type_name = node_type
-        if not type_name:
-            # Fallback: derive from param name (e.g., "user_id" -> "UserNode")
-            base_name = param_name.replace("_id", "") if param_name != "id" else "unknown"
-            parts = base_name.split("_")
-            pascal_name = "".join(part.capitalize() for part in parts)
-            type_name = f"{pascal_name}Node"
-
-        # Encode as GlobalID: base64("TypeName:uuid")
-        global_id_str = f"{type_name}:{value}"
-        encoded = base64.b64encode(global_id_str.encode()).decode()
-        logger.debug(f"Converted {param_name}={value} to GlobalID({type_name}): {encoded}")
-        return encoded
+        if decode_global_id(value) is None:
+            raise GlobalIDFormatError(
+                _INVALID_GLOBAL_ID_MESSAGE.format(param_name=param_name)
+            )
+        return value
 
     def _handle_navigate(self, arguments: Dict[str, Any], context: Dict[str, Any]) -> Dict[str, Any]:
         """Handle navigate frontend passthrough tool."""
