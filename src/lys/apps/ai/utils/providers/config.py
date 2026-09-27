@@ -8,6 +8,7 @@ supporting purpose-based configuration with API key resolution.
 from dataclasses import dataclass, field, replace as dataclass_replace
 from typing import Optional, Dict, Any
 
+from lys.apps.ai.utils.prompts import framework_default_system_prompt
 from lys.apps.ai.utils.providers.exceptions import AIPurposeNotFoundError
 
 
@@ -182,7 +183,13 @@ def parse_plugin_config(plugin_config: Dict[str, Any]) -> AIConfig:
             api_key=cfg.get("api_key"),
             base_url=cfg.get("base_url"),
             timeout=cfg.get("timeout", 30),
-            system_prompt=cfg.get("system_prompt"),
+            # The configured prompt first, the framework's own default second: a
+            # purpose lys drives itself must not depend on the consumer having
+            # copied its instructions into settings. Applied HERE, where config
+            # becomes an endpoint, so everything downstream sees the prompt that
+            # will really be used — including the boot-time versioning, which
+            # skips an endpoint carrying no prompt.
+            system_prompt=cfg.get("system_prompt") or framework_default_system_prompt(purpose),
             options=cfg.get("options", {}),
             fallback=fallback,
         )

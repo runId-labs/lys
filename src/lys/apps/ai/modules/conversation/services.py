@@ -59,6 +59,7 @@ from lys.apps.ai.modules.core.services import AIToolService
 from lys.apps.ai.tasks import generate_conversation_title, summarize_conversation
 from lys.apps.ai.utils.guardrails import CONFIRM_ACTION_TOOL
 from lys.apps.ai.utils.page_params import PAGE_PARAMS_HEADER, validate_page_params
+from lys.apps.ai.utils.sse import format_sse
 from lys.apps.ai.utils.providers.exceptions import AIPurposeNotFoundError, AIError
 from lys.apps.ai.utils.search import (
     DEFAULT_TEXT_SEARCH_CONFIG,
@@ -2005,9 +2006,9 @@ class AIConversationService(EntityService[AIConversation]):
                 if kind == "voice":
                     if voice_pipeline is not None:
                         voice_pipeline.feed(piece)
-                    events.append(_format_sse("voice_token", {"content": piece}))
+                    events.append(format_sse("voice_token", {"content": piece}))
                 else:
-                    events.append(_format_sse("token", {"content": piece}))
+                    events.append(format_sse("token", {"content": piece}))
             return events
 
         try:
@@ -2036,11 +2037,11 @@ class AIConversationService(EntityService[AIConversation]):
                         # prompt may forbid showing, so it stays behind chatbot.expose_reasoning.
                         if chunk.reasoning:
                             reasoning_characters += len(chunk.reasoning)
-                            yield _format_sse(
+                            yield format_sse(
                                 "reasoning_progress", {"characters": reasoning_characters}
                             )
                             if expose_reasoning:
-                                yield _format_sse("reasoning", {"content": chunk.reasoning})
+                                yield format_sse("reasoning", {"content": chunk.reasoning})
 
                         if chunk.content:
                             accumulated_content += chunk.content
@@ -2052,7 +2053,7 @@ class AIConversationService(EntityService[AIConversation]):
                                 for voice_event in _route_spoken_pieces(spoken_splitter.feed(chunk.content)):
                                     yield voice_event
                             else:
-                                yield _format_sse("token", {"content": chunk.content})
+                                yield format_sse("token", {"content": chunk.content})
                             # Audio produced while the tokens were streaming comes
                             # out right away: the voice must not lag behind the
                             # text it belongs to.
@@ -2081,7 +2082,7 @@ class AIConversationService(EntityService[AIConversation]):
                             await message_service.delete(user_message_id, session)
                         except Exception as del_err:
                             logger.error(f"Failed to delete orphaned user message {user_message_id}: {del_err}")
-                    yield _format_sse("error", {
+                    yield format_sse("error", {
                         "message": "An error occurred while generating the response.",
                         "code": "PROVIDER_ERROR",
                     })
@@ -2147,7 +2148,7 @@ class AIConversationService(EntityService[AIConversation]):
                         "frontend_actions": frontend_actions if frontend_actions else None,
                     })
                     await cls.maybe_enqueue_compaction(conversation, session, last_usage)
-                    yield _format_sse("done", result)
+                    yield format_sse("done", result)
 
                     if voice_pipeline is not None:
                         # Drift: the voice was asked for and the final answer
@@ -2215,7 +2216,7 @@ class AIConversationService(EntityService[AIConversation]):
                     tool_args_str = tool_call.get("function", {}).get("arguments", "{}")
                     tool_call_id = tool_call.get("id", "")
 
-                    yield _format_sse("tool_start", {"name": tool_name, "arguments": tool_args_str})
+                    yield format_sse("tool_start", {"name": tool_name, "arguments": tool_args_str})
 
                     try:
                         tool_args = json.loads(tool_args_str) if isinstance(tool_args_str, str) else tool_args_str
@@ -2230,7 +2231,7 @@ class AIConversationService(EntityService[AIConversation]):
                             "success": True,
                         })
 
-                        yield _format_sse("tool_result", {
+                        yield format_sse("tool_result", {
                             "name": tool_name,
                             "result": result if isinstance(result, dict) else {"result": str(result)},
                             "success": True,
@@ -2258,7 +2259,7 @@ class AIConversationService(EntityService[AIConversation]):
                             "success": False,
                         })
 
-                        yield _format_sse("tool_result", {
+                        yield format_sse("tool_result", {
                             "name": tool_name,
                             "result": {"error": safe_error_msg},
                             "success": False,
@@ -2280,7 +2281,7 @@ class AIConversationService(EntityService[AIConversation]):
                             logger.error(f"Failed to save tool error to DB: {db_err}")
 
             # Max iterations reached
-            yield _format_sse("error", {
+            yield format_sse("error", {
                 "message": "Maximum tool iterations reached.",
                 "code": "MAX_ITERATIONS",
             })
@@ -2310,11 +2311,6 @@ class _StreamingInfo:
 
     def __init__(self, connected_user: Dict[str, Any], access_token: str):
         self.context = _StreamingContext(connected_user, access_token)
-
-
-def _format_sse(event: str, data: Any) -> str:
-    """Format an SSE event string."""
-    return f"event: {event}\ndata: {json.dumps(data)}\n\n"
 
 
 def _accumulate_tool_calls(accumulator: Dict[int, Dict[str, Any]], deltas: List[Dict[str, Any]]) -> None:

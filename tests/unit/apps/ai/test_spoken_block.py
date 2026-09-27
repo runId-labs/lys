@@ -34,10 +34,10 @@ def renditions(splits: list[str]) -> tuple[str, str]:
 
 def test_disabled_config_leaves_the_answer_whole():
     config = SpokenBlockConfig.from_plugin_config({})
-    written, spoken = split_spoken_blocks("[VOICE]Bonjour tout le monde[/VOICE] Écrit.", config)
+    written, spoken = split_spoken_blocks("[VOICE]Hello everyone[/VOICE] Written.", config)
 
     assert config.enabled is False
-    assert written == "[VOICE]Bonjour tout le monde[/VOICE] Écrit."
+    assert written == "[VOICE]Hello everyone[/VOICE] Written."
     assert spoken is None
 
 
@@ -106,48 +106,88 @@ def test_two_blocks_are_joined_in_the_spoken_side():
 
 def test_custom_tags_are_honored():
     config = SpokenBlockConfig(enabled=True, open_tag="<say>", close_tag="</say>")
-    written, spoken = split_spoken_blocks("Texte <say>Parlé</say> Suite.", config)
+    written, spoken = split_spoken_blocks("Text <say>Spoken</say> More.", config)
 
-    assert " ".join(written.split()) == "Texte Suite."
-    assert spoken == "Parlé"
+    assert " ".join(written.split()) == "Text More."
+    assert spoken == "Spoken"
 
 
 def test_the_fallback_stripper_removes_what_a_voice_cannot_read():
     stripped = strip_markdown_for_speech(
-        "### Titre\n\nLe solde est de **622 342 €** et `croît`.\n\n"
-        "| Société | Trésorerie |\n|---|---|\n| A | 8 k€ |\n| B | 107 k€ |\n\n"
-        "- premier point\n- deuxième point\n1. numéroté"
+        "### Heading\n\nThe balance is **622,342 EUR** and `rising`.\n\n"
+        "| Company | Cash |\n|---|---|\n| A | 8k |\n| B | 107k |\n\n"
+        "- first point\n- second point\n1. numbered"
     )
 
     assert "###" not in stripped
     assert "**" not in stripped
     assert "`" not in stripped
     assert "|" not in stripped
-    assert stripped.startswith("Titre")
-    assert "A · 8 k€" in stripped  # a table read aloud is a list, not a grid
+    assert stripped.startswith("Heading")
+    assert "A · 8k" in stripped  # a table read aloud is a list, not a grid
     assert "- " not in stripped
     assert "1. " not in stripped
-    assert "622 342 €" in stripped  # the figures survive, only the marks go
+    assert "622,342 EUR" in stripped  # the figures survive, only the marks go
+
+
+def test_the_fallback_stripper_drops_link_urls_and_keeps_their_text():
+    """A URL read aloud is noise; the text around it is the information."""
+    stripped = strip_markdown_for_speech(
+        "See [the Q3 report](https://example.com/reports?id=42) and "
+        "![the cash chart](https://example.com/chart.png) below.\n"
+        "Docs at <https://example.com/docs>."
+    )
+
+    assert stripped == (
+        "See the Q3 report and the cash chart below.\n"
+        "Docs at https://example.com/docs."
+    )
+
+
+def test_the_fallback_stripper_removes_single_mark_emphasis():
+    stripped = strip_markdown_for_speech("An *important* point and _another_ one, ~~not this~~.")
+
+    assert stripped == "An important point and another one, not this."
+
+
+def test_the_fallback_stripper_keeps_snake_case_identifiers_whole():
+    """The underscore form of emphasis must not eat the middle of an identifier."""
+    stripped = strip_markdown_for_speech("The user_id_value column and _this emphasis_.")
+
+    assert stripped == "The user_id_value column and this emphasis."
+
+
+def test_the_fallback_stripper_removes_blockquote_markers():
+    stripped = strip_markdown_for_speech("> A quoted warning.\n> Second quoted line.")
+
+    assert stripped == "A quoted warning.\nSecond quoted line."
+
+
+def test_the_fallback_stripper_keeps_a_bare_url():
+    """Stripping marks is not dropping content: a bare URL is what the answer said."""
+    stripped = strip_markdown_for_speech("The endpoint is https://example.com/v1 today.")
+
+    assert stripped == "The endpoint is https://example.com/v1 today."
 
 
 def test_the_fallback_reading_keeps_only_the_opening_sentences():
     """Drift must not turn into a two-minute reading of the whole answer."""
     opening = spoken_fallback_opening(
-        "Premier point, le verdict. Deuxième phrase utile.\n"
-        "Troisième phrase encore. Une quatrième utile aussi. Une cinquième qui passe.\n"
-        "Une sixième déjà trop. Et un paragraphe entier que personne n'écoutera."
+        "First, the verdict. A second useful sentence.\n"
+        "A third one still. A fourth one, useful too. A fifth one that makes it.\n"
+        "A sixth one already too many. And a whole paragraph nobody will listen to."
     )
 
     assert opening == (
-        "Premier point, le verdict. Deuxième phrase utile. "
-        "Troisième phrase encore. Une quatrième utile aussi. Une cinquième qui passe."
+        "First, the verdict. A second useful sentence. "
+        "A third one still. A fourth one, useful too. A fifth one that makes it."
     )
 
 
 def test_the_fallback_reading_of_a_short_answer_is_whole():
-    opening = spoken_fallback_opening("Une seule phrase courte")
+    opening = spoken_fallback_opening("One short sentence only")
 
-    assert opening == "Une seule phrase courte"
+    assert opening == "One short sentence only"
 
 
 @pytest.mark.asyncio

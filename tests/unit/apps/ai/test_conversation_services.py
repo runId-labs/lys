@@ -602,13 +602,13 @@ class TestPageParamsContext:
 
 
 class TestFormatSSE:
-    """Tests for _format_sse helper."""
+    """Tests for the shared SSE formatter."""
 
     def test_format_sse_basic(self):
         """Test SSE formatting with simple data."""
-        from lys.apps.ai.modules.conversation.services import _format_sse
+        from lys.apps.ai.utils.sse import format_sse
 
-        result = _format_sse("token", {"content": "hello"})
+        result = format_sse("token", {"content": "hello"})
 
         assert result.startswith("event: token\n")
         assert "data: " in result
@@ -618,9 +618,9 @@ class TestFormatSSE:
 
     def test_format_sse_error_event(self):
         """Test SSE formatting for error events."""
-        from lys.apps.ai.modules.conversation.services import _format_sse
+        from lys.apps.ai.utils.sse import format_sse
 
-        result = _format_sse("error", {"message": "Something failed", "code": "ERR"})
+        result = format_sse("error", {"message": "Something failed", "code": "ERR"})
 
         assert "event: error\n" in result
         data = json.loads(result.split("data: ")[1].strip())
@@ -629,9 +629,9 @@ class TestFormatSSE:
 
     def test_format_sse_done_event(self):
         """Test SSE formatting for done events."""
-        from lys.apps.ai.modules.conversation.services import _format_sse
+        from lys.apps.ai.utils.sse import format_sse
 
-        result = _format_sse("done", {"conversationId": "conv-1"})
+        result = format_sse("done", {"conversationId": "conv-1"})
 
         assert "event: done\n" in result
         data = json.loads(result.split("data: ")[1].strip())

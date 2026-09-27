@@ -155,6 +155,58 @@ argument wins over the option). A 200 response without a `text` key
 transcribes to `""` — the same result as silence, and guessing between the
 two would invent an error.
 
+## Speech synthesis and the spoken blocks
+
+`AIService.synthesize(text, config, voice, response_format="mp3")` (plus
+`synthesize_sync` and `synthesize_stream`, which yields raw PCM) is an optional
+provider capability like transcription: the fallback chain walks on
+`NotImplementedError`. The `voice` argument is never defaulted — the Mistral
+speech API rejects a request without one — so the caller resolves it from the
+endpoint's `options["voice"]`. `synthesize_stream` does NOT retry a provider that
+already yielded a chunk: the caller has played that audio, and restarting the
+sentence elsewhere would splice two voices mid-word.
+
+An answer can carry two renditions of itself: the written one shown in the chat,
+and a spoken one for a voice. The convention is configuration, not code:
+
+```python
+"ai": {
+    "chatbot": {
+        "spoken_block": {
+            "enabled": True,          # absent or False = the feature does not exist
+            "open_tag": "[VOICE]",    # optional
+            "close_tag": "[/VOICE]",  # optional
+            "prompt": "...",          # optional, replaces the framework instructions
+        },
+    },
+    "tts": {"provider": "mistral", "model": "...", "options": {"voice": "Nova"}},
+    "spoken_repair": {"provider": "mistral", "model": "..."},
+}
+```
+
+RULES:
+
+- **The tags never reach a client or a row.** `AIMessage.content` holds the
+  written rendition, `spoken_content` the spoken one, and the tags neither — so
+  history, search and compaction never see them and the model is never fed its
+  own spoken text on a later turn. `spoken_content` is NULL when the model wrote
+  no block: that is the drift signal, not an empty string.
+- **`voice=True` on `chat_with_tools_streaming` is per turn and stateless.** The
+  server keeps no voice session. A voice the deployment cannot serve
+  (no `tts` purpose, no resolvable API key, no voice in its `options`) is dropped
+  and logged — no `voice` event is emitted and the text stream never fails.
+  `voice` events may arrive AFTER `done`: the text is complete, the reading is not.
+- **Drift is repaired, never muted.** An answer carrying no block goes through the
+  `spoken_repair` purpose to regenerate its spoken rendition; if that call fails,
+  the sanitized OPENING of the written answer is read (five sentences), never the
+  whole of it and never raw markdown.
+- **`spoken_repair` has a framework default prompt.** It is the one purpose whose
+  instructions lys owns (`lys.apps.ai.utils.prompts`), applied while the plugin
+  config is parsed, so an app that configures the purpose without a
+  `system_prompt` still gets working instructions — and the default is versioned
+  in `ai_prompt_version` like any other. Configure a `system_prompt` on the
+  endpoint to override it.
+
 ## Exposing a webservice as a chatbot TOOL
 
 Any `lys_getter` / `lys_connection` / `lys_creation` query can become a tool

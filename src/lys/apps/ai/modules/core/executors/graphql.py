@@ -576,7 +576,7 @@ class GraphQLToolExecutor(ToolExecutor):
                 "status": "confirmation_required",
                 "action_id": action_id,
                 "preview": {"path": path, "page_name": route_name},
-                "message": f"Voulez-vous naviguer vers {route_name} pour effectuer cette action ?"
+                "message": f"Navigate to {route_name} to perform this action?"
             }
 
         # Direct navigation (explicit request) - no confirmation needed

@@ -19,11 +19,12 @@ Pure blocks only, no provider and no socket: unit-testable without a TTS key.
 
 import asyncio
 import base64
-import json
 import logging
 import re
 from dataclasses import dataclass
 from typing import AsyncIterator, Callable, Dict, List, Optional, Tuple
+
+from lys.apps.ai.utils.sse import format_sse
 
 logger = logging.getLogger(__name__)
 
@@ -41,8 +42,9 @@ DEFAULT_SPOKEN_BLOCK_CLOSE_TAG = "[/VOICE]"
 DEFAULT_SPOKEN_BLOCK_PROMPT = f"""# Voice output
 
 Your answers are read aloud by a speech synthesizer. EVERY answer — including
-long, structured ones — opens with its spoken rendition wrapped in {DEFAULT_SPOKEN_BLOCK_OPEN_TAG}...{DEFAULT_SPOKEN_BLOCK_CLOSE_TAG} tags.
-An answer without one leaves the reader with silence.
+long, structured ones — opens with its spoken rendition wrapped in
+{DEFAULT_SPOKEN_BLOCK_OPEN_TAG}...{DEFAULT_SPOKEN_BLOCK_CLOSE_TAG} tags. An
+answer without one leaves the reader with silence.
 
 The spoken rendition is the answer FOR THE EAR, and it stands alone: everything
 the written answer establishes that the reader needs — names, figures,
@@ -65,24 +67,9 @@ to re-ask what the written text already said.
 - Outside the tags, write the complete answer as usual: the block carries the
   speech, never replaces the text."""
 
-# The repair instructions used when a turn carried the voice but the model
-# wrote no block — a focused LLM call regenerates what the model skipped.
-# Configurable through the tts endpoint (``tts.options.repair_prompt``): the
-# voice's repair is the voice's business, and an app may want its repair to
-# speak in a persona of its own.
-DEFAULT_SPOKEN_REPAIR_PROMPT = """You turn a written chatbot answer into its spoken rendition, read aloud by a speech synthesizer.
-
-Rewrite the answer below FOR THE EAR:
-- Self-sufficient: everything the answer establishes that the reader needs —
-  names, figures, definitions, warnings — is said aloud. A listener must never
-  have to re-ask what the written text already said.
-- Plain text: no markdown, no bold, no headings, no tables. Short lists are
-  allowed when they genuinely help the ear.
-- Write every number, amount and symbol the way it is spoken, in full words;
-  spell units and symbols out in the answer's language.
-- Conversational, as long as the content needs and no longer.
-
-Output ONLY the spoken text. No tags, no preamble, no quotation marks."""
+# The repair prompt used when the model wrote no block lives in
+# ``lys.apps.ai.utils.prompts``: the config layer applies it as the
+# ``spoken_repair`` endpoint's default system prompt, and cannot import from here.
 
 
 @dataclass(frozen=True)
@@ -206,13 +193,32 @@ def strip_markdown_for_speech(text: str) -> str:
     """
     Reduce a written answer to something a voice can read honestly.
 
-    Headings lose their markers, bold and inline code lose their marks, table
-    rows become "cell · cell · cell" — a table read aloud is a list, not a
-    grid — and list bullets become spoken enumeration.
+    Headings lose their markers, emphasis and inline code lose their marks, a
+    link keeps its text and drops its URL — a URL read aloud is noise, never
+    information — table rows become "cell · cell · cell" (a table read aloud is
+    a list, not a grid) and list bullets become spoken enumeration.
+
+    A bare URL left in the prose is NOT removed: dropping it would silently lose
+    what the answer said, and this function only strips marks, never content.
     """
     stripped = text
+    # Links before emphasis: the text inside a link may itself be emphasized,
+    # and the URL must go before anything else tries to read its punctuation.
+    # The image's alt text is what a listener can be told; its URL is not.
+    stripped = re.sub(r"!\[([^\]]*)\]\([^)]*\)", r"\1", stripped)
+    stripped = re.sub(r"\[([^\]]*)\]\([^)]*\)", r"\1", stripped)
+    # An autolink is a URL wrapped in angle brackets — the brackets are marks.
+    stripped = re.sub(r"<(https?://[^>\s]+)>", r"\1", stripped)
     stripped = re.sub(r"^#{1,6}[ \t]*", "", stripped, flags=re.MULTILINE)
+    # A blockquote marker is a layout cue with no spoken equivalent.
+    stripped = re.sub(r"^[ \t]*>[ \t]?", "", stripped, flags=re.MULTILINE)
+    stripped = re.sub(r"~~(.+?)~~", r"\1", stripped)
     stripped = re.sub(r"\*\*(.+?)\*\*", r"\1", stripped)
+    # Single-mark emphasis, AFTER bold so "**x**" is not read as two italics.
+    # The underscore form requires non-word boundaries: snake_case identifiers
+    # are content, and "user_id_value" must not lose its middle.
+    stripped = re.sub(r"\*([^*\n]+)\*", r"\1", stripped)
+    stripped = re.sub(r"(?<!\w)_([^_\n]+)_(?!\w)", r"\1", stripped)
     stripped = stripped.replace("`", "")
     # Table rows: separator lines out, cell pipes read as pauses. The
     # whitespace classes are HORIZONTAL on purpose — \s would swallow the line
@@ -261,11 +267,6 @@ def spoken_fallback_opening(text: str, max_sentences: int = 5) -> str:
     complete, remainder = split_complete_sentences(text)
     sentences = complete + ([remainder.strip()] if remainder.strip() else [])
     return " ".join(sentence.strip() for sentence in sentences[:max_sentences]).strip()
-
-
-def format_sse(event: str, data: Dict) -> str:
-    """Format one SSE event — the conversation service's wire format."""
-    return f"event: {event}\ndata: {json.dumps(data)}\n\n"
 
 
 def split_complete_sentences(buffer: str) -> Tuple[List[str], str]:
