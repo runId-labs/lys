@@ -87,7 +87,7 @@ _ADD_ITEM = {
                 "arrow: a directed link between two elements named in 'from' and 'to'. "
                 "line: an undirected link, or a plain rule. "
                 "frame: a named zone; put elements in it with their 'frame' field. "
-                "table: a grid, from 'headers' and 'rows'. "
+                "table: a grid, from 'headers' and 'rows' - sized to its content, never pass a width. "
                 "chart: a chart, from 'chart'."
             ),
         },

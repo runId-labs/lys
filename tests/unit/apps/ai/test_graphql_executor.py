@@ -630,6 +630,73 @@ class TestGraphQLToolExecutorSpecialTools:
         assert len(info.context.frontend_actions) == 1
 
     @pytest.mark.asyncio
+    async def test_navigate_with_writable_arrival_params(self, executor):
+        """Arrival filters validated against the TARGET page's schema land in the action."""
+        info = MagicMock()
+        info.context.frontend_actions = []
+        executor._accessible_routes = [{
+            "path": "/decisions",
+            "name": "DecisionTreePage",
+            "params": {"pastMonths": {"type": "int", "writable": True}},
+        }]
+
+        result = executor._handle_navigate(
+            {"path": "/decisions", "params": {"pastMonths": "24"}},
+            {"info": info},
+        )
+
+        assert result["status"] == "navigation_scheduled"
+        action = info.context.frontend_actions[0]
+        assert action["params"] == {"pastMonths": 24}
+
+    @pytest.mark.asyncio
+    async def test_navigate_without_params_carries_none(self, executor):
+        """No params: the action carries no params key — the page opens on its defaults."""
+        info = MagicMock()
+        info.context.frontend_actions = []
+        executor._accessible_routes = [{"path": "/dashboard", "name": "Dashboard"}]
+
+        executor._handle_navigate({"path": "/dashboard"}, {"info": info})
+
+        assert "params" not in info.context.frontend_actions[0]
+
+    @pytest.mark.asyncio
+    async def test_navigate_refuses_readonly_arrival_param(self, executor):
+        """A param the target page declares but not writable is refused, and the
+        navigation does NOT happen: a partial filter set never lands silently."""
+        info = MagicMock()
+        info.context.frontend_actions = []
+        executor._accessible_routes = [{
+            "path": "/decisions",
+            "name": "DecisionTreePage",
+            "params": {"clientId": {"type": "global_id"}},
+        }]
+
+        result = executor._handle_navigate(
+            {"path": "/decisions", "params": {"clientId": "whatever"}},
+            {"info": info},
+        )
+
+        assert result["status"] == "error"
+        assert result["refused"] == {"clientId": "not_writable"}
+        assert info.context.frontend_actions == []
+
+    @pytest.mark.asyncio
+    async def test_navigate_refuses_undeclared_arrival_param(self, executor):
+        info = MagicMock()
+        info.context.frontend_actions = []
+        executor._accessible_routes = [{"path": "/home", "name": "Home"}]
+
+        result = executor._handle_navigate(
+            {"path": "/home", "params": {"anything": 1}},
+            {"info": info},
+        )
+
+        assert result["status"] == "error"
+        assert result["refused"] == {"anything": "undeclared"}
+        assert info.context.frontend_actions == []
+
+    @pytest.mark.asyncio
     async def test_execute_dispatches_to_special_tool(self, executor):
         """Test that execute() dispatches to a special tool handler."""
         info = MagicMock()

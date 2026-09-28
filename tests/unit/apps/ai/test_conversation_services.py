@@ -1782,12 +1782,15 @@ class TestChatWithToolsStreaming:
         assert error_data["code"] == "MAX_ITERATIONS"
 
     @pytest.mark.asyncio
-    async def test_voice_turn_routes_spoken_and_written_renditions(self, mock_session, connected_user):
+    @pytest.mark.asyncio
+    async def test_voice_turn_speaks_the_written_answer(self, mock_session, connected_user):
         """
-        A voice turn splits the renditions on the wire and at persistence:
-        the block's text goes to voice_token and the synthesizer, the written
-        answer to token, the tags to neither, and the persisted row carries
-        the two renditions in their own columns.
+        A voice turn says the WRITTEN answer: the same text streams to the
+        client, is synthesized through the mechanical ear (markdown out,
+        amounts spelled), and persists in content exactly as written — the
+        spoken form is never stored, it is recomputed wherever a voice needs
+        it. No second rendition exists, no voice_token event goes out — the
+        bubble follows the written stream.
         """
         from lys.apps.ai.modules.conversation.services import AIConversationService
         from lys.apps.ai.utils.providers.abstracts import AIStreamChunk
@@ -1798,8 +1801,8 @@ class TestChatWithToolsStreaming:
         mock_msg_service = AsyncMock()
 
         async def fake_stream(*args, **kwargs):
-            yield AIStreamChunk(content="[VOICE]Spoken summary of the answer.[/VOICE]Written ")
-            yield AIStreamChunk(content="answer.", finish_reason="stop", usage={"prompt_tokens": 5, "completion_tokens": 2})
+            yield AIStreamChunk(content="The treasury holds **150 k€** at ")
+            yield AIStreamChunk(content="year end.", finish_reason="stop", usage={"prompt_tokens": 5, "completion_tokens": 2})
 
         synthesized = []
 
@@ -1829,7 +1832,7 @@ class TestChatWithToolsStreaming:
         with patch.object(AIConversationService, "_prepare_chat_context", new_callable=AsyncMock, return_value=ctx), \
              patch.object(
                  AIConversationService.app_manager.settings, "get_plugin_config",
-                 return_value={"chatbot": {"spoken_block": {"enabled": True}}},
+                 return_value={"chatbot": {"spoken_block": {"enabled": True, "language": "fr"}}},
              ):
             async for event in AIConversationService.chat_with_tools_streaming(
                 user_id="user-123", content="Hi", session=mock_session,
@@ -1838,134 +1841,47 @@ class TestChatWithToolsStreaming:
             ):
                 events.append(event)
 
-        # The spoken rendition goes to its own event kind, the written one to
-        # token — and the tags exist in neither wire. The written tokens are
-        # JOINED before asserting: the splitter releases pieces at safe
-        # boundaries, a word can span two of them.
-        assert any(e.startswith("event: voice_token") and "Spoken summary of the answer." in e for e in events)
+        # The written stream is the only text on the wire, said exactly as
+        # it was written.
         written_tokens = "".join(
             json.loads(e.split("data: ", 1)[1])["content"]
             for e in events if e.startswith("event: token")
         )
-        assert written_tokens == "Written answer."
-        assert not any("[VOICE]" in e for e in events)
-
-        # The block was synthesized — once, sentence by sentence.
-        assert synthesized == ["Spoken summary of the answer."]
+        assert written_tokens == "The treasury holds **150 k€** at year end."
+        assert not any(e.startswith("event: voice_token") for e in events)
         assert any(e.startswith("event: voice") and '"audio"' in e for e in events)
 
-        # Persistence: written and spoken in their own columns, tags nowhere.
+        # The synthesizer heard the mechanical ear of the CONFIGURED language:
+        # no bold marks, the amount said in words.
+        assert synthesized == ["The treasury holds 150 k€ at year end.".replace(
+            "150 k€", "cent cinquante mille euros"
+        )]
+
+        # Persistence: the written answer exactly as written — and no
+        # spoken column anywhere, nothing derived is stored.
         create_call = mock_msg_service.create.call_args
-        assert create_call[1]["content"] == "Written answer."
-        assert create_call[1]["spoken_content"] == "Spoken summary of the answer."
+        assert create_call[1]["content"] == "The treasury holds **150 k€** at year end."
+        assert "spoken_content" not in create_call[1]
 
     @pytest.mark.asyncio
-    async def test_voice_turn_without_a_block_is_repaired_by_a_chat_call(self, mock_session, connected_user):
+    async def test_a_non_voice_turn_persists_the_text_alone(self, mock_session, connected_user):
         """
-        Drift: the voice was asked for and the model wrote no block. A focused
-        chat call REGENERATES the spoken rendition from the written answer —
-        self-sufficient, not a mechanical cut — and the spoken column stays
-        null (the drift signal: the repair is not the model's own block).
+        The feature is enabled but THIS turn carries no voice flag: the text
+        streams alone, and the row is the text — nothing else.
         """
         from lys.apps.ai.modules.conversation.services import AIConversationService
         from lys.apps.ai.utils.providers.abstracts import AIStreamChunk
-        from lys.apps.ai.utils.providers.config import AIEndpointConfig
 
         mock_conversation = MagicMock()
         mock_conversation.id = "conv-1"
         mock_msg_service = AsyncMock()
 
         async def fake_stream(*args, **kwargs):
-            yield AIStreamChunk(content="**Written** answer, ")
-            yield AIStreamChunk(content="no block.", finish_reason="stop", usage={"prompt_tokens": 5, "completion_tokens": 2})
-
-        synthesized = []
-
-        async def fake_synthesize(sentence, config, voice):
-            synthesized.append(sentence)
-            yield b"\x00\x01"
-
-        mock_ai_service = MagicMock()
-        mock_ai_service.chat_stream_with_purpose = fake_stream
-        mock_ai_service.get_endpoint = MagicMock(return_value=AIEndpointConfig(
-            provider="mistral", model="voxtral", options={"voice": "fr_test"},
-        ))
-        mock_ai_service.synthesize_stream = fake_synthesize
-        # The repair call: a focused rewrite, returning tags it should not
-        # have — the defensive strip must remove them before the ear hears.
-        repair_response = MagicMock()
-        repair_response.content = "[VOICE]Repaired rendition, with the four dimensions said aloud.[/VOICE]"
-        mock_ai_service.chat_with_purpose = AsyncMock(return_value=repair_response)
-
-        ctx = {
-            "executor": MagicMock(),
-            "conversation": mock_conversation,
-            "message_service": mock_msg_service,
-            "ai_service": mock_ai_service,
-            "llm_tools": [],
-            "messages": [{"role": "system", "content": "sys"}, {"role": "user", "content": "Hi"}],
-            "info": MagicMock(),
-            "user_message_id": "user-msg-1",
-        }
-
-        events = []
-        with patch.object(AIConversationService, "_prepare_chat_context", new_callable=AsyncMock, return_value=ctx), \
-             patch.object(
-                 AIConversationService.app_manager.settings, "get_plugin_config",
-                 return_value={"chatbot": {"spoken_block": {"enabled": True}}},
-             ):
-            async for event in AIConversationService.chat_with_tools_streaming(
-                user_id="user-123", content="Hi", session=mock_session,
-                connected_user=connected_user, access_token="tok",
-                voice=True,
-            ):
-                events.append(event)
-
-        # No voice_token on the wire, but the REPAIRED text was spoken —
-        # tags stripped, substance kept.
-        assert not any(e.startswith("event: voice_token") for e in events)
-        assert synthesized == ["Repaired rendition, with the four dimensions said aloud."]
-
-        # The repair went through the spoken_repair purpose.
-        assert mock_ai_service.chat_with_purpose.call_args[0][1] == "spoken_repair"
-
-        create_call = mock_msg_service.create.call_args
-        assert create_call[1]["spoken_content"] is None  # the drift signal
-
-    @pytest.mark.asyncio
-    async def test_voice_turn_repair_failure_falls_back_to_the_opening(self, mock_session, connected_user):
-        """
-        The repair call itself fails: the last resort reads the OPENING of the
-        sanitized written answer — never mute, never the whole text.
-        """
-        from lys.apps.ai.modules.conversation.services import AIConversationService
-        from lys.apps.ai.utils.providers.abstracts import AIStreamChunk
-        from lys.apps.ai.utils.providers.config import AIEndpointConfig
-        from lys.apps.ai.utils.providers.exceptions import AIProviderError
-
-        mock_conversation = MagicMock()
-        mock_conversation.id = "conv-1"
-        mock_msg_service = AsyncMock()
-
-        written = "**Written** verdict here. Second sentence. Third one. Fourth sentence too."
-
-        async def fake_stream(*args, **kwargs):
-            yield AIStreamChunk(content=written)
+            yield AIStreamChunk(content="Plain answer, 26% up.")
             yield AIStreamChunk(content="", finish_reason="stop", usage={"prompt_tokens": 5, "completion_tokens": 2})
 
-        synthesized = []
-
-        async def fake_synthesize(sentence, config, voice):
-            synthesized.append(sentence)
-            yield b"\x00\x01"
-
         mock_ai_service = MagicMock()
         mock_ai_service.chat_stream_with_purpose = fake_stream
-        mock_ai_service.get_endpoint = MagicMock(return_value=AIEndpointConfig(
-            provider="mistral", model="voxtral", options={"voice": "fr_test"},
-        ))
-        mock_ai_service.synthesize_stream = fake_synthesize
-        mock_ai_service.chat_with_purpose = AsyncMock(side_effect=AIProviderError("repair provider down"))
 
         ctx = {
             "executor": MagicMock(),
@@ -1978,23 +1894,21 @@ class TestChatWithToolsStreaming:
             "user_message_id": "user-msg-1",
         }
 
-        events = []
         with patch.object(AIConversationService, "_prepare_chat_context", new_callable=AsyncMock, return_value=ctx), \
              patch.object(
                  AIConversationService.app_manager.settings, "get_plugin_config",
                  return_value={"chatbot": {"spoken_block": {"enabled": True}}},
              ):
-            async for event in AIConversationService.chat_with_tools_streaming(
+            async for _ in AIConversationService.chat_with_tools_streaming(
                 user_id="user-123", content="Hi", session=mock_session,
                 connected_user=connected_user, access_token="tok",
-                voice=True,
+                voice=False,
             ):
-                events.append(event)
+                pass
 
-        # The repair failed, the sanitized OPENING was read instead — bold
-        # marks gone, the first sentences only, no tags anywhere.
-        assert " ".join(synthesized) == "Written verdict here. Second sentence. Third one. Fourth sentence too."
-        assert not any("[VOICE]" in s for s in synthesized)
+        create_call = mock_msg_service.create.call_args
+        assert create_call[1]["content"] == "Plain answer, 26% up."
+        assert "spoken_content" not in create_call[1]
 
 class TestAIConversationServiceUsageFields:
     """Tests for AIConversationService._usage_fields token-column mapping."""
@@ -3117,8 +3031,8 @@ class TestBuildVoicePipeline:
         from lys.apps.ai.utils.providers.abstracts import AIStreamChunk
 
         async def fake_stream(*args, **kwargs):
-            yield AIStreamChunk(content="[VOICE]Said aloud.[/VOICE]", provider="mistral", model="m")
-            yield AIStreamChunk(content="Written answer.", finish_reason="stop", provider="mistral", model="m")
+            yield AIStreamChunk(content="Written answer, ", provider="mistral", model="m")
+            yield AIStreamChunk(content="said as it stands.", finish_reason="stop", provider="mistral", model="m")
 
         mock_ai_service = MagicMock()
         mock_ai_service.chat_stream_with_purpose = fake_stream
@@ -3158,15 +3072,174 @@ class TestBuildVoicePipeline:
         assert any(e.startswith("event: done") for e in events)
         assert not any(e.startswith("event: error") for e in events)
         assert not any(e.startswith("event: voice\n") for e in events)
-        # The split still happened: the tags never reach the client or the row.
-        # The written text arrives across several token events (the splitter holds
-        # back any tail that could still turn out to be a tag), so it is the JOIN
-        # that must read as the answer.
+        # The written text arrives across token events, so it is the JOIN
+        # that must read as the answer — and the row is that text, nothing
+        # else: no spoken column exists.
         written = "".join(
             json.loads(e.split("data: ", 1)[1])["content"]
             for e in events
             if e.startswith("event: token")
         )
-        assert written == "Written answer."
-        assert not any("[VOICE]" in e for e in events)
-        assert mock_msg_service.create.call_args[1]["spoken_content"] == "Said aloud."
+        assert written == "Written answer, said as it stands."
+        assert mock_msg_service.create.call_args[1]["content"] == "Written answer, said as it stands."
+        assert "spoken_content" not in mock_msg_service.create.call_args[1]
+
+
+class TestSetPageParams:
+    """Tests for the `set_page_params` special tool — the model WRITING the page's filters.
+
+    The gate: a page declares at least one `writable` param, or the tool is
+    neither registered nor exposed (ai.md R1 — handler and definition under the
+    same condition). The handler validates against the page's declared schema
+    and applies all-or-nothing: one refused key refuses the call.
+    """
+
+    @staticmethod
+    def _page_context(page_name="SomePage"):
+        page_context = MagicMock()
+        page_context.page_name = page_name
+        return page_context
+
+    @staticmethod
+    def _ai_service(schema):
+        service = MagicMock()
+        service.get_page_params_schema.return_value = schema
+        return service
+
+    @pytest.mark.asyncio
+    async def test_registered_only_on_writable_params(self):
+        """No writable param: no handler, no tool definition. The page opts in per param."""
+        from lys.apps.ai.modules.conversation.services import AIConversationService
+        from lys.apps.ai.utils.page_params import SET_PAGE_PARAMS_TOOL
+
+        tools = []
+        with patch.object(AIConversationService, "app_manager", MagicMock()), \
+             patch.object(
+                 AIConversationService,
+                 "_build_set_page_params_handler",
+                 return_value=AsyncMock(),
+             ):
+            AIConversationService.app_manager.settings.get_plugin_config.return_value = {}
+            AIConversationService.app_manager.get_service.return_value = self._ai_service(
+                {"clientId": {"type": "global_id"}}
+            )
+            executor = await AIConversationService._get_tool_executor(
+                tools, MagicMock(), [], self._page_context()
+            )
+        assert "set_page_params" not in executor._special_tools
+        assert SET_PAGE_PARAMS_TOOL not in tools
+
+    @pytest.mark.asyncio
+    async def test_registered_when_page_declares_writable(self):
+        from lys.apps.ai.modules.conversation.services import AIConversationService
+        from lys.apps.ai.utils.page_params import SET_PAGE_PARAMS_TOOL
+
+        tools = []
+        with patch.object(AIConversationService, "app_manager", MagicMock()), \
+             patch.object(
+                 AIConversationService,
+                 "_build_set_page_params_handler",
+                 return_value=AsyncMock(),
+             ):
+            AIConversationService.app_manager.settings.get_plugin_config.return_value = {}
+            AIConversationService.app_manager.get_service.return_value = self._ai_service(
+                {"pastMonths": {"type": "int", "writable": True}}
+            )
+            executor = await AIConversationService._get_tool_executor(
+                tools, MagicMock(), [], self._page_context()
+            )
+        assert "set_page_params" in executor._special_tools
+        assert SET_PAGE_PARAMS_TOOL in tools
+
+    @pytest.mark.asyncio
+    async def test_handler_applies_validated_params(self):
+        """Valid writable params: one frontend action, values coerced by type."""
+        from lys.apps.ai.modules.conversation.services import AIConversationService
+
+        schema = {"pastMonths": {"type": "int", "writable": True}}
+        handler = AIConversationService._build_set_page_params_handler("SomePage", schema)
+
+        info = MagicMock()
+        info.context.frontend_actions = []
+        result = await handler({"params": {"pastMonths": "24"}}, {"info": info})
+
+        assert result["status"] == "success"
+        assert info.context.frontend_actions == [{
+            "type": "update_page_params",
+            "params": {"pastMonths": 24},
+        }]
+
+    @pytest.mark.asyncio
+    async def test_handler_refuses_the_whole_call_on_one_refusal(self):
+        """A read-only key among the requested ones refuses everything: a
+        partial filter set must never reach the screen."""
+        from lys.apps.ai.modules.conversation.services import AIConversationService
+
+        schema = {
+            "pastMonths": {"type": "int", "writable": True},
+            "clientId": {"type": "global_id"},
+        }
+        handler = AIConversationService._build_set_page_params_handler("SomePage", schema)
+
+        info = MagicMock()
+        info.context.frontend_actions = []
+        result = await handler(
+            {"params": {"pastMonths": "24", "clientId": "abc"}}, {"info": info}
+        )
+
+        assert result["status"] == "error"
+        assert result["refused"] == {"clientId": "not_writable"}
+        assert info.context.frontend_actions == []
+
+    @pytest.mark.asyncio
+    async def test_handler_refuses_empty_params(self):
+        from lys.apps.ai.modules.conversation.services import AIConversationService
+
+        handler = AIConversationService._build_set_page_params_handler(
+            "SomePage", {"pastMonths": {"type": "int", "writable": True}}
+        )
+        result = await handler({"params": {}}, {"info": MagicMock()})
+        assert result["status"] == "error"
+
+
+class TestSetPageParamsInternalRouting:
+    """Internal params (component state, declared `internal`) route to the page
+    context, URL filters to the URL: an internal flag never lands in the URL,
+    a filter never gets lost in the page context.
+    """
+
+    @pytest.mark.asyncio
+    async def test_internal_params_routed_to_internal_params(self):
+        from lys.apps.ai.modules.conversation.services import AIConversationService
+
+        schema = {
+            "pastMonths": {"type": "int", "writable": True},
+            "treeExpanded": {"type": "bool", "writable": True, "internal": True},
+        }
+        handler = AIConversationService._build_set_page_params_handler("SomePage", schema)
+
+        info = MagicMock()
+        info.context.frontend_actions = []
+        result = await handler(
+            {"params": {"pastMonths": 24, "treeExpanded": True}}, {"info": info}
+        )
+
+        assert result["status"] == "success"
+        action = info.context.frontend_actions[0]
+        assert action["params"] == {"pastMonths": 24}
+        assert action["internalParams"] == {"treeExpanded": True}
+
+    @pytest.mark.asyncio
+    async def test_url_only_params_carry_no_internal_key(self):
+        from lys.apps.ai.modules.conversation.services import AIConversationService
+
+        schema = {"pastMonths": {"type": "int", "writable": True}}
+        handler = AIConversationService._build_set_page_params_handler("SomePage", schema)
+
+        info = MagicMock()
+        info.context.frontend_actions = []
+        await handler({"params": {"pastMonths": 24}}, {"info": info})
+
+        action = info.context.frontend_actions[0]
+        assert action["params"] == {"pastMonths": 24}
+        assert "internalParams" not in action

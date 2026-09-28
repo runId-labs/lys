@@ -13,6 +13,8 @@ from lys.core.utils.routes import (
     load_routes_manifest,
     filter_routes_by_permissions,
     build_navigate_tool,
+    route_page_params,
+    writable_param_names,
 )
 
 
@@ -181,3 +183,36 @@ class TestBuildNavigateTool:
         routes = []
         tool = build_navigate_tool(routes)
         assert tool["function"]["parameters"]["properties"]["path"]["enum"] == []
+
+
+class TestManifestParamAccessors:
+    """The one accessor both schema readers go through: the AI service
+    resolving a page by name, and the navigate tool resolving a route by
+    path. A malformed or missing declaration must read the same on both."""
+
+    def test_a_route_without_params_declares_none(self):
+        assert route_page_params({"path": "/x"}) is None
+
+    def test_a_malformed_params_declaration_is_no_declaration(self):
+        assert route_page_params({"params": ["pastMonths"]}) is None
+        assert route_page_params({"params": None}) is None
+
+    def test_a_non_route_declares_none(self):
+        assert route_page_params(None) is None
+
+    def test_the_declared_params_come_back_as_declared(self):
+        schema = {"pastMonths": {"type": "int", "writable": True}}
+        assert route_page_params({"params": schema}) is schema
+
+    def test_only_the_writable_params_are_named_and_sorted(self):
+        schema = {
+            "pastMonths": {"type": "int", "writable": True},
+            "clientId": {"type": "global_id"},
+            "activeTab": {"type": "enum", "writable": True},
+            "broken": "not a spec",
+        }
+        assert writable_param_names(schema) == ["activeTab", "pastMonths"]
+
+    def test_no_schema_names_no_writable_param(self):
+        assert writable_param_names(None) == []
+        assert writable_param_names({"clientId": {"type": "global_id"}}) == []

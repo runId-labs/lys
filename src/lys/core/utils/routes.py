@@ -29,6 +29,30 @@ def camel_to_snake(name: str) -> str:
     return result.lstrip("_")
 
 
+def route_page_params(route: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    """
+    The params a routes-manifest entry declares, or None when it declares none.
+
+    One accessor for the one source of truth: the manifest entry. Both readers
+    of a schema go through it — the AI service resolving a page by name, and
+    the navigate tool resolving the TARGET route by path — so a route whose
+    ``params`` is missing or malformed reads the same way on both paths.
+    """
+    if not isinstance(route, dict):
+        return None
+    params = route.get("params")
+    return params if isinstance(params, dict) else None
+
+
+def writable_param_names(schema: Optional[Dict[str, Any]]) -> List[str]:
+    """The params a page marks writable, sorted — what the model may set."""
+    if not isinstance(schema, dict):
+        return []
+    return sorted(
+        key for key, spec in schema.items() if isinstance(spec, dict) and spec.get("writable")
+    )
+
+
 def load_routes_manifest(path: str) -> Optional[Dict[str, Any]]:
     """
     Load routes manifest from a JSON file.
@@ -96,18 +120,21 @@ def build_navigate_tool(accessible_routes: List[Dict[str, Any]]) -> Dict[str, An
     """
     Build the navigate tool definition with accessible paths as enum.
 
-    Args:
-        accessible_routes: List of routes the user can access
-
-    Returns:
-        Tool definition dict for LLM function calling
+    Routes declaring writable params carry them in the description: the model
+    needs to know WHICH filters it may set on arrival, and only the writable
+    ones are its to set.
     """
     # Build path enum from accessible routes
     path_enum = [route["path"] for route in accessible_routes]
 
-    # Build description with available pages
+    # Build description with available pages, and the writable params each
+    # accepts on arrival
+    def _writable_note(route: Dict[str, Any]) -> str:
+        writable = writable_param_names(route_page_params(route))
+        return f" (writable params: {', '.join(writable)})" if writable else ""
+
     routes_description = "\n".join(
-        f"- {route['path']}: {route.get('description', 'No description')}"
+        f"- {route['path']}: {route.get('description', 'No description')}{_writable_note(route)}"
         for route in accessible_routes
     )
 
@@ -117,7 +144,10 @@ def build_navigate_tool(accessible_routes: List[Dict[str, Any]]) -> Dict[str, An
             "name": "navigate",
             "description": (
                 "Navigate the user to a specific page in the application. "
-                "Use this when the user asks to go to a page or section.\n\n"
+                "Use this when the user asks to go to a page or section. "
+                "A route listing 'writable params' accepts them on arrival, in the "
+                "same shapes as the 'Page params' JSON section — pass them to land "
+                "the user directly on the state you described (never invent a value).\n\n"
                 f"Available pages:\n{routes_description}"
             ),
             "parameters": {
@@ -127,6 +157,15 @@ def build_navigate_tool(accessible_routes: List[Dict[str, Any]]) -> Dict[str, An
                         "type": "string",
                         "enum": path_enum,
                         "description": "The URL path to navigate to"
+                    },
+                    "params": {
+                        "type": "object",
+                        "description": (
+                            "Optional filters to apply on arrival — only the keys the "
+                            "target route lists as writable params, values exactly as "
+                            "the 'Page params' section carries them. Omit to open the "
+                            "page with its defaults."
+                        ),
                     },
                     "continue_action": {
                         "type": "boolean",

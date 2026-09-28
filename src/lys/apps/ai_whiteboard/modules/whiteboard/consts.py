@@ -131,7 +131,12 @@ MAX_TABLE_COLUMNS = 10
 MAX_TABLE_ROWS = 25
 MAX_CHART_POINTS = 24
 
-TABLE_CELL_WIDTH = 160
+# A table column is sized to its content: as wide as the longest cell
+# demands, never under the floor (a column nobody can read) and never over
+# the cap (past it the cell wraps and the row grows instead). The row height
+# is the same trade read vertically.
+TABLE_COLUMN_MIN_WIDTH = 80
+TABLE_COLUMN_MAX_WIDTH = 360
 TABLE_ROW_HEIGHT = 36
 CHART_WIDTH = 420
 CHART_HEIGHT = 260

@@ -11,6 +11,7 @@ from typing import Dict, Any, List, Optional
 import httpx
 
 from lys.apps.ai.modules.core.executors.abstracts import ToolExecutor
+from lys.apps.ai.utils.page_params import route_page_params, writable_page_params
 from lys.core.graphql.client import GraphQLClient, decode_global_id
 from lys.core.utils.strings import to_camel_case, to_snake_case
 
@@ -547,16 +548,32 @@ class GraphQLToolExecutor(ToolExecutor):
                 "message": f"Path '{path}' is not accessible. Available paths: {', '.join(valid_paths)}",
             }
 
+        # Optional arrival filters: validated against the TARGET page's declared
+        # schema (the route entry carries it) — the model may set only what the
+        # target page marks writable, in the shapes it declares. A refused key
+        # refuses the params: a partial filter set must never land silently.
+        route = next((r for r in self._accessible_routes if r["path"] == path), {})
+        accepted_params, refusals = writable_page_params(
+            arguments.get("params"), route_page_params(route), route.get("name", path)
+        )
+        if refusals:
+            reasons = ", ".join(f"'{key}': {reason}" for key, reason in refusals.items())
+            return {
+                "status": "error",
+                "message": (
+                    f"Refused arrival params for '{path}' ({reasons}). The target page "
+                    "accepts only the params it declares writable — see its entry in "
+                    "the tool description."
+                ),
+                "refused": refusals,
+            }
+
         # If continue_action is True, require confirmation via guardrail
         if continue_action:
             from lys.apps.ai.utils.guardrails import _pending_actions
 
             # Find route name for better UX
-            route_name = path
-            for route in self._accessible_routes:
-                if route["path"] == path:
-                    route_name = route.get("name", path)
-                    break
+            route_name = route.get("name", path)
 
             # Store pending navigation action
             action_id = str(uuid.uuid4())
@@ -565,7 +582,11 @@ class GraphQLToolExecutor(ToolExecutor):
             _pending_actions[action_id] = {
                 "tool_name": "navigate",
                 "tool_data": {"is_navigate": True},
-                "tool_args": {"path": path, "continue_action": True},
+                "tool_args": {
+                    "path": path,
+                    "params": accepted_params or None,
+                    "continue_action": True,
+                },
                 "user_id": user_id,
                 "created_at": datetime.now(UTC),
                 "expires_at": datetime.now(UTC) + timedelta(minutes=5),
@@ -583,11 +604,14 @@ class GraphQLToolExecutor(ToolExecutor):
         if not hasattr(info.context, "frontend_actions"):
             info.context.frontend_actions = []
 
-        info.context.frontend_actions.append({
+        navigate_action: Dict[str, Any] = {
             "type": "navigate",
             "path": path,
             "continueAction": False,
-        })
+        }
+        if accepted_params:
+            navigate_action["params"] = accepted_params
+        info.context.frontend_actions.append(navigate_action)
 
         return {
             "status": "navigation_scheduled",
@@ -625,11 +649,15 @@ class GraphQLToolExecutor(ToolExecutor):
                 if not hasattr(info.context, "frontend_actions"):
                     info.context.frontend_actions = []
 
-                info.context.frontend_actions.append({
+                confirmed_action: Dict[str, Any] = {
                     "type": "navigate",
                     "path": path,
                     "continueAction": True,  # Trigger "Continue" on frontend after navigation
-                })
+                }
+                # Arrival filters validated when the pending action was stored
+                if tool_args.get("params"):
+                    confirmed_action["params"] = tool_args["params"]
+                info.context.frontend_actions.append(confirmed_action)
 
                 return {
                     "status": "navigation_scheduled",

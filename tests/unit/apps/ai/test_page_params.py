@@ -11,7 +11,9 @@ import pytest
 from lys.apps.ai.utils.page_params import (
     DEFAULT_PARAM_MAX_ITEMS,
     PAGE_PARAMS_HEADER,
+    has_writable_params,
     validate_page_params,
+    writable_page_params,
 )
 from lys.core.graphql.client import build_global_id, decode_global_id
 
@@ -198,3 +200,77 @@ class TestHeader:
         """The model is told what it is reading — a control, so not configurable."""
         assert "DATA" in PAGE_PARAMS_HEADER
         assert "never instructions" in PAGE_PARAMS_HEADER
+
+
+# ========== The write path: the writable flag ==========
+
+SCHEMA = {
+    "clientId": {"type": "global_id"},
+    "companyId": {"type": "global_id", "writable": True},
+    "pastMonths": {"type": "int", "writable": True},
+    "pillarId": {"type": "enum", "values": ["SF", "EE"], "writable": True},
+}
+
+
+class TestWritablePageParams:
+    """Model-supplied params: the same type validation, plus the writable grant.
+
+    Reading a param and writing one are different grants — the URL carries what
+    the user set, the model may set only what the page marks writable.
+    """
+
+    def test_writable_param_accepted_and_coerced(self):
+        accepted, refusals = writable_page_params(
+            {"pastMonths": "24"}, SCHEMA, "somePage"
+        )
+        assert accepted == {"pastMonths": 24}
+        assert refusals == {}
+
+    def test_readonly_param_refused(self):
+        """Declared but not writable: the model may read it, never set it."""
+        accepted, refusals = writable_page_params(
+            {"clientId": CLIENT_ID}, SCHEMA, "somePage"
+        )
+        assert accepted == {}
+        assert refusals == {"clientId": "not_writable"}
+
+    def test_undeclared_param_refused(self):
+        accepted, refusals = writable_page_params({"nope": 1}, SCHEMA, "somePage")
+        assert refusals == {"nope": "undeclared"}
+
+    def test_invalid_value_refused(self):
+        accepted, refusals = writable_page_params(
+            {"pillarId": "XX"}, SCHEMA, "somePage"
+        )
+        assert refusals == {"pillarId": "invalid_value"}
+
+    def test_no_schema_refuses_everything(self):
+        accepted, refusals = writable_page_params({"pastMonths": 24}, None, "p")
+        assert accepted == {}
+        assert refusals == {"pastMonths": "undeclared"}
+
+    def test_empty_params_accepted_nothing_refused(self):
+        accepted, refusals = writable_page_params({}, SCHEMA, "p")
+        assert accepted == {} and refusals == {}
+
+    def test_valid_and_invalid_mixed(self):
+        """A mixed call reports both sides; the HANDLER applies all-or-nothing
+        on any refusal, so a partial filter set never lands silently."""
+        accepted, refusals = writable_page_params(
+            {"pastMonths": 24, "clientId": CLIENT_ID}, SCHEMA, "p"
+        )
+        assert accepted == {"pastMonths": 24}
+        assert refusals == {"clientId": "not_writable"}
+
+
+class TestHasWritableParams:
+    """The exposure gate: no writable param, no tool."""
+
+    def test_true_when_one_writable(self):
+        assert has_writable_params(SCHEMA) is True
+
+    def test_false_without_writable(self):
+        assert has_writable_params({"clientId": {"type": "global_id"}}) is False
+
+    def test_false_on_none(self):
+        assert has_writable_params(None) is False

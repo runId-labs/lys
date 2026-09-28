@@ -40,10 +40,14 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest", "pytest-asyncio", "pytest-cov", "pytest-forked", "aiosqlite", "fakeredis",
-       "langdetect>=1.0.9", "pgvector>=0.3.0"]
+       "langdetect>=1.0.9", "pgvector>=0.3.0", "num2words>=0.5.14",
+       # Regenerates the whiteboard's Virgil metrics table (scripts/generate_font_metrics.py).
+       "fonttools>=4.50", "brotli>=1.1"]
 mollie = ["mollie-api-python>=3.0.0"]
 storage = ["aioboto3>=12.0.0"]
-ai = ["mistralai", "langdetect>=1.0.9", "pgvector>=0.3.0"]
+# The spoken answer's figures are said in words (chatbot.spoken_block). Imported
+# lazily: absent, the voice degrades to digits, it never breaks.
+ai = ["mistralai", "langdetect>=1.0.9", "pgvector>=0.3.0", "num2words>=0.5.14"]
 pdf = ["weasyprint>=62", "markdown>=3.6"]
 all = ["mollie-api-python>=3.0.0", "aioboto3>=12.0.0", "mistralai", "langdetect>=1.0.9", "pgvector>=0.3.0", "weasyprint>=62", "markdown>=3.6"]
 test = [

@@ -71,8 +71,8 @@ is a declaration, not a filter: **each page declares its params under the route'
   "params": {
     "dossierId": {"type": "global_id"},
     "statuses":  {"type": "enum", "values": ["draft", "sent", "paid"], "multiple": true},
-    "since":     {"type": "date"},
-    "search":    {"type": "text", "max_length": 80}
+    "since":     {"type": "date", "writable": true},
+    "search":    {"type": "text", "max_length": 80, "writable": true}
   }
 }
 ```
@@ -112,6 +112,45 @@ RULES:
 - The declaration bounds what the model READS. What a tool DOES with a param is
   the webservice's permission chain — an injection cannot exceed the connected
   user's own rights, and mutations still pass `CONFIRM_ACTION_TOOL`.
+
+### Writing params: `writable`, `set_page_params`, `navigate` arrival filters
+
+Reading a param and writing one are different grants. Every declared param is
+rendered to the model; only the ones marked `"writable": true` may the model SET:
+
+- **`set_page_params`** — change the filters of the page the user is on. The
+  framework exposes the tool only on pages declaring at least one writable
+  param (handler and definition under the same condition, like every special
+  tool), validates against the page's declared schema, and emits a
+  `update_page_params` frontend action — the front applies it to the URL, the
+  screen refilters, no review card: view state is reversible and the filter bar
+  shows the change. Apply all-or-nothing on any refusal — a partial filter set
+  must never land silently.
+- **`navigate` arrival filters** — `navigate({path, params})` validates `params`
+  against the TARGET page's declared schema (the route entry carries it) and
+  lands the user directly on the state described. The target's writable params
+  are listed in the tool description, so the model knows what it may set.
+
+A frontend action leaves the server TWICE on the streaming path, and the client
+must handle it once. It is streamed in a `frontend_actions` event as soon as the
+tool that produced it returns, with `fromIndex` — its position in the full list
+the `done` event still carries. Applied on the event, the screen moves before
+the answer that comments on it; applied only from `done`, it moves after the
+written and the spoken answer, and the user is told about a page, a card or a
+form that is not on screen yet. A client that handles the event skips those
+indexes in `done`; one that ignores it applies everything from `done`, as
+before.
+- **`writable` is opt-in per param, default off.** The dossier the user works on
+  (`clientId`) typically stays user-driven: the model reads it, never changes it.
+- **`internal: true` marks component state, not a URL filter.** Its value travels
+  through the page context (`updatePageParams` on the front), never the URL, and
+  a model write routes to the page context (`internalParams` on the action)
+  instead of the URL: an internal flag never lands in the URL, a filter never
+  gets lost in the page context. The component syncs its state from the param
+  both ways — the user's toggle reaches the model, the model's write reaches the
+  screen.
+- Writing params never widens rights: filters change what the user LOOKS at;
+  every query still runs under the connected user's own permissions.
 
 ## Conversation search (`search_conversation`)
 
@@ -155,7 +194,7 @@ argument wins over the option). A 200 response without a `text` key
 transcribes to `""` — the same result as silence, and guessing between the
 two would invent an error.
 
-## Speech synthesis and the spoken blocks
+## Speech synthesis and the spoken answer
 
 `AIService.synthesize(text, config, voice, response_format="mp3")` (plus
 `synthesize_sync` and `synthesize_stream`, which yields raw PCM) is an optional
@@ -166,46 +205,46 @@ endpoint's `options["voice"]`. `synthesize_stream` does NOT retry a provider tha
 already yielded a chunk: the caller has played that audio, and restarting the
 sentence elsewhere would splice two voices mid-word.
 
-An answer can carry two renditions of itself: the written one shown in the chat,
-and a spoken one for a voice. The convention is configuration, not code:
+The model writes ONE answer and the synthesizer reads it as it stands. There is
+no second rendition, no tag convention and no repair call: what is written is
+what is said, passed through `normalize_speech` — a deterministic pass that
+strips the markdown and spells what a synthesizer cannot read honestly.
 
 ```python
 "ai": {
     "chatbot": {
         "spoken_block": {
-            "enabled": True,          # absent or False = the feature does not exist
-            "open_tag": "[VOICE]",    # optional
-            "close_tag": "[/VOICE]",  # optional
-            "prompt": "...",          # optional, replaces the framework instructions
+            "enabled": True,     # absent or False = the feature does not exist
+            "language": "fr",    # optional: the spoken vocabulary to apply
         },
     },
     "tts": {"provider": "mistral", "model": "...", "options": {"voice": "Nova"}},
-    "spoken_repair": {"provider": "mistral", "model": "..."},
 }
 ```
 
 RULES:
 
-- **The tags never reach a client or a row.** `AIMessage.content` holds the
-  written rendition, `spoken_content` the spoken one, and the tags neither — so
-  history, search and compaction never see them and the model is never fed its
-  own spoken text on a later turn. `spoken_content` is NULL when the model wrote
-  no block: that is the drift signal, not an empty string.
+- **The spoken form is never persisted.** `AIMessage.content` holds the answer
+  exactly as written; nothing derived from it is stored. The spoken text is a
+  pure function of that content, recomputed wherever a voice needs it.
 - **`voice=True` on `chat_with_tools_streaming` is per turn and stateless.** The
   server keeps no voice session. A voice the deployment cannot serve
   (no `tts` purpose, no resolvable API key, no voice in its `options`) is dropped
   and logged — no `voice` event is emitted and the text stream never fails.
   `voice` events may arrive AFTER `done`: the text is complete, the reading is not.
-- **Drift is repaired, never muted.** An answer carrying no block goes through the
-  `spoken_repair` purpose to regenerate its spoken rendition; if that call fails,
-  the sanitized OPENING of the written answer is read (five sentences), never the
-  whole of it and never raw markdown.
-- **`spoken_repair` has a framework default prompt.** It is the one purpose whose
-  instructions lys owns (`lys.apps.ai.utils.prompts`), applied while the plugin
-  config is parsed, so an app that configures the purpose without a
-  `system_prompt` still gets working instructions — and the default is versioned
-  in `ai_prompt_version` like any other. Configure a `system_prompt` on the
-  endpoint to override it.
+- **No `voice_token` event exists.** The written stream IS the speech: the client
+  bubble follows `token`, and `voice` carries the audio for the same text.
+- **The spoken vocabulary is opt-in per language.** `spoken_block.language`
+  selects a `SpeechVocabulary` (figures said in words via the optional
+  `num2words`, currency symbols, scale prefixes, abbreviated months, layout
+  glyphs). Declare none and the answer gets the markdown strip alone — the
+  framework speaks no language by default and never applies another language's
+  words. `fr` is the vocabulary shipped today; adding one is one table in
+  `lys.apps.ai.modules.conversation.spoken_block`, never another branch.
+- **Normalization strips marks, never content.** A bare URL, a time (`14:30`), a
+  ratio (`3:1`), a date (`2024-01-01`) and a range (`10-15`) keep their
+  punctuation: only a `+`/`-` OPENING a figure is spoken as a sign, and only a
+  colon that is not part of a token becomes a pause.
 
 ## Exposing a webservice as a chatbot TOOL
 

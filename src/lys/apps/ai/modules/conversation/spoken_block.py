@@ -1,18 +1,17 @@
 """
-Spoken-block support for the chatbot — the written/spoken split.
+Spoken answer support for the chatbot — the direct voice.
 
-A chatbot answer can carry TWO renditions of itself: the written one, displayed
-in the chat, and a spoken one meant for a voice. The convention carrying both
-in the model's single output channel: the spoken rendition is wrapped in tags
-declared in configuration — ``[VOICE]...[/VOICE]`` by default — and may appear
-ANYWHERE in the stream: a short block before a tool call ("what I am looking
-at"), a full block as the answer's spoken summary.
+The model writes ONE answer — naturally speakable prose, the app's own prompt
+carries the voice-first style — and the synthesizer reads it through
+:func:`normalize_speech`: a mechanical, deterministic pass (markdown out,
+amounts and symbols spelled in words). No tags, no second rendition, no
+repair call: what is written is what is said.
 
-Everything here is generic framework mechanism, no application content: which
-tags, what instructions the model gets (a default prompt, overridable), and
-whether the feature exists at all are all ``chatbot.spoken_block`` settings —
-an app that configures nothing keeps the exact behavior it had. The voice of
-the answers (persona, language style) stays in the app's own prompt.
+Everything here is generic framework mechanism, no application content:
+whether the feature exists at all is the ``chatbot.spoken_block.enabled``
+setting, and which words a language says is one ``SpeechVocabulary`` table
+selected by ``chatbot.spoken_block.language`` — an app that declares none gets
+the markdown strip alone, never another language's words.
 
 Pure blocks only, no provider and no socket: unit-testable without a TTS key.
 """
@@ -29,166 +28,37 @@ from lys.apps.ai.utils.sse import format_sse
 logger = logging.getLogger(__name__)
 
 # What one line of configuration looks like. Absent or ``enabled: false`` means
-# the feature does not exist: no prompt injected, no tag routing, no split at
-# persistence — the answer is what the model wrote, whole.
-DEFAULT_SPOKEN_BLOCK_OPEN_TAG = "[VOICE]"
-DEFAULT_SPOKEN_BLOCK_CLOSE_TAG = "[/VOICE]"
-
-# The default instructions injected in the system prompt when the feature is
-# on. English — tags and instructions in the same language as the tags, the
-# spoken CONTENT staying in the conversation's language; an app replaces the
-# whole section through ``chatbot.spoken_block.prompt`` when its voice needs
-# a persona of its own.
-DEFAULT_SPOKEN_BLOCK_PROMPT = f"""# Voice output
-
-Your answers are read aloud by a speech synthesizer. EVERY answer — including
-long, structured ones — opens with its spoken rendition wrapped in
-{DEFAULT_SPOKEN_BLOCK_OPEN_TAG}...{DEFAULT_SPOKEN_BLOCK_CLOSE_TAG} tags. An
-answer without one leaves the reader with silence.
-
-The spoken rendition is the answer FOR THE EAR, and it stands alone: everything
-the written answer establishes that the reader needs — names, figures,
-definitions, warnings — is said aloud. Someone who only listens must never have
-to re-ask what the written text already said.
-
-- Length follows the content: a terse question earns a sentence or two, a rich
-  answer earns as many as it needs. Conversational, never a reading of the full
-  text: say the substance, skip the layout talk.
-- Plain text only inside the tags: no bold, no headings, no tables. Short lists
-  are allowed when they genuinely help the ear — naming the four dimensions of
-  an index aloud, for instance.
-- Write EVERY number, amount and symbol the way it is SPOKEN, in full words:
-  "about twenty-two point eight million euros", never "22,8 M€". Spell units
-  and symbols out — "%" becomes "percent", "€" becomes "euros" — in the
-  conversation's language. A synthesizer reads what a page writes literally.
-- You may ALSO open a short spoken block BEFORE a slow tool call to say what
-  you are looking at ("I am pulling the health scores of the six companies")
-  — the reader hears you are working instead of staring at silence.
-- Outside the tags, write the complete answer as usual: the block carries the
-  speech, never replaces the text."""
-
-# The repair prompt used when the model wrote no block lives in
-# ``lys.apps.ai.utils.prompts``: the config layer applies it as the
-# ``spoken_repair`` endpoint's default system prompt, and cannot import from here.
-
-
+# the feature does not exist: the answer is what the model wrote, whole, and no
+# synthesizer reads it.
 @dataclass(frozen=True)
 class SpokenBlockConfig:
     """The feature's configuration, resolved from the AI plugin settings."""
 
     enabled: bool = False
-    open_tag: str = DEFAULT_SPOKEN_BLOCK_OPEN_TAG
-    close_tag: str = DEFAULT_SPOKEN_BLOCK_CLOSE_TAG
-    prompt: str = DEFAULT_SPOKEN_BLOCK_PROMPT
+    language: Optional[str] = None
 
     @classmethod
     def from_plugin_config(cls, chatbot_config: Dict) -> "SpokenBlockConfig":
-        """
-        Read ``chatbot.spoken_block`` from the AI plugin configuration.
+        """Read ``chatbot.spoken_block`` from the AI plugin configuration.
 
-        A partial dict is fine — only ``enabled`` truly decides existence, the
-        rest falls back to the framework defaults so an app that only says
-        ``{"enabled": true}`` gets a working feature with nothing else.
+        A partial dict is fine — only ``enabled`` decides existence, an app
+        that only says ``{"enabled": True}`` gets a working voice reading the
+        answer with its markdown stripped.
+
+        ``language`` names the spoken vocabulary to apply on top of that strip
+        (figures said in words, symbols and units spelled). It is opt-in on
+        purpose: the framework speaks no language by default, and an app that
+        does not declare one gets the strip alone rather than another
+        language's words.
         """
         raw = chatbot_config.get("spoken_block") or {}
+        language = raw.get("language")
         return cls(
             enabled=bool(raw.get("enabled", False)),
-            open_tag=str(raw.get("open_tag") or DEFAULT_SPOKEN_BLOCK_OPEN_TAG),
-            close_tag=str(raw.get("close_tag") or DEFAULT_SPOKEN_BLOCK_CLOSE_TAG),
-            prompt=str(raw.get("prompt") or DEFAULT_SPOKEN_BLOCK_PROMPT),
+            language=str(language).lower() if language else None,
         )
 
 
-class SpokenBlockSplitter:
-    """
-    Cut a token stream into its written and spoken renditions.
-
-    The tags can arrive split across chunks — ``[VO`` at the end of one, ``ICE]``
-    at the start of the next — so every unemitted tail that could still become
-    a tag is held back until more text decides. Everything emitted is final.
-
-    Feed token deltas in, get ``(kind, text)`` pieces out: ``"voice"`` inside a
-    block, ``"written"`` outside. The tags themselves are consumed, never
-    emitted: the caller never forwards them to a client or a synthesizer.
-    """
-
-    def __init__(self, config: SpokenBlockConfig):
-        self._config = config
-        self._inside_block = False
-        self._pending = ""
-
-    def feed(self, text: str) -> List[Tuple[str, str]]:
-        """Add one token delta, returning the completed pieces in order."""
-        self._pending += text
-        pieces: List[Tuple[str, str]] = []
-
-        while True:
-            tag = self._config.close_tag if self._inside_block else self._config.open_tag
-            index = self._pending.find(tag)
-            if index == -1:
-                break
-            # Text before the tag belongs to the current state; the tag itself
-            # is consumed as the state switch.
-            before = self._pending[:index]
-            if before:
-                pieces.append(("voice" if self._inside_block else "written", before))
-            self._inside_block = not self._inside_block
-            self._pending = self._pending[index + len(tag):]
-
-        # No full tag left: emit everything except a tail short enough to
-        # still become one. A tail longer than any tag cannot be a tag start,
-        # so it is safe to release.
-        hold = max(len(self._config.open_tag), len(self._config.close_tag)) - 1
-        release = len(self._pending) - hold
-        if release > 0:
-            emitted, self._pending = self._pending[:release], self._pending[release:]
-            pieces.append(("voice" if self._inside_block else "written", emitted))
-        return pieces
-
-    def flush(self) -> List[Tuple[str, str]]:
-        """End of stream: whatever is held back belongs to the current state."""
-        if not self._pending:
-            return []
-        piece = ("voice" if self._inside_block else "written", self._pending)
-        self._pending = ""
-        return [piece]
-
-    @property
-    def inside_block(self) -> bool:
-        """True while the last fed text sits inside the spoken tags."""
-        return self._inside_block
-
-
-def split_spoken_blocks(text: str, config: SpokenBlockConfig) -> Tuple[str, Optional[str]]:
-    """
-    Split a complete answer for persistence: (written, spoken).
-
-    The written rendition is the answer with its blocks and tags removed —
-    clean for search, compaction and the next turn's history. The spoken one
-    is the blocks' content joined by a blank line; ``None`` when the model
-    wrote no block at all (the caller's drift signal).
-
-    A block left unclosed at the end is still spoken content — the model was
-    interrupted, not undecided — so it goes to the spoken side, tags stripped.
-
-    A disabled configuration is a feature that does not exist: the text comes
-    back exactly as written, spoken ``None`` — the guard lives here, not only
-    at the call sites, so no unguarded caller can ever strip a disabled app's
-    answers.
-    """
-    if not config.enabled:
-        return text, None
-    splitter = SpokenBlockSplitter(config)
-    pieces = splitter.feed(text) + splitter.flush()
-    written = "".join(text_ for kind, text_ in pieces if kind == "written")
-    spoken_parts = [text_ for kind, text_ in pieces if kind == "voice"]
-    return written.strip(), "\n\n".join(speaker.strip() for speaker in spoken_parts if speaker.strip()) or None
-
-
-# Markdown that would be heard as noise or read as symbols if handed raw to a
-# synthesizer. The spoken blocks should need none of this — the strip exists
-# for the FALLBACK path, where the voice reads the written answer because the
-# model emitted no block at all.
 def strip_markdown_for_speech(text: str) -> str:
     """
     Reduce a written answer to something a voice can read honestly.
@@ -237,36 +107,216 @@ def strip_markdown_for_speech(text: str) -> str:
     return stripped.strip()
 
 
-def strip_spoken_tags(text: str, config: SpokenBlockConfig) -> str:
+# --- The mechanical ear -----------------------------------------------------------------------
+#
+# The synthesizer reads the written answer as it stands. What a
+# synthesizer cannot read honestly is not a matter of judgment but of
+# typography: markdown marks, abbreviated months, a colon spoken as a word.
+# Spelling those out is deterministic — regexes, a French vocabulary, unit
+# tests — which is why it lives here rather than in a second model call.
+#
+# The figures themselves are spoken by num2words — the industry's pragmatic
+# answer for TTS text normalization (the heavyweight one, NVIDIA NeMo's WFST
+# grammars, asks for linguistic tooling this feature does not need). It ships
+# with the ``ai`` extra and is imported lazily: absent, the amounts still get
+# their units spelled ("150 mille euros") with the figure left as digits — a
+# degraded voice, never a broken one.
+
+try:
+    from num2words import num2words as _num2words
+except ImportError:  # pragma: no cover - exercised through the fallback tests
+    _num2words = None
+
+
+def _number_in_words(figure: str, language: str) -> str:
+    """A figure as it is said, or the figure itself when no library speaks."""
+    if _num2words is None:
+        return figure
+    try:
+        # The spaces are thousands groups ("22 860"), not noise to the float.
+        return _num2words(float(figure.replace(" ", "").replace(",", ".")), lang=language)
+    except (ValueError, NotImplementedError):
+        return figure
+
+
+# Typography a synthesizer reads as silence or as noise: the narrow no-break
+# space French puts between a number and its unit ("22,8 %") or between
+# thousands groups ("22 860") becomes a plain space before anything else looks
+# at it. Not language-specific — the marks are typographic, not lexical.
+_INVISIBLE_SPACES = str.maketrans({"\u202f": " ", "\u00a0": " "})
+
+# One figure: thousands groups separated by spaces, a decimal comma or point,
+# or a bare integer — matched so "22 860,5 M€" is one spoken amount and not
+# "860".
+_FIGURE_RE = r"\d{1,3}(?: \d{3})*(?:[.,]\d+)?|\d+(?:[.,]\d+)?"
+
+# The scale prefixes and the currency symbols, in one amount. The currency is
+# per symbol, not per country: "$" is spoken dollars whatever the issuer, and
+# a currency missing from a vocabulary's table is a symbol the voice reads as
+# letters — extend the table, never guess.
+_AMOUNT_RE = re.compile(rf"({_FIGURE_RE})\s*(Mds|Md|M|k|K)?\s*(€|\$|£|¥|₿|CHF)")
+_PERCENT_RE = re.compile(rf"({_FIGURE_RE})\s*%")
+
+# A sign, and only a sign: the "+" or "-" that OPENS a figure. Anything glued to
+# what precedes it is punctuation of that token, not an operator — "2024-01-01"
+# is a date, "10-15" a range, "ref-12" an identifier, and a voice saying "moins"
+# in any of them is reading something the answer never wrote.
+_SIGN_RE = re.compile(r"(?<![\w)\]])([+-])(?=\d)")
+
+# A colon the model left in despite the prompt is a voice problem: it becomes a
+# comma pause, the closest thing to how a reader uses it. Two colons are NOT
+# that: the one inside a time ("14:30") and the one opening a URL scheme
+# ("https://") are part of their token, and turning them into a pause loses
+# what the answer said.
+_SPOKEN_COLON_RE = re.compile(r"\s*(?<!\d):(?!//)\s*")
+
+
+@dataclass(frozen=True)
+class SpeechVocabulary:
+    """How one language says what typography only writes.
+
+    Adding a language is adding one instance to :data:`_SPEECH_VOCABULARIES`,
+    never another branch: the pipeline below is language-agnostic, only these
+    tables are not.
     """
-    Remove the block tags a REPAIR output must not carry.
 
-    The repair prompt says "no tags", but a model that just failed to follow
-    the block convention once already is not trusted on a second instruction:
-    the defensive strip is one line, a spoken "[VOICE]" aloud is a bug the
-    listener hears.
+    #: Scale prefix -> (singular, plural) of the spoken scale word.
+    scales: Dict[str, Tuple[str, str]]
+    #: Currency symbol -> how it is said, already plural.
+    currencies: Dict[str, str]
+    #: Abbreviated month -> its full name. An abbreviation is read as letters
+    #: ("nov. 2024" as "N-O-V point ...") on some engines.
+    months: Dict[str, str]
+    #: Layout glyphs with one natural spoken equivalent in this language.
+    glyphs: List[Tuple["re.Pattern", str]]
+    #: What "%" is said as, and the sign words.
+    percent: str
+    plus: str
+    minus: str
+    #: Vowel sounds triggering the elision of the scale connector, and the two
+    #: connector forms ("un million d'euros" / "de dollars").
+    elision_sounds: str
+    elided_connector: str
+    connector: str
+    #: The scales this language leaves invariable and un-connected ("mille").
+    invariable_scales: Tuple[str, ...] = ()
+
+
+_FRENCH_VOCABULARY = SpeechVocabulary(
+    scales={
+        "k": ("mille", "mille"),  # invariable: un mille, deux mille
+        "K": ("mille", "mille"),
+        "M": ("million", "millions"),
+        "Md": ("milliard", "milliards"),
+        "Mds": ("milliard", "milliards"),
+    },
+    currencies={
+        "€": "euros",
+        "$": "dollars",
+        "£": "livres",
+        "¥": "yens",
+        "₿": "bitcoins",
+        "CHF": "francs suisses",
+    },
+    months={
+        "janv.": "janvier", "févr.": "février", "avr.": "avril",
+        "juil.": "juillet", "sept.": "septembre", "oct.": "octobre",
+        "nov.": "novembre", "déc.": "décembre",
+    },
+    glyphs=[
+        # The ASCII arrow is what a model actually types when it thinks in
+        # keyboards; the unicode one is what it types when it thinks in glyphs.
+        (re.compile(r"->|→"), ", "),
+        (re.compile(r"&"), " et "),
+    ],
+    percent="pour cent",
+    plus="plus ",
+    minus="moins ",
+    elision_sounds="aeiouéèêh",
+    elided_connector="d'",
+    connector="de ",
+    invariable_scales=("k", "K"),
+)
+
+#: The vocabularies the framework ships. A language absent from here gets the
+#: markdown strip alone — a degraded voice, never another language's words.
+_SPEECH_VOCABULARIES: Dict[str, SpeechVocabulary] = {
+    "fr": _FRENCH_VOCABULARY,
+}
+
+
+def _spell_amount(match: "re.Match", language: str, vocabulary: SpeechVocabulary) -> str:
+    """One figure, its scale and its currency, as they are said."""
+    figure, scale, currency = match.group(1), match.group(2), match.group(3)
+    words = _number_in_words(figure, language)
+    currency_words = vocabulary.currencies.get(currency, currency)
+    if not scale:
+        return f"{words} {currency_words}"
+    singular, plural = vocabulary.scales[scale]
+    if scale in vocabulary.invariable_scales:
+        # Invariable, and never followed by a connector: "cent cinquante mille
+        # euros".
+        return f"{words} {singular} {currency_words}"
+    value = float(figure.replace(" ", "").replace(",", "."))
+    # The agreement follows the SPOKEN number: "un million", "un virgule cinq
+    # millions". The elision is the currency's first sound: "d'euros",
+    # "de dollars".
+    scale_word = singular if value == 1 else plural
+    connector = (
+        vocabulary.elided_connector
+        if currency_words[0] in vocabulary.elision_sounds
+        else vocabulary.connector
+    )
+    return f"{words} {scale_word} {connector}{currency_words}"
+
+
+def normalize_speech(text: str, language: Optional[str] = None) -> str:
     """
-    return text.replace(config.open_tag, "").replace(config.close_tag, "")
+    Make a written answer honest to read aloud — mechanically.
 
+    The markdown goes first: a synthesized "**500 k€**" is asterisks and a
+    composed unit, and the amounts are matched after the marks are gone.
+    Bare digits are LEFT AS DIGITS — engines read "2024" correctly, and a
+    text without any figure is harder to follow than one with them. A digit
+    carrying a unit (amount, percent) is different: the unit announces the
+    number, so the whole thing is said — "vingt-deux virgule huit millions
+    d'euros", "vingt-six pour cent".
 
-def spoken_fallback_opening(text: str, max_sentences: int = 5) -> str:
+    Args:
+        text: The written answer, markdown included.
+        language: The spoken vocabulary to apply, as configured in
+            ``chatbot.spoken_block.language``. None, or a language the
+            framework ships no vocabulary for, gets the markdown strip alone
+            rather than another language's words.
+
+    Returns:
+        The text a synthesizer can read as it stands.
     """
-    The fallback reading when the model wrote no block: the OPENING of the
-    written answer, not all of it.
+    stripped = strip_markdown_for_speech(text).translate(_INVISIBLE_SPACES)
+    vocabulary = _SPEECH_VOCABULARIES.get(language) if language else None
+    if vocabulary is None:
+        return stripped
 
-    The drift already costs the reader a late voice; making them listen to a
-    two-minute reading of a long written answer turns a miss into a punishment.
-    But too short an opening zaps what the answer actually said — five
-    sentences carry both the verdict and what supports it. The rest is what
-    the panel is for.
-
-    The input is a COMPLETE answer, not a streaming buffer: its final
-    sentence has no closing boundary, so the tail counts as a sentence —
-    nothing of what is read is dropped for a punctuation technicality.
-    """
-    complete, remainder = split_complete_sentences(text)
-    sentences = complete + ([remainder.strip()] if remainder.strip() else [])
-    return " ".join(sentence.strip() for sentence in sentences[:max_sentences]).strip()
+    # The signed figures are unmarked before their amounts and percents are
+    # spelled: after the spelling the "+" is glued to letters and no longer
+    # recognizable as a sign.
+    stripped = _SIGN_RE.sub(
+        lambda m: vocabulary.plus if m.group(1) == "+" else vocabulary.minus, stripped
+    )
+    stripped = _AMOUNT_RE.sub(lambda m: _spell_amount(m, language, vocabulary), stripped)
+    stripped = _PERCENT_RE.sub(
+        lambda m: f"{_number_in_words(m.group(1), language)} {vocabulary.percent}", stripped
+    )
+    for pattern, spoken in vocabulary.glyphs:
+        stripped = pattern.sub(spoken, stripped)
+    stripped = _SPOKEN_COLON_RE.sub(", ", stripped)
+    for abbreviation, month in vocabulary.months.items():
+        stripped = stripped.replace(abbreviation, month)
+    # The replacements leave commas against commas (" : " after an arrow
+    # became ", , "): one pause, not a stumble.
+    stripped = re.sub(r",\s*,", ",", stripped)
+    stripped = re.sub(r"\s+,", ",", stripped)
+    return re.sub(r"  +", " ", stripped).strip()
 
 
 def split_complete_sentences(buffer: str) -> Tuple[List[str], str]:
@@ -274,11 +324,16 @@ def split_complete_sentences(buffer: str) -> Tuple[List[str], str]:
     Cut a growing spoken block into speakable pieces.
 
     A sentence ends at terminal punctuation followed by whitespace, or at a
-    line break — the break matters as much as the period: spoken blocks carry
-    short lists whose lines end without punctuation, and a paragraph break is
-    a natural speech pause even mid-sentence.
+    line break — the break matters as much as the period: answers carry short
+    lists whose lines end without punctuation, and a paragraph break is a
+    natural speech pause even mid-sentence.
+
+    A period closing a figure does NOT end a sentence: "1." opening an ordered
+    list, or "2024." closing one, would otherwise be cut into a piece of its
+    own and read aloud as a bare number. The piece simply joins the text that
+    follows it, which is what a reader does with it.
     """
-    parts = re.split(r"(?<=[.!?…])[ \t]+|\n+", buffer)
+    parts = re.split(r"(?<=[.!?…])(?<!\d\.)[ \t]+|\n+", buffer)
     if len(parts) <= 1:
         return [], buffer
     return parts[:-1], parts[-1]

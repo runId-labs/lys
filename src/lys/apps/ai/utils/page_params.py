@@ -24,6 +24,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from uuid import UUID
 
 from lys.core.graphql.client import decode_global_id
+from lys.core.utils.routes import route_page_params, writable_param_names  # noqa: F401
 
 logger = logging.getLogger(__name__)
 
@@ -249,3 +250,113 @@ def validate_page_params(
         accepted[key] = coerced
 
     return accepted
+
+
+def has_writable_params(schema: Optional[Dict[str, Any]]) -> bool:
+    """
+    Whether a page declares at least one model-writable param.
+
+    The gate for exposing `set_page_params` (and the `params` argument of
+    `navigate`): a page that marks no param `writable` never sees the tool, so
+    the surface stays opt-in per page, per param.
+    """
+    return bool(writable_param_names(schema))
+
+
+def writable_page_params(
+    params: Optional[Dict[str, Any]],
+    schema: Optional[Dict[str, Any]],
+    page_name: str = "",
+) -> Tuple[Dict[str, Any], Dict[str, str]]:
+    """
+    Model-supplied params gate: the same type validation as
+    :func:`validate_page_params`, plus the ``writable`` flag.
+
+    Reading a param and writing one are different grants: the URL carries what
+    the USER set (every declared param), the model may set only what the page
+    marks ``writable: true``. Reading the refusal reasons matters here, unlike
+    the read path: they go back to the MODEL (errors belong to the model — it
+    reformulates), not only to a log.
+
+    Args:
+        params: The model-supplied params (a tool call's ``params`` argument).
+        schema: The page's declared params, or None when the page declares none.
+        page_name: The page, for the log lines only.
+
+    Returns:
+        ``(accepted, refusals)`` — the validated params the model may set, and
+        a ``{key: reason}`` dict for the ones it may not:
+        ``"undeclared"`` (no declaration), ``"not_writable"`` (declared but
+        read-only), ``"invalid_value"`` (does not match its declared type).
+    """
+    accepted: Dict[str, Any] = {}
+    refusals: Dict[str, str] = {}
+
+    if not params:
+        return accepted, refusals
+
+    for key, value in (params or {}).items():
+        spec = schema.get(key) if isinstance(schema, dict) else None
+        if not isinstance(spec, dict):
+            refusals[key] = "undeclared"
+            logger.info(
+                "[PageParams] Page '%s': model-supplied param '%s' is not declared",
+                page_name, key,
+            )
+            continue
+        if not spec.get("writable"):
+            refusals[key] = "not_writable"
+            logger.info(
+                "[PageParams] Page '%s': param '%s' is declared read-only",
+                page_name, key,
+            )
+            continue
+
+        ok, coerced = _check_value(value, spec)
+        if not ok:
+            refusals[key] = "invalid_value"
+            logger.info(
+                "[PageParams] Page '%s': model-supplied param '%s' does not match "
+                "its declared type '%s'",
+                page_name, key, spec.get("type"),
+            )
+            continue
+        accepted[key] = coerced
+
+    return accepted, refusals
+
+
+# The model-facing definition. Exposed only on pages declaring at least one
+# writable param — the description must stand alone: it says WHAT the tool does,
+# WHERE the values come from (the same "Page params" JSON section the model
+# reads), and what NOT to use it for.
+SET_PAGE_PARAMS_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "set_page_params",
+        "description": (
+            "Change the filters of the page the user is looking at. The page accepts "
+            "only the params it declares writable, in the same shapes as the 'Page "
+            "params' JSON section of the dynamic context: pass ids and values exactly "
+            "as that section carries them. The change applies immediately — the screen "
+            "refilters and the section reflects it on the next turn — so tell the user "
+            "what you changed. Use it when the user asks to see another period, "
+            "company, indicator or scope; never to answer a question (read the current "
+            "params instead), and never invent a value the page has not shown you."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "params": {
+                    "type": "object",
+                    "description": (
+                        "The filters to set, keyed as in the 'Page params' section "
+                        "(e.g. {\"pastMonths\": 24}). Only the keys the page declares "
+                        "writable are accepted; an id goes in as the GlobalID you read."
+                    ),
+                },
+            },
+            "required": ["params"],
+        },
+    },
+}

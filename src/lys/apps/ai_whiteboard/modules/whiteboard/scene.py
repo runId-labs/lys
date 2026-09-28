@@ -30,6 +30,7 @@ import unicodedata
 from random import randint
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
+from lys.apps.ai_whiteboard.modules.whiteboard.font_metrics import VIRGIL_CHAR_WIDTHS
 from lys.apps.ai_whiteboard.errors import (
     WHITEBOARD_ELEMENT_NAME_REQUIRED,
     WHITEBOARD_INVALID_CHART,
@@ -47,6 +48,8 @@ from lys.apps.ai_whiteboard.errors import (
 )
 from lys.apps.ai_whiteboard.modules.whiteboard.consts import (
     BOUND_TEXT_PADDING,
+    TABLE_COLUMN_MAX_WIDTH,
+    TABLE_COLUMN_MIN_WIDTH,
     CELL_HEIGHT,
     CELL_WIDTH,
     CHAR_WIDTH_RATIO,
@@ -83,7 +86,6 @@ from lys.apps.ai_whiteboard.modules.whiteboard.consts import (
     SERIES_COLORS,
     STACK_GAP,
     STROKE_COLOR,
-    TABLE_CELL_WIDTH,
     TABLE_ROW_HEIGHT,
     TRANSPARENT,
     ElementKind,
@@ -189,18 +191,28 @@ def _text_value(value: Any, field: str = "text") -> str:
 # ==================== Text measurement ====================
 
 
-def _char_width(font_size: float) -> float:
-    return font_size * CHAR_WIDTH_RATIO
+def _char_width(char: str, font_size: float) -> float:
+    """One character's advance, in the face the editor measures with.
 
-
-def _wrap(text: str, max_chars: int) -> List[str]:
+    The Virgil table is the canvas measurement itself (no kerning, advances
+    summed — see font_metrics.py). A character the table does not carry falls
+    back to the historic generous ratio: unknown is not invisible, and a box
+    slightly too wide is invisible where a clipped character is not.
     """
-    Break text into lines that fit ``max_chars``, keeping the caller's own line breaks.
+    return VIRGIL_CHAR_WIDTHS.get(char, CHAR_WIDTH_RATIO) * font_size
+
+
+def _text_width(text: str, font_size: float = FONT_SIZE) -> float:
+    return sum(_char_width(char, font_size) for char in text)
+
+
+def _wrap(text: str, max_width: float, font_size: float = FONT_SIZE) -> List[str]:
+    """
+    Break text into lines that fit ``max_width``, keeping the caller's own line breaks.
 
     Words longer than a line are left whole rather than cut: a broken IBAN or SIREN is
     worse than a line that runs slightly wide, and the editor draws it either way.
     """
-    max_chars = max(1, max_chars)
     lines: List[str] = []
     for paragraph in text.split("\n"):
         if not paragraph:
@@ -209,7 +221,7 @@ def _wrap(text: str, max_chars: int) -> List[str]:
         current = ""
         for word in paragraph.split(" "):
             candidate = f"{current} {word}".strip()
-            if len(candidate) <= max_chars or not current:
+            if not current or _text_width(candidate, font_size) <= max_width:
                 current = candidate
             else:
                 lines.append(current)
@@ -218,21 +230,23 @@ def _wrap(text: str, max_chars: int) -> List[str]:
     return lines
 
 
-def _text_size(text: str, font_size: float = FONT_SIZE, max_width: Optional[float] = None) -> Tuple[float, float]:
+def _text_size(
+    text: str, font_size: float = FONT_SIZE, max_width: Optional[float] = None
+) -> Tuple[float, float]:
     """
     How much room a text needs.
 
-    Measured from character counts, not font metrics: the editor has the real face and we
-    do not, so :data:`CHAR_WIDTH_RATIO` errs generous. A box slightly too wide is
-    invisible on a whiteboard; a box too narrow clips the text, which is the failure this
-    replaces.
+    Measured from the Virgil font's own advance widths — the same sum the
+    editor's canvas makes once its fonts are loaded, which is the geometry
+    the board settles on. The lines break at word boundaries the way the
+    editor wraps; the height is one line box per line, unrounded like the
+    editor leaves them.
     """
-    char_width = _char_width(font_size)
     if max_width:
-        lines = _wrap(text, int(max_width / char_width))
+        lines = _wrap(text, max_width, font_size)
     else:
         lines = text.split("\n")
-    width = max((len(line) for line in lines), default=0) * char_width
+    width = max((_text_width(line, font_size) for line in lines), default=0)
     return width, len(lines) * font_size * LINE_HEIGHT
 
 
@@ -707,14 +721,48 @@ def _make_table(
     Native rather than an image, because the board's promise is that the user can edit
     what is on it. A table the user cannot retype a figure into would be a screenshot
     with extra steps - and the caller still only sends data, never geometry.
+
+    The grid is sized by its content, cell by cell: a column is as wide as its widest
+    cell demands (past the cap the cell wraps and the row grows instead), a row as tall
+    as its tallest wrapped cell. The uniform grid this replaces starved the narrow
+    columns and drowned the wide ones - every overflow a reader saw was a cell whose
+    content nobody had asked about.
     """
     headers, rows = _read_table(operation)
     columns = len(headers)
-    lines = len(rows) + 1
+    grid = [headers] + rows
 
-    column_width = _size(operation["width"], "width") / columns if operation.get("width") is not None \
-        else TABLE_CELL_WIDTH
-    width, height = column_width * columns, TABLE_ROW_HEIGHT * lines
+    # Column widths: the widest natural cell decides, inside [min, cap].
+    natural_widths = [
+        max(_text_size(row[column])[0] for row in grid) for column in range(columns)
+    ]
+    column_widths = [
+        min(
+            max(natural + 2 * BOUND_TEXT_PADDING, TABLE_COLUMN_MIN_WIDTH),
+            TABLE_COLUMN_MAX_WIDTH,
+        )
+        for natural in natural_widths
+    ]
+    if operation.get("width") is not None:
+        # The caller asked for a width: the content-proportional columns are
+        # scaled to it, the proportions preserved.
+        wanted = _size(operation["width"], "width")
+        factor = wanted / sum(column_widths)
+        column_widths = [column * factor for column in column_widths]
+
+    # Row heights: the tallest WRAPPED cell decides — a cell past its column's
+    # cap wraps, and the row carries the extra lines.
+    row_heights: List[float] = []
+    for row in grid:
+        needed = max(
+            _text_size(
+                row[column], max_width=column_widths[column] - 2 * BOUND_TEXT_PADDING
+            )[1]
+            for column in range(columns)
+        )
+        row_heights.append(max(needed + 2 * BOUND_TEXT_PADDING, TABLE_ROW_HEIGHT))
+
+    width, height = sum(column_widths), sum(row_heights)
     x, y = _resolve_position(operation, elements, width, height)
     tag = {OWNER_KEY: element_id, KIND_KEY: ElementKind.TABLE.value}
 
@@ -724,30 +772,32 @@ def _make_table(
         groupIds=[element_id], customData=tag,
         **_style(operation),
     )]
+    column_edges = _cumulative_edges(column_widths)
+    row_edges = _cumulative_edges(row_heights)
     for column in range(1, columns):
         parts.append(_base_element(
             f"{element_id}-col-{column}", "line",
-            x=x + column * column_width, y=y, width=0, height=height,
+            x=x + column_edges[column], y=y, width=0, height=height,
             points=[[0, 0], [0, height]],
             groupIds=[element_id], customData=dict(tag),
             strokeColor=parts[0]["strokeColor"],
         ))
-    for line in range(1, lines):
+    for line in range(1, len(grid)):
         parts.append(_base_element(
             f"{element_id}-row-{line}", "line",
-            x=x, y=y + line * TABLE_ROW_HEIGHT, width=width, height=0,
+            x=x, y=y + row_edges[line], width=width, height=0,
             points=[[0, 0], [width, 0]],
             groupIds=[element_id], customData=dict(tag),
             strokeColor=parts[0]["strokeColor"],
         ))
-    for line, cells in enumerate([headers] + rows):
+    for line, cells in enumerate(grid):
         for column, cell in enumerate(cells):
             parts.append(_base_element(
                 f"{element_id}-cell-{line}-{column}", "text",
-                x=x + column * column_width + BOUND_TEXT_PADDING,
-                y=y + line * TABLE_ROW_HEIGHT + BOUND_TEXT_PADDING,
-                width=max(column_width - 2 * BOUND_TEXT_PADDING, 1),
-                height=TABLE_ROW_HEIGHT - 2 * BOUND_TEXT_PADDING,
+                x=x + column_edges[column] + BOUND_TEXT_PADDING,
+                y=y + row_edges[line] + BOUND_TEXT_PADDING,
+                width=max(column_widths[column] - 2 * BOUND_TEXT_PADDING, 1),
+                height=max(row_heights[line] - 2 * BOUND_TEXT_PADDING, 1),
                 text=cell, originalText=cell,
                 fontSize=FONT_SIZE, fontFamily=FONT_FAMILY, lineHeight=LINE_HEIGHT,
                 textAlign="left", verticalAlign="middle", autoResize=False,
@@ -756,6 +806,15 @@ def _make_table(
             ))
     parts[0]["customData"] = {**tag, SPEC_KEY: {"headers": headers, "rows": rows}}
     return parts
+
+
+def _cumulative_edges(sizes: Sequence[float]) -> List[float]:
+    """The offset each boundary sits at: [0, w0, w0 + w1, ...] - where the
+    next element starts, which is where the rule between them is drawn."""
+    edges: List[float] = [0.0]
+    for size in sizes:
+        edges.append(edges[-1] + size)
+    return edges
 
 
 # ==================== Charts ====================

@@ -382,3 +382,112 @@ class TestValidateScene:
         scene = {"elements": [{"id": "a", "type": "rectangle", "x": float("nan")}]}
         with pytest.raises(LysError):
             scene_tools.validate_scene(scene, self.LIMIT)
+
+
+class TestTextMeasurement:
+    """The server lays text out with the Virgil font's own advances — the
+    same sum the editor's canvas makes once its fonts are loaded."""
+
+    def test_a_texts_width_is_the_fonts_own_sum_of_advances(self):
+        # Ground truth, measured the long way: the editor's canvas gives the
+        # same figure once Virgil is loaded (no kerning in the face, the
+        # advances ARE the measurement).
+        width, _ = scene_tools._text_size("Société")
+        assert width == pytest.approx(58.88, abs=0.1)
+
+    def test_an_unknown_character_falls_back_generously(self):
+        # Not in the table: the historic ratio, never zero — a clipped
+        # character is worse than a box slightly too wide.
+        width, _ = scene_tools._text_size("\u4e2d")
+        assert width > 0
+
+    def test_a_constrained_text_wraps_at_word_boundaries(self):
+        # The natural width of one long word cannot be broken: it stays whole
+        # and runs wide rather than cutting an IBAN in half.
+        long_word = "SIREN-123456789"
+        _, height = scene_tools._text_size(long_word, max_width=10)
+        assert height == pytest.approx(16 * 1.25)
+
+    def test_wrapping_counts_the_lines_the_editor_will_draw(self):
+        text = "un rendement en nette amelioration sur l'exercice"
+        _, natural = scene_tools._text_size(text)
+        _, wrapped = scene_tools._text_size(text, max_width=120)
+        assert wrapped > natural
+        # One line box per line, unrounded.
+        assert wrapped / (16 * 1.25) == round(wrapped / (16 * 1.25))
+
+
+class TestContentSizedTable:
+    """A table is sized by its content: columns to their widest cell, rows to
+    their tallest wrapped one. The uniform grid starved the narrow columns
+    and drowned the wide ones."""
+
+    def table(self, board):
+        return next(e for e in board["elements"] if e["type"] == "rectangle")
+
+    def cells(self, board):
+        return {e["id"]: e for e in board["elements"] if e["type"] == "text"}
+
+    def test_a_column_is_as_wide_as_its_widest_cell(self):
+        board = draw({"add": [{
+            "name": "t", "kind": "table",
+            "headers": ["N°", "Société"],
+            "rows": [["1", "PREFA BLOC AGREGATS"]],
+        }]})
+        columns = {e["id"] for e in board["elements"] if "-col-" in e["id"]}
+        rule = next(e for e in board["elements"] if e["id"] == "t-col-1")
+        cell = self.cells(board)["t-cell-0-1"]
+        # The Société column starts wide (its content), the N° column narrow.
+        assert rule["x"] < 90
+        assert cell["width"] > 150
+
+    def test_a_capped_column_wraps_and_the_row_grows(self):
+        board = draw({"add": [{
+            "name": "t", "kind": "table",
+            "headers": ["Société", "Chiffre d'affaires consolidé sur l'exercice 2025"],
+            "rows": [["BTP", "924 k€"]],
+        }]})
+        rows = {e["id"]: e for e in board["elements"] if "-row-" in e["id"]}
+        table = self.table(board)
+        # The header row carries two wrapped lines: it is taller than the
+        # one-line data row.
+        header_bottom = rows["t-row-1"]["y"]
+        assert header_bottom - table["y"] > 36
+        assert table["height"] - (header_bottom - table["y"]) == pytest.approx(36)
+
+    def test_a_short_table_is_compact(self):
+        board = draw({"add": [{
+            "name": "t", "kind": "table",
+            "headers": ["a", "b"], "rows": [["1", "2"]],
+        }]})
+        table = self.table(board)
+        # Two columns at the content floor, two rows (header + data) at the
+        # row floor: the uniform grid could not have been smaller either.
+        assert table["width"] == pytest.approx(160)
+        assert table["height"] == pytest.approx(72)
+
+    def test_the_callers_width_scales_the_content_proportions(self):
+        board = draw({"add": [{
+            "name": "t", "kind": "table", "width": 600,
+            "headers": ["N°", "Société"],
+            "rows": [["1", "PREFA BLOC AGREGATS"]],
+        }]})
+        table = self.table(board)
+        rule = next(e for e in board["elements"] if e["id"] == "t-col-1")
+        # The total is the caller's width; the split keeps the content's
+        # proportions - the narrow N° column stays narrower than Société.
+        assert table["width"] == pytest.approx(600)
+        assert rule["x"] < 300
+        assert rule["x"] > 80
+
+    def test_new_data_resizes_the_grid_in_place(self):
+        board = draw(
+            {"add": [{"name": "t", "kind": "table", "headers": ["a"], "rows": [["1"]]}]},
+            {"update": [{"name": "t", "kind": "table",
+                         "headers": ["a", "Société"],
+                         "rows": [["1", "PREFA BLOC AGREGATS"]]}]},
+        )
+        table = self.table(board)
+        described_entry = described(board)["t"]
+        assert described_entry["data"]["headers"] == ["a", "Société"]
+        assert table["width"] > 80

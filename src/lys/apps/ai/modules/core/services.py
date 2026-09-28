@@ -36,7 +36,7 @@ from lys.core.consts.ai import ToolRiskLevel
 from lys.core.graphql.client import GraphQLClient
 from lys.core.registries import register_service
 from lys.core.services import Service
-from lys.core.utils.routes import load_routes_manifest
+from lys.core.utils.routes import load_routes_manifest, route_page_params
 from lys.core.utils.strings import to_snake_case
 
 if TYPE_CHECKING:
@@ -203,8 +203,7 @@ class AIService(Service):
 
         for route in manifest.get("routes", []):
             if route.get("name") == page_name:
-                params_schema = route.get("params")
-                return params_schema if isinstance(params_schema, dict) else None
+                return route_page_params(route)
 
         return None
 

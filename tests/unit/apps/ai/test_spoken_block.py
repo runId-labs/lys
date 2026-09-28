@@ -1,225 +1,237 @@
 """
-Tests for the spoken blocks — the written/spoken split of a chatbot answer.
+Tests for the chatbot's spoken answer — the direct voice.
 
-What is tested: the pure blocks of the mechanism. The tags route a token
-stream into written and spoken pieces (including the tag cut in half across
-two chunks), the persistence split keeps the written content free of tags, and
-the fallback sanitizer makes a written answer honest to the ear. No provider,
-no socket.
+One text, said as it stands: the normalizer is the mechanical ear (markdown
+out, amounts and symbols spelled), the pipeline synthesizes it sentence by
+sentence while the answer is still generating.
 """
-
 import pytest
 
 from lys.apps.ai.modules.conversation.spoken_block import (
     SpokenBlockConfig,
     SpokenBlockPipeline,
-    SpokenBlockSplitter,
-    split_spoken_blocks,
-    spoken_fallback_opening,
+    normalize_speech,
+    split_complete_sentences,
     strip_markdown_for_speech,
 )
 
 
-def renditions(splits: list[str]) -> tuple[str, str]:
-    """Feed a splitter every piece, returning its written and spoken texts."""
-    splitter = SpokenBlockSplitter(SpokenBlockConfig(enabled=True))
-    pieces: list[tuple[str, str]] = []
-    for text in splits:
-        pieces.extend(splitter.feed(text))
-    pieces.extend(splitter.flush())
-    written = "".join(text for kind, text in pieces if kind == "written")
-    spoken = "".join(text for kind, text in pieces if kind == "voice")
-    return written, spoken
-
-
-def test_disabled_config_leaves_the_answer_whole():
+def test_disabled_config_leaves_no_voice():
+    """The feature is opt-in: an app that configures nothing has none."""
     config = SpokenBlockConfig.from_plugin_config({})
-    written, spoken = split_spoken_blocks("[VOICE]Hello everyone[/VOICE] Written.", config)
-
     assert config.enabled is False
-    assert written == "[VOICE]Hello everyone[/VOICE] Written."
-    assert spoken is None
 
 
-def test_a_partial_enabled_config_uses_the_framework_defaults():
+def test_a_partial_enabled_config_is_enough():
+    """Only ``enabled`` decides existence: ``{"enabled": True}`` is a working
+    voice with nothing else."""
     config = SpokenBlockConfig.from_plugin_config({"spoken_block": {"enabled": True}})
-
     assert config.enabled is True
-    assert config.open_tag == "[VOICE]"
-    assert config.close_tag == "[/VOICE]"
-    assert config.prompt  # the framework's default instructions
 
 
-def test_a_block_splits_the_stream_into_written_and_voice():
-    written, spoken = renditions([
-        "Answer written. [VOICE]Spoken summary",
-        " of the answer.[/VOICE] Written tail.",
-    ])
-
-    assert " ".join(written.split()) == "Answer written. Written tail."
-    assert spoken == "Spoken summary of the answer."
+def test_the_stripper_removes_what_a_voice_cannot_read():
+    stripped = strip_markdown_for_speech("## Head\n**bold** and *italic* and `code`")
+    assert stripped == "Head\nbold and italic and code"
 
 
-def test_a_tag_cut_in_half_across_chunks_is_reassembled():
-    """The provider may emit "[VO" and "ICE]" in separate chunks — the held-back
-    tail must become a tag, never a stray "[VO" in either rendition."""
-    written, spoken = renditions(["Written start. [VO", "ICE]Spoken[/VO", "ICE] Tail."])
-
-    assert " ".join(written.split()) == "Written start. Tail."
-    assert spoken == "Spoken"
-    assert "[VO" not in written + spoken
+def test_the_stripper_drops_link_urls_and_keeps_their_text():
+    stripped = strip_markdown_for_speech("See [the report](http://x.y) for details")
+    assert "the report" in stripped
+    assert "http" not in stripped
 
 
-def test_an_unclosed_block_is_still_spoken_content():
-    """The model was interrupted mid-block, not undecided about speaking."""
-    written, spoken = renditions("[VOICE]I am pulling the hea")
-
-    assert written == ""
-    assert spoken == "I am pulling the hea"
+def test_the_stripper_keeps_snake_case_identifiers_whole():
+    """The underscore form needs non-word boundaries: user_id_value is content."""
+    assert strip_markdown_for_speech("_user_id_value_") == "_user_id_value_"
 
 
-def test_persistence_split_keeps_content_free_of_tags():
-    written, spoken = split_spoken_blocks(
-        "Written answer, complete.\n\n[VOICE]Spoken rendition, two sentences. Numbers said aloud.[/VOICE]",
-        SpokenBlockConfig(enabled=True),
+def test_the_stripper_keeps_a_bare_url():
+    """This function only strips marks, never content: a URL in the prose stays."""
+    assert strip_markdown_for_speech("go to http://x.y") == "go to http://x.y"
+
+
+# --- The mechanical ear ---------------------------------------------------------
+
+def test_an_amount_is_said_in_words_with_its_unit():
+    """150 k€ is one spoken amount: the figure in words, the scale, the
+    currency. The unit announces the number, so both are said."""
+    spoken = normalize_speech(
+        "Le CA est de **22,8 M€**, en hausse de +26%, arrêté au 15 nov. 2024.", "fr"
     )
-
-    assert written == "Written answer, complete."
-    assert spoken == "Spoken rendition, two sentences. Numbers said aloud."
-
-
-def test_persistence_split_without_a_block_is_the_written_answer():
-    written, spoken = split_spoken_blocks("Just text, no block.", SpokenBlockConfig(enabled=True))
-
-    assert written == "Just text, no block."
-    assert spoken is None  # the drift signal
+    assert "vingt-deux virgule huit millions d'euros" in spoken
+    assert "plus vingt-six pour cent" in spoken
+    assert "15 novembre 2024" in spoken
+    # The markdown marks are gone: a synthesizer never hears an asterisk.
+    assert "**" not in spoken
 
 
-def test_two_blocks_are_joined_in_the_spoken_side():
-    written, spoken = split_spoken_blocks(
-        "A [VOICE]first[/VOICE] B [VOICE]second[/VOICE] C",
-        SpokenBlockConfig(enabled=True),
-    )
-    assert " ".join(written.split()) == "A B C"
-    assert spoken == "first\n\nsecond"
+def test_a_signed_percent_is_said_with_its_sign():
+    spoken = normalize_speech("+26% de hausse, -12% de marge", "fr")
+    assert "plus vingt-six pour cent" in spoken
+    assert "moins douze pour cent" in spoken
 
 
-def test_custom_tags_are_honored():
-    config = SpokenBlockConfig(enabled=True, open_tag="<say>", close_tag="</say>")
-    written, spoken = split_spoken_blocks("Text <say>Spoken</say> More.", config)
-
-    assert " ".join(written.split()) == "Text More."
-    assert spoken == "Spoken"
-
-
-def test_the_fallback_stripper_removes_what_a_voice_cannot_read():
-    stripped = strip_markdown_for_speech(
-        "### Heading\n\nThe balance is **622,342 EUR** and `rising`.\n\n"
-        "| Company | Cash |\n|---|---|\n| A | 8k |\n| B | 107k |\n\n"
-        "- first point\n- second point\n1. numbered"
-    )
-
-    assert "###" not in stripped
-    assert "**" not in stripped
-    assert "`" not in stripped
-    assert "|" not in stripped
-    assert stripped.startswith("Heading")
-    assert "A · 8k" in stripped  # a table read aloud is a list, not a grid
-    assert "- " not in stripped
-    assert "1. " not in stripped
-    assert "622,342 EUR" in stripped  # the figures survive, only the marks go
+def test_every_scale_of_an_amount_agrees_with_its_figure():
+    """The agreement follows the SPOKEN number: one million, one and a half
+    millions. The thousand scale never carries a "de"."""
+    spoken = normalize_speech("1 M€, 1,5 M€, 2 Md€, 500 k€, 150 k€", "fr")
+    assert "un million d'euros" in spoken
+    assert "un virgule cinq millions d'euros" in spoken
+    assert "deux milliards d'euros" in spoken
+    assert "cinq cents mille euros" in spoken
+    assert "cent cinquante mille euros" in spoken
 
 
-def test_the_fallback_stripper_drops_link_urls_and_keeps_their_text():
-    """A URL read aloud is noise; the text around it is the information."""
-    stripped = strip_markdown_for_speech(
-        "See [the Q3 report](https://example.com/reports?id=42) and "
-        "![the cash chart](https://example.com/chart.png) below.\n"
-        "Docs at <https://example.com/docs>."
-    )
-
-    assert stripped == (
-        "See the Q3 report and the cash chart below.\n"
-        "Docs at https://example.com/docs."
-    )
+def test_the_amount_currencies_are_spoken_by_symbol():
+    """The currency is per symbol: dollars, livres, yens, bitcoins, francs
+    suisses — the voice says what the figure carries, whatever the issuer."""
+    spoken = normalize_speech("3 M$, 1 M£, 120 ¥, 0,5 ₿, 120 CHF", "fr")
+    assert "trois millions de dollars" in spoken
+    assert "un million de livres" in spoken
+    assert "cent vingt yens" in spoken
+    assert "zéro virgule cinq bitcoins" in spoken
+    assert "cent vingt francs suisses" in spoken
 
 
-def test_the_fallback_stripper_removes_single_mark_emphasis():
-    stripped = strip_markdown_for_speech("An *important* point and _another_ one, ~~not this~~.")
-
-    assert stripped == "An important point and another one, not this."
-
-
-def test_the_fallback_stripper_keeps_snake_case_identifiers_whole():
-    """The underscore form of emphasis must not eat the middle of an identifier."""
-    stripped = strip_markdown_for_speech("The user_id_value column and _this emphasis_.")
-
-    assert stripped == "The user_id_value column and this emphasis."
+def test_the_thousands_spaces_are_part_of_the_figure():
+    """French groups thousands with spaces: "22 860 €" is one amount, not
+    "860" said alone."""
+    spoken = normalize_speech("La trésorerie est de 22 860 €", "fr")
+    assert "vingt-deux mille huit cent soixante euros" in spoken
 
 
-def test_the_fallback_stripper_removes_blockquote_markers():
-    stripped = strip_markdown_for_speech("> A quoted warning.\n> Second quoted line.")
-
-    assert stripped == "A quoted warning.\nSecond quoted line."
-
-
-def test_the_fallback_stripper_keeps_a_bare_url():
-    """Stripping marks is not dropping content: a bare URL is what the answer said."""
-    stripped = strip_markdown_for_speech("The endpoint is https://example.com/v1 today.")
-
-    assert stripped == "The endpoint is https://example.com/v1 today."
+def test_bare_digits_are_left_to_the_engine():
+    """Digits without a unit stay as digits: engines read numbers correctly,
+    and the amounts carry the units that announce them."""
+    spoken = normalize_speech("en 2024, 150 salariés, un ETP de 22,8", "fr")
+    assert "2024" in spoken
+    assert "150" in spoken
+    assert "22,8" in spoken
 
 
-def test_the_fallback_reading_keeps_only_the_opening_sentences():
-    """Drift must not turn into a two-minute reading of the whole answer."""
-    opening = spoken_fallback_opening(
-        "First, the verdict. A second useful sentence.\n"
-        "A third one still. A fourth one, useful too. A fifth one that makes it.\n"
-        "A sixth one already too many. And a whole paragraph nobody will listen to."
-    )
-
-    assert opening == (
-        "First, the verdict. A second useful sentence. "
-        "A third one still. A fourth one, useful too. A fifth one that makes it."
-    )
+def test_a_colon_becomes_a_pause():
+    """A colon is read as a word by naive engines: the pause a reader means
+    by it is a comma."""
+    spoken = normalize_speech("SF : liquidité au plancher", "fr")
+    assert spoken == "SF, liquidité au plancher"
 
 
-def test_the_fallback_reading_of_a_short_answer_is_whole():
-    opening = spoken_fallback_opening("One short sentence only")
+def test_the_arrow_is_a_pause_not_a_colon():
+    spoken = normalize_speech("SF -> liquidité : 21 k€", "fr")
+    assert "SF, liquidité, vingt et un mille euros" in spoken
 
-    assert opening == "One short sentence only"
+
+def test_the_french_typography_spaces_do_not_break_the_amounts():
+    """A narrow no-break space before the unit is silence or noise to an
+    engine — it becomes a plain space before anything else reads it."""
+    spoken = normalize_speech("26\u202f% du chiffre d'affaires", "fr")
+    assert "vingt-six pour cent" in spoken
+
+
+def test_without_the_library_the_figures_stay_as_digits():
+    """num2words is optional: absent, the units are still spelled and the
+    voice degrades to digits — it never breaks."""
+    import lys.apps.ai.modules.conversation.spoken_block as spoken_block
+    saved = spoken_block._num2words
+    try:
+        spoken_block._num2words = None
+        spoken = spoken_block.normalize_speech("150 k€ et 26%", "fr")
+        assert "150 mille euros" in spoken
+        assert "26 pour cent" in spoken
+    finally:
+        spoken_block._num2words = saved
+
+
+def test_the_mechanical_ear_of_an_unknown_language_is_only_markdown():
+    """The framework ships no vocabulary for that language: the strip alone,
+    never another language's words."""
+    spoken = normalize_speech("26% and **bold**", language="en")
+    assert spoken == "26% and bold"
+
+
+def test_an_unconfigured_language_speaks_no_vocabulary():
+    """The default is no vocabulary at all: an app that declares no
+    ``spoken_block.language`` gets the markdown strip, not French."""
+    assert normalize_speech("26% et **gras**") == "26% et gras"
+
+
+def test_the_config_carries_the_spoken_vocabulary():
+    """The language is one plugin-config line, lowercased — the framework
+    hardcodes none."""
+    assert SpokenBlockConfig.from_plugin_config(
+        {"spoken_block": {"enabled": True, "language": "FR"}}
+    ) == SpokenBlockConfig(enabled=True, language="fr")
+    assert SpokenBlockConfig.from_plugin_config(
+        {"spoken_block": {"enabled": True}}
+    ).language is None
+
+
+def test_a_url_keeps_its_scheme_and_a_time_its_colon():
+    """The colon pause must not eat a token's own colon: a spoken
+    "https, //" and a "14, 30" both lose what the answer said."""
+    spoken = normalize_speech("Voir https://exemple.fr/doc à 14:30, ratio 3:1", "fr")
+    assert "https://exemple.fr/doc" in spoken
+    assert "14:30" in spoken
+    assert "3:1" in spoken
+
+
+def test_a_hyphen_inside_a_token_is_not_a_minus_sign():
+    """A date, a range and an identifier all carry hyphens that are
+    punctuation, not operators: only a sign OPENING a figure is spoken."""
+    spoken = normalize_speech("Du 2024-01-01 au 2024-03-31, sur 10-15 jours (ref-12)", "fr")
+    assert "moins" not in spoken
+    assert "2024-01-01" in spoken
+    assert "10-15" in spoken
+    assert "ref-12" in spoken
+
+
+def test_a_sign_opening_a_figure_is_still_spoken():
+    """The guard above must not mute the real signs."""
+    spoken = normalize_speech("Marge +12 % contre -3 %", "fr")
+    assert "plus douze pour cent" in spoken
+    assert "moins trois pour cent" in spoken
+
+
+def test_an_ordered_list_marker_is_not_spoken_as_a_bare_number():
+    """The sentence split runs before the markdown strip: a period closing a
+    figure must not cut "1." into a piece read aloud as "un"."""
+    sentences, remainder = split_complete_sentences("1. Premier point. 2. Second point. ")
+    assert sentences == ["1. Premier point.", "2. Second point."]
+    assert normalize_speech(sentences[0], "fr") == "Premier point."
 
 
 @pytest.mark.asyncio
 async def test_the_pipeline_synthesizes_sentence_by_sentence_in_order():
-    synthesized: list[str] = []
+    """The sentences are synthesized in arrival order, one call each."""
+    synthesized = []
 
     async def fake_synthesize(sentence: str):
         synthesized.append(sentence)
-        yield b"\x01"
+        yield b"audio"
 
     pipeline = SpokenBlockPipeline(fake_synthesize)
-    pipeline.feed("First sentence. Second sentence. Third, still grow")
-    # Nothing is ready at feed time — the worker has had no turn to run.
-    drained_now = [event async for event in pipeline.drain()]
-    assert drained_now == []
+    pipeline.feed("Première phrase. ")
+    pipeline.feed("Deuxième phrase. ")
+    pipeline.feed("Troisième en attente")
+    async for _ in pipeline.drain():
+        pass
+    async for _ in pipeline.finish():
+        pass
 
-    events = [event async for event in pipeline.finish()]
-    # Everything fed was spoken, the remainder included, in order.
-    assert synthesized == ["First sentence.", "Second sentence.", "Third, still grow"]
-    assert len(events) == 3
-    assert '"audio"' in events[0]
+    assert synthesized == ["Première phrase.", "Deuxième phrase.", "Troisième en attente"]
 
 
 @pytest.mark.asyncio
 async def test_a_failing_synthesis_emits_one_error_and_ends_cleanly():
-    async def failing(sentence: str):
-        raise RuntimeError("provider down")
-        yield b""  # pragma: no cover — makes this an async generator
+    """A synthesis failure never breaks the chat: one error event, then
+    silence — the text stream carries on alone."""
+    async def failing_synthesize(sentence: str):
+        raise RuntimeError("boom")
+        yield b""
 
-    pipeline = SpokenBlockPipeline(failing)
-    pipeline.feed("One sentence. Another one.")
-    events = [event async for event in pipeline.finish()]
-
-    # ONE error marker for the whole feed, not one per sentence.
-    assert events == ['event: voice\ndata: {"error": "synthesis"}\n\n']
+    pipeline = SpokenBlockPipeline(failing_synthesize)
+    pipeline.feed("Une phrase.")
+    events = []
+    async for event in pipeline.finish():
+        events.append(event)
+    assert any('"error": "synthesis"' in event for event in events)

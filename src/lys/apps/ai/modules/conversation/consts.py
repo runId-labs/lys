@@ -4,17 +4,8 @@ AI Conversation constants.
 
 from enum import Enum
 
-# Re-exported: the purpose is DEFINED in the utils layer because the config layer
-# applies its default prompt while parsing the plugin config, and that layer cannot
-# import upward from here. Imported so this module stays the one place to read the
-# chatbot's purposes.
-from lys.apps.ai.utils.prompts import AI_PURPOSE_SPOKEN_REPAIR  # noqa: F401
-
-
 # Purpose for conversation-based AI interactions
 AI_PURPOSE_CHATBOT = "chatbot"
-
-# Repair of a drifted spoken block: AI_PURPOSE_SPOKEN_REPAIR, imported above.
 
 # GraphQL node type a conversation GlobalID carries. Clients only ever handle GlobalIDs,
 # so the chat stream hands one out under this type and the entry points decode it back.
