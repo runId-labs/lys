@@ -72,7 +72,7 @@ is a declaration, not a filter: **each page declares its params under the route'
     "dossierId": {"type": "global_id"},
     "statuses":  {"type": "enum", "values": ["draft", "sent", "paid"], "multiple": true},
     "since":     {"type": "date", "writable": true},
-    "search":    {"type": "text", "max_length": 80, "writable": true}
+    "search":    {"type": "text", "writable": true}
   }
 }
 ```
@@ -85,12 +85,48 @@ is a declaration, not a filter: **each page declares its params under the route'
 | `bool` | a boolean, or `"true"` / `"false"` / `"1"` / `"0"` |
 | `date` | an ISO date, normalised to `YYYY-MM-DD` |
 | `enum` | one of `values`, exactly. No `values` → accepts nothing |
-| `text` | free text up to `max_length`. **No default cap**: no `max_length` → accepts nothing |
+| `text` | free text. The page declares the TYPE only — how much prose it may carry is the framework's |
 
 `"multiple": true` on any type takes a list instead of a scalar, capped by
 `max_items` (framework default 50). One invalid item invalidates the whole list —
 a silently shortened filter would read to the model as a narrower selection than
 the user's screen shows.
+
+`text` is the one type able to carry prose into the prompt, so **a page does not
+state its length**: the cap is injected into every text declaration ONCE as the
+routes manifest is cached, and a `max_length` the page writes is ignored (and
+logged). Declared per page, the number lived in two places — the schema, and
+whatever bounds the input that fills it — and one of the two eventually gets
+forgotten.
+
+The cap is 200 characters — `MAX_SEARCH_LENGTH`, what the platform already
+accepts for the same kind of string. It bounds PROMPT VOLUME, re-rendered every
+turn, and nothing else; a lower number would be worse than arbitrary, because a
+param over the cap is dropped and the model would then read a screen state the
+user is not looking at. Raised for a whole deployment through
+`chatbot.options.page_params.max_text_length` — one visible decision instead of
+a value per page nobody re-reads. Two refusals at load, both logged:
+
+| Configured value | Applied |
+|------------------|---------|
+| absent | 200 (`MAX_SEARCH_LENGTH`) |
+| not a positive integer (`"200"`, `0`, `-1`, `true`) | the default — injected as is it would make every `text` param of every page fail validation silently |
+| above 2000 (`MAX_CONFIGURABLE_TEXT_LENGTH`) | 2000 — a deployment does not get to unbound what every turn re-renders |
+
+**Whatever fills a `text` param must be bounded to the same number or less** —
+the input, the URL writer, the tool that sets it. Above it the filter works on
+screen and vanishes from the model's view, which is the one failure the declared
+schema cannot report.
+
+**A `text` param may not be `multiple`.** One that says it is gets DROPPED and
+logged as an error naming the page and the param: a list multiplies the prose it
+brings, and what legitimately comes in several — tags, companies, statuses — is a
+closed type. The param then arrives undeclared, which is how the runtime already
+fails closed.
+
+The cap is not a protection: an instruction fits in thirty characters, so what
+makes a param safe to render is its TYPE — closed for every type but this one —
+and `text` stays the exception.
 
 RULES:
 

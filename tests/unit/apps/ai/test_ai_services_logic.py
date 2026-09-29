@@ -6,8 +6,12 @@ and context tool registration/execution.
 
 Isolation: All tests use inline imports + patch.object. No global state modified.
 """
-import pytest
+from contextlib import contextmanager
 from unittest.mock import AsyncMock, Mock, patch, MagicMock
+
+import pytest
+
+from lys.apps.ai.utils.page_params import DEFAULT_MAX_TEXT_LENGTH, MAX_CONFIGURABLE_TEXT_LENGTH
 
 
 class TestProviderRegistry:
@@ -793,57 +797,126 @@ class TestRoutesManifest:
     """Tests for AIService.get_routes_manifest / get_page_webservices /
     get_page_chatbot_behaviour (moved here from AIConversationService)."""
 
-    def test_get_routes_manifest_caches_after_first_load(self):
+    @staticmethod
+    @contextmanager
+    def _cached(chatbot_config, manifest=None):
+        """Load `manifest` into the AIService cache under `chatbot_config`.
+
+        The cache is a class attribute: every test that fills it restores it, so the
+        next one starts from a known state.
+        """
         from lys.apps.ai.modules.core.services import AIService
 
         original_cache = AIService._routes_manifest_cache
+        AIService._routes_manifest_cache = None
         try:
-            AIService._routes_manifest_cache = None
             with patch.object(AIService, "app_manager", create=True) as mock_am, \
-                 patch("lys.apps.ai.modules.core.services.load_routes_manifest") as mock_load:
-                mock_am.settings.get_plugin_config.return_value = {
-                    "chatbot": {"options": {"routes_manifest_path": "/some/path.json"}}
-                }
-                mock_load.return_value = {"routes": [{"name": "HomePage"}]}
+                    patch("lys.apps.ai.modules.core.services.load_routes_manifest") as mock_load:
+                mock_am.settings.get_plugin_config.return_value = {"chatbot": chatbot_config}
+                mock_load.return_value = manifest
+                yield AIService, mock_load
+        finally:
+            AIService._routes_manifest_cache = original_cache
 
-                first = AIService.get_routes_manifest()
-                second = AIService.get_routes_manifest()
+    @staticmethod
+    def _options(**extra):
+        """A chatbot config pointing at a manifest, plus whatever the test states."""
+        return {"options": {"routes_manifest_path": "/some/path.json", **extra}}
+
+    def test_get_routes_manifest_caches_after_first_load(self):
+        with self._cached(self._options(), {"routes": [{"name": "HomePage"}]}) as (service, mock_load):
+            first = service.get_routes_manifest()
+            second = service.get_routes_manifest()
 
             assert first == {"routes": [{"name": "HomePage"}]}
             assert second is first
             mock_load.assert_called_once_with("/some/path.json")
-        finally:
-            AIService._routes_manifest_cache = original_cache
 
     def test_get_routes_manifest_returns_empty_dict_when_not_configured(self):
-        from lys.apps.ai.modules.core.services import AIService
-
-        original_cache = AIService._routes_manifest_cache
-        try:
-            AIService._routes_manifest_cache = None
-            with patch.object(AIService, "app_manager", create=True) as mock_am:
-                mock_am.settings.get_plugin_config.return_value = {"chatbot": {}}
-                result = AIService.get_routes_manifest()
-
-            assert result == {}
-        finally:
-            AIService._routes_manifest_cache = original_cache
+        with self._cached({}) as (service, _):
+            assert service.get_routes_manifest() == {}
 
     def test_get_routes_manifest_tolerates_a_non_dict_chatbot_config(self):
         """A malformed plugin config ({"chatbot": "oops"}) must not raise - it just
         yields no manifest, same as no chatbot config at all."""
-        from lys.apps.ai.modules.core.services import AIService
+        with self._cached("oops") as (service, _):
+            assert service.get_routes_manifest() == {}
 
-        original_cache = AIService._routes_manifest_cache
-        try:
-            AIService._routes_manifest_cache = None
-            with patch.object(AIService, "app_manager", create=True) as mock_am:
-                mock_am.settings.get_plugin_config.return_value = {"chatbot": "oops"}
-                result = AIService.get_routes_manifest()
+    def test_a_text_declaration_is_capped_as_the_manifest_is_cached(self):
+        """The cap is applied once, at load, not on every turn that reads the page."""
+        manifest = {"routes": [{
+            "name": "ClientsPage",
+            "params": {
+                "clientId": {"type": "global_id"},
+                "notes": {"type": "text", "max_length": 10_000},
+            },
+        }]}
 
-            assert result == {}
-        finally:
-            AIService._routes_manifest_cache = original_cache
+        with self._cached(self._options(), manifest) as (service, _):
+            service.get_routes_manifest()
+
+            # The page's own number is ignored, the framework's applies.
+            assert service.get_page_params_schema("ClientsPage") == {
+                "clientId": {"type": "global_id"},
+                "notes": {"type": "text", "max_length": DEFAULT_MAX_TEXT_LENGTH},
+            }
+
+    def test_the_deployment_can_raise_the_text_ceiling(self):
+        config = self._options(page_params={"max_text_length": 254})
+        manifest = {"routes": [{"name": "UsersPage", "params": {"email": {"type": "text"}}}]}
+
+        with self._cached(config, manifest) as (service, _):
+            service.get_routes_manifest()
+
+            assert service.get_page_params_schema("UsersPage") == {
+                "email": {"type": "text", "max_length": 254},
+            }
+
+    def test_an_unusable_ceiling_falls_back_to_the_framework_default(self):
+        """A bad config must not mute every text param of every page."""
+        config = self._options(page_params={"max_text_length": "254"})
+        manifest = {"routes": [{"name": "UsersPage", "params": {"email": {"type": "text"}}}]}
+
+        with self._cached(config, manifest) as (service, _):
+            service.get_routes_manifest()
+
+            assert service.get_page_params_schema("UsersPage") == {
+                "email": {"type": "text", "max_length": DEFAULT_MAX_TEXT_LENGTH},
+            }
+
+    def test_an_oversized_ceiling_is_clamped(self):
+        """The params are re-rendered every turn: the deployment does not get to unbound them."""
+        config = self._options(page_params={"max_text_length": 500_000})
+        manifest = {"routes": [{"name": "UsersPage", "params": {"email": {"type": "text"}}}]}
+
+        with self._cached(config, manifest) as (service, _):
+            service.get_routes_manifest()
+
+            assert service.get_page_params_schema("UsersPage") == {
+                "email": {"type": "text", "max_length": MAX_CONFIGURABLE_TEXT_LENGTH},
+            }
+
+    def test_the_navigate_path_reads_the_sanitized_route(self):
+        """The routes are rewritten in place, so both readers see the same schema."""
+        from lys.core.utils.routes import route_page_params
+
+        manifest = {"routes": [{
+            "name": "ClientsPage",
+            "path": "/clients",
+            "params": {
+                "tags": {"type": "text", "multiple": True, "writable": True},
+                "search": {"type": "text", "writable": True},
+            },
+        }]}
+
+        with self._cached(self._options(), manifest) as (service, _):
+            cached = service.get_routes_manifest()
+
+            # What _handle_navigate resolves from the accessible routes.
+            route = next(r for r in cached["routes"] if r["path"] == "/clients")
+            assert route_page_params(route) == {
+                "search": {"type": "text", "writable": True, "max_length": DEFAULT_MAX_TEXT_LENGTH},
+            }
 
     def test_get_page_webservices_merges_global_and_page_specific(self):
         from lys.apps.ai.modules.core.services import AIService

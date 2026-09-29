@@ -6,6 +6,7 @@ from urllib.parse import urlparse
 from lys.apps.user_auth.errors import EMPTY_PASSWORD_ERROR, WEAK_PASSWORD, INVALID_NAME, INVALID_LANGUAGE, INVALID_GENDER
 from lys.apps.user_auth.modules.user.consts import MALE_GENDER, FEMALE_GENDER, OTHER_GENDER
 from lys.core.consts.errors import NOT_UUID_ERROR, UNSAFE_URL_ERROR, SEARCH_TOO_LONG_ERROR
+from lys.core.consts.validation import MAX_SEARCH_LENGTH  # noqa: F401  (re-exported: imported from here historically)
 from lys.core.errors import LysError
 
 
@@ -14,8 +15,6 @@ NAME_PATTERN = r"^[a-zA-ZÀ-ÿ\s\-']+$"
 LANGUAGE_PATTERN = r"^[a-z]{2}(-[a-z]{2})?$"
 
 # Password constraints
-MAX_SEARCH_LENGTH = 200
-
 PASSWORD_MIN_LENGTH = 8
 PASSWORD_MAX_LENGTH = 128
 

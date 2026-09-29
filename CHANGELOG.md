@@ -7,6 +7,15 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+- `chatbot.options.page_params.max_text_length`: the `text` cap for a whole deployment, for pages filtering on file names or email addresses. A value that is not a positive integer is refused at load and the default applies — injected as is, it would make every `text` param of every page fail validation silently. Above `MAX_CONFIGURABLE_TEXT_LENGTH` (2000) it is clamped: the page params are re-rendered on every turn, so a deployment does not get to unbound them
+- `lys.core.consts.validation.MAX_SEARCH_LENGTH`, the input-size constant moved out of `lys.core.utils.validators` (which still re-exports it). That module imports app errors and app consts, so reading a number from it dragged `user_auth` into any component that needed one
+
+### Changed
+- A page no longer declares `max_length` on a `text` param: the cap is the framework's, injected into every text declaration once as the routes manifest is cached (`sanitize_page_params_schema`). Declared per page, the number lived in two places — the schema, and whatever bounds the input that fills it — and one of the two eventually got forgotten. A `max_length` a manifest still carries is ignored and logged. The cap is `MAX_SEARCH_LENGTH` (200), what the platform already accepts for the same kind of string: it bounds prompt volume and nothing else, a param over it being dropped rather than truncated
+- A `text` param may no longer be `multiple`. One that declares it is dropped at load and logged by page and param: a list multiplies the prose it brings, and what legitimately comes in several — tags, companies, statuses — is a closed type. The param then arrives undeclared, which is how the runtime already fails closed
+- `sanitize_page_params_schema` returns `None` for anything that is not a schema instead of the value it was handed — read downstream as a page declaring nothing, which refuses every param
+
 ## [0.50.0] - 2026-09-28
 
 ### Added

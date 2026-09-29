@@ -9,9 +9,13 @@ the model without a page having declared it, and in the shape it declared?
 import pytest
 
 from lys.apps.ai.utils.page_params import (
+    DEFAULT_MAX_TEXT_LENGTH,
     DEFAULT_PARAM_MAX_ITEMS,
+    MAX_CONFIGURABLE_TEXT_LENGTH,
     PAGE_PARAMS_HEADER,
     has_writable_params,
+    resolve_max_text_length,
+    sanitize_page_params_schema,
     validate_page_params,
     writable_page_params,
 )
@@ -157,6 +161,103 @@ class TestText:
         """max_length has no default: the one type that can carry prose must be bounded."""
         assert validate_page_params({"search": "acme"}, {"search": {"type": "text"}}) == {}
         assert validate_page_params({"search": "acme"}, {"search": {"type": "text", "max_length": 0}}) == {}
+
+    def test_the_declared_length_is_what_bounds_a_value(self):
+        schema = {"search": {"type": "text", "max_length": 10}}
+        assert validate_page_params({"search": "a" * 10}, schema) == {"search": "a" * 10}
+        assert validate_page_params({"search": "a" * 11}, schema) == {}
+
+
+class TestSchemaSanitization:
+    """What a page may DECLARE, checked once at load — not per request."""
+
+    def test_the_framework_caps_a_bare_declaration(self):
+        """A page declares the type; how much prose it carries is not its call."""
+        assert sanitize_page_params_schema({"search": {"type": "text"}}) == {
+            "search": {"type": "text", "max_length": DEFAULT_MAX_TEXT_LENGTH},
+        }
+
+    def test_a_length_the_page_states_is_ignored(self):
+        """Stated per page, the number lived in two places and one got forgotten."""
+        for declared in (10, DEFAULT_MAX_TEXT_LENGTH + 1, 10_000, 0, True):
+            assert sanitize_page_params_schema({"search": {"type": "text", "max_length": declared}}) == {
+                "search": {"type": "text", "max_length": DEFAULT_MAX_TEXT_LENGTH},
+            }
+
+    def test_the_deployment_raises_it_for_everyone(self):
+        """One visible decision, not a value per page nobody re-reads."""
+        assert sanitize_page_params_schema({"email": {"type": "text"}}, max_text_length=254) == {
+            "email": {"type": "text", "max_length": 254},
+        }
+
+    def test_a_multiple_text_is_dropped(self):
+        """A list multiplies the prose; what comes in several is a closed type."""
+        for spec in (
+            {"type": "text", "multiple": True},
+            {"type": "text", "multiple": True, "max_items": 2},
+        ):
+            assert sanitize_page_params_schema({"tags": spec}) == {}
+        # And the value is then refused, the param being undeclared.
+        schema = sanitize_page_params_schema({"tags": {"type": "text", "multiple": True}})
+        assert validate_page_params({"tags": ["a", "b"]}, schema) == {}
+
+    def test_a_multiple_closed_type_is_untouched(self):
+        schema = {"ids": {"type": "global_id", "multiple": True, "max_items": 500}}
+        assert sanitize_page_params_schema(schema) == schema
+
+    def test_closed_types_are_left_alone(self):
+        schema = {
+            "clientId": {"type": "global_id"},
+            "status": {"type": "enum", "values": ["a"]},
+            "ids": {"type": "uuid", "multiple": True, "max_items": 500},
+        }
+        assert sanitize_page_params_schema(schema) == schema
+
+    def test_the_input_is_never_mutated(self):
+        schema = {"search": {"type": "text", "max_length": 10_000}}
+        sanitize_page_params_schema(schema)
+        assert schema == {"search": {"type": "text", "max_length": 10_000}}
+
+    def test_anything_that_is_not_a_schema_yields_no_schema(self):
+        """None reads downstream as a page declaring nothing, which refuses everything."""
+        for not_a_schema in (None, "nope", [], 3):
+            assert sanitize_page_params_schema(not_a_schema) is None
+        assert validate_page_params({"search": "acme"}, sanitize_page_params_schema("nope")) == {}
+
+    def test_a_writable_text_is_capped_like_any_other(self):
+        """The model-supplied path reads the same sanitized schema."""
+        schema = sanitize_page_params_schema({"search": {"type": "text", "writable": True}})
+        assert schema == {"search": {"type": "text", "writable": True, "max_length": DEFAULT_MAX_TEXT_LENGTH}}
+
+        accepted, refusals = writable_page_params({"search": "a" * (DEFAULT_MAX_TEXT_LENGTH + 1)}, schema)
+        assert (accepted, refusals) == ({}, {"search": "invalid_value"})
+
+
+class TestConfiguredTextLength:
+    """An unusable override is refused at load, not propagated into every schema."""
+
+    def test_a_positive_integer_is_taken(self):
+        assert resolve_max_text_length(254) == 254
+
+    def test_an_absent_value_falls_back(self):
+        assert resolve_max_text_length(None) == DEFAULT_MAX_TEXT_LENGTH
+
+    def test_a_value_above_the_ceiling_is_clamped(self):
+        """The params are re-rendered every turn: a deployment does not get to unbound them."""
+        assert resolve_max_text_length(MAX_CONFIGURABLE_TEXT_LENGTH) == MAX_CONFIGURABLE_TEXT_LENGTH
+        assert resolve_max_text_length(MAX_CONFIGURABLE_TEXT_LENGTH + 1) == MAX_CONFIGURABLE_TEXT_LENGTH
+        assert resolve_max_text_length(500_000) == MAX_CONFIGURABLE_TEXT_LENGTH
+
+    def test_an_unusable_value_falls_back_instead_of_muting_every_page(self):
+        """Injected as is, it would fail every text param of every page, silently."""
+        for configured in ("80", 0, -1, True, 12.5, [], {"max": 80}):
+            assert resolve_max_text_length(configured) == DEFAULT_MAX_TEXT_LENGTH
+
+        # And the fallback keeps text params working.
+        schema = sanitize_page_params_schema(
+            {"search": {"type": "text"}}, max_text_length=resolve_max_text_length("80")
+        )
+        assert validate_page_params({"search": "acme"}, schema) == {"search": "acme"}
 
 
 # ========== Multi-valued params ==========

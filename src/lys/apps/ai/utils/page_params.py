@@ -25,6 +25,7 @@ from uuid import UUID
 
 from lys.core.graphql.client import decode_global_id
 from lys.core.utils.routes import route_page_params, writable_param_names  # noqa: F401
+from lys.core.consts.validation import MAX_SEARCH_LENGTH
 
 logger = logging.getLogger(__name__)
 
@@ -52,6 +53,25 @@ PARAM_TYPES = frozenset({
 # not the consumer's: an unbounded list is a prompt-size problem before it is a
 # security one, and no screen shows fifty active filters.
 DEFAULT_PARAM_MAX_ITEMS = 50
+
+# How much a ``text`` param may carry. A page declares the TYPE, not the length: the
+# cap is injected into every text declaration as the manifest is read. Overridable per
+# deployment through ``chatbot.options.page_params.max_text_length`` of the ``ai``
+# plugin config, for pages filtering on file names or email addresses.
+#
+# The number is MAX_SEARCH_LENGTH — what the platform already accepts for the same kind
+# of string. Lower would be arbitrary and worse than arbitrary: a param over the cap is
+# dropped, so the model would read a screen state the user is not looking at. The cap
+# bounds PROMPT VOLUME, re-rendered every turn, and nothing else: what makes a param
+# safe to render is its TYPE, closed for every type but this one.
+DEFAULT_MAX_TEXT_LENGTH = MAX_SEARCH_LENGTH
+
+# The ceiling a deployment may raise the cap to. The cap bounds prompt volume, and the
+# page params are re-rendered on EVERY turn of a conversation: a deployment that states
+# more than this gets the ceiling, not its number. Ten times the default leaves room
+# for the long end of a legitimate filter (a path, a subject line) without letting a
+# single param outweigh the conversation it travels with.
+MAX_CONFIGURABLE_TEXT_LENGTH = MAX_SEARCH_LENGTH * 10
 
 # The header of the rendered segment. The framing line is NOT configurable: it is a
 # safety control, not a voice choice — an app that could reword it could weaken it.
@@ -134,12 +154,12 @@ def _check_enum(value: Any, spec: Dict[str, Any]) -> Tuple[bool, Any]:
 
 def _check_text(value: Any, spec: Dict[str, Any]) -> Tuple[bool, Any]:
     """
-    Accept free text, up to the DECLARED length.
+    Accept free text, up to the cap the framework put on this declaration.
 
-    ``max_length`` has no framework default on purpose: free text is the one type
-    that can carry prose into the prompt, so the consumer states how much of it the
-    page legitimately produces. A declaration without a usable cap accepts nothing —
-    the omission fails closed rather than opening the surface it was meant to bound.
+    ``max_length`` is injected into every text spec as the manifest is read (see
+    :func:`sanitize_page_params_schema`). A spec reaching here without a usable one
+    never passed the load path, so it accepts nothing rather than opening the surface
+    the cap exists to bound.
     """
     if not isinstance(value, str):
         return False, None
@@ -183,6 +203,99 @@ def _check_value(value: Any, spec: Dict[str, Any]) -> Tuple[bool, Any]:
             return False, None
         accepted.append(coerced)
     return True, accepted
+
+
+def resolve_max_text_length(configured: Any) -> int:
+    """
+    The deployment's ``text`` cap, or the framework default when it is unusable.
+
+    An unusable value is logged and replaced rather than injected: propagated as is,
+    it would make every ``text`` param of every page fail validation silently.
+
+    Args:
+        configured: ``chatbot.options.page_params.max_text_length``, or None when the
+            deployment states none.
+
+    Returns:
+        A positive int, never above :data:`MAX_CONFIGURABLE_TEXT_LENGTH`.
+    """
+    if configured is None:
+        return DEFAULT_MAX_TEXT_LENGTH
+
+    if isinstance(configured, bool) or not isinstance(configured, int) or configured <= 0:
+        logger.error(
+            "[PageParams] max_text_length must be a positive integer, got %r — the "
+            "framework default of %s applies",
+            configured, DEFAULT_MAX_TEXT_LENGTH,
+        )
+        return DEFAULT_MAX_TEXT_LENGTH
+
+    if configured > MAX_CONFIGURABLE_TEXT_LENGTH:
+        logger.error(
+            "[PageParams] max_text_length %s is above the framework ceiling of %s — "
+            "the ceiling applies. The page params are re-rendered on every turn",
+            configured, MAX_CONFIGURABLE_TEXT_LENGTH,
+        )
+        return MAX_CONFIGURABLE_TEXT_LENGTH
+
+    return configured
+
+
+def sanitize_page_params_schema(
+    schema: Optional[Dict[str, Any]],
+    page_name: str = "",
+    max_text_length: int = DEFAULT_MAX_TEXT_LENGTH,
+) -> Optional[Dict[str, Any]]:
+    """
+    Apply the framework's ``text`` cap to a page's declared params.
+
+    A page declares the type; the length is the framework's, because the string is
+    rendered into a prompt. A ``max_length`` the page states is ignored and logged.
+
+    A ``text`` param may not be multi-valued: a list multiplies the prose it brings,
+    and what legitimately comes in several is a closed type. Such a param is dropped
+    and logged at load, named by page and param, which leaves it undeclared —
+    :func:`validate_page_params` then refuses its values, the runtime's existing
+    fail-closed path.
+
+    Args:
+        schema: The page's declared params, from the routes manifest route entry.
+        page_name: The page, for the log lines.
+        max_text_length: The longest a single ``text`` value may be.
+
+    Returns:
+        A new schema with its text declarations capped and its unusable ones dropped,
+        or None when there is no schema to sanitize — which :func:`validate_page_params`
+        reads as a page declaring nothing. The input is never mutated.
+    """
+    if not isinstance(schema, dict):
+        return None
+
+    kept: Dict[str, Any] = {}
+    for key, spec in schema.items():
+        if not isinstance(spec, dict) or spec.get("type") != PARAM_TYPE_TEXT:
+            kept[key] = spec
+            continue
+
+        if "max_length" in spec:
+            logger.warning(
+                "[PageParams] Page '%s': param '%s' declares max_length, which is not "
+                "the page's to state — the framework's %s applies",
+                page_name, key, max_text_length,
+            )
+
+        if spec.get("multiple"):
+            logger.error(
+                "[PageParams] Page '%s': param '%s' is a multiple 'text', which is not "
+                "allowed — a list multiplies the prose it brings, and what comes in "
+                "several is a closed type. Dropped from the declaration",
+                page_name, key,
+            )
+            continue
+
+        kept[key] = {**spec, "max_length": max_text_length}
+
+    return kept
 
 
 def validate_page_params(

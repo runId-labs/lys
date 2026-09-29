@@ -29,6 +29,10 @@ from lys.apps.ai.utils.providers.exceptions import (
     AIValidationError,
 )
 from lys.apps.ai.utils.message_sanitizer import sanitize_llm_messages
+from lys.apps.ai.utils.page_params import (
+    resolve_max_text_length,
+    sanitize_page_params_schema,
+)
 from lys.apps.ai.utils.schema_limits import find_fields_at_max_length
 from lys.apps.ai.utils.providers.anthropic import AnthropicProvider
 from lys.apps.ai.utils.providers.mistral import MistralProvider
@@ -138,11 +142,63 @@ class AIService(Service):
             routes_manifest_path = chatbot_config.get("options", {}).get("routes_manifest_path")
 
         if routes_manifest_path:
-            cls._routes_manifest_cache = load_routes_manifest(routes_manifest_path)
+            manifest = load_routes_manifest(routes_manifest_path)
+            cls._routes_manifest_cache = cls._sanitize_manifest_params(
+                manifest, cls._resolve_max_text_length(chatbot_config)
+            )
         else:
             cls._routes_manifest_cache = {}
 
         return cls._routes_manifest_cache
+
+    @classmethod
+    def _resolve_max_text_length(cls, chatbot_config: Any) -> int:
+        """
+        The deployment's ``text`` cap, from ``options.page_params.max_text_length``.
+
+        Falls back to the framework default when the key is absent or unusable (see
+        :func:`resolve_max_text_length`, which logs the refusal).
+        """
+        options = chatbot_config.get("options") if isinstance(chatbot_config, dict) else None
+        page_params_config = options.get("page_params") if isinstance(options, dict) else None
+        configured = page_params_config.get("max_text_length") if isinstance(page_params_config, dict) else None
+        return resolve_max_text_length(configured)
+
+    @classmethod
+    def _sanitize_manifest_params(
+        cls,
+        manifest: Optional[Dict[str, Any]],
+        max_text_length: int,
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Drop the unusable param declarations, once, as the manifest is cached.
+
+        Here rather than in the readers: :meth:`get_page_params_schema` and the
+        navigate tool (through ``route_page_params``) both read the route entries of
+        this cache, and the routes are rewritten IN PLACE — so a route object handed to
+        either reader carries the sanitized schema. Per request instead, a refusal
+        would be a filter vanishing from every turn with nothing to point at.
+
+        Args:
+            manifest: The freshly loaded manifest, rewritten in place.
+            max_text_length: The cap to apply to every ``text`` declaration.
+
+        Returns:
+            The same manifest, or the value unchanged when there is none.
+        """
+        if not manifest:
+            return manifest
+
+        for route in manifest.get("routes", []):
+            if not isinstance(route, dict) or not isinstance(route.get("params"), dict):
+                continue
+            route["params"] = sanitize_page_params_schema(
+                route["params"],
+                page_name=route.get("name") or route.get("path", ""),
+                max_text_length=max_text_length,
+            )
+
+        return manifest
 
     @classmethod
     def get_page_webservices(cls, page_name: str) -> set[str]:
