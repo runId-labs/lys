@@ -34,6 +34,10 @@ from lys.core.services import EntityService
 
 logger = logging.getLogger(__name__)
 
+#: Backends that take one writer at a time, so a board cannot be committed in a
+#: transaction of its own while the caller still holds theirs.
+SINGLE_WRITER_BACKENDS = ("sqlite",)
+
 
 @register_service()
 class WhiteboardService(EntityService[Whiteboard]):
@@ -76,6 +80,55 @@ class WhiteboardService(EntityService[Whiteboard]):
     # ==================== Target resolution ====================
 
     @classmethod
+    async def find_for_conversation(
+        cls,
+        user_id: str,
+        current_whiteboard_id: Optional[str],
+        named_whiteboard_id: Optional[str],
+        session,
+    ) -> Optional[Whiteboard]:
+        """
+        The board a tool call is about, **without opening one**.
+
+        Named target wins; otherwise it is the board the conversation already points at,
+        never whatever the user happens to be looking at. A focused board is reachable,
+        but only when the caller names it — so writing on the user's own board stays
+        something that was asked for, not an ambient side effect of asking a question.
+
+        A named board that is not this user's is refused with ``WHITEBOARD_NOT_FOUND``,
+        the same answer whether it exists or not. It is not redirected to the
+        conversation's own board: the model would believe it drew where it asked and the
+        drawing would be somewhere else.
+
+        Args:
+            user_id: The owner every read is filtered on.
+            current_whiteboard_id: The board the conversation points at, if any.
+            named_whiteboard_id: The board the caller named, if any.
+            session: The session to read through.
+
+        Returns:
+            The board to work on, or None when there is none to work on yet. Opening one
+            is the caller's decision — a read must not make it.
+
+        Raises:
+            LysError: A board was named and is not this user's.
+        """
+        if named_whiteboard_id:
+            named = await cls.get_for_user(named_whiteboard_id, user_id, session)
+            if named is None:
+                logger.warning(f"Whiteboard '{named_whiteboard_id}' is not reachable for user '{user_id}'")
+                raise LysError(WHITEBOARD_NOT_FOUND, f"Whiteboard '{named_whiteboard_id}' does not exist")
+            return named
+
+        # A pointer can outlive the board it names: whiteboard_id carries no foreign key,
+        # and a board deleted elsewhere would leave it dangling. A dead pointer reads as
+        # no board rather than failing the turn.
+        if current_whiteboard_id:
+            return await cls.get_for_user(current_whiteboard_id, user_id, session)
+
+        return None
+
+    @classmethod
     async def resolve_for_conversation(
         cls,
         conversation: Any,
@@ -85,15 +138,9 @@ class WhiteboardService(EntityService[Whiteboard]):
         """
         Pick the board a tool call is about, and open one if the conversation has none.
 
-        Named target wins; otherwise it is **always** the conversation's own board, never
-        whatever the user happens to be looking at. A focused board is reachable, but only
-        when the caller names it — so writing on the user's own board stays something that
-        was asked for, not an ambient side effect of asking a question.
-
-        A named board that is not this user's is refused with ``WHITEBOARD_NOT_FOUND``, the
-        same answer whether it exists or not. It is not redirected to the conversation's
-        own board: the model would believe it drew where it asked and the drawing would be
-        somewhere else.
+        Both the board and the pointer land in the caller's session, so this is the path
+        for a caller whose transaction ends soon. A chatbot turn's does not — it must go
+        through :meth:`draw`, which commits the board apart.
 
         Args:
             conversation: The AIConversation of the current turn.
@@ -106,47 +153,152 @@ class WhiteboardService(EntityService[Whiteboard]):
         Raises:
             LysError: A board was named and is not the user's.
         """
-        if whiteboard_id:
-            named = await cls.get_for_user(whiteboard_id, conversation.user_id, session)
-            if named is None:
-                logger.warning(f"Whiteboard '{whiteboard_id}' is not reachable for user '{conversation.user_id}'")
-                raise LysError(WHITEBOARD_NOT_FOUND, f"Whiteboard '{whiteboard_id}' does not exist")
-            return named
-
-        # A pointer can outlive the board it names: whiteboard_id carries no foreign key,
-        # and a board deleted elsewhere in the same session would leave it dangling. A
-        # dead pointer opens a new board rather than failing the turn.
-        if conversation.whiteboard_id:
-            own = await cls.get_for_user(conversation.whiteboard_id, conversation.user_id, session)
-            if own is not None:
-                return own
+        whiteboard = await cls.find_for_conversation(
+            conversation.user_id, conversation.whiteboard_id, whiteboard_id, session,
+        )
+        if whiteboard is not None:
+            return whiteboard
 
         return await cls.open_for_conversation(conversation, session)
 
     @classmethod
-    async def open_for_conversation(cls, conversation: Any, session) -> Whiteboard:
+    async def create_for_user(
+        cls,
+        user_id: str,
+        title: Optional[str],
+        session,
+    ) -> Whiteboard:
         """
-        Open the conversation's board and point the conversation at it.
+        Open an empty board for a user, attached to nothing.
 
-        The title is the conversation's. It is nullable there — a background task writes
-        it after the first exchange — so a board opened before that falls back rather than
-        leaving the column empty, which it refuses anyway.
+        Whoever wanted it points at it: a conversation writes the pointer on its own row,
+        in its own transaction, which is not this board's business.
+
+        The title falls back because a conversation's is nullable — a background task
+        writes it after the first exchange — and the column here refuses empty.
         """
         whiteboard = cls.entity_class(
-            user_id=conversation.user_id,
-            title=(conversation.title or DEFAULT_TITLE)[:TITLE_MAX_LENGTH],
+            user_id=user_id,
+            title=(title or DEFAULT_TITLE)[:TITLE_MAX_LENGTH],
             scene_json=scene_tools.empty_scene(),
             revision=1,
         )
         session.add(whiteboard)
         await session.flush()
 
+        cls._notify(whiteboard, session)
+        return whiteboard
+
+    @classmethod
+    async def open_for_conversation(cls, conversation: Any, session) -> Whiteboard:
+        """
+        Open the conversation's board and point the conversation at it.
+
+        Both writes in the caller's session: the board is only visible to other
+        connections once that session commits. See :meth:`resolve_for_conversation` for
+        who may use this.
+        """
+        whiteboard = await cls.create_for_user(
+            conversation.user_id, conversation.title, session,
+        )
+
         conversation.whiteboard_id = whiteboard.id
         session.add(conversation)
         await session.flush()
 
-        cls._notify(whiteboard, session)
         return whiteboard
+
+    @classmethod
+    def _can_commit_apart(cls) -> bool:
+        """
+        Whether a second transaction can write while the caller's is already open.
+
+        On a single-writer backend it cannot: the caller's turn has written its own rows
+        long before a tool runs, so a second transaction would wait for a lock the caller
+        only releases once this call returns. That is a deadlock, not a slow query.
+        """
+        return cls.app_manager.database.settings.type not in SINGLE_WRITER_BACKENDS
+
+    @classmethod
+    async def draw(
+        cls,
+        *,
+        user_id: str,
+        title: Optional[str],
+        current_whiteboard_id: Optional[str],
+        named_whiteboard_id: Optional[str],
+        operations: Dict[str, Any],
+        caller_session,
+    ) -> Dict[str, Any]:
+        """
+        Apply a patch to a board, committed as soon as the backend allows.
+
+        Why not simply the caller's session: a chatbot turn holds its session open for
+        the whole streamed answer, and the browser is only told a board moved when the
+        transaction commits (see :meth:`_notify`). Drawn in the turn's session, a board
+        therefore appears AFTER the answer — the user hears the sentence naming it before
+        seeing it. Committed apart, it appears when it was drawn, which is before the
+        first word.
+
+        What that trades: a board survives a turn that fails afterwards. A drawing nobody
+        asked about is a far smaller wrong than an answer pointing at a drawing that is
+        not there.
+
+        On a single-writer backend the patch goes in the caller's session instead (see
+        :meth:`_can_commit_apart`): the board then appears at the end of the turn, which
+        is late but correct — the alternative is a turn that hangs on a lock.
+
+        The pointer stays the caller's to write, in the caller's transaction: this board
+        knows nothing of conversations. Returns what a tool has to hand back to the model
+        — plain values, so nothing depends on a session that is closed by then.
+
+        Args:
+            user_id: The owner every read is filtered on.
+            title: Title for a board opened here, when there is none to draw on.
+            current_whiteboard_id: The board the caller already points at, if any.
+            named_whiteboard_id: The board the model named, if any.
+            operations: The patch, as :meth:`apply_operations` takes it.
+            caller_session: The caller's session, used only where a second one cannot be.
+
+        Returns:
+            The board id, its title and its elements, as plain values.
+
+        Raises:
+            LysError: A board was named and is not this user's, or the patch is refused.
+        """
+        if not cls._can_commit_apart():
+            return await cls._draw(
+                user_id, title, current_whiteboard_id, named_whiteboard_id, operations, caller_session,
+            )
+
+        async with cls.app_manager.database.get_session() as session:
+            return await cls._draw(
+                user_id, title, current_whiteboard_id, named_whiteboard_id, operations, session,
+            )
+
+    @classmethod
+    async def _draw(
+        cls,
+        user_id: str,
+        title: Optional[str],
+        current_whiteboard_id: Optional[str],
+        named_whiteboard_id: Optional[str],
+        operations: Dict[str, Any],
+        session,
+    ) -> Dict[str, Any]:
+        """Resolve the target through one session, opening a board if there is none."""
+        whiteboard = await cls.find_for_conversation(
+            user_id, current_whiteboard_id, named_whiteboard_id, session,
+        )
+        if whiteboard is None:
+            whiteboard = await cls.create_for_user(user_id, title, session)
+
+        await cls.apply_operations(whiteboard, operations, session)
+        return {
+            "whiteboard_id": whiteboard.id,
+            "title": whiteboard.title,
+            "elements": cls.describe(whiteboard),
+        }
 
     # ==================== Writes ====================
 

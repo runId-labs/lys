@@ -250,7 +250,6 @@ class TestTools:
         async with whiteboard_app_manager.database.get_session() as session:
             conversation = await make_conversation(whiteboard_app_manager, session, str(uuid4()))
             context = {"session": session, "conversation_id": conversation.id}
-
             drawn = await conversation_service._handle_draw_on_whiteboard(
                 {"add": [{"name": "Idea", "text": "hello"}]}, context
             )
@@ -266,10 +265,34 @@ class TestTools:
         async with whiteboard_app_manager.database.get_session() as session:
             conversation = await make_conversation(whiteboard_app_manager, session, str(uuid4()))
             context = {"session": session, "conversation_id": conversation.id}
-
             result = await conversation_service._handle_draw_on_whiteboard({"add": ["not an object"]}, context)
 
             assert result["error"] == "WHITEBOARD_INVALID_OPERATION"
+
+    @pytest.mark.asyncio
+    async def test_reading_first_leaves_exactly_one_board(self, whiteboard_app_manager):
+        """A read must not open a board: the draw that follows would open a second one."""
+        conversation_service = whiteboard_app_manager.get_service("ai_conversation")
+        whiteboard_entity = whiteboard_app_manager.get_entity("whiteboard")
+
+        async with whiteboard_app_manager.database.get_session() as session:
+            user_id = str(uuid4())
+            conversation = await make_conversation(whiteboard_app_manager, session, user_id)
+            context = {"session": session, "conversation_id": conversation.id}
+
+            empty = await conversation_service._handle_read_whiteboard({}, context)
+            assert empty["error"] == "NO_WHITEBOARD"
+            assert conversation.whiteboard_id is None
+
+            drawn = await conversation_service._handle_draw_on_whiteboard(
+                {"add": [{"name": "Idea", "text": "hello"}]}, context
+            )
+
+            boards = await session.execute(
+                select(whiteboard_entity).where(whiteboard_entity.user_id == user_id)
+            )
+            assert [board.id for board in boards.scalars().all()] == [drawn["whiteboard_id"]]
+            assert conversation.whiteboard_id == drawn["whiteboard_id"]
 
     @pytest.mark.asyncio
     async def test_an_invented_board_id_is_refused(self, whiteboard_app_manager):

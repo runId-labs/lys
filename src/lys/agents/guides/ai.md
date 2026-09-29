@@ -313,6 +313,13 @@ inherit from the app's, or the tools are silently absent.
 - The scene size limit is the `ai_whiteboard.max_scene_bytes` plugin setting.
 - A named `whiteboard_id` that is not the user's is refused (`WHITEBOARD_NOT_FOUND`), never
   redirected to the conversation's own board.
+- `draw_on_whiteboard` commits the board in a transaction of its own, so it reaches the
+  browser while the answer is still streaming. On a single-writer backend (SQLite) it
+  falls back to the turn's session — correct, but the board appears at the end of the
+  turn.
+- `read_whiteboard` never opens a board: one opened in the turn's session would be
+  invisible to that separate transaction, which would then open a second one. With no
+  board yet it returns `NO_WHITEBOARD`, and drawing is what opens one.
 
 ## Frontend proposals (chatbot-initiated actions)
 

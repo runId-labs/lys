@@ -9,6 +9,7 @@ the behaviour under test is SQLAlchemy's transaction events.
 
 import asyncio
 import uuid
+from contextlib import asynccontextmanager
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -116,6 +117,98 @@ class TestResolveForConversation:
         with patch.object(WhiteboardService, "open_for_conversation", AsyncMock(return_value=opened)):
             result = await WhiteboardService.resolve_for_conversation(self.conversation(), MagicMock())
         assert result is opened
+
+
+class TestDraw:
+    """Where the patch is committed, which is what the method exists to decide."""
+
+    OPERATIONS = {"add": [{"name": "a"}]}
+
+    @staticmethod
+    def arguments(caller_session, current=None, named=None):
+        return {
+            "user_id": USER,
+            "title": "Title",
+            "current_whiteboard_id": current,
+            "named_whiteboard_id": named,
+            "operations": TestDraw.OPERATIONS,
+            "caller_session": caller_session,
+        }
+
+    @pytest.fixture
+    def drawn(self):
+        """:meth:`_draw` stubbed: only the session it is handed is under test here."""
+        with patch.object(
+            WhiteboardService, "_draw", AsyncMock(return_value={"whiteboard_id": BOARD_ID}),
+        ) as draw:
+            yield draw
+
+    @pytest.mark.asyncio
+    async def test_a_backend_taking_a_second_writer_commits_the_board_apart(self, manager, drawn):
+        own_session = MagicMock()
+
+        @asynccontextmanager
+        async def get_session():
+            yield own_session
+
+        manager.database.settings.type = "postgresql"
+        manager.database.get_session = get_session
+        caller_session = MagicMock()
+
+        await WhiteboardService.draw(**self.arguments(caller_session))
+
+        assert drawn.await_args.args[-1] is own_session
+
+    @pytest.mark.asyncio
+    async def test_a_single_writer_backend_draws_in_the_callers_session(self, manager, drawn):
+        """SQLite: a second transaction would wait on a lock only the caller can release."""
+        manager.database.settings.type = "sqlite"
+        manager.database.get_session = MagicMock(
+            side_effect=AssertionError("a second transaction must not be opened here")
+        )
+        caller_session = MagicMock()
+
+        await WhiteboardService.draw(**self.arguments(caller_session))
+
+        assert drawn.await_args.args[-1] is caller_session
+
+    @pytest.mark.asyncio
+    async def test_a_board_is_opened_only_when_there_is_none(self, manager):
+        board = make_board()
+        session = make_session(board)
+        with patch.object(WhiteboardService, "find_for_conversation", AsyncMock(return_value=board)), \
+                patch.object(WhiteboardService, "create_for_user", AsyncMock()) as create, \
+                patch.object(WhiteboardService, "apply_operations", AsyncMock(return_value=board)):
+            result = await WhiteboardService._draw(USER, "Title", BOARD_ID, None, self.OPERATIONS, session)
+
+        create.assert_not_awaited()
+        assert result["whiteboard_id"] == BOARD_ID
+
+    @pytest.mark.asyncio
+    async def test_nothing_to_draw_on_opens_a_board(self, manager):
+        opened = make_board()
+        session = make_session(opened)
+        with patch.object(WhiteboardService, "find_for_conversation", AsyncMock(return_value=None)), \
+                patch.object(WhiteboardService, "create_for_user", AsyncMock(return_value=opened)) as create, \
+                patch.object(WhiteboardService, "apply_operations", AsyncMock(return_value=opened)):
+            await WhiteboardService._draw(USER, "Title", None, None, self.OPERATIONS, session)
+
+        create.assert_awaited_once_with(USER, "Title", session)
+
+
+class TestFindForConversation:
+    """A read resolves a board; it never opens one."""
+
+    @pytest.mark.asyncio
+    async def test_a_dangling_pointer_reads_as_no_board(self, manager):
+        with patch.object(WhiteboardService, "get_for_user", AsyncMock(return_value=None)):
+            assert await WhiteboardService.find_for_conversation(USER, BOARD_ID, None, MagicMock()) is None
+
+    @pytest.mark.asyncio
+    async def test_no_pointer_reads_as_no_board_without_touching_the_database(self, manager):
+        session = make_session(make_board())
+        assert await WhiteboardService.find_for_conversation(USER, None, None, session) is None
+        session.execute.assert_not_called()
 
 
 class TestSaveSceneValidation:

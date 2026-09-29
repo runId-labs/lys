@@ -128,15 +128,43 @@ except ImportError:  # pragma: no cover - exercised through the fallback tests
     _num2words = None
 
 
-def _number_in_words(figure: str, language: str) -> str:
-    """A figure as it is said, or the figure itself when no library speaks."""
+def _integer_in_words(digits: str, language: str) -> str:
+    """One whole number as it is said, or the digits when no library speaks."""
+    if _num2words is None:
+        return digits
+    try:
+        return _num2words(int(digits), lang=language)
+    except (ValueError, NotImplementedError):
+        return digits
+
+
+def _number_in_words(figure: str, language: str, vocabulary: "SpeechVocabulary") -> str:
+    """
+    A figure as a person reads it aloud.
+
+    The two sides of the separator are spoken as NUMBERS, not as digits: "1,48"
+    is "un virgule quarante-huit", the way it is said out loud. Handing the
+    whole float to num2words gives "un virgule quatre huit" — correct digits,
+    and nobody says that.
+
+    Leading zeros of the decimal part keep their place ("1,05" → "un virgule
+    zéro cinq"): spoken as a number, "05" would drop the zero and say a
+    hundredth as if it were a tenth.
+    """
     if _num2words is None:
         return figure
-    try:
-        # The spaces are thousands groups ("22 860"), not noise to the float.
-        return _num2words(float(figure.replace(" ", "").replace(",", ".")), lang=language)
-    except (ValueError, NotImplementedError):
-        return figure
+    # The spaces are thousands groups ("22 860"), not part of the value.
+    plain = figure.replace(" ", "").replace(".", ",")
+    whole, _, decimals = plain.partition(",")
+    words = _integer_in_words(whole or "0", language)
+    if not decimals:
+        return words
+
+    leading_zeros = len(decimals) - len(decimals.lstrip("0"))
+    zeros = [_integer_in_words("0", language)] * leading_zeros
+    remainder = decimals[leading_zeros:]
+    spoken_decimals = zeros + ([_integer_in_words(remainder, language)] if remainder else [])
+    return f"{words} {vocabulary.decimal_separator} {' '.join(spoken_decimals)}"
 
 
 # Typography a synthesizer reads as silence or as noise: the narrow no-break
@@ -198,6 +226,13 @@ class SpeechVocabulary:
     elision_sounds: str
     elided_connector: str
     connector: str
+    #: How the decimal separator is said. The part after it is spoken as ONE
+    #: number ("un virgule quarante-huit"), which is how a person reads a
+    #: figure — num2words says it digit by digit ("un virgule quatre huit"),
+    #: which is how a machine reads one. Last of the required fields on
+    #: purpose: a field inserted above one shifts every positional argument
+    #: after it, silently, in every vocabulary a consuming project declares.
+    decimal_separator: str
     #: The scales this language leaves invariable and un-connected ("mille").
     invariable_scales: Tuple[str, ...] = ()
 
@@ -235,6 +270,7 @@ _FRENCH_VOCABULARY = SpeechVocabulary(
     elision_sounds="aeiouéèêh",
     elided_connector="d'",
     connector="de ",
+    decimal_separator="virgule",
     invariable_scales=("k", "K"),
 )
 
@@ -248,7 +284,7 @@ _SPEECH_VOCABULARIES: Dict[str, SpeechVocabulary] = {
 def _spell_amount(match: "re.Match", language: str, vocabulary: SpeechVocabulary) -> str:
     """One figure, its scale and its currency, as they are said."""
     figure, scale, currency = match.group(1), match.group(2), match.group(3)
-    words = _number_in_words(figure, language)
+    words = _number_in_words(figure, language, vocabulary)
     currency_words = vocabulary.currencies.get(currency, currency)
     if not scale:
         return f"{words} {currency_words}"
@@ -305,7 +341,7 @@ def normalize_speech(text: str, language: Optional[str] = None) -> str:
     )
     stripped = _AMOUNT_RE.sub(lambda m: _spell_amount(m, language, vocabulary), stripped)
     stripped = _PERCENT_RE.sub(
-        lambda m: f"{_number_in_words(m.group(1), language)} {vocabulary.percent}", stripped
+        lambda m: f"{_number_in_words(m.group(1), language, vocabulary)} {vocabulary.percent}", stripped
     )
     for pattern, spoken in vocabulary.glyphs:
         stripped = pattern.sub(spoken, stripped)
