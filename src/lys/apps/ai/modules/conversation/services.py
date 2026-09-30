@@ -1745,6 +1745,108 @@ class AIConversationService(EntityService[AIConversation]):
         }
 
     @classmethod
+    async def _close_turn(
+        cls,
+        conversation: "AIConversation",
+        session: AsyncSession,
+        info: Any,
+        content: Optional[str],
+        tool_calls_count: int,
+        tool_results: List[Dict[str, Any]],
+        usage: Optional[Dict[str, Any]],
+    ) -> Dict[str, Any]:
+        """
+        The end of a non-streaming turn, whichever branch reaches it: the
+        final answer, or a navigation the client continues on its own.
+
+        Args:
+            conversation: The conversation the turn belongs to.
+            session: Database session, for the compaction check.
+            info: GraphQL info; its context carries the frontend actions the
+                tools of the turn collected.
+            content: The answer as written, or None when the model wrote none.
+            tool_calls_count: Tool calls made over the whole turn.
+            tool_results: One entry per executed tool, in execution order.
+            usage: Token usage of the last provider call, or None.
+
+        Returns:
+            The turn result, after ``_process_response`` has had its say.
+
+        Side effects:
+            Enqueues a compaction when the conversation calls for one.
+        """
+        frontend_actions = list(getattr(info.context, "frontend_actions", []))
+        result = {
+            "content": content,
+            "conversation_id": conversation.id,
+            "tool_calls_count": tool_calls_count,
+            "tool_results": tool_results,
+            "frontend_actions": frontend_actions if frontend_actions else None,
+        }
+        await cls.maybe_enqueue_compaction(conversation, session, usage)
+        cls._process_response(result)
+        return result
+
+    @classmethod
+    async def _close_streaming_turn(
+        cls,
+        conversation: "AIConversation",
+        session: AsyncSession,
+        info: Any,
+        content: str,
+        tool_calls_count: int,
+        tool_results: List[Dict[str, Any]],
+        usage: Optional[Dict[str, Any]],
+        voice_pipeline: Optional["SpokenBlockPipeline"],
+    ) -> AsyncGenerator[str, None]:
+        """
+        The end of a streaming turn, whichever branch reaches it: the final
+        answer, or a navigation the client continues on its own.
+
+        Args:
+            conversation: The conversation the turn belongs to.
+            session: Database session, for the compaction check.
+            info: Streaming info shim; its context carries the frontend
+                actions the tools of the turn collected.
+            content: The answer as streamed, empty when the model wrote none.
+            tool_calls_count: Tool calls made over the whole turn.
+            tool_results: One entry per executed tool, in execution order.
+            usage: Token usage of the last provider call, or None.
+            voice_pipeline: The speech pipeline to close, or None when the
+                turn has no voice.
+
+        Yields:
+            The ``done`` event, then the tail of the voice — the reading of
+            the answer may outlive its ``done``: the client has its text, the
+            audio keeps streaming.
+
+        Side effects:
+            Enqueues a compaction when the conversation calls for one.
+        """
+        frontend_actions = list(getattr(info.context, "frontend_actions", []))
+        result = {
+            # Clients only ever handle GlobalIDs: the conversation listing returns
+            # them, so the stream must hand out the same reference or a resumed
+            # conversation and a fresh one would carry two different formats.
+            "conversationId": build_global_id(AI_CONVERSATION_NODE_NAME, conversation.id),
+            "toolCallsCount": tool_calls_count,
+            "frontendActions": frontend_actions if frontend_actions else None,
+        }
+        cls._process_response({
+            "content": content,
+            "conversation_id": conversation.id,
+            "tool_calls_count": tool_calls_count,
+            "tool_results": tool_results,
+            "frontend_actions": frontend_actions if frontend_actions else None,
+        })
+        await cls.maybe_enqueue_compaction(conversation, session, usage)
+        yield format_sse("done", result)
+
+        if voice_pipeline is not None:
+            async for voice_event in voice_pipeline.finish():
+                yield voice_event
+
+    @classmethod
     async def chat_with_tools(
         cls,
         user_id: str,
@@ -1824,18 +1926,10 @@ class AIConversationService(EntityService[AIConversation]):
                     **cls._usage_fields(response.usage),
                 )
 
-                frontend_actions = list(getattr(info.context, "frontend_actions", []))
-
-                result = {
-                    "content": response.content,
-                    "conversation_id": conversation.id,
-                    "tool_calls_count": tool_calls_count,
-                    "tool_results": tool_results,
-                    "frontend_actions": frontend_actions if frontend_actions else None,
-                }
-                await cls.maybe_enqueue_compaction(conversation, session, response.usage)
-                cls._process_response(result)
-                return result
+                return await cls._close_turn(
+                    conversation, session, info, response.content,
+                    tool_calls_count, tool_results, response.usage,
+                )
 
             # Execute tool calls
             tool_calls_count += len(tool_calls)
@@ -1863,6 +1957,7 @@ class AIConversationService(EntityService[AIConversation]):
             )
 
             # Execute each tool and collect results
+            actions_before_tools = len(getattr(info.context, "frontend_actions", []))
             for tool_call in tool_calls:
                 tool_name = tool_call.get("function", {}).get("name", "")
                 tool_args_str = tool_call.get("function", {}).get("arguments", "{}")
@@ -1924,6 +2019,17 @@ class AIConversationService(EntityService[AIConversation]):
                         )
                     except Exception as db_err:
                         logger.error(f"Failed to save tool error to DB: {db_err}")
+
+            # A navigation the client continues on its own ends the turn here
+            # (see _hands_over_to_client): no further model call, the answer
+            # comes on the new page. The text written before the call is the
+            # assistant message already persisted with its tool calls.
+            produced = list(getattr(info.context, "frontend_actions", []))[actions_before_tools:]
+            if _hands_over_to_client(produced):
+                return await cls._close_turn(
+                    conversation, session, info, response.content,
+                    tool_calls_count, tool_results, response.usage,
+                )
 
         # Max iterations reached
         frontend_actions = getattr(info.context, "frontend_actions", [])
@@ -2158,31 +2264,11 @@ class AIConversationService(EntityService[AIConversation]):
                         **cls._usage_fields(last_usage),
                     )
 
-                    frontend_actions = list(getattr(info.context, "frontend_actions", []))
-
-                    result = {
-                        # Clients only ever handle GlobalIDs: the conversation listing returns
-                        # them, so the stream must hand out the same reference or a resumed
-                        # conversation and a fresh one would carry two different formats.
-                        "conversationId": build_global_id(AI_CONVERSATION_NODE_NAME, conversation.id),
-                        "toolCallsCount": tool_calls_count,
-                        "frontendActions": frontend_actions if frontend_actions else None,
-                    }
-                    cls._process_response({
-                        "content": accumulated_content,
-                        "conversation_id": conversation.id,
-                        "tool_calls_count": tool_calls_count,
-                        "tool_results": tool_results,
-                        "frontend_actions": frontend_actions if frontend_actions else None,
-                    })
-                    await cls.maybe_enqueue_compaction(conversation, session, last_usage)
-                    yield format_sse("done", result)
-
-                    if voice_pipeline is not None:
-                        # The reading of the answer may outlive its "done": the
-                        # client has its text, the audio tail keeps streaming.
-                        async for voice_event in voice_pipeline.finish():
-                            yield voice_event
+                    async for event in cls._close_streaming_turn(
+                        conversation, session, info, accumulated_content,
+                        tool_calls_count, tool_results, last_usage, voice_pipeline,
+                    ):
+                        yield event
                     return
 
                 # Tool calls detected — execute them
@@ -2212,6 +2298,7 @@ class AIConversationService(EntityService[AIConversation]):
                 )
 
                 # Execute each tool
+                actions_before_tools = len(getattr(info.context, "frontend_actions", []))
                 for tool_call in finalized_tool_calls:
                     tool_name = tool_call.get("function", {}).get("name", "")
                     tool_args_str = tool_call.get("function", {}).get("arguments", "{}")
@@ -2294,6 +2381,20 @@ class AIConversationService(EntityService[AIConversation]):
                         except Exception as db_err:
                             logger.error(f"Failed to save tool error to DB: {db_err}")
 
+                # A navigation the client continues on its own ends the turn
+                # here (see _hands_over_to_client): no further model call —
+                # the answer comes on the new page. The sentence streamed
+                # before the call is the assistant message already persisted
+                # with its tool calls; "done" carries the actions as usual.
+                produced = list(getattr(info.context, "frontend_actions", []))[actions_before_tools:]
+                if _hands_over_to_client(produced):
+                    async for event in cls._close_streaming_turn(
+                        conversation, session, info, accumulated_content,
+                        tool_calls_count, tool_results, last_usage, voice_pipeline,
+                    ):
+                        yield event
+                    return
+
             # Max iterations reached
             yield format_sse("error", {
                 "message": "Maximum tool iterations reached.",
@@ -2325,6 +2426,25 @@ class _StreamingInfo:
 
     def __init__(self, connected_user: Dict[str, Any], access_token: str):
         self.context = _StreamingContext(connected_user, access_token)
+
+
+def _hands_over_to_client(actions: List[Dict[str, Any]]) -> bool:
+    """
+    Whether one of these frontend actions moves the user to another page AND
+    asks the client to continue the exchange there (a navigate action carrying
+    ``continueAction``).
+
+    Such an action ends the turn on the server side: the model has said what
+    it had to say before the call — one sentence announcing the move — and
+    anything it would write after the tool result is written for a page it is
+    about to leave, then repeated or contradicted on arrival, where the answer
+    belongs. The client sends the continuation once the new page is loaded,
+    with that page's prompt and tools.
+    """
+    return any(
+        action.get("type") == "navigate" and bool(action.get("continueAction"))
+        for action in actions
+    )
 
 
 def _accumulate_tool_calls(accumulator: Dict[int, Dict[str, Any]], deltas: List[Dict[str, Any]]) -> None:

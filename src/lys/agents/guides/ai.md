@@ -149,6 +149,22 @@ RULES:
   the webservice's permission chain — an injection cannot exceed the connected
   user's own rights, and mutations still pass `CONFIRM_ACTION_TOOL`.
 
+### A continued navigation ends the turn
+
+`navigate` with `continue_action: true` (confirmed through `confirm_action`)
+schedules the move AND asks the client to resume the exchange on the new page.
+The server ends the turn as soon as the tools of that iteration have run: no
+further model call, `done` goes out with the actions (and the voice tail, if
+any), so `done` can follow a turn whose only text is the sentence the model
+wrote before the call — an empty text is possible. Anything the model would
+write after the tool result belongs to the page it is leaving.
+
+The CLIENT is responsible for the continuation: once the route has changed
+and its page context names the new page, it sends the continuation message
+(with that page's prompt and tools in play). Sending it before the page
+context has moved makes the model answer with the old page. A `navigate`
+without `continue_action` triggers no continuation.
+
 ### Writing params: `writable`, `set_page_params`, `navigate` arrival filters
 
 Reading a param and writing one are different grants. Every declared param is

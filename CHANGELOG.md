@@ -7,6 +7,15 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.50.1] - 2026-09-30
+
+### Fixed
+- AI conversation: a `navigate` with `continue_action` ends the turn once the
+  tools of that iteration have run — `done` carries the actions, no further
+  model call — so the model no longer writes an answer for the page it is
+  leaving, then repeats or contradicts it on arrival. The client sends the
+  continuation once the new page is loaded (see `agents/guides/ai.md`).
+
 ## [0.50.0] - 2026-09-30
 
 ### Added

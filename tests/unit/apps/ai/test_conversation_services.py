@@ -3244,3 +3244,181 @@ class TestSetPageParamsInternalRouting:
         action = info.context.frontend_actions[0]
         assert action["params"] == {"pastMonths": 24}
         assert "internalParams" not in action
+
+
+class TestHandsOverToClient:
+    """The turn ends when a navigate action asks the client to continue elsewhere."""
+
+    def test_navigate_with_continue_hands_over(self):
+        from lys.apps.ai.modules.conversation.services import _hands_over_to_client
+
+        actions = [{"type": "navigate", "path": "/somewhere", "continueAction": True}]
+        assert _hands_over_to_client(actions) is True
+
+    def test_navigate_without_continue_does_not(self):
+        from lys.apps.ai.modules.conversation.services import _hands_over_to_client
+
+        actions = [{"type": "navigate", "path": "/somewhere", "continueAction": False}]
+        assert _hands_over_to_client(actions) is False
+
+    def test_other_actions_do_not(self):
+        from lys.apps.ai.modules.conversation.services import _hands_over_to_client
+
+        actions = [
+            {"type": "update_page_params", "params": {"x": 1}},
+            {"type": "refresh", "nodes": ["Node"]},
+        ]
+        assert _hands_over_to_client(actions) is False
+        assert _hands_over_to_client([]) is False
+
+
+class TestTurnEndsOnContinuedNavigation:
+    """
+    A navigate the client continues on its own ends the turn: one ``done``, no
+    second provider call, the voice closed — on both loops.
+    """
+
+    NAVIGATE_CALL = {
+        "id": "call-1",
+        "type": "function",
+        "function": {"name": "navigate", "arguments": json.dumps({"path": "/target", "continue_action": True})},
+    }
+
+    @staticmethod
+    def _executor():
+        """A navigate tool that schedules the continued navigation, like the real one."""
+        async def execute(tool_name, arguments, context):
+            assert tool_name == "navigate"
+            context["info"].context.frontend_actions.append(
+                {"type": "navigate", "path": arguments["path"], "continueAction": True}
+            )
+            return {"status": "navigation_scheduled"}
+
+        executor = MagicMock()
+        executor.execute = AsyncMock(side_effect=execute)
+        return executor
+
+    @staticmethod
+    def _context(ai_service, executor):
+        message_service = MagicMock()
+        message_service.create = AsyncMock()
+        message_service.add_tool_result = AsyncMock()
+        message_service.delete = AsyncMock()
+        return {
+            "executor": executor,
+            "conversation": SimpleNamespace(id="conv-1"),
+            "message_service": message_service,
+            "ai_service": ai_service,
+            "llm_tools": [{"type": "function", "function": {"name": "navigate"}}],
+            "messages": [{"role": "user", "content": "Ou est la page ?"}],
+            "user_message_id": "msg-1",
+        }
+
+    @pytest.mark.asyncio
+    async def test_streaming_turn_ends_after_the_navigation(self):
+        from lys.apps.ai.modules.conversation.services import AIConversationService
+
+        stream_calls = []
+
+        async def chat_stream_with_purpose(messages, purpose, tools, cache_key=None):
+            stream_calls.append(list(messages))
+            if len(stream_calls) > 1:
+                raise AssertionError("the provider was called again after the navigation")
+            yield SimpleNamespace(content="Je t'ouvre la page.", reasoning=None, tool_calls=None,
+                                  finish_reason=None, usage=None, model="model-x", provider="provider-x")
+            yield SimpleNamespace(content=None, reasoning=None,
+                                  tool_calls=[{"index": 0, **self.NAVIGATE_CALL}],
+                                  finish_reason="tool_calls", usage={"prompt_tokens": 1, "completion_tokens": 1},
+                                  model=None, provider=None)
+
+        ai_service = MagicMock()
+        ai_service.chat_stream_with_purpose = chat_stream_with_purpose
+        ctx = self._context(ai_service, self._executor())
+
+        voice_events = []
+
+        class _Voice:
+            def feed(self, text):
+                pass
+
+            async def drain(self):
+                if False:
+                    yield ""
+
+            async def finish(self):
+                voice_events.append("finish")
+                yield "event: voice\ndata: {}\n\n"
+
+            async def abort(self):
+                voice_events.append("abort")
+
+        app_manager = MagicMock()
+        app_manager.settings.get_plugin_config.return_value = {
+            "chatbot": {"spoken_block": {"enabled": True, "language": "fr"}}
+        }
+
+        with patch.object(AIConversationService, "app_manager", new=app_manager), \
+             patch.object(AIConversationService, "_prepare_chat_context", new=AsyncMock(return_value=ctx)), \
+             patch.object(AIConversationService, "_build_voice_pipeline", return_value=_Voice()), \
+             patch.object(AIConversationService, "maybe_enqueue_compaction", new=AsyncMock()):
+            events = [
+                event async for event in AIConversationService.chat_with_tools_streaming(
+                    user_id="user-1", content="Ou est la page ?", session=MagicMock(),
+                    connected_user={"sub": "user-1"}, access_token="token", voice=True,
+                )
+            ]
+
+        names = [event.split("\n", 1)[0] for event in events]
+        assert names.count("event: done") == 1
+        assert "event: error" not in names
+        assert len(stream_calls) == 1
+        # The text before the call streamed, the tool ran, the actions went out.
+        assert "event: token" in names
+        assert "event: tool_result" in names
+        assert "event: frontend_actions" in names
+        done = json.loads(events[names.index("event: done")].split("data: ", 1)[1])
+        assert done["frontendActions"] == [{"type": "navigate", "path": "/target", "continueAction": True}]
+        assert done["toolCallsCount"] == 1
+        # The voice tail follows "done": the pipeline was finished (the closing
+        # abort of the finally block is the usual no-op after a finish).
+        assert names.index("event: voice") > names.index("event: done")
+        assert voice_events[0] == "finish"
+        # One assistant row: the sentence with its tool call. No answer written for the old page.
+        create = ctx["message_service"].create
+        assert create.call_count == 1
+        assert create.call_args.kwargs["tool_calls"][0]["function"]["name"] == "navigate"
+        ctx["message_service"].add_tool_result.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_non_streaming_turn_ends_after_the_navigation(self):
+        from lys.apps.ai.modules.conversation.services import AIConversationService
+
+        calls = []
+
+        async def chat_with_purpose(messages, purpose, tools, cache_key=None):
+            calls.append(list(messages))
+            if len(calls) > 1:
+                raise AssertionError("the provider was called again after the navigation")
+            return SimpleNamespace(content="Je t'ouvre la page.", tool_calls=[self.NAVIGATE_CALL],
+                                   provider="provider-x", model="model-x", usage=None)
+
+        ai_service = MagicMock()
+        ai_service.chat_with_purpose = chat_with_purpose
+        ctx = self._context(ai_service, self._executor())
+        info = SimpleNamespace(context=SimpleNamespace(connected_user={"sub": "user-1"}, frontend_actions=[]))
+        app_manager = MagicMock()
+        app_manager.settings.get_plugin_config.return_value = {}
+
+        with patch.object(AIConversationService, "app_manager", new=app_manager), \
+             patch.object(AIConversationService, "_prepare_chat_context", new=AsyncMock(return_value=ctx)), \
+             patch.object(AIConversationService, "maybe_enqueue_compaction", new=AsyncMock()):
+            result = await AIConversationService.chat_with_tools(
+                user_id="user-1", content="Ou est la page ?", session=MagicMock(), info=info,
+            )
+
+        assert len(calls) == 1
+        assert result["content"] == "Je t'ouvre la page."
+        assert result["tool_calls_count"] == 1
+        assert result["frontend_actions"] == [{"type": "navigate", "path": "/target", "continueAction": True}]
+        assert ctx["message_service"].create.call_count == 1
+        ctx["message_service"].add_tool_result.assert_awaited_once()
