@@ -10,6 +10,7 @@ from lys.core.consts.errors import NOT_FOUND_ERROR
 from lys.core.contexts import Info
 from lys.core.entities import Entity
 from lys.core.errors import LysError
+from lys.core.graphql.atomic import run_atomic
 from lys.core.graphql.fields import lys_typed_field
 from lys.core.graphql.nodes import EntityNode
 from lys.core.utils.access import get_db_object_and_check_access, check_access_to_object
@@ -52,17 +53,23 @@ def _edition_resolver_generator(resolver: Callable, ensure_type: Type[EntityNode
                 )
             )
 
-        # update the retrieved object with the resolver
-        await resolver(self, obj=obj, *args, info=info, **kwargs)
+        async def edit() -> None:
+            # update the retrieved object with the resolver
+            await resolver(self, obj=obj, *args, info=info, **kwargs)
 
-        # check permission again after updating
-        await check_access_to_object(obj, info.context)
+            # check permission again after updating
+            await check_access_to_object(obj, info.context)
 
-        # Flush changes to database before refresh
-        await session.flush()
+            # Flush changes to database before refresh
+            await session.flush()
 
-        # Refresh to load all relationships before creating the node
-        await session.refresh(obj)
+            # Refresh to load all relationships before creating the node
+            await session.refresh(obj)
+
+        # One unit with the access check that follows the edit: an edit that
+        # moves the object out of the caller's reach is refused AND undone —
+        # without the savepoint it was refused and saved (see atomic.py).
+        await run_atomic(session, edit)
 
         return ensure_type.from_obj(obj)
 

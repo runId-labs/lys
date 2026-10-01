@@ -81,6 +81,20 @@ class ProductMutation(Mutation):
         return await service.create(session=info.context.session, **inputs.to_pydantic().model_dump())
 ```
 
+- **R8 — A mutation is atomic.** `lys_creation`, `lys_edition`, `lys_delete`
+  and a `lys_field` used as a mutation run their resolver inside a savepoint:
+  if it raises, everything it wrote is rolled back; nothing is left half-done.
+  Do not rely on a write surviving an error. The one case that must — a failed
+  login attempt, an audit line recorded before refusing — commits explicitly
+  (`await info.context.session.commit()`) and then raises. **An explicit commit
+  ends the protection**: it closes the savepoint, so whatever the resolver
+  writes after it is no longer rolled back if it then fails. Commit last — or,
+  when a commit must happen mid-way (a row a worker has to see before it is
+  enqueued), wrap what follows in its own `async with session.begin_nested():`.
+  A service called outside these decorators (a task, a REST route) gets no
+  savepoint: there the unit of work is the caller's, and a multi-write method
+  opens its own (`async with session.begin_nested():`).
+
 ## Context cheatsheet
 
 `info.context.session` (AsyncSession) · `info.context.app_manager` ·

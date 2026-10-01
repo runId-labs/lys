@@ -11,6 +11,7 @@ from lys.core.consts.errors import NOT_FOUND_ERROR
 from lys.core.contexts import Info
 from lys.core.entities import Entity
 from lys.core.errors import LysError
+from lys.core.graphql.atomic import run_atomic
 from lys.core.graphql.fields import create_strawberry_field_config, _apply_webservice_config
 from lys.core.graphql.nodes import EntityNode, SuccessNode
 from lys.core.utils.access import get_db_object_and_check_access
@@ -41,9 +42,15 @@ def _delete_resolver_generator(resolver: Callable, ensure_type: Type[EntityNode]
                 )
             )
 
-        # update the object with the resolver
-        await resolver(self, obj=entity_obj, info=info)
-        await session.delete(entity_obj)
+        async def delete() -> None:
+            # update the object with the resolver
+            await resolver(self, obj=entity_obj, info=info)
+            await session.delete(entity_obj)
+
+        # Releasing the savepoint flushes the delete: a row still referenced
+        # fails HERE, as this mutation's error, rather than at the final
+        # commit, after the response already said it succeeded (see atomic.py).
+        await run_atomic(session, delete)
 
         return SuccessNode(
             succeed=True

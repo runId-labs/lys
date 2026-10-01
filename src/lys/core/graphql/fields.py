@@ -8,6 +8,7 @@ from strawberry.extensions import FieldExtension
 from strawberry.annotation import StrawberryAnnotation
 
 from lys.core.contexts import Info
+from lys.core.graphql.atomic import run_atomic
 from lys.core.graphql.interfaces import NodeInterface
 from lys.core.graphql.nodes import EntityNode, ServiceNode, ServiceNodeMixin
 from lys.core.permissions import generate_webservice_permission
@@ -15,6 +16,19 @@ from lys.core.registries import AppRegistry, register_webservice
 from lys.core.utils.webservice import WebserviceIsPublicType, format_filed_description
 
 logger = logging.getLogger(__name__)
+
+
+def _is_root_mutation(info: Info) -> bool:
+    """
+    Whether the field being resolved is a mutation itself — a root field of a
+    mutation operation — rather than a field read on what a mutation returned.
+
+    Only that one is run atomically: a nested field resolves after the mutation
+    did its writes, and a query writes nothing to protect.
+    """
+    operation_type = getattr(getattr(info, "operation", None), "operation", None)
+    is_mutation = getattr(operation_type, "value", None) == "mutation"
+    return is_mutation and getattr(getattr(info, "path", None), "prev", None) is None
 
 
 def create_strawberry_field_config(
@@ -193,7 +207,10 @@ def lys_field(
                     # Check if session already exists in context (from DatabaseSessionExtension)
                     existing_session = getattr(info.context, 'session', None)
                     if existing_session is not None:
-                        # Use existing session from context
+                        # Use existing session from context. A mutation's
+                        # writes are one unit (see atomic.py).
+                        if _is_root_mutation(info):
+                            return await run_atomic(existing_session, resolve_node)
                         return await resolve_node()
                     else:
                         # Create new session if none exists

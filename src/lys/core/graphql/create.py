@@ -7,6 +7,7 @@ from strawberry.extensions import FieldExtension
 from lys.core.consts.ai import ToolRiskLevel
 from lys.core.contexts import Info
 from lys.core.entities import Entity
+from lys.core.graphql.atomic import run_atomic
 from lys.core.graphql.fields import lys_typed_field
 from lys.core.graphql.nodes import EntityNode
 from lys.core.utils.access import check_access_to_object
@@ -22,28 +23,35 @@ def _creation_resolver_generator(resolver: Callable, ensure_type: Type[EntityNod
         # The session is kept open by the extension for the entire GraphQL operation
         session = info.context.session
 
-        entity_obj: Entity = await resolver(self, *args, info=info, **kwargs)
+        async def create() -> Entity:
+            entity_obj: Entity = await resolver(self, *args, info=info, **kwargs)
 
-        # check if the object is the same type of ensure type entity
-        if not isinstance(entity_obj, ensure_type.entity_class):
-            raise ValueError(
-                "Wrong entity type '%s'. (Expected: '%s')" % (
-                    entity_obj.__class__.__name__,
-                    ensure_type.entity_class.__name__
+            # check if the object is the same type of ensure type entity
+            if not isinstance(entity_obj, ensure_type.entity_class):
+                raise ValueError(
+                    "Wrong entity type '%s'. (Expected: '%s')" % (
+                        entity_obj.__class__.__name__,
+                        ensure_type.entity_class.__name__
+                    )
                 )
-            )
 
-        # check permission again after updating
-        await check_access_to_object(entity_obj, info.context)
+            # check permission again after updating
+            await check_access_to_object(entity_obj, info.context)
 
-        # add object to database
-        session.add(entity_obj)
+            # add object to database
+            session.add(entity_obj)
 
-        # Flush changes to database before refresh
-        await session.flush()
+            # Flush changes to database before refresh
+            await session.flush()
 
-        # Refresh to load all relationships before creating the node
-        await session.refresh(entity_obj)
+            # Refresh to load all relationships before creating the node
+            await session.refresh(entity_obj)
+
+            return entity_obj
+
+        # The resolver, the access check and the flush are one unit: whatever
+        # refuses, nothing the resolver wrote is left behind (see atomic.py).
+        entity_obj = await run_atomic(session, create)
 
         # return node
         return ensure_type.from_obj(entity_obj)

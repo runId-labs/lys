@@ -73,6 +73,9 @@ class TestCreationResolverGenerator:
 
         mock_info = MagicMock()
         mock_session = AsyncMock()
+        # sync_session is synchronous on AsyncSession; no savepoint is left open
+        mock_session.sync_session = MagicMock()
+        mock_session.sync_session.get_nested_transaction.return_value = None
         mock_info.context.session = mock_session
 
         with patch("lys.core.graphql.create.check_access_to_object", new_callable=AsyncMock):

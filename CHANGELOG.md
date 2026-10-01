@@ -7,6 +7,24 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.50.2] - 2026-10-01
+
+### Fixed
+- GraphQL mutations are atomic. A resolver that raised after writing left its
+  writes behind: the error is caught by the GraphQL layer to be reported, so
+  the request session was committed anyway — a mutation refusing its third
+  write persisted the first two and told the caller it failed. `lys_creation`,
+  `lys_edition`, `lys_delete` and a `lys_field` resolved as a mutation's root
+  field now run inside a savepoint (`lys.core.graphql.atomic.run_atomic`),
+  rolled back on any error. One savepoint per mutation, so a mutation that
+  succeeded is not undone by a later one failing in the same operation.
+  Side effects of the same change: the access check `lys_edition` runs after
+  the edit now undoes the edit when it refuses, and a constraint violation on
+  a `lys_delete` is reported as the mutation's error instead of being lost at
+  the final commit. A resolver that must persist before refusing keeps doing
+  so by committing explicitly (`await session.commit()`), as the login does
+  for failed attempts.
+
 ## [0.50.1] - 2026-09-30
 
 ### Fixed
