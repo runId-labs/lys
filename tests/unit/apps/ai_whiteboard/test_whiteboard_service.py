@@ -195,6 +195,114 @@ class TestDraw:
 
         create.assert_awaited_once_with(USER, "Title", session)
 
+    @pytest.mark.asyncio
+    async def test_showing_touches_nothing_on_the_board(self, manager):
+        board = make_board(revision=4)
+        session = make_session(board)
+        with patch.object(WhiteboardService, "find_for_conversation", AsyncMock(return_value=board)), \
+                patch.object(WhiteboardService, "apply_operations", AsyncMock()) as apply, \
+                patch.object(WhiteboardService, "show", MagicMock(return_value=board)) as show:
+            await WhiteboardService._draw(USER, "Title", BOARD_ID, None, {}, session, focus=["a"])
+
+        apply.assert_not_awaited()
+        show.assert_called_once_with(board, ["a"], session)
+        assert board.revision == 4
+
+    @pytest.mark.asyncio
+    async def test_showing_does_not_open_a_board(self, manager):
+        """An empty board thrown open in front of the user is not an answer to 'show me'."""
+        session = make_session()
+        with patch.object(WhiteboardService, "find_for_conversation", AsyncMock(return_value=None)), \
+                patch.object(WhiteboardService, "create_for_user", AsyncMock()) as create:
+            with pytest.raises(LysError) as error:
+                await WhiteboardService._draw(USER, "Title", None, None, {}, session, focus=["a"])
+
+        assert error.value.detail == "WHITEBOARD_NOT_FOUND"
+        create.assert_not_awaited()
+
+
+class TestOverlapReport:
+    """A drawing tells its caller what it left on top of something else."""
+
+    @pytest.fixture(autouse=True)
+    def locked(self):
+        with patch.object(WhiteboardService, "_lock", AsyncMock(side_effect=lambda board, _session: board)):
+            yield
+
+    async def drawn(self, operations):
+        board = make_board()
+        with patch.object(WhiteboardService, "find_for_conversation", AsyncMock(return_value=board)):
+            return await WhiteboardService._draw(USER, "Title", BOARD_ID, None, operations, make_session(board))
+
+    @pytest.mark.asyncio
+    async def test_an_overlap_comes_back_with_the_board(self, manager):
+        result = await self.drawn({"add": [
+            {"name": "a", "x": 0, "y": 0, "width": 200, "height": 100},
+            {"name": "b", "x": 150, "y": 90, "width": 200, "height": 100},
+        ]})
+        assert result["overlaps"] == [{"element": "a", "with": "b", "width": 50, "height": 10}]
+        # Reported, not refused: the drawing is on the board.
+        assert {entry["name"] for entry in result["elements"]} == {"a", "b"}
+
+    @pytest.mark.asyncio
+    async def test_a_clean_drawing_says_nothing(self, manager):
+        result = await self.drawn({"add": [{"name": "a", "x": 0, "y": 0}]})
+        assert "overlaps" not in result
+
+
+class TestWhatToLookAt:
+    """The signal names the elements the editor should bring into view."""
+
+    @pytest.fixture(autouse=True)
+    def locked(self):
+        """The row lock is a database matter; what is under test is what follows it."""
+        with patch.object(WhiteboardService, "_lock", AsyncMock(side_effect=lambda board, _session: board)):
+            yield
+
+    @pytest.mark.asyncio
+    async def test_a_patch_shows_what_it_drew(self, manager):
+        board = make_board()
+        session = make_session(board)
+        operations = {"add": [{"name": "a"}, {"name": "b"}], "delete": ["b"]}
+        with patch.object(WhiteboardService, "_notify") as notify:
+            await WhiteboardService.apply_operations(board, operations, session)
+
+        assert notify.call_args.kwargs["focus"] == ["a"]
+
+    @pytest.mark.asyncio
+    async def test_a_named_focus_wins_over_what_the_patch_drew(self, manager):
+        board = make_board(scene=scene_tools.apply_operations(
+            scene_tools.empty_scene(), {"add": [{"name": "old"}]}
+        ))
+        session = make_session(board)
+        with patch.object(WhiteboardService, "_notify") as notify:
+            await WhiteboardService.apply_operations(board, {"add": [{"name": "new"}]}, session, focus=["old"])
+
+        assert notify.call_args.kwargs["focus"] == ["old"]
+
+    @pytest.mark.asyncio
+    async def test_an_unknown_focus_refuses_the_whole_patch(self, manager):
+        board = make_board(revision=3)
+        session = make_session(board)
+        with pytest.raises(LysError) as error:
+            await WhiteboardService.apply_operations(board, {"add": [{"name": "a"}]}, session, focus=["nowhere"])
+
+        assert error.value.detail == "WHITEBOARD_UNKNOWN_ELEMENT"
+        # Refused before anything was written: the board is where it was.
+        assert board.revision == 3
+        assert scene_tools.find(board.scene_json, "a") is None
+
+    def test_showing_names_only_what_is_on_the_board(self, manager):
+        board = make_board(scene=scene_tools.apply_operations(
+            scene_tools.empty_scene(), {"add": [{"name": "Organigramme"}]}
+        ))
+        with patch.object(WhiteboardService, "_notify") as notify:
+            WhiteboardService.show(board, ["Organigramme"], MagicMock())
+        assert notify.call_args.kwargs["focus"] == ["organigramme"]
+
+        with pytest.raises(LysError):
+            WhiteboardService.show(board, ["nowhere"], MagicMock())
+
 
 class TestFindForConversation:
     """A read resolves a board; it never opens one."""
@@ -309,6 +417,19 @@ class TestNotification:
         assert signal == "WHITEBOARD_UPDATED"
         assert params["revision"] == 2
         assert "scene" not in params
+        # Nothing to look at unless the writer said so: an editor save moves no view.
+        assert "focus" not in params
+
+    @pytest.mark.asyncio
+    async def test_the_signal_carries_what_to_look_at(self, session, pubsub):
+        await self._begin(session)
+        WhiteboardService._notify(make_board(revision=2), session, focus=["a", "b"])
+        await session.commit()
+        await self._settle()
+
+        _, _, params = pubsub.publish.await_args.args
+        assert params["focus"] == ["a", "b"]
+        assert params["revision"] == 2
 
     @pytest.mark.asyncio
     async def test_a_rollback_publishes_nothing_and_leaves_no_hook_behind(self, session, pubsub):

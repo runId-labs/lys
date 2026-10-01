@@ -30,7 +30,7 @@ import unicodedata
 from random import randint
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
-from lys.apps.ai_whiteboard.modules.whiteboard.font_metrics import VIRGIL_CHAR_WIDTHS
+from lys.apps.ai_whiteboard.modules.whiteboard.font_metrics import CHAR_WIDTHS
 from lys.apps.ai_whiteboard.errors import (
     WHITEBOARD_ELEMENT_NAME_REQUIRED,
     WHITEBOARD_INVALID_CHART,
@@ -54,7 +54,10 @@ from lys.apps.ai_whiteboard.modules.whiteboard.consts import (
     CELL_WIDTH,
     CHAR_WIDTH_RATIO,
     CHART_HEIGHT,
+    CHART_CAPTION_FONT_RATIO,
     CHART_LABEL_BAND,
+    CHART_VALUE_BAND,
+    CHART_VALUE_GAP,
     CHART_WIDTH,
     ChartType,
     DIAMOND_PADDING_FACTOR,
@@ -66,9 +69,12 @@ from lys.apps.ai_whiteboard.modules.whiteboard.consts import (
     LABELLED_SHAPES,
     LINE_HEIGHT,
     LINEAR_KINDS,
+    LINK_LANE_ATTEMPTS,
+    LINK_LANE_MARGIN,
     MAX_CHART_POINTS,
     MAX_COORDINATE,
     MAX_ELEMENTS,
+    MAX_REPORTED_OVERLAPS,
     MAX_GRID_ROWS,
     MAX_SIZE,
     MAX_TABLE_COLUMNS,
@@ -83,6 +89,7 @@ from lys.apps.ai_whiteboard.modules.whiteboard.consts import (
     OPERATION_DELETE,
     OPERATION_KEYS,
     OPERATION_UPDATE,
+    OVERLAP_TOLERANCE,
     SERIES_COLORS,
     STACK_GAP,
     STROKE_COLOR,
@@ -103,6 +110,11 @@ TEXT_SUFFIX = "-text"
 OWNER_KEY = "whiteboardOwner"
 KIND_KEY = "whiteboardKind"
 SPEC_KEY = "whiteboardSpec"
+# The rectangle a figure occupies, relative to its anchor: [dx, dy, width, height]. Set
+# when the anchor is not the figure's outline - a bar chart hangs from its baseline, a
+# line with no height - so that "where is it" and "put it there" mean the figure's
+# top-left corner for every kind, the way a caller thinks of it.
+BOX_KEY = "whiteboardBox"
 
 _COLOR_PATTERN = re.compile(r"^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$")
 
@@ -194,12 +206,13 @@ def _text_value(value: Any, field: str = "text") -> str:
 def _char_width(char: str, font_size: float) -> float:
     """One character's advance, in the face the editor measures with.
 
-    The Virgil table is the canvas measurement itself (no kerning, advances
-    summed — see font_metrics.py). A character the table does not carry falls
-    back to the historic generous ratio: unknown is not invisible, and a box
-    slightly too wide is invisible where a clipped character is not.
+    The table holds the advances of the face the board writes with, which is
+    what the canvas sums (kerning aside — see font_metrics.py). A character
+    the table does not carry falls back to the historic generous ratio:
+    unknown is not invisible, and a box slightly too wide is invisible where
+    a clipped character is not.
     """
-    return VIRGIL_CHAR_WIDTHS.get(char, CHAR_WIDTH_RATIO) * font_size
+    return CHAR_WIDTHS.get(char, CHAR_WIDTH_RATIO) * font_size
 
 
 def _text_width(text: str, font_size: float = FONT_SIZE) -> float:
@@ -230,15 +243,29 @@ def _wrap(text: str, max_width: float, font_size: float = FONT_SIZE) -> List[str
     return lines
 
 
+def _wrapped(text: str, max_width: float, font_size: float = FONT_SIZE) -> str:
+    """
+    A text as it has to be WRITTEN in a box of fixed width: its lines already broken.
+
+    The editor draws a fixed-width text exactly as stored. It wraps one while the user
+    types in it, never when a scene is loaded - so a text handed over on one line
+    stays on one line, runs out of its box and over its neighbour, whatever height
+    was reserved for the lines it should have had. The breaks are therefore made
+    here, by the same rule that sized the box, and the unbroken text goes in
+    ``originalText``, which is what the editor re-wraps from when the user edits it.
+    """
+    return "\n".join(_wrap(text, max_width, font_size))
+
+
 def _text_size(
     text: str, font_size: float = FONT_SIZE, max_width: Optional[float] = None
 ) -> Tuple[float, float]:
     """
     How much room a text needs.
 
-    Measured from the Virgil font's own advance widths — the same sum the
-    editor's canvas makes once its fonts are loaded, which is the geometry
-    the board settles on. The lines break at word boundaries the way the
+    Measured from the font's own advance widths — the sum the editor's
+    canvas makes once its fonts are loaded, which is the geometry the board
+    settles on. The lines break at word boundaries the way the
     editor wraps; the height is one line box per line, unrounded like the
     editor leaves them.
     """
@@ -334,6 +361,37 @@ def _footprint(element: Dict[str, Any]) -> Tuple[float, float, float, float]:
     return min(x, x + width), min(y, y + height), abs(width), abs(height)
 
 
+def _box(
+    element: Dict[str, Any],
+    elements: Optional[Sequence[Dict[str, Any]]] = None,
+) -> Tuple[float, float, float, float]:
+    """
+    The rectangle a NAMED element occupies on the board: x, y, width, height.
+
+    Its own geometry for everything whose anchor is its outline. A figure that records a
+    box (see BOX_KEY) answers with that instead: read from the anchor of a bar chart, a
+    position was its baseline and a height was zero - so a redraw "where it stood" put
+    the chart a whole chart lower each time, and a caller told to place something under
+    it was given the wrong bottom.
+
+    A bar chart drawn before boxes were recorded has none. Given the scene, its box is
+    read from the parts it is made of - without it the chart is a line to everything
+    that looks for room on the board, and the next element lands on its bars.
+    """
+    box = (element.get("customData") or {}).get(BOX_KEY)
+    if box:
+        dx, dy, width, height = box
+        return float(element.get("x", 0)) + dx, float(element.get("y", 0)) + dy, width, height
+    if elements is not None and element.get("type") == "line" and _owner(element) == element["id"]:
+        parts = [_footprint(part) for part in elements if _owner(part) == element["id"]]
+        left = min(x for x, _, _, _ in parts)
+        top = min(y for _, y, _, _ in parts)
+        right = max(x + width for x, _, width, _ in parts)
+        bottom = max(y + height for _, y, _, height in parts)
+        return left, top, right - left, bottom - top
+    return _footprint(element)
+
+
 def _overlaps(a: Tuple[float, float, float, float], b: Tuple[float, float, float, float]) -> bool:
     return not (a[0] + a[2] <= b[0] or b[0] + b[2] <= a[0] or a[1] + a[3] <= b[1] or b[1] + b[3] <= a[1])
 
@@ -427,13 +485,18 @@ def _shape_size(kind: ElementKind, operation: Dict[str, Any], text: str) -> Tupl
         ElementKind.DIAMOND: DIAMOND_PADDING_FACTOR,
     }.get(kind, 1.0)
 
+    # The editor gives a label the shape's width divided by the factor, MINUS the
+    # padding: the padding is therefore scaled with the text, not added after it. Added
+    # after, a diamond came out ten pixels short of its own label, which the editor then
+    # broke in the middle of a word. The text is rounded up first: the editor rounds the
+    # room it gives, and an exact fit here is a pixel short there.
     if width is None:
         natural, _ = _text_size(text)
-        width = max(MIN_SHAPE_WIDTH, min(NOTE_WIDTH, natural * factor + 2 * BOUND_TEXT_PADDING))
+        width = max(MIN_SHAPE_WIDTH, min(NOTE_WIDTH, (math.ceil(natural) + 2 * BOUND_TEXT_PADDING) * factor))
     if height is None:
         usable = max(width / factor - 2 * BOUND_TEXT_PADDING, 1)
         _, needed = _text_size(text, max_width=usable)
-        height = max(MIN_SHAPE_HEIGHT, needed * factor + 2 * BOUND_TEXT_PADDING)
+        height = max(MIN_SHAPE_HEIGHT, (math.ceil(needed) + 2 * BOUND_TEXT_PADDING) * factor)
     return width, height
 
 
@@ -496,7 +559,11 @@ def _make_frame(
     text: str,
 ) -> List[Dict[str, Any]]:
     """
-    A named zone. The editor draws its name in the corner and moves what sits inside it.
+    A named zone. The editor draws its label in the corner and moves what sits inside it.
+
+    The label is the caller's text and nothing else: a caller that passes an empty text
+    wants a bare zone - typically under a title it drew itself - and gets one. Falling
+    back on the element's identifier wrote an internal slug on the user's board.
 
     Sized generously by default: a frame is a container, and one born too small for what
     the caller is about to put in it is a frame the user has to resize by hand.
@@ -507,7 +574,7 @@ def _make_frame(
     return [_base_element(
         element_id, "frame",
         x=x, y=y, width=width, height=height,
-        name=text or element_id,
+        name=text,
     )]
 
 
@@ -535,6 +602,128 @@ def _segment_between(source: Dict[str, Any], target: Dict[str, Any]) -> Dict[str
         "width": abs(end_x - start_x), "height": abs(end_y - start_y),
         "points": [[0, 0], [end_x - start_x, end_y - start_y]],
     }
+
+
+Point = Tuple[float, float]
+Box = Tuple[float, float, float, float]
+
+
+def _segment_hits(start: Point, end: Point, box: Box) -> bool:
+    """
+    Whether a segment passes through a box (Liang-Barsky clipping).
+
+    The box is taken a pixel inside its edges: a link that starts on the edge of a
+    shape, or runs along the side of one, touches it and does not cross it.
+    """
+    left, top = box[0] + 1, box[1] + 1
+    right, bottom = box[0] + box[2] - 1, box[1] + box[3] - 1
+    if right <= left or bottom <= top:
+        return False
+    dx, dy = end[0] - start[0], end[1] - start[1]
+    entry, leave = 0.0, 1.0
+    for direction, distance in ((-dx, start[0] - left), (dx, right - start[0]),
+                                (-dy, start[1] - top), (dy, bottom - start[1])):
+        if direction == 0:
+            if distance < 0:
+                return False
+            continue
+        ratio = distance / direction
+        if direction < 0:
+            entry = max(entry, ratio)
+        else:
+            leave = min(leave, ratio)
+    return entry < leave
+
+
+def _path_hits(path: Sequence[Point], boxes: Iterable[Box]) -> List[Box]:
+    """The boxes a path passes through."""
+    return [
+        box for box in boxes
+        if any(_segment_hits(path[index], path[index + 1], box) for index in range(len(path) - 1))
+    ]
+
+
+def _as_link_geometry(path: Sequence[Point]) -> Dict[str, Any]:
+    """A path as the editor stores a link: an origin, and points relative to it."""
+    origin_x, origin_y = path[0]
+    xs, ys = [x for x, _ in path], [y for _, y in path]
+    return {
+        "x": origin_x, "y": origin_y,
+        "width": max(xs) - min(xs), "height": max(ys) - min(ys),
+        "points": [[x - origin_x, y - origin_y] for x, y in path],
+    }
+
+
+def _route_between(
+    source: Dict[str, Any],
+    target: Dict[str, Any],
+    elements: Sequence[Dict[str, Any]],
+) -> Dict[str, Any]:
+    """
+    The path of a link: straight when nothing stands in the way, round it otherwise.
+
+    A straight link between two boxes with a third one on the line runs through that
+    third box, under its text, and lies on top of the links that box already has - on a
+    cycle drawn in a row, the return arrow from the last box to the first vanished into
+    the row itself and its label was written across the middle box.
+
+    The detour is three straight runs: out of the source, along a lane clear of the row
+    (or of the column), into the target. Out and in on the same side, so a return link
+    reads as the loop it is. The lane is the nearer free one - below or above for a link
+    that runs mostly sideways, right or left for one that runs up or down - and it has
+    to be free of everything named on the board, texts included: a lane through a title
+    trades one collision for another. With no free lane within reach the link stays
+    straight, which is what it was.
+    """
+    straight = _segment_between(source, target)
+    source_box, target_box = _box(source, elements), _box(target, elements)
+    ends = {source["id"], target["id"]}
+    named = [
+        element for element in elements
+        if element["id"] not in ends and _is_anchor(element) and element.get("type") != "frame"
+        and not (element.get("type") in ("arrow", "line") and _owner(element) is None)
+    ]
+    # What a link must not run through, and what a lane must stay clear of.
+    blocks = [_box(element, elements) for element in named if element.get("type") != "text"]
+    everything = [_box(element, elements) for element in named]
+
+    start = (straight["x"], straight["y"])
+    end = (start[0] + straight["points"][-1][0], start[1] + straight["points"][-1][1])
+    crossed = _path_hits([start, end], blocks)
+    if not crossed:
+        return straight
+
+    source_x, source_y, source_width, source_height = source_box
+    target_x, target_y, target_width, target_height = target_box
+    source_centre = (source_x + source_width / 2, source_y + source_height / 2)
+    target_centre = (target_x + target_width / 2, target_y + target_height / 2)
+    passed = [source_box, target_box, *crossed]
+    sideways = abs(target_centre[0] - source_centre[0]) >= abs(target_centre[1] - source_centre[1])
+
+    for attempt in range(1, LINK_LANE_ATTEMPTS + 1):
+        margin = LINK_LANE_MARGIN * attempt
+        if sideways:
+            below = max(y + height for _, y, _, height in passed) + margin
+            above = min(y for _, y, _, _ in passed) - margin
+            candidates = [
+                [(source_centre[0], source_y + source_height), (source_centre[0], below),
+                 (target_centre[0], below), (target_centre[0], target_y + target_height)],
+                [(source_centre[0], source_y), (source_centre[0], above),
+                 (target_centre[0], above), (target_centre[0], target_y)],
+            ]
+        else:
+            right = max(x + width for x, _, width, _ in passed) + margin
+            left = min(x for x, _, _, _ in passed) - margin
+            candidates = [
+                [(source_x + source_width, source_centre[1]), (right, source_centre[1]),
+                 (right, target_centre[1]), (target_x + target_width, target_centre[1])],
+                [(source_x, source_centre[1]), (left, source_centre[1]),
+                 (left, target_centre[1]), (target_x, target_centre[1])],
+            ]
+        for path in candidates:
+            if not _path_hits(path, everything):
+                return _as_link_geometry(path)
+    return straight
 
 
 def _make_linear(
@@ -570,7 +759,7 @@ def _make_linear(
         for endpoint in (source_id, target_id):
             if endpoint not in by_id:
                 raise LysError(WHITEBOARD_UNKNOWN_ELEMENT, f"Link endpoint '{endpoint}' is not on the board")
-        fields.update(_segment_between(by_id[source_id], by_id[target_id]))
+        fields.update(_route_between(by_id[source_id], by_id[target_id], elements))
         fields["startBinding"] = {"elementId": source_id, "focus": 0, "gap": 4}
         fields["endBinding"] = {"elementId": target_id, "focus": 0, "gap": 4}
     else:
@@ -607,7 +796,12 @@ def _bind(element: Dict[str, Any], link_id: str) -> None:
 
 def _refresh_links(elements: List[Dict[str, Any]], moved_ids: Iterable[str]) -> None:
     """
-    Redraw the links touching elements that just moved.
+    Redraw the links touching elements that just moved or were just drawn - and the
+    links just drawn themselves.
+
+    A link is routed against what is on the board when it is added, and a patch may
+    well add the box that stands in its way a line later: the pass that closes a patch
+    is the first moment the whole of it can be seen.
 
     The editor repairs bound paths on load, but only once it has them: a link whose
     stored segment points somewhere else entirely shows up wrong in the scene the browser
@@ -624,11 +818,11 @@ def _refresh_links(elements: List[Dict[str, Any]], moved_ids: Iterable[str]) -> 
             continue
         start = (element.get("startBinding") or {}).get("elementId")
         end = (element.get("endBinding") or {}).get("elementId")
-        if not start or not end or not moved & {start, end}:
+        if not start or not end or not moved & {start, end, element["id"]}:
             continue
         if start not in by_id or end not in by_id:
             continue
-        element.update(_segment_between(by_id[start], by_id[end]))
+        element.update(_route_between(by_id[start], by_id[end], elements))
         _touch(element)
 
 
@@ -798,7 +992,7 @@ def _make_table(
                 y=y + row_edges[line] + BOUND_TEXT_PADDING,
                 width=max(column_widths[column] - 2 * BOUND_TEXT_PADDING, 1),
                 height=max(row_heights[line] - 2 * BOUND_TEXT_PADDING, 1),
-                text=cell, originalText=cell,
+                text=_wrapped(cell, column_widths[column] - 2 * BOUND_TEXT_PADDING), originalText=cell,
                 fontSize=FONT_SIZE, fontFamily=FONT_FAMILY, lineHeight=LINE_HEIGHT,
                 textAlign="left", verticalAlign="middle", autoResize=False,
                 groupIds=[element_id], customData=dict(tag),
@@ -852,6 +1046,22 @@ def _read_chart(operation: Dict[str, Any]) -> Tuple[ChartType, List[str], List[f
     return chart_type, labels, values, _text_value(chart.get("title"), "chart.title")
 
 
+def _format_figure(value: float) -> str:
+    """
+    A figure as a reader expects it on a chart: whole when it is whole, two decimals at
+    most otherwise, thousands apart.
+
+    Never the general float format: past a million it switches to an exponent, and
+    "1.23457e+06" on a revenue chart is a figure nobody can read. The separator is a
+    no-break space - the one grouping no locale reads as a decimal mark.
+    """
+    if float(value).is_integer():
+        grouped = f"{int(value):,}"
+    else:
+        grouped = f"{value:,.2f}".rstrip("0").rstrip(".")
+    return grouped.replace(",", "\u00a0")
+
+
 def _make_bar_chart(
     element_id: str,
     operation: Dict[str, Any],
@@ -861,12 +1071,18 @@ def _make_bar_chart(
     title: str,
 ) -> List[Dict[str, Any]]:
     """
-    Bars as real rectangles, sitting on a baseline, each with its label underneath.
+    Bars as real rectangles, sitting on a baseline: the name of each under it, its
+    figure above it.
 
     Drawn natively because the format can express it exactly and the user can then drag a
     bar, recolour it or write next to it. Negative values are not plotted below the axis:
     a whiteboard bar chart is a comparison of magnitudes, and an axis crossing mid-figure
     is a statistics chart nobody asked for.
+
+    The figure sits on top of its bar, where the eye reads a bar's height; stacked under
+    the name it turned the caption into three lines for any name that wrapped, and the
+    last one fell out of the band. Both captions take the whole slot rather than the
+    bar's width - the gap between two bars is room a long name can use.
     """
     width = _size(operation["width"], "width") if operation.get("width") is not None else CHART_WIDTH
     height = _size(operation["height"], "height") if operation.get("height") is not None else CHART_HEIGHT
@@ -874,8 +1090,11 @@ def _make_bar_chart(
     tag = {OWNER_KEY: element_id, KIND_KEY: ElementKind.CHART.value}
 
     title_height = FONT_SIZE * LINE_HEIGHT if title else 0
-    plot_height = height - title_height - CHART_LABEL_BAND
-    baseline = y + title_height + plot_height
+    # The tallest bar stops short of the title by one band: the room its figure needs.
+    plot_height = height - title_height - CHART_VALUE_BAND - CHART_LABEL_BAND
+    baseline = y + title_height + CHART_VALUE_BAND + plot_height
+    caption_font_size = FONT_SIZE * CHART_CAPTION_FONT_RATIO
+    caption_line = caption_font_size * LINE_HEIGHT
     slot = width / len(values)
     bar_width = slot * 0.7
     scale = max(abs(value) for value in values) or 1
@@ -885,10 +1104,15 @@ def _make_bar_chart(
         x=x, y=baseline, width=width, height=0,
         points=[[0, 0], [width, 0]],
         groupIds=[element_id],
-        customData={**tag, SPEC_KEY: {
-            "type": ChartType.BAR.value, "title": title,
-            "data": [{"label": label, "value": value} for label, value in zip(labels, values)],
-        }},
+        customData={
+            **tag,
+            SPEC_KEY: {
+                "type": ChartType.BAR.value, "title": title,
+                "data": [{"label": label, "value": value} for label, value in zip(labels, values)],
+            },
+            # From the title's top to the bottom of the names under the bars.
+            BOX_KEY: [0, y - baseline, width, height + BOUND_TEXT_PADDING],
+        },
     )]
     if title:
         parts.append(_base_element(
@@ -908,13 +1132,23 @@ def _make_bar_chart(
             backgroundColor=SERIES_COLORS[position % len(SERIES_COLORS)],
             groupIds=[element_id], customData=dict(tag),
         ))
-        caption = f"{label}\n{value:g}"
+        slot_x = x + position * slot
         parts.append(_base_element(
             f"{element_id}-label-{position}", "text",
-            x=bar_x, y=baseline + BOUND_TEXT_PADDING,
-            width=max(bar_width, 1), height=CHART_LABEL_BAND,
-            text=caption, originalText=caption,
-            fontSize=FONT_SIZE * 0.75, fontFamily=FONT_FAMILY, lineHeight=LINE_HEIGHT,
+            x=slot_x, y=baseline + BOUND_TEXT_PADDING,
+            width=max(slot, 1), height=CHART_LABEL_BAND,
+            text=_wrapped(label, slot, caption_font_size), originalText=label,
+            fontSize=caption_font_size, fontFamily=FONT_FAMILY, lineHeight=LINE_HEIGHT,
+            textAlign="center", verticalAlign="top", autoResize=False,
+            groupIds=[element_id], customData=dict(tag),
+        ))
+        figure = _format_figure(value)
+        parts.append(_base_element(
+            f"{element_id}-value-{position}", "text",
+            x=slot_x, y=baseline - bar_height - caption_line - CHART_VALUE_GAP,
+            width=max(slot, 1), height=caption_line,
+            text=figure, originalText=figure,
+            fontSize=caption_font_size, fontFamily=FONT_FAMILY, lineHeight=LINE_HEIGHT,
             textAlign="center", verticalAlign="top", autoResize=False,
             groupIds=[element_id], customData=dict(tag),
         ))
@@ -1085,8 +1319,9 @@ def _move_and_resize(elements: List[Dict[str, Any]], element_id: str, operation:
     if has_x != has_y:
         raise LysError(WHITEBOARD_INVALID_GEOMETRY, "'x' and 'y' go together: give both or neither")
     if has_x:
-        dx = _coordinate(operation["x"], "x") - anchor["x"]
-        dy = _coordinate(operation["y"], "y") - anchor["y"]
+        left, top, _, _ = _box(anchor, elements)
+        dx = _coordinate(operation["x"], "x") - left
+        dy = _coordinate(operation["y"], "y") - top
         for element in family + ([label] if label else []):
             element["x"] += dx
             element["y"] += dy
@@ -1155,11 +1390,21 @@ def _redraw(elements: List[Dict[str, Any]], operation: Dict[str, Any], element_i
     """
     by_id = _index(elements)
     anchor = by_id[element_id]
-    position = {"x": anchor["x"], "y": anchor["y"]}
+    left, top, _, _ = _box(anchor, elements)
+    position = {"x": left, "y": top}
     removed = _collect_removals(elements, element_id)
-    # The links to this figure survive: only the drawing is rebuilt, and they are
-    # redrawn against the new geometry below.
-    removed -= {e["id"] for e in elements if e.get("type") in ("arrow", "line")}
+    # The links to this figure survive, labels included: only the drawing is rebuilt,
+    # and they are redrawn against the new geometry by the caller. The figure's OWN
+    # lines do not - a table's rules and a bar chart's baseline are lines too, and kept
+    # they would sit under the rebuilt ones, same ids twice in the scene.
+    links = {
+        e["id"] for e in elements
+        if e.get("type") in ("arrow", "line") and _owner(e) != element_id
+    }
+    removed -= links | {f"{link}{TEXT_SUFFIX}" for link in links}
+    # Both sides of a binding: the rebuilt anchor is a new element, and the links still
+    # name it as their endpoint.
+    carried = [bound for bound in anchor.get("boundElements") or [] if bound.get("id") in links]
 
     remaining = [e for e in elements if e["id"] not in removed]
     rebuilt = dict(operation)
@@ -1170,6 +1415,9 @@ def _redraw(elements: List[Dict[str, Any]], operation: Dict[str, Any], element_i
 
     elements[:] = remaining
     _add(elements, rebuilt, element_id)
+    if carried:
+        rebuilt_anchor = _index(elements)[element_id]
+        rebuilt_anchor["boundElements"] = [*(rebuilt_anchor.get("boundElements") or []), *carried]
     return True
 
 
@@ -1277,6 +1525,7 @@ def apply_operations(scene: Dict[str, Any], operations: Dict[str, Any]) -> Dict[
         raise LysError(WHITEBOARD_UNKNOWN_OPERATION, f"Unknown operations: {', '.join(sorted(unknown))}")
 
     elements: List[Dict[str, Any]] = [dict(e) for e in scene.get("elements", [])]
+    # What changed place or appeared: the links touching it are routed again at the end.
     moved: List[str] = []
 
     for operation in operations.get(OPERATION_ADD) or []:
@@ -1286,6 +1535,7 @@ def apply_operations(scene: Dict[str, Any], operations: Dict[str, Any]) -> Dict[
                 moved.append(element_id)
         else:
             _add(elements, operation, element_id)
+            moved.append(element_id)
 
     for operation in operations.get(OPERATION_UPDATE) or []:
         element_id = slugify(operation.get("name") or "")
@@ -1325,12 +1575,13 @@ def describe(scene: Dict[str, Any]) -> List[Dict[str, Any]]:
         if not _is_anchor(element):
             continue
         custom = element.get("customData") or {}
+        left, top, width, height = _box(element, elements)
         entry: Dict[str, Any] = {
             "name": element["id"],
-            "x": round(float(element.get("x", 0))),
-            "y": round(float(element.get("y", 0))),
-            "width": round(float(element.get("width", 0))),
-            "height": round(float(element.get("height", 0))),
+            "x": round(left),
+            "y": round(top),
+            "width": round(width),
+            "height": round(height),
         }
         label = by_id.get(f"{element['id']}{TEXT_SUFFIX}")
 
@@ -1360,6 +1611,114 @@ def describe(scene: Dict[str, Any]) -> List[Dict[str, Any]]:
             entry["frame"] = element["frameId"]
         described.append(entry)
     return described
+
+
+def drawn_names(operations: Dict[str, Any]) -> List[str]:
+    """
+    The elements a patch puts on the board or changes, by name, in the order it names
+    them - what there is to look at once it is applied.
+
+    Not the ones it deletes: nothing is left of them to show. A name both drawn and
+    deleted by the same patch is gone too, since deletes are applied last.
+    """
+    deleted = {slugify(name) for name in operations.get(OPERATION_DELETE) or []}
+    names: List[str] = []
+    for key in (OPERATION_ADD, OPERATION_UPDATE):
+        for item in operations.get(key) or []:
+            name = slugify(item.get("name") or "")
+            if name and name not in deleted and name not in names:
+                names.append(name)
+    return names
+
+
+def resolve_focus(scene: Dict[str, Any], names: Any) -> List[str]:
+    """
+    The elements a caller asks to bring into view, checked against the board.
+
+    Refused rather than skipped when one is not there: a caller told "shown" about an
+    element that does not exist would describe to the user a view they are not looking
+    at. It is the caller that can fix the name, and only if it is told.
+
+    Raises:
+        LysError: Not a list of names, or a name that is not on the board.
+    """
+    if not isinstance(names, list) or not names or not all(isinstance(name, str) for name in names):
+        raise LysError(WHITEBOARD_INVALID_OPERATION, "'focus' is a list of element names")
+    by_id = _index(scene.get("elements", []))
+    resolved: List[str] = []
+    for name in names:
+        element_id = slugify(name)
+        if element_id not in by_id or not _is_anchor(by_id[element_id]):
+            raise LysError(WHITEBOARD_UNKNOWN_ELEMENT, f"Element '{element_id}' is not on the board")
+        if element_id not in resolved:
+            resolved.append(element_id)
+    return resolved
+
+
+def overlaps(scene: Dict[str, Any], names: Sequence[str]) -> List[Dict[str, Any]]:
+    """
+    Where the elements named sit on top of something else on the board.
+
+    A caller places by coordinates it chooses BEFORE the sizes exist: a note is as tall
+    as its text turns out to need, a table as wide as its content. It cannot see the
+    result either. So the board looks for it, and says: which element, on which other,
+    over how much - enough for the caller to move one of the two in its next call.
+
+    Only what the caller just drew is checked, against everything: an overlap the user
+    made by hand elsewhere on the board is theirs, and reporting it on every call would
+    teach the caller to ignore the report.
+
+    Links are left out - an arrow crosses things by nature - and so is an element lying
+    wholly inside a frame, which is what a frame is for. The largest overlaps come
+    first, and the list is capped: past a handful the layout has to be redone, not
+    patched pair by pair.
+    """
+    elements = scene.get("elements", [])
+    by_id = _index(elements)
+    boxes = {
+        element_id: _box(element, elements)
+        for element_id, element in by_id.items()
+        if _is_anchor(element) and not (element.get("type") in ("arrow", "line") and _owner(element) is None)
+    }
+
+    found: List[Tuple[float, Dict[str, Any]]] = []
+    reported: set = set()
+    for name in names:
+        if name not in boxes:
+            continue
+        x, y, width, height = boxes[name]
+        for other, (other_x, other_y, other_width, other_height) in boxes.items():
+            if other == name or (other, name) in reported:
+                continue
+            shared_width = min(x + width, other_x + other_width) - max(x, other_x)
+            shared_height = min(y + height, other_y + other_height) - max(y, other_y)
+            if shared_width <= OVERLAP_TOLERANCE or shared_height <= OVERLAP_TOLERANCE:
+                continue
+            if _holds(by_id[other], boxes[other], boxes[name]) or _holds(by_id[name], boxes[name], boxes[other]):
+                continue
+            reported.add((name, other))
+            found.append((shared_width * shared_height, {
+                "element": name, "with": other,
+                "width": round(shared_width), "height": round(shared_height),
+            }))
+
+    found.sort(key=lambda item: item[0], reverse=True)
+    return [entry for _, entry in found[:MAX_REPORTED_OVERLAPS]]
+
+
+def _holds(
+    container: Dict[str, Any],
+    outer: Tuple[float, float, float, float],
+    inner: Tuple[float, float, float, float],
+) -> bool:
+    """Whether ``container`` is a frame with ``inner`` lying wholly inside it."""
+    if container.get("type") != "frame":
+        return False
+    return (
+        inner[0] >= outer[0] and inner[1] >= outer[1]
+        and inner[0] + inner[2] <= outer[0] + outer[2]
+        and inner[1] + inner[3] <= outer[1] + outer[3]
+    )
 
 
 def element_names(scene: Dict[str, Any]) -> List[str]:

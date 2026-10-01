@@ -111,6 +111,15 @@ DEFAULT_COMPACTION_PROMPT = (
 )
 
 
+# Streamed between two stretches of text the model wrote on either side of a tool call.
+# A turn reaches the client as ONE text, the tokens of every iteration appended to the
+# same bubble and fed to the same voice: without a break, the sentence before the call
+# and the one after it are glued together ("...readable.The note..."), on screen and for
+# the splitter that cuts the speech into sentences. A paragraph break, because they are
+# two utterances - what was said before acting, and what is said once it is done.
+TURN_SEGMENT_BREAK = "\n\n"
+
+
 class AIMessageRole(str, Enum):
     """Role of a message in a conversation."""
     SYSTEM = "system"

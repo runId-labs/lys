@@ -1632,6 +1632,81 @@ class TestChatWithToolsStreaming:
         assert "password" not in error_data["result"]["error"]
         assert "prod-db" not in error_data["result"]["error"]
 
+    @staticmethod
+    async def _tokens_around_a_tool_call(mock_session, connected_user, before, after):
+        """The token stream of a turn that writes ``before``, calls a tool, then writes ``after``."""
+        from lys.apps.ai.modules.conversation.services import AIConversationService
+        from lys.apps.ai.utils.providers.abstracts import AIStreamChunk
+
+        call_count = 0
+
+        async def fake_stream(*args, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                for piece in before:
+                    yield AIStreamChunk(content=piece, model="m1", provider="test-provider")
+                yield AIStreamChunk(
+                    tool_calls=[{"index": 0, "id": "call-1", "function": {"name": "a_tool", "arguments": "{}"}}],
+                    finish_reason="tool_calls", model="m1", provider="test-provider",
+                )
+            else:
+                for piece in after:
+                    yield AIStreamChunk(content=piece, model="m1", provider="test-provider")
+                yield AIStreamChunk(finish_reason="stop", model="m1", provider="test-provider")
+
+        mock_ai_service = MagicMock()
+        mock_ai_service.chat_stream_with_purpose = fake_stream
+        mock_executor = AsyncMock()
+        mock_executor.execute = AsyncMock(return_value={"ok": True})
+        mock_msg_service = AsyncMock()
+        ctx = {
+            "executor": mock_executor,
+            "conversation": MagicMock(id="conv-1"),
+            "message_service": mock_msg_service,
+            "ai_service": mock_ai_service,
+            "llm_tools": [{"type": "function", "function": {"name": "a_tool"}}],
+            "messages": [{"role": "system", "content": "sys"}, {"role": "user", "content": "Go"}],
+            "info": MagicMock(),
+            "user_message_id": "user-msg-1",
+        }
+
+        tokens = []
+        with patch.object(AIConversationService, "_prepare_chat_context", new_callable=AsyncMock, return_value=ctx):
+            async for event in AIConversationService.chat_with_tools_streaming(
+                user_id="user-123", content="Go", session=mock_session,
+                connected_user=connected_user, access_token="tok",
+            ):
+                if event.startswith("event: token"):
+                    tokens.append(json.loads(event.split("data: ")[1].strip())["content"])
+        return tokens, mock_msg_service
+
+    @pytest.mark.asyncio
+    async def test_text_written_around_a_tool_call_is_not_glued_together(self, mock_session, connected_user):
+        """The client appends every token to one text: two utterances need a break between them."""
+        tokens, message_service = await self._tokens_around_a_tool_call(
+            mock_session, connected_user, before=["I move ", "it."], after=["It is ", "moved."],
+        )
+
+        assert "".join(tokens) == "I move it.\n\nIt is moved."
+        # The break belongs to the stream: each message is stored as it was written.
+        stored = [call.kwargs.get("content") for call in message_service.create.call_args_list]
+        assert "I move it." in stored and "It is moved." in stored
+
+    @pytest.mark.asyncio
+    async def test_no_break_before_the_only_text_of_a_turn(self, mock_session, connected_user):
+        tokens, _ = await self._tokens_around_a_tool_call(
+            mock_session, connected_user, before=[], after=["Done."],
+        )
+        assert tokens == ["Done."]
+
+    @pytest.mark.asyncio
+    async def test_no_second_break_when_the_text_brings_its_own(self, mock_session, connected_user):
+        tokens, _ = await self._tokens_around_a_tool_call(
+            mock_session, connected_user, before=["I move it.\n"], after=["Moved."],
+        )
+        assert "".join(tokens) == "I move it.\nMoved."
+
     @pytest.mark.asyncio
     async def test_tool_error_db_save_failure_does_not_cascade_stream(self, mock_session, connected_user):
         """Test that a DB failure when saving tool error does not crash the streaming loop."""

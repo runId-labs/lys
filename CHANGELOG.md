@@ -7,6 +7,69 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.51.0] - 2026-10-01
+
+### Added
+- The whiteboard update signal carries `focus`: the names of the elements the
+  editor should bring into view. A patch names what it drew; a caller can name
+  something else with the new `focus` argument of `draw_on_whiteboard`, and
+  given alone - no add, update or delete - it shows what is already on the
+  board without writing anything (`WhiteboardService.show`, no revision bump,
+  never opens a board). An editor save carries no `focus`.
+
+- `draw_on_whiteboard` reports the overlaps it created: its result carries
+  `overlaps` (`element`, `with`, overlapping `width` and `height`) when an
+  element the patch drew sits on another one, so the model can move it in the
+  same turn. Links are not reported, nor is an element lying inside a frame.
+
+- A whiteboard link goes round the elements standing between its two ends
+  instead of through them: out of the source, along a lane clear of the row
+  (or of the column), into the target. A return arrow from the last box of a
+  row to the first used to run through the boxes in between, on top of their
+  own arrows, with its label written across the middle one. With no free lane
+  within reach the link stays straight.
+
+### Changed
+- Whiteboard text is written in Liberation Sans (Excalidraw font family 9, a
+  plain sans-serif metric-compatible with Arial that the editor bundles)
+  instead of the hand-drawn face, with that face's line height (1.15 instead
+  of 1.25): a board is read as a document, and the hand-drawn face cost
+  legibility on figures and small labels. `font_metrics.py` is regenerated
+  for it and its table renamed `CHAR_WIDTHS`; `scripts/generate_font_metrics.py`
+  now takes any font file and names the face it read. Boards already drawn
+  keep the face their elements were stored with.
+- A bar chart writes each figure above its bar and the name alone under it
+  (they shared one caption under the bar, which lost its last line whenever a
+  name wrapped). Figures are grouped by thousands and never switch to an
+  exponent (`1 234 567`, not `1.23457e+06`).
+
+### Fixed
+- The text a chatbot turn writes before a tool call and the text it writes
+  after are no longer glued together in the stream ("...readable.The note...").
+  The tokens of every iteration land in one bubble and one voice; a paragraph
+  break is now streamed between two stretches of text. Stored messages are
+  unchanged.
+- A bar chart is positioned by its top-left corner like every other element.
+  Its anchor is its baseline, so its described position was the baseline with
+  a height of zero, an update of `x`/`y` put the baseline there, and every
+  redraw from new data moved the chart down by its own height.
+- A diamond or an ellipse is sized for the room the editor really gives its
+  label: the padding was added after the shape factor instead of being scaled
+  by it, and a diamond came out too narrow for its text, which the editor
+  broke in the middle of a word. The diamond factor is the editor's (2).
+- A whiteboard frame drawn with an empty `text` is a bare zone: it no longer
+  shows its internal identifier as a label.
+- A whiteboard text held in a fixed-width box - a table cell, a name under a
+  bar - is written with its line breaks. The editor draws such a text as
+  stored and never wraps it on load, so a long cell ran out of its column and
+  over the next one although its row had been sized for two lines. The
+  unbroken text is kept in `originalText`.
+- Redrawing a table or a bar chart from new data left the old rules or
+  baseline in the scene under the rebuilt ones (same ids twice), dropped the
+  label of any arrow attached to the figure, and left that arrow bound on one
+  side only. The figure's own lines now go with it, and its links come through
+  whole.
+
 ## [0.50.2] - 2026-10-01
 
 ### Fixed

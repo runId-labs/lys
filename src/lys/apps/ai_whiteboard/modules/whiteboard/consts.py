@@ -72,21 +72,40 @@ CELL_HEIGHT = 200
 MAX_GRID_ROWS = 60
 # Vertical gap left when placement falls back to stacking under the existing content.
 STACK_GAP = 60
+# A link that would run through another element goes round it instead, along a lane this
+# far clear of the elements it passes. When that lane is taken, it is tried further out,
+# this many times, before the link is left straight - a detour that wanders half the
+# board to avoid a box reads worse than a line crossing it.
+LINK_LANE_MARGIN = 40
+LINK_LANE_ATTEMPTS = 3
 
 NOTE_WIDTH = 220
 NOTE_HEIGHT = 120
 # An ellipse needs more room than a rectangle for the same text: its inscribed area is
 # roughly half the bounding box, so a label that fits a note overflows an ellipse.
+# The factors are the editor's own: it gives a label width / sqrt(2) in an ellipse and
+# width / 2 in a diamond. A smaller factor here sizes a shape the editor then finds too
+# narrow for its label.
 ELLIPSE_PADDING_FACTOR = 1.45
-DIAMOND_PADDING_FACTOR = 1.6
+DIAMOND_PADDING_FACTOR = 2.0
 
 
 # ==================== Text ====================
 
-# Excalidraw's own defaults. Font family 1 is its hand-drawn face.
+# Font family 9 is Liberation Sans in Excalidraw's own numbering: a plain sans-serif,
+# metric-compatible with Arial, that the editor bundles and serves itself - so a board
+# reads the same on every system, which a family resolved from the viewer's installed
+# fonts would not. A board is read as a document, by people who did not draw it: a
+# hand-drawn face costs legibility on figures and small labels.
+#
+# The line height is that face's own in the editor. The two go together: the editor
+# falls back on the family's line height whenever it re-measures a text, and a height
+# computed here with another one would size every box for lines the editor does not draw.
+#
+# Changing the face means regenerating font_metrics.py (scripts/generate_font_metrics.py).
 FONT_SIZE = 16
-FONT_FAMILY = 1
-LINE_HEIGHT = 1.25
+FONT_FAMILY = 9
+LINE_HEIGHT = 1.15
 # Width of an average character as a fraction of the font size. The editor measures text
 # with real font metrics and we cannot, so this errs generous: a box slightly too wide is
 # invisible, a box too narrow clips the text — which is the failure this replaces.
@@ -131,6 +150,13 @@ MAX_TABLE_COLUMNS = 10
 MAX_TABLE_ROWS = 25
 MAX_CHART_POINTS = 24
 
+# Two elements sharing less than this, in either direction, are neighbours: sizes are
+# computed here from font metrics and settle a pixel or two away in the editor.
+OVERLAP_TOLERANCE = 2
+# How many overlaps a drawing reports back. Past a handful the layout is to be redone,
+# not patched pair by pair - and a long list costs the caller its attention.
+MAX_REPORTED_OVERLAPS = 10
+
 # A table column is sized to its content: as wide as the longest cell
 # demands, never under the floor (a column nobody can read) and never over
 # the cap (past it the cell wraps and the row grows instead). The row height
@@ -140,8 +166,16 @@ TABLE_COLUMN_MAX_WIDTH = 360
 TABLE_ROW_HEIGHT = 36
 CHART_WIDTH = 420
 CHART_HEIGHT = 260
-# Room left under a bar chart for the category labels.
+# Room left under a bar chart for the category labels: two lines of the caption face,
+# so a name too long for its slot wraps once instead of running into its neighbour.
 CHART_LABEL_BAND = 28
+# The captions of a bar chart - names under, figures over - are set smaller than the
+# board's text: they annotate the bars, they are not the content.
+CHART_CAPTION_FONT_RATIO = 0.75
+# Room kept above the bars for the tallest one's figure, and the gap between a bar and
+# the figure standing on it.
+CHART_VALUE_BAND = 18
+CHART_VALUE_GAP = 2
 
 
 # Operation keys accepted in a patch, applied in this order: an add followed by a delete

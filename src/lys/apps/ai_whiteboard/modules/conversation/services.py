@@ -81,7 +81,7 @@ class AIConversationService(BaseAIConversationService):
         cls, arguments: Dict[str, Any], context: Dict[str, Any],
     ) -> Dict[str, Any]:
         """
-        Apply a patch to a board.
+        Apply a patch to a board, or bring elements of it into the user's view.
 
         Returns the board as it stands afterwards, so the model can see the result of its
         own call without spending a second one reading it back.
@@ -100,8 +100,12 @@ class AIConversationService(BaseAIConversationService):
             for key in ("add", "update", "delete")
             if arguments.get(key)
         }
-        if not operations:
-            return {"error": "EMPTY_PATCH", "message": "Nothing to draw: add, update or delete is required"}
+        focus = arguments.get("focus") or None
+        if not operations and not focus:
+            return {
+                "error": "EMPTY_PATCH",
+                "message": "Nothing to do: give add, update or delete to draw, or focus to show",
+            }
 
         whiteboard_service = cls.app_manager.get_service("whiteboard")
         try:
@@ -115,6 +119,7 @@ class AIConversationService(BaseAIConversationService):
                 named_whiteboard_id=arguments.get("whiteboard_id"),
                 operations=operations,
                 caller_session=context["session"],
+                focus=focus,
             )
         except LysError as e:
             logger.info(f"Whiteboard patch refused for conversation '{conversation.id}': {e.debug_message}")

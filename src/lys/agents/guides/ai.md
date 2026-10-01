@@ -369,6 +369,20 @@ inherit from the app's, or the tools are silently absent.
   browser while the answer is still streaming. On a single-writer backend (SQLite) it
   falls back to the turn's session — correct, but the board appears at the end of the
   turn.
+- The update signal tells the editor what to look at: `focus`, the names a patch drew, or
+  the ones the caller passed in `focus`. `draw_on_whiteboard` with `focus` alone writes
+  nothing and only moves the owner's view (`WhiteboardService.show`); it never opens a
+  board. An editor save sends no `focus`.
+- A drawing reports what it left on top of something else: the tool result carries
+  `overlaps` (`element`, `with`, overlapping `width` and `height`) for the elements the
+  patch drew, largest first, capped. The patch is applied regardless - the model places
+  before sizes exist and fixes with an update. Links and elements inside a frame are not
+  reported.
+- A link (`from`/`to`) is routed by the server: straight, or round the elements standing
+  between its ends along a free lane (`scene._route_between`). The whole patch is routed
+  once applied, so the order it names things in does not matter.
+- A named element's position is its top-left corner whatever it is made of
+  (`scene._box`): a bar chart, anchored on its baseline, records its box.
 - `read_whiteboard` never opens a board: one opened in the turn's session would be
   invisible to that separate transaction, which would then open a second one. With no
   board yet it returns `NO_WHITEBOARD`, and drawing is what opens one.

@@ -172,6 +172,87 @@ class TestLinks:
         assert described(board)["flux"]["x"] != before
 
 
+class TestLinkRouting:
+    """A link goes round what stands between its two ends instead of through it."""
+
+    ROW = [
+        {"name": "A", "x": 0, "y": 0, "width": 120, "height": 60},
+        {"name": "B", "x": 300, "y": 0, "width": 120, "height": 60},
+        {"name": "C", "x": 600, "y": 0, "width": 120, "height": 60},
+    ]
+
+    @staticmethod
+    def path(board, name):
+        link = scene_tools.find(board, name)
+        return [(link["x"] + x, link["y"] + y) for x, y in link["points"]]
+
+    def test_nothing_in_the_way_is_a_straight_link(self):
+        board = draw({"add": [*self.ROW, {"name": "ab", "kind": "arrow", "from": "A", "to": "B"}]})
+        assert len(self.path(board, "ab")) == 2
+
+    def test_a_link_goes_round_the_box_between_its_ends(self):
+        board = draw({"add": [*self.ROW, {"name": "retour", "kind": "arrow", "from": "C", "to": "A"}]})
+        path = self.path(board, "retour")
+        # Out of C and into A by the same side, along a lane clear of the whole row.
+        assert len(path) == 4
+        assert path[0] == (660, 60) and path[-1] == (60, 60)
+        assert path[1][1] == path[2][1] > 60
+
+    def test_the_lane_keeps_clear_of_what_is_under_the_row(self):
+        board = draw({"add": [
+            *self.ROW,
+            {"name": "dessous", "x": 300, "y": 80, "width": 120, "height": 60},
+            {"name": "retour", "kind": "arrow", "from": "C", "to": "A"},
+        ]})
+        path = self.path(board, "retour")
+        # Below is taken: the lane runs above the row instead.
+        assert path[1][1] == path[2][1] < 0
+
+    def test_a_link_down_a_column_goes_round_by_the_side(self):
+        board = draw({"add": [
+            {"name": "haut", "x": 0, "y": 0, "width": 120, "height": 60},
+            {"name": "milieu", "x": 0, "y": 140, "width": 120, "height": 60},
+            {"name": "bas", "x": 0, "y": 280, "width": 120, "height": 60},
+            {"name": "direct", "kind": "arrow", "from": "haut", "to": "bas"},
+        ]})
+        path = self.path(board, "direct")
+        assert len(path) == 4
+        assert path[1][0] == path[2][0] > 120
+
+    def test_a_box_drawn_after_the_link_in_the_same_patch_is_seen(self):
+        # The patch is routed as a whole once it is applied, whatever order it names things in.
+        board = draw({"add": [
+            self.ROW[0], self.ROW[2],
+            {"name": "retour", "kind": "arrow", "from": "C", "to": "A"},
+            self.ROW[1],
+        ]})
+        assert len(self.path(board, "retour")) == 4
+
+    def test_moving_an_end_routes_its_link_again(self):
+        board = draw({"add": [*self.ROW, {"name": "retour", "kind": "arrow", "from": "C", "to": "A"}]})
+        board = scene_tools.apply_operations(board, {"update": [{"name": "A", "x": 0, "y": 400}]})
+        # B no longer stands between the two: the detour is gone with the reason for it.
+        path = self.path(board, "retour")
+        assert len(path) == 2
+        assert path[-1][1] >= 400
+
+    def test_a_frame_around_the_ends_is_not_in_the_way(self):
+        board = draw({"add": [
+            {"name": "zone", "kind": "frame", "text": "", "x": -40, "y": -40, "width": 600, "height": 200},
+            self.ROW[0], self.ROW[1],
+            {"name": "ab", "kind": "arrow", "from": "A", "to": "B"},
+        ]})
+        assert len(self.path(board, "ab")) == 2
+
+    def test_no_free_lane_leaves_the_link_straight(self):
+        walls = [
+            {"name": "mur haut", "x": -400, "y": -400, "width": 1600, "height": 380},
+            {"name": "mur bas", "x": -400, "y": 80, "width": 1600, "height": 380},
+        ]
+        board = draw({"add": [*self.ROW, *walls, {"name": "retour", "kind": "arrow", "from": "C", "to": "A"}]})
+        assert len(self.path(board, "retour")) == 2
+
+
 class TestTable:
     """A table is data: it is drawn from it, and redrawn when it changes."""
 
@@ -197,6 +278,31 @@ class TestTable:
         assert (entry["x"], entry["y"]) == (60, 90)
         assert entry["data"]["rows"] == [["1", "2"], ["3", "4"]]
 
+    def test_a_redraw_leaves_no_part_of_the_old_grid_behind(self):
+        # The rules of a table are lines, like the links a redraw has to keep: told
+        # apart by who owns them, or the old rules stay under the new ones.
+        board = draw(
+            {"add": [{"name": "t", "kind": "table", "headers": ["a", "b"], "rows": [["1", "2"], ["3", "4"]]}]},
+            {"update": [{"name": "t", "headers": ["a", "b"], "rows": [["1", "2"]]}]},
+        )
+        ids = [element["id"] for element in board["elements"]]
+        assert len(ids) == len(set(ids))
+        assert "t-row-2" not in ids
+
+    def test_a_redraw_keeps_the_links_whole(self):
+        board = draw(
+            {"add": [
+                {"name": "t", "kind": "table", "headers": ["a"], "rows": [["1"]]},
+                {"name": "n", "x": 900, "y": 0},
+                {"name": "lien", "kind": "arrow", "from": "n", "to": "t", "label": "voir"},
+            ]},
+            {"update": [{"name": "t", "headers": ["a"], "rows": [["1"], ["2"]]}]},
+        )
+        assert described(board)["lien"]["label"] == "voir"
+        # Bound on both sides: the rebuilt table knows the arrow that ends on it.
+        table = scene_tools.find(board, "t")
+        assert {"type": "arrow", "id": "lien"} in table["boundElements"]
+
     def test_deleting_it_removes_every_part(self):
         board = draw(
             {"add": [{"name": "t", "kind": "table", "headers": ["a", "b"], "rows": [["1", "2"]]}]},
@@ -214,6 +320,49 @@ class TestChart:
         }}]})
         assert any(element["type"] == "rectangle" for element in board["elements"])
         assert not any(element["type"] == "image" for element in board["elements"])
+
+    def test_a_bar_carries_its_name_under_it_and_its_figure_over_it(self):
+        board = draw({"add": [{"name": "c", "kind": "chart", "chart": {
+            "type": "bar", "title": "CA", "data": [{"label": "A", "value": 3}, {"label": "B", "value": 7}],
+        }}]})
+        parts = {element["id"]: element for element in board["elements"]}
+        title, baseline = parts["c-title"], parts["c"]["y"]
+        for position, (label, figure) in enumerate([("A", "3"), ("B", "7")]):
+            bar, name, value = parts[f"c-bar-{position}"], parts[f"c-label-{position}"], parts[f"c-value-{position}"]
+            assert (name["text"], value["text"]) == (label, figure)
+            assert name["y"] >= baseline
+            assert value["y"] + value["height"] <= bar["y"]
+        # The tallest bar's figure clears the title: neither is written over the other.
+        assert parts["c-value-1"]["y"] >= title["y"] + title["height"]
+
+    def test_a_name_too_long_for_its_slot_is_written_on_two_lines(self):
+        data = [{"label": f"SOCIETE NUMERO {index}", "value": index + 1} for index in range(6)]
+        board = draw({"add": [{"name": "c", "kind": "chart", "chart": {"type": "bar", "data": data}}]})
+        name = scene_tools.find(board, "c-label-0")
+        assert name["text"].count("\n") == 1
+        assert name["originalText"] == "SOCIETE NUMERO 0"
+
+    @pytest.mark.parametrize("value,expected", [
+        (924, "924"),
+        (6878, "6\u00a0878"),
+        (1234567, "1\u00a0234\u00a0567"),
+        (1234.5, "1\u00a0234.5"),
+        (0.1, "0.1"),
+    ])
+    def test_a_figure_reads_as_a_figure(self, value, expected):
+        # Never an exponent, thousands apart: "1.23457e+06" is not a revenue.
+        assert scene_tools._format_figure(value) == expected
+
+    def test_a_redraw_leaves_no_part_of_the_old_chart_behind(self):
+        board = draw(
+            {"add": [{"name": "c", "kind": "chart", "chart": {
+                "type": "bar", "data": [{"label": "A", "value": 3}, {"label": "B", "value": 7}],
+            }}]},
+            {"update": [{"name": "c", "chart": {"type": "bar", "data": [{"label": "A", "value": 1}]}}]},
+        )
+        ids = [element["id"] for element in board["elements"]]
+        assert len(ids) == len(set(ids))
+        assert "c-bar-1" not in ids
 
     def test_a_pie_travels_as_a_spec_with_no_bytes(self):
         board = draw({"add": [{"name": "c", "kind": "chart", "chart": {
@@ -252,6 +401,36 @@ class TestChart:
         parts = [e for e in board["elements"] if (e.get("customData") or {}).get("whiteboardOwner") == "c"]
         assert parts and all(element["x"] >= 500 for element in parts)
 
+    BARS = {"type": "bar", "title": "CA", "data": [{"label": "A", "value": 3}, {"label": "B", "value": 7}]}
+
+    def top_of(self, board):
+        return min(e["y"] for e in board["elements"] if (e.get("customData") or {}).get("whiteboardOwner") == "c")
+
+    def test_a_bar_chart_is_where_its_top_left_corner_is(self):
+        # Its anchor is its baseline: read from there, it was 232 lower and had no height.
+        board = draw({"add": [{"name": "c", "kind": "chart", "x": 100, "y": 200, "chart": self.BARS}]})
+        entry = described(board)["c"]
+        assert (entry["x"], entry["y"]) == (100, 200)
+        assert entry["height"] > 200
+        assert self.top_of(board) == pytest.approx(200)
+
+    def test_new_data_redraws_a_bar_chart_where_it_stood(self):
+        board = draw(
+            {"add": [{"name": "c", "kind": "chart", "x": 100, "y": 200, "chart": self.BARS}]},
+            {"update": [{"name": "c", "chart": self.BARS}]},
+            {"update": [{"name": "c", "chart": self.BARS}]},
+        )
+        assert self.top_of(board) == pytest.approx(200)
+
+    def test_moving_a_bar_chart_puts_its_top_left_corner_there(self):
+        board = draw(
+            {"add": [{"name": "c", "kind": "chart", "x": 100, "y": 200, "chart": self.BARS}]},
+            {"update": [{"name": "c", "x": 500, "y": 300}]},
+        )
+        entry = described(board)["c"]
+        assert (entry["x"], entry["y"]) == (500, 300)
+        assert self.top_of(board) == pytest.approx(300)
+
 
 class TestFrame:
     """A frame is a zone, and the editor moves what it holds."""
@@ -262,6 +441,15 @@ class TestFrame:
             {"name": "A", "frame": "zone", "x": 20, "y": 20},
         ]})
         assert described(board)["a"]["frame"] == "zone"
+
+    def test_a_frame_is_labelled_with_its_text_and_nothing_else(self):
+        board = draw({"add": [
+            {"name": "zone_filiales", "kind": "frame", "text": "Filiales", "x": 0, "y": 0},
+            {"name": "zone_nue", "kind": "frame", "text": "", "x": 600, "y": 0},
+        ]})
+        assert scene_tools.find(board, "zone_filiales")["name"] == "Filiales"
+        # An empty text is a bare zone, never the identifier written on the board.
+        assert scene_tools.find(board, "zone_nue")["name"] == ""
 
     def test_an_unknown_frame_is_refused(self):
         with pytest.raises(LysError):
@@ -384,16 +572,141 @@ class TestValidateScene:
             scene_tools.validate_scene(scene, self.LIMIT)
 
 
+class TestOverlaps:
+    """A caller places blind: the board tells it what it put on top of what."""
+
+    def found(self, *operations):
+        board = draw(*operations)
+        return scene_tools.overlaps(board, scene_tools.drawn_names(operations[-1]))
+
+    def test_two_notes_drawn_on_each_other_are_reported(self):
+        found = self.found({"add": [
+            {"name": "a", "x": 0, "y": 0, "width": 200, "height": 100},
+            {"name": "b", "x": 150, "y": 90, "width": 200, "height": 100},
+        ]})
+        assert found == [{"element": "a", "with": "b", "width": 50, "height": 10}]
+
+    def test_neighbours_are_not_an_overlap(self):
+        assert self.found({"add": [
+            {"name": "a", "x": 0, "y": 0, "width": 200, "height": 100},
+            {"name": "b", "x": 0, "y": 100, "width": 200, "height": 100},
+            {"name": "c", "x": 201, "y": 0, "width": 200, "height": 100},
+        ]}) == []
+
+    def test_a_title_written_under_a_card_is_reported(self):
+        found = self.found({"add": [
+            {"name": "titre", "kind": "text", "text": "Événements marquants du groupe", "x": 720, "y": 1450},
+            {"name": "carte", "x": 740, "y": 1440, "width": 220, "height": 90},
+        ]})
+        assert [(entry["element"], entry["with"]) for entry in found] == [("titre", "carte")]
+
+    def test_what_sits_inside_a_frame_is_where_it_belongs(self):
+        found = self.found({"add": [
+            {"name": "zone", "kind": "frame", "text": "", "x": 0, "y": 0, "width": 600, "height": 400},
+            {"name": "dedans", "x": 40, "y": 40, "width": 200, "height": 100},
+            {"name": "a cheval", "x": 500, "y": 40, "width": 200, "height": 100},
+        ]})
+        assert [(entry["element"], entry["with"]) for entry in found] == [("zone", "a-cheval")]
+
+    def test_a_link_crossing_something_is_not_an_overlap(self):
+        assert self.found({"add": [
+            {"name": "a", "x": 0, "y": 0, "width": 100, "height": 60},
+            {"name": "entre", "x": 300, "y": 0, "width": 100, "height": 60},
+            {"name": "b", "x": 600, "y": 0, "width": 100, "height": 60},
+            {"name": "lien", "kind": "arrow", "from": "a", "to": "b", "label": "retour"},
+        ]}) == []
+
+    def test_only_what_the_patch_drew_is_checked(self):
+        # Two elements already on each other are the board's past, not this call's doing.
+        found = self.found(
+            {"add": [
+                {"name": "a", "x": 0, "y": 0, "width": 200, "height": 100},
+                {"name": "b", "x": 100, "y": 50, "width": 200, "height": 100},
+            ]},
+            {"add": [{"name": "c", "x": 1000, "y": 0, "width": 200, "height": 100}]},
+        )
+        assert found == []
+
+    def test_a_bar_chart_counts_for_its_whole_box(self):
+        found = self.found({"add": [
+            {"name": "c", "kind": "chart", "x": 0, "y": 0, "chart": {
+                "type": "bar", "data": [{"label": "A", "value": 3}],
+            }},
+            {"name": "sous le titre", "x": 20, "y": 20, "width": 100, "height": 60},
+        ]})
+        assert [(entry["element"], entry["with"]) for entry in found] == [("c", "sous-le-titre")]
+
+    def test_a_bar_chart_drawn_before_boxes_were_recorded_still_counts_for_its_bars(self):
+        board = draw({"add": [{"name": "c", "kind": "chart", "x": 0, "y": 0, "chart": {
+            "type": "bar", "data": [{"label": "A", "value": 3}],
+        }}]})
+        # As stored by an earlier version: the anchor knows nothing of the figure's box.
+        scene_tools.find(board, "c")["customData"].pop("whiteboardBox")
+        board = scene_tools.apply_operations(
+            board, {"add": [{"name": "sur les barres", "x": 150, "y": 100, "width": 100, "height": 60}]}
+        )
+        found = scene_tools.overlaps(board, ["sur-les-barres"])
+        assert [(entry["element"], entry["with"]) for entry in found] == [("sur-les-barres", "c")]
+        assert described(board)["c"]["height"] > 200
+
+    def test_the_report_is_capped_largest_first(self):
+        pile = [{"name": f"n{index}", "x": index * 5, "y": 0, "width": 200, "height": 100} for index in range(12)]
+        found = self.found({"add": pile})
+        assert len(found) == 10
+        assert found[0]["width"] >= found[-1]["width"]
+
+
+class TestShapeSizing:
+    """A shape is sized for the room the editor gives its label, not for the label alone."""
+
+    @pytest.mark.parametrize("kind,factor", [("diamond", 2.0), ("ellipse", 2 ** 0.5)])
+    def test_a_label_fits_on_one_line_in_its_shape(self, kind, factor):
+        board = draw({"add": [{"name": "s", "kind": kind, "text": "Valider ?"}]})
+        shape = scene_tools.find(board, "s")
+        natural, _ = scene_tools._text_size("Valider ?")
+        # What the editor leaves a label: the shape's width over the factor, less the padding.
+        assert shape["width"] / factor - 10 >= natural
+
+
+class TestFocus:
+    """What there is to look at: what a patch drew, or what the caller names."""
+
+    def test_a_patch_draws_what_it_adds_and_updates_not_what_it_deletes(self):
+        operations = {
+            "add": [{"name": "Titre org"}, {"name": "A"}, {"name": "B"}],
+            "update": [{"name": "A", "text": "a"}, {"name": "C", "text": "c"}],
+            "delete": ["B", "D"],
+        }
+        assert scene_tools.drawn_names(operations) == ["titre-org", "a", "c"]
+
+    def test_a_delete_alone_draws_nothing(self):
+        assert scene_tools.drawn_names({"delete": ["a"]}) == []
+
+    def test_a_focus_resolves_to_the_names_on_the_board(self):
+        board = draw({"add": [{"name": "Organigramme"}, {"name": "Titre"}]})
+        assert scene_tools.resolve_focus(board, ["Titre", "organigramme", "Titre"]) == ["titre", "organigramme"]
+
+    @pytest.mark.parametrize("names", [["nowhere"], ["organigramme-text"], [], "organigramme", [1]])
+    def test_a_focus_on_nothing_is_refused(self, names):
+        # A bound label is not a name a caller can use, and an empty focus shows nothing.
+        board = draw({"add": [{"name": "Organigramme"}]})
+        with pytest.raises(LysError):
+            scene_tools.resolve_focus(board, names)
+
+
 class TestTextMeasurement:
-    """The server lays text out with the Virgil font's own advances — the
-    same sum the editor's canvas makes once its fonts are loaded."""
+    """The server lays text out with the advances of the face the board
+    writes with — the sum the editor's canvas makes once its fonts are loaded."""
+
+    # One line box, in the board's face: font size times that face's line height.
+    LINE_BOX = 16 * 1.15
 
     def test_a_texts_width_is_the_fonts_own_sum_of_advances(self):
-        # Ground truth, measured the long way: the editor's canvas gives the
-        # same figure once Virgil is loaded (no kerning in the face, the
-        # advances ARE the measurement).
+        # Ground truth, summed the long way from the face's advance widths
+        # (Liberation Sans, metric-compatible with Arial). No pair in this word
+        # is kerned, so the canvas gives the same figure.
         width, _ = scene_tools._text_size("Société")
-        assert width == pytest.approx(58.88, abs=0.1)
+        assert width == pytest.approx(53.37, abs=0.1)
 
     def test_an_unknown_character_falls_back_generously(self):
         # Not in the table: the historic ratio, never zero — a clipped
@@ -406,7 +719,7 @@ class TestTextMeasurement:
         # and runs wide rather than cutting an IBAN in half.
         long_word = "SIREN-123456789"
         _, height = scene_tools._text_size(long_word, max_width=10)
-        assert height == pytest.approx(16 * 1.25)
+        assert height == pytest.approx(self.LINE_BOX)
 
     def test_wrapping_counts_the_lines_the_editor_will_draw(self):
         text = "un rendement en nette amelioration sur l'exercice"
@@ -414,7 +727,7 @@ class TestTextMeasurement:
         _, wrapped = scene_tools._text_size(text, max_width=120)
         assert wrapped > natural
         # One line box per line, unrounded.
-        assert wrapped / (16 * 1.25) == round(wrapped / (16 * 1.25))
+        assert wrapped / self.LINE_BOX == pytest.approx(round(wrapped / self.LINE_BOX))
 
 
 class TestContentSizedTable:
@@ -444,7 +757,7 @@ class TestContentSizedTable:
     def test_a_capped_column_wraps_and_the_row_grows(self):
         board = draw({"add": [{
             "name": "t", "kind": "table",
-            "headers": ["Société", "Chiffre d'affaires consolidé sur l'exercice 2025"],
+            "headers": ["Société", "Chiffre d'affaires consolidé sur l'exercice 2025, toutes sociétés du groupe"],
             "rows": [["BTP", "924 k€"]],
         }]})
         rows = {e["id"]: e for e in board["elements"] if "-row-" in e["id"]}
@@ -454,6 +767,20 @@ class TestContentSizedTable:
         header_bottom = rows["t-row-1"]["y"]
         assert header_bottom - table["y"] > 36
         assert table["height"] - (header_bottom - table["y"]) == pytest.approx(36)
+
+    def test_a_wrapped_cell_is_written_with_its_line_breaks(self):
+        # The editor draws a fixed-width text as stored and never wraps it on load:
+        # the breaks the row was sized for have to be in the text itself.
+        header = "Chiffre d'affaires consolidé sur l'exercice 2025, toutes sociétés du groupe"
+        board = draw({"add": [{
+            "name": "t", "kind": "table",
+            "headers": ["Société", header], "rows": [["BTP", "924 k€"]],
+        }]})
+        cells = self.cells(board)
+        assert "\n" in cells["t-cell-0-1"]["text"]
+        assert cells["t-cell-0-1"]["text"].replace("\n", " ") == header
+        assert cells["t-cell-0-1"]["originalText"] == header
+        assert cells["t-cell-1-1"]["text"] == "924 k€"
 
     def test_a_short_table_is_compact(self):
         board = draw({"add": [{

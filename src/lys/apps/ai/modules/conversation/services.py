@@ -28,6 +28,7 @@ from lys.apps.ai.modules.conversation.consts import (
     DEFAULT_COMPACTION_TOKEN_THRESHOLD,
     DEFAULT_COMPACTION_WINDOW_MESSAGES,
     DEFAULT_DYNAMIC_CONTEXT_HEADER,
+    TURN_SEGMENT_BREAK,
     DEFAULT_SEARCH_RESULTS,
     DEFAULT_SUMMARY_HEADER,
     DISPLAY_TITLE_MAX_LENGTH,
@@ -2158,6 +2159,11 @@ class AIConversationService(EntityService[AIConversation]):
             # the explanation lands on what it describes.
             streamed_action_count = 0
 
+            # The last character streamed in this turn, across iterations: what tells
+            # whether the text of a new iteration needs a break before it (see
+            # TURN_SEGMENT_BREAK).
+            streamed_tail = ""
+
             # Agent loop
             for iteration in range(max_tool_iterations):
                 accumulated_content = ""
@@ -2189,7 +2195,18 @@ class AIConversationService(EntityService[AIConversation]):
                                 yield format_sse("reasoning", {"content": chunk.reasoning})
 
                         if chunk.content:
+                            # First text of this iteration, right after text from an
+                            # earlier one: a break goes out first. It belongs to the
+                            # stream only - each message is stored as it was written.
+                            if (
+                                not accumulated_content and streamed_tail
+                                and not streamed_tail.isspace() and not chunk.content[0].isspace()
+                            ):
+                                yield format_sse("token", {"content": TURN_SEGMENT_BREAK})
+                                if voice_pipeline is not None:
+                                    voice_pipeline.feed(TURN_SEGMENT_BREAK)
                             accumulated_content += chunk.content
+                            streamed_tail = chunk.content[-1]
                             yield format_sse("token", {"content": chunk.content})
                             # The same text is spoken. Fed raw here — the
                             # pipeline normalizes per complete sentence —

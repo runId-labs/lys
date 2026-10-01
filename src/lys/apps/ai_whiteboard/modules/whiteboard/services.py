@@ -229,9 +229,15 @@ class WhiteboardService(EntityService[Whiteboard]):
         named_whiteboard_id: Optional[str],
         operations: Dict[str, Any],
         caller_session,
+        focus: Optional[List[str]] = None,
     ) -> Dict[str, Any]:
         """
         Apply a patch to a board, committed as soon as the backend allows.
+
+        With no patch and a ``focus``, nothing is written: the owner's view is brought
+        onto the named elements (see :meth:`show`). It travels the same way because it
+        has the same constraint - the browser is told at the commit, and told at the end
+        of a streamed answer it moves the view after the sentence that announced it.
 
         Why not simply the caller's session: a chatbot turn holds its session open for
         the whole streamed answer, and the browser is only told a board moved when the
@@ -257,23 +263,28 @@ class WhiteboardService(EntityService[Whiteboard]):
             title: Title for a board opened here, when there is none to draw on.
             current_whiteboard_id: The board the caller already points at, if any.
             named_whiteboard_id: The board the model named, if any.
-            operations: The patch, as :meth:`apply_operations` takes it.
+            operations: The patch, as :meth:`apply_operations` takes it. May be empty
+                when ``focus`` is given.
             caller_session: The caller's session, used only where a second one cannot be.
+            focus: Names of the elements to bring into the owner's view. Without it, a
+                patch shows what it drew.
 
         Returns:
-            The board id, its title and its elements, as plain values.
+            The board id, its title and its elements, as plain values - and ``overlaps``
+            when the patch left an element on top of another (see ``scene.overlaps``).
 
         Raises:
-            LysError: A board was named and is not this user's, or the patch is refused.
+            LysError: A board was named and is not this user's, the patch is refused, or
+                ``focus`` names something that is not on the board.
         """
         if not cls._can_commit_apart():
             return await cls._draw(
-                user_id, title, current_whiteboard_id, named_whiteboard_id, operations, caller_session,
+                user_id, title, current_whiteboard_id, named_whiteboard_id, operations, caller_session, focus=focus,
             )
 
         async with cls.app_manager.database.get_session() as session:
             return await cls._draw(
-                user_id, title, current_whiteboard_id, named_whiteboard_id, operations, session,
+                user_id, title, current_whiteboard_id, named_whiteboard_id, operations, session, focus=focus,
             )
 
     @classmethod
@@ -285,20 +296,41 @@ class WhiteboardService(EntityService[Whiteboard]):
         named_whiteboard_id: Optional[str],
         operations: Dict[str, Any],
         session,
+        focus: Optional[List[str]] = None,
     ) -> Dict[str, Any]:
-        """Resolve the target through one session, opening a board if there is none."""
+        """
+        Resolve the target through one session, opening a board if there is none.
+
+        Only a patch opens a board: showing something on a board that does not exist is
+        refused, not answered with an empty one thrown open in front of the user.
+        """
         whiteboard = await cls.find_for_conversation(
             user_id, current_whiteboard_id, named_whiteboard_id, session,
         )
         if whiteboard is None:
+            if not operations:
+                raise LysError(WHITEBOARD_NOT_FOUND, "There is no whiteboard to show yet: drawing on one opens it")
             whiteboard = await cls.create_for_user(user_id, title, session)
 
-        await cls.apply_operations(whiteboard, operations, session)
-        return {
+        if operations:
+            await cls.apply_operations(whiteboard, operations, session, focus=focus)
+        else:
+            cls.show(whiteboard, focus, session)
+
+        result: Dict[str, Any] = {
             "whiteboard_id": whiteboard.id,
             "title": whiteboard.title,
             "elements": cls.describe(whiteboard),
         }
+        # What the patch put on top of something else. Reported, not refused: the caller
+        # chose its coordinates before any size existed and cannot see the board, so the
+        # drawing stands and the caller is told what to move. The key is absent when
+        # there is nothing to say.
+        if operations:
+            found = scene_tools.overlaps(whiteboard.scene_json, scene_tools.drawn_names(operations))
+            if found:
+                result["overlaps"] = found
+        return result
 
     # ==================== Writes ====================
 
@@ -333,6 +365,7 @@ class WhiteboardService(EntityService[Whiteboard]):
         whiteboard: Whiteboard,
         operations: Dict[str, Any],
         session,
+        focus: Optional[List[str]] = None,
     ) -> Whiteboard:
         """
         Apply a patch to a board's scene.
@@ -345,15 +378,39 @@ class WhiteboardService(EntityService[Whiteboard]):
         before the patch is applied, so the patch always lands on the latest scene rather
         than on the one the caller happened to hold. The revision it produces is what lets
         the browser notice.
+
+        The browser is also told what to look at: ``focus`` when the caller named it,
+        otherwise what the patch drew. A board grows away from where its owner is
+        looking, and a drawing announced in the chat that landed off screen reads as
+        nothing having happened. ``focus`` is checked against the scene the patch
+        produces, before anything is written - so it may name what the same patch adds.
         """
         whiteboard = await cls._lock(whiteboard, session)
         current = whiteboard.scene_json or scene_tools.empty_scene()
-        whiteboard.scene_json = scene_tools.apply_operations(current, operations)
+        scene = scene_tools.apply_operations(current, operations)
+        shown = scene_tools.resolve_focus(scene, focus) if focus else scene_tools.drawn_names(operations)
+
+        whiteboard.scene_json = scene
         whiteboard.revision = (whiteboard.revision or 0) + 1
         session.add(whiteboard)
         await session.flush()
 
-        cls._notify(whiteboard, session)
+        cls._notify(whiteboard, session, focus=shown)
+        return whiteboard
+
+    @classmethod
+    def show(cls, whiteboard: Whiteboard, names: Optional[List[str]], session) -> Whiteboard:
+        """
+        Bring elements of a board into its owner's view, without touching the board.
+
+        Nothing is written and the revision does not move: the signal alone carries it,
+        and an editor that is not open at that moment simply opens on those elements.
+
+        Raises:
+            LysError: A name that is not on the board.
+        """
+        shown = scene_tools.resolve_focus(whiteboard.scene_json or scene_tools.empty_scene(), names)
+        cls._notify(whiteboard, session, focus=shown)
         return whiteboard
 
     @classmethod
@@ -432,7 +489,7 @@ class WhiteboardService(EntityService[Whiteboard]):
     # ==================== Notification ====================
 
     @classmethod
-    def _notify(cls, whiteboard: Whiteboard, session) -> None:
+    def _notify(cls, whiteboard: Whiteboard, session, focus: Optional[List[str]] = None) -> None:
         """
         Tell the owner's open editors that the board moved — **once the write lands**.
 
@@ -453,6 +510,10 @@ class WhiteboardService(EntityService[Whiteboard]):
         one refresh behind, while failing the write because Redis is down is lost work. The
         payload carries the id and the revision, never the scene — signals are not replayed,
         so a client that missed one must be able to see the gap and refetch.
+
+        ``focus`` rides along when there is something to look at: the names of the
+        elements the editor should bring into view. An editor save sends none - the
+        owner's other tabs follow the content, not the viewport of the one that drew.
         """
         pubsub = getattr(cls.app_manager, "pubsub", None)
         if not pubsub:
@@ -471,6 +532,8 @@ class WhiteboardService(EntityService[Whiteboard]):
             "whiteboardId": build_global_id(WHITEBOARD_NODE_NAME, whiteboard.id),
             "revision": whiteboard.revision,
         }
+        if focus:
+            params["focus"] = list(focus)
         whiteboard_id = whiteboard.id
 
         async def publish() -> None:

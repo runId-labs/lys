@@ -69,7 +69,7 @@ class TestDefinitions:
 
     def test_draw_declares_the_three_operations(self):
         properties = DRAW_ON_WHITEBOARD_TOOL["function"]["parameters"]["properties"]
-        assert {"add", "update", "delete", "whiteboard_id"} <= set(properties)
+        assert {"add", "update", "delete", "focus", "whiteboard_id"} <= set(properties)
 
 
 class TestToolExecutor:
@@ -123,6 +123,21 @@ class TestDrawHandler:
         await service._handle_draw_on_whiteboard({"add": [{"name": "a"}]}, ctx)
 
         ctx["session"].add.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_a_focus_alone_is_a_call_worth_making(self, service, whiteboard_service):
+        """'Show me the org chart': nothing to draw, something to bring into view."""
+        result = await service._handle_draw_on_whiteboard({"focus": ["organigramme"]}, context())
+
+        kwargs = whiteboard_service.draw.await_args.kwargs
+        assert kwargs["operations"] == {}
+        assert kwargs["focus"] == ["organigramme"]
+        assert result == DRAWN
+
+    @pytest.mark.asyncio
+    async def test_a_patch_without_focus_passes_none(self, service, whiteboard_service):
+        await service._handle_draw_on_whiteboard({"add": [{"name": "a"}], "focus": []}, context())
+        assert whiteboard_service.draw.await_args.kwargs["focus"] is None
 
     @pytest.mark.asyncio
     async def test_empty_patch_is_reported_not_applied(self, service, whiteboard_service):

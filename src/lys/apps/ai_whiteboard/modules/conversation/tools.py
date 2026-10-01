@@ -86,7 +86,8 @@ _ADD_ITEM = {
                 "text: free-standing text, for a title or a caption. "
                 "arrow: a directed link between two elements named in 'from' and 'to'. "
                 "line: an undirected link, or a plain rule. "
-                "frame: a named zone; put elements in it with their 'frame' field. "
+                "frame: a zone labelled with its 'text' (an empty 'text' leaves it bare); "
+                "put elements in it with their 'frame' field. "
                 "table: a grid, from 'headers' and 'rows' - sized to its content, never pass a width. "
                 "chart: a chart, from 'chart'."
             ),
@@ -150,13 +151,21 @@ DRAW_ON_WHITEBOARD_TOOL = {
             "above it, and send the whole layout in ONE call so it appears at once. "
             "Coordinates are optional: elements you do not place are dropped in the next "
             "free slot, which is fine for a lone note and wrong for a diagram.\n"
+            "You place blind: a box is as tall as its text turns out to need, and you only "
+            "learn sizes from the result. When the result carries 'overlaps' - each entry "
+            "an 'element' you drew sitting on a 'with', over a 'width' and a 'height' - "
+            "something is unreadable on the user's screen: fix it before you answer, by "
+            "moving one of the two with update (x, y), using the sizes the result gives.\n"
             "Reuse the SAME name to come back to an element: naming an existing one "
             "rewrites it instead of adding a near-duplicate beside it, so keep a name "
             "stable once you have used it, even if you would phrase the title differently "
             "today. Moving an element carries its label and its arrows with it.\n"
             "Revisit as much as you add: when something on the board turns out wrong or "
             "outdated, update or delete it. A board only ever added to stops being "
-            "readable, and the user relies on it to still be true."
+            "readable, and the user relies on it to still be true.\n"
+            "The user's view follows you: it moves onto what a call adds or changes. To "
+            "SHOW something already on the board - 'show me the org chart', 'go back to "
+            "the table' - call with 'focus' alone: nothing is redrawn, the view goes there."
         ),
         "parameters": {
             "type": "object",
@@ -177,6 +186,17 @@ DRAW_ON_WHITEBOARD_TOOL = {
                         "and the arrows attached to it."
                     ),
                     "items": {"type": "string"},
+                },
+                "focus": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": (
+                        "Names of the elements to bring into the user's view. Leave it out "
+                        "when drawing, unless the point of the call is somewhere else than "
+                        "what it changes. Alone - no add, update or delete - it shows what is "
+                        "already there without touching it; name every element of the "
+                        "diagram you mean, title included."
+                    ),
                 },
                 "whiteboard_id": {
                     "type": "string",
