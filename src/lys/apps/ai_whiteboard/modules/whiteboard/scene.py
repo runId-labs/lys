@@ -1367,8 +1367,10 @@ def _update(elements: List[Dict[str, Any]], operation: Dict[str, Any], element_i
     if element_id not in _index(elements):
         raise LysError(WHITEBOARD_UNKNOWN_ELEMENT, f"Element '{element_id}' is not on the board")
 
-    if operation.get("headers") is not None or operation.get("chart") is not None:
+    if operation.get("chart") is not None:
         return _redraw(elements, operation, element_id)
+    if operation.get("headers") is not None or operation.get("rows") is not None:
+        return _redraw(elements, _complete_table_data(elements, operation, element_id), element_id)
 
     moved = _move_and_resize(elements, element_id, operation)
     _restyle(elements, element_id, operation)
@@ -1378,6 +1380,32 @@ def _update(elements: List[Dict[str, Any]], operation: Dict[str, Any], element_i
     elif not moved and not any(operation.get(field) is not None for field in ("color", "background")):
         _touch(_index(elements)[element_id])
     return moved
+
+
+def _complete_table_data(
+    elements: List[Dict[str, Any]], operation: Dict[str, Any], element_id: str,
+) -> Dict[str, Any]:
+    """
+    The update with the half of the table data it leaves out taken from the table on the board.
+
+    Correcting one cell means sending the lines again, not the column titles: an update
+    with only ``rows`` (or only ``headers``) redraws the table with the other half it
+    already has. Table data aimed at an element that is not a table is refused rather
+    than dropped - an update that silently changes nothing reads as done to its caller,
+    which then repeats it.
+    """
+    custom = _index(elements)[element_id].get("customData") or {}
+    if custom.get(KIND_KEY) != ElementKind.TABLE.value:
+        raise LysError(
+            WHITEBOARD_INVALID_TABLE,
+            f"'{element_id}' is not a table: 'headers' and 'rows' only redraw a table",
+        )
+    current = custom.get(SPEC_KEY) or {}
+    return {
+        **operation,
+        "headers": operation["headers"] if operation.get("headers") is not None else current.get("headers"),
+        "rows": operation["rows"] if operation.get("rows") is not None else current.get("rows", []),
+    }
 
 
 def _redraw(elements: List[Dict[str, Any]], operation: Dict[str, Any], element_id: str) -> bool:

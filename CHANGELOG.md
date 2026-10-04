@@ -7,6 +7,17 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.51.1] - 2026-10-04
+
+### Fixed
+- `draw_on_whiteboard`: an `update` (or an `add` on an existing table) carrying only
+  `rows` or only `headers` now redraws the table, keeping the half it leaves out
+  from the table on the board. It used to succeed while changing nothing, and the
+  model, reading its own correction as done, repeated it. Table data aimed at an
+  element that is not a table is now refused with `WHITEBOARD_INVALID_TABLE` instead
+  of being dropped. The `update` schema of `headers` and `rows` now says which half
+  is kept and that `rows` replaces every line.
+
 ## [0.51.0] - 2026-10-01
 
 ### Added

@@ -119,11 +119,18 @@ _UPDATE_ITEM = {
         "name": {"type": "string", "description": "Name of the element to change."},
         "text": {"type": "string", "description": "Its new text. The box grows if the text no longer fits."},
         "label": {"type": "string", "description": "For an arrow or a line: its new label."},
-        "headers": {"type": "array", "items": {"type": "string"}, "description": "Redraw a table with these columns."},
+        "headers": {
+            "type": "array",
+            "items": {"type": "string"},
+            "description": "Redraw a table with these columns. Leave out 'rows' to keep its current lines.",
+        },
         "rows": {
             "type": "array",
             "items": {"type": "array", "items": {"type": "string"}},
-            "description": "Redraw a table with these lines.",
+            "description": (
+                "Redraw a table with these lines, all of them: they replace the current ones. "
+                "Leave out 'headers' to keep its current columns."
+            ),
         },
         "chart": _CHART_SCHEMA,
         **_GEOMETRY_PROPERTIES,

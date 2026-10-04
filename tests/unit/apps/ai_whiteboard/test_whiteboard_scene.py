@@ -278,6 +278,43 @@ class TestTable:
         assert (entry["x"], entry["y"]) == (60, 90)
         assert entry["data"]["rows"] == [["1", "2"], ["3", "4"]]
 
+    def test_new_rows_alone_redraw_it_with_its_headers(self):
+        # Correcting a cell sends the lines again, not the column titles: the update
+        # must redraw, not succeed while changing nothing (the caller repeats it).
+        board = draw(
+            {"add": [{"name": "t", "kind": "table", "headers": ["Item", "Total"], "rows": [["first", "10"]]}]},
+            {"update": [{"name": "t", "rows": [["first", "3"]]}]},
+        )
+        data = described(board)["t"]["data"]
+        assert data == {"headers": ["Item", "Total"], "rows": [["first", "3"]]}
+
+    def test_new_headers_alone_redraw_it_with_its_rows(self):
+        board = draw(
+            {"add": [{"name": "t", "kind": "table", "headers": ["a", "b"], "rows": [["1", "2"]]}]},
+            {"update": [{"name": "t", "headers": ["x", "y"]}]},
+        )
+        assert described(board)["t"]["data"] == {"headers": ["x", "y"], "rows": [["1", "2"]]}
+
+    def test_rows_that_no_longer_fit_the_headers_are_refused(self):
+        with pytest.raises(LysError) as error:
+            draw(
+                {"add": [{"name": "t", "kind": "table", "headers": ["a", "b"], "rows": [["1", "2"]]}]},
+                {"update": [{"name": "t", "rows": [["1"]]}]},
+            )
+        assert error.value.detail == "WHITEBOARD_INVALID_TABLE"
+
+    def test_an_add_of_rows_on_an_existing_table_redraws_it(self):
+        board = draw(
+            {"add": [{"name": "t", "kind": "table", "headers": ["a"], "rows": [["1"]]}]},
+            {"add": [{"name": "t", "rows": [["2"]]}]},
+        )
+        assert described(board)["t"]["data"]["rows"] == [["2"]]
+
+    def test_table_data_on_what_is_not_a_table_is_refused(self):
+        with pytest.raises(LysError) as error:
+            draw({"add": [{"name": "n", "text": "note"}]}, {"update": [{"name": "n", "rows": [["1"]]}]})
+        assert error.value.detail == "WHITEBOARD_INVALID_TABLE"
+
     def test_a_redraw_leaves_no_part_of_the_old_grid_behind(self):
         # The rules of a table are lines, like the links a redraw has to keep: told
         # apart by who owns them, or the old rules stay under the new ones.
