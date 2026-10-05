@@ -7,11 +7,15 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.52.0] - 2026-10-05
+
 ### Changed
 - **Breaking**: `AbstractImportService.perform_import` reports an import that raises
   under the `INTERNAL_ERROR` global error code instead of `NO_FILE`. `NO_FILE` is now
   only used when the import has no stored file. Clients that matched `NO_FILE` to
   display import failures must also match `INTERNAL_ERROR`.
+- `DatabaseManager._build_url` and `DatabaseManager._get_engine_kwargs` are renamed
+  `build_url` and `get_engine_kwargs`: they are used outside the class (migrations).
 
 ### Fixed
 - `AbstractImportService.perform_import`: an import that raises is now rolled back
@@ -23,6 +27,14 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - `AbstractImportService.perform_import`: a database error is reported as
   `INTERNAL_ERROR` without details. Its message carries the SQL statement and its
   parameters, which were stored in the import report.
+- Database engines are created with `hide_parameters=True`: bound query values no
+  longer appear in SQLAlchemy error messages, and so no longer reach logs or error
+  trackers. New `DatabaseSettings.hide_parameters` setting (default `True`) to show
+  them again for local debugging.
+- `configure_alembic_env`: the migration engine now uses the same SSL settings
+  (`ssl_mode`, `connect_args`) and `hide_parameters` as the application engines.
+  It used to ignore them, so migrations connected to PostgreSQL without SSL even
+  with `ssl_mode="require"`.
 
 ## [0.51.1] - 2026-10-04
 

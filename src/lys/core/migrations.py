@@ -56,13 +56,20 @@ def configure_alembic_env(settings_module: str = "settings"):
     # 3. Build sync database URL
     from lys.core.managers.database import DatabaseManager
     db_manager = DatabaseManager(app_manager.settings.database)
-    database_url = db_manager._build_url(async_mode=False)
+    database_url = db_manager.build_url(async_mode=False)
 
     # 4. Run migrations
     if context.is_offline_mode():
         _run_migrations_offline(database_url, target_metadata)
     else:
-        _run_migrations_online(database_url, target_metadata)
+        # Same SSL and parameter hiding as the application engines. Pool settings are left
+        # out: migrations run on a NullPool.
+        engine_kwargs = db_manager.get_engine_kwargs(async_mode=False)
+        engine_options = {
+            "hide_parameters": engine_kwargs["hide_parameters"],
+            "connect_args": engine_kwargs.get("connect_args", {}),
+        }
+        _run_migrations_online(database_url, target_metadata, engine_options)
 
 
 def _run_migrations_offline(url, target_metadata):
@@ -78,8 +85,14 @@ def _run_migrations_offline(url, target_metadata):
         context.run_migrations()
 
 
-def _run_migrations_online(url, target_metadata):
-    """Run migrations in online mode (direct database connection)."""
+def _run_migrations_online(url, target_metadata, engine_options):
+    """Run migrations in online mode (direct database connection).
+
+    Args:
+        url: Sync database URL
+        target_metadata: Metadata the migrations are compared against
+        engine_options: Extra create_engine keyword arguments (SSL connect_args, hide_parameters)
+    """
     from sqlalchemy import engine_from_config, pool
 
     alembic_config = context.config
@@ -89,6 +102,7 @@ def _run_migrations_online(url, target_metadata):
         alembic_config.get_section(alembic_config.config_ini_section, {}),
         prefix="sqlalchemy.",
         poolclass=pool.NullPool,
+        **engine_options,
     )
 
     with connectable.connect() as connection:

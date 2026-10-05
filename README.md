@@ -571,6 +571,7 @@ app_settings.database.configure(
     pool_pre_ping=True,       # Verify connections before use
     pool_recycle=3600,        # Recycle connections after 1 hour
     ssl_mode="require",       # PostgreSQL SSL mode
+    hide_parameters=True,     # Keep query values out of error messages and logs (default)
 )
 ```
 

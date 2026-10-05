@@ -41,7 +41,7 @@ class TestConfigureAlembicEnv:
         mock_ctx = MagicMock()
         mock_ctx.is_offline_mode.return_value = True
         mock_db = MagicMock()
-        mock_db._build_url.return_value = "sqlite:///test.db"
+        mock_db.build_url.return_value = "sqlite:///test.db"
 
         with patch.object(migrations_module, "importlib", MagicMock(import_module=MagicMock(return_value=mock_settings))), \
              patch.object(migrations_module, "context", mock_ctx), \
@@ -59,7 +59,10 @@ class TestConfigureAlembicEnv:
         mock_ctx = MagicMock()
         mock_ctx.is_offline_mode.return_value = False
         mock_db = MagicMock()
-        mock_db._build_url.return_value = "sqlite:///test.db"
+        mock_db.build_url.return_value = "sqlite:///test.db"
+        mock_db.get_engine_kwargs.return_value = {
+            "hide_parameters": True, "connect_args": {"sslmode": "require"}, "pool_size": 10,
+        }
 
         with patch.object(migrations_module, "importlib", MagicMock(import_module=MagicMock(return_value=mock_settings))), \
              patch.object(migrations_module, "context", mock_ctx), \
@@ -68,7 +71,10 @@ class TestConfigureAlembicEnv:
              patch.object(migrations_module, "_run_migrations_online") as mock_online:
             migrations_module.configure_alembic_env()
 
-        mock_online.assert_called_once()
+        mock_db.get_engine_kwargs.assert_called_once_with(async_mode=False)
+        url, _, engine_options = mock_online.call_args.args
+        assert url == "sqlite:///test.db"
+        assert engine_options == {"hide_parameters": True, "connect_args": {"sslmode": "require"}}
 
     def test_loads_entities_component(self):
         from lys.core.consts.component_types import AppComponentTypeEnum
@@ -77,7 +83,7 @@ class TestConfigureAlembicEnv:
         mock_ctx = MagicMock()
         mock_ctx.is_offline_mode.return_value = False
         mock_db = MagicMock()
-        mock_db._build_url.return_value = "sqlite:///test.db"
+        mock_db.build_url.return_value = "sqlite:///test.db"
         mock_mgr = MagicMock()
 
         with patch.object(migrations_module, "importlib", MagicMock(import_module=MagicMock(return_value=mock_settings))), \
@@ -127,8 +133,14 @@ class TestRunMigrationsOnline:
         mock_engine_from_config.return_value = mock_connectable
 
         with patch.object(migrations_module, "context", mock_ctx):
-            migrations_module._run_migrations_online("sqlite:///test.db", mock_metadata)
+            migrations_module._run_migrations_online(
+                "sqlite:///test.db", mock_metadata,
+                {"hide_parameters": True, "connect_args": {"sslmode": "require"}},
+            )
 
         mock_ctx.config.set_main_option.assert_called_once_with("sqlalchemy.url", "sqlite:///test.db")
+        engine_call = mock_engine_from_config.call_args.kwargs
+        assert engine_call["hide_parameters"] is True
+        assert engine_call["connect_args"] == {"sslmode": "require"}
         mock_ctx.configure.assert_called_once()
         mock_ctx.run_migrations.assert_called_once()

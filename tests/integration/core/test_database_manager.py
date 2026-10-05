@@ -38,7 +38,7 @@ class TestDatabaseManagerURLBuilding:
         )
 
         db_manager = DatabaseManager(settings)
-        url = db_manager._build_url(async_mode=True)
+        url = db_manager.build_url(async_mode=True)
 
         assert url == "postgresql+asyncpg://user:pass@localhost:5432/testdb"
 
@@ -55,7 +55,7 @@ class TestDatabaseManagerURLBuilding:
         )
 
         db_manager = DatabaseManager(settings)
-        url = db_manager._build_url(async_mode=False)
+        url = db_manager.build_url(async_mode=False)
 
         assert url == "postgresql+psycopg2://user:pass@localhost:5432/testdb"
 
@@ -68,7 +68,7 @@ class TestDatabaseManagerURLBuilding:
         )
 
         db_manager = DatabaseManager(settings)
-        url = db_manager._build_url(async_mode=True)
+        url = db_manager.build_url(async_mode=True)
 
         assert url == "sqlite+aiosqlite:///:memory:"
 
@@ -81,7 +81,7 @@ class TestDatabaseManagerURLBuilding:
         )
 
         db_manager = DatabaseManager(settings)
-        url = db_manager._build_url(async_mode=False)
+        url = db_manager.build_url(async_mode=False)
 
         assert url == "sqlite:///:memory:"
 
@@ -98,7 +98,7 @@ class TestDatabaseManagerURLBuilding:
         )
 
         db_manager = DatabaseManager(settings)
-        url = db_manager._build_url(async_mode=True)
+        url = db_manager.build_url(async_mode=True)
 
         assert url == "mysql+aiomysql://user:pass@localhost:3306/testdb"
 
@@ -115,7 +115,7 @@ class TestDatabaseManagerURLBuilding:
         )
 
         db_manager = DatabaseManager(settings)
-        url = db_manager._build_url(async_mode=False)
+        url = db_manager.build_url(async_mode=False)
 
         assert url == "mysql+mysqldb://user:pass@localhost:3306/testdb"
 
@@ -130,7 +130,7 @@ class TestDatabaseManagerURLBuilding:
         db_manager = DatabaseManager(settings)
 
         with pytest.raises(ValueError) as exc_info:
-            db_manager._build_url()
+            db_manager.build_url()
 
         assert "Unsupported database type" in str(exc_info.value)
 

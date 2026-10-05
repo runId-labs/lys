@@ -48,7 +48,7 @@ class DatabaseManager:
         self._sync_engine: Optional[Engine] = None
         self._sync_session_factory: Optional[sessionmaker] = None
 
-    def _build_url(self, async_mode: bool = True) -> str:
+    def build_url(self, async_mode: bool = True) -> str:
         """
         Build database URL from configured components.
 
@@ -107,7 +107,7 @@ class DatabaseManager:
             self.settings.poolclass  # Return as-is if already sync or unknown
         )
 
-    def _get_engine_kwargs(self, async_mode: bool = True) -> Dict[str, Any]:
+    def get_engine_kwargs(self, async_mode: bool = True) -> Dict[str, Any]:
         """
         Get keyword arguments for engine creation.
 
@@ -124,6 +124,7 @@ class DatabaseManager:
             "pool_recycle": self.settings.pool_recycle,
             "echo": self.settings.echo,
             "echo_pool": self.settings.echo_pool,
+            "hide_parameters": self.settings.hide_parameters,
         }
 
         # Poolclass
@@ -171,8 +172,8 @@ class DatabaseManager:
         Raises:
             ValueError: If database settings are not configured
         """
-        url = self._build_url(async_mode=True)
-        engine_kwargs = self._get_engine_kwargs(async_mode=True)
+        url = self.build_url(async_mode=True)
+        engine_kwargs = self.get_engine_kwargs(async_mode=True)
         return create_async_engine(url, **engine_kwargs)
 
     def create_sync_database_engine(self) -> Engine:
@@ -185,8 +186,8 @@ class DatabaseManager:
         Raises:
             ValueError: If database settings are not configured
         """
-        url = self._build_url(async_mode=False)
-        engine_kwargs = self._get_engine_kwargs(async_mode=False)
+        url = self.build_url(async_mode=False)
+        engine_kwargs = self.get_engine_kwargs(async_mode=False)
         return create_engine(url, **engine_kwargs)
 
     def get_engine(self) -> AsyncEngine:

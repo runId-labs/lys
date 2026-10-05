@@ -40,6 +40,10 @@ class DatabaseSettings(BaseSettings):
         self.echo: bool = False
         # Enable pool logging
         self.echo_pool: bool = False
+        # Hide bound parameters from SQLAlchemy error messages and SQL logging, so query
+        # values (emails, tokens, personal data) never reach logs or error trackers.
+        # Set to False only to debug locally.
+        self.hide_parameters: bool = True
         # Number of connections to maintain in pool
         self.pool_size: Optional[int] = None
         # Maximum overflow connections
