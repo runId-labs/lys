@@ -146,6 +146,101 @@ class TestPerformImportReRaises:
         mock_session.commit.assert_called_once()
 
 
+class TestPerformImportRollsBackOnFailure:
+    """A failed import is rolled back before its FAILED status is recorded."""
+
+    @staticmethod
+    def _run(process_error=None, first_commit_error=None):
+        from lys.apps.file_management.modules.file_import.services import AbstractImportService
+
+        calls = Mock()
+        mock_file_import = Mock()
+        mock_file_import.stored_file = Mock()
+        mock_file_import.config = None
+
+        mock_session = calls.session
+        mock_session.get.return_value = mock_file_import
+        mock_session.__enter__ = Mock(return_value=mock_session)
+        mock_session.__exit__ = Mock(return_value=False)
+        if first_commit_error is not None:
+            mock_session.commit.side_effect = [first_commit_error, None]
+
+        mock_file_import_service = calls.file_import_service
+        mock_file_import_service.entity_class = Mock
+        mock_stored_file_service = Mock()
+        mock_stored_file_service.download_sync.return_value = b"col\nvalue\n"
+
+        mock_app_manager = Mock()
+        mock_app_manager.database.get_sync_session.return_value = mock_session
+        mock_app_manager.get_service.side_effect = lambda name: {
+            "file_import": mock_file_import_service,
+            "stored_file": mock_stored_file_service,
+        }[name]
+
+        class ConcreteImportService(AbstractImportService):
+            import_type = "TEST"
+            unique_column = "id"
+
+            def get_column_mapping(self):
+                return {}
+
+            def init_entity(self, unique_value, session):
+                return Mock()
+
+            def parse_file(self, file_import, raw_content, config):
+                return Mock()
+
+            def prepare_import(self, file_import, df, session):
+                return df
+
+            def _process_dataframe(self, file_import, df, report, session):
+                session.add("half-written row")
+                if process_error is not None:
+                    raise process_error
+
+        expected = process_error or first_commit_error
+        with pytest.raises(type(expected)):
+            ConcreteImportService(mock_app_manager).perform_import("test-id")
+        names = [call[0] for call in calls.mock_calls if call[0] in (
+            "session.add", "session.rollback", "session.commit", "file_import_service.update_progress",
+        )]
+        report = calls.file_import_service.update_progress.call_args.kwargs["report"]
+        return names, report
+
+    def test_writes_of_a_failed_import_are_rolled_back_before_failed_is_committed(self):
+        calls, _ = self._run(process_error=RuntimeError("process exploded"))
+        assert calls == [
+            "session.add", "session.rollback", "file_import_service.update_progress", "session.commit",
+        ]
+
+    def test_failure_raised_by_the_commit_itself_still_records_failed(self):
+        """A database error at commit leaves the session unusable until rolled back:
+        without the rollback, the FAILED status could never be saved."""
+        calls, _ = self._run(first_commit_error=RuntimeError("deferred constraint violated"))
+        assert calls == [
+            "session.add", "session.commit", "session.rollback",
+            "file_import_service.update_progress", "session.commit",
+        ]
+
+    def test_database_error_is_reported_without_its_sql_details(self):
+        from sqlalchemy.exc import IntegrityError
+        from lys.apps.file_management.modules.file_import.consts import REPORT_MESSAGE_INTERNAL_ERROR
+
+        error = IntegrityError("INSERT INTO secret_table VALUES (%s)", ("secret-value",), Exception("dup"))
+        _, report = self._run(first_commit_error=error)
+        [message] = report.globals
+        assert message.message == REPORT_MESSAGE_INTERNAL_ERROR
+        assert message.details is None
+
+    def test_other_errors_are_reported_as_internal_error_with_their_message(self):
+        from lys.apps.file_management.modules.file_import.consts import REPORT_MESSAGE_INTERNAL_ERROR
+
+        _, report = self._run(process_error=ValueError("unreadable sheet"))
+        [message] = report.globals
+        assert message.message == REPORT_MESSAGE_INTERNAL_ERROR
+        assert message.details == "unreadable sheet"
+
+
 class TestPerformImportPurgesSourceFile:
     """Tests the post-import purge in perform_import (delete_file_after_import)."""
 

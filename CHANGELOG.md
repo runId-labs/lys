@@ -7,6 +7,23 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+- **Breaking**: `AbstractImportService.perform_import` reports an import that raises
+  under the `INTERNAL_ERROR` global error code instead of `NO_FILE`. `NO_FILE` is now
+  only used when the import has no stored file. Clients that matched `NO_FILE` to
+  display import failures must also match `INTERNAL_ERROR`.
+
+### Fixed
+- `AbstractImportService.perform_import`: an import that raises is now rolled back
+  before it is marked FAILED. The error path used to commit on top of what the import
+  had written, persisting a half-done import (rows already replaced or deleted, others
+  never written). A failure raised by the database left the session in an aborted
+  transaction, so the FAILED status could not be saved and the import stayed in
+  progress with no error.
+- `AbstractImportService.perform_import`: a database error is reported as
+  `INTERNAL_ERROR` without details. Its message carries the SQL statement and its
+  parameters, which were stored in the import report.
+
 ## [0.51.1] - 2026-10-04
 
 ### Fixed

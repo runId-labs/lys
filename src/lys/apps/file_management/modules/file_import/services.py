@@ -10,6 +10,7 @@ from typing import Any, Callable, Optional, Type, Hashable
 
 from pandas import read_csv, read_excel, DataFrame
 from sqlalchemy import select
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Session
 
@@ -20,6 +21,7 @@ from lys.apps.file_management.modules.file_import.consts import (
     FILE_IMPORT_STATUS_FAILED,
     FILE_IMPORT_STATUS_SKIPPED,
     REPORT_MESSAGE_NO_FILE,
+    REPORT_MESSAGE_INTERNAL_ERROR,
     CSV_MIME_TYPE,
     XLS_MIME_TYPE,
     XLSX_MIME_TYPE,
@@ -813,6 +815,17 @@ class AbstractImportService(abc.ABC):
 
         This is the main entry point, typically called from a Celery task.
 
+        What prepare_import and _process_dataframe write to the database is committed in
+        one transaction with the outcome. An exception rolls all of it back, then the import
+        is marked FAILED on its own and the exception re-raised. Side effects outside the
+        database (files, external calls made by hooks or setters) are not undone. Rows
+        rejected one by one without an exception are a different matter: _process_dataframe
+        reports them, and the rows that passed are committed.
+
+        The exception is reported as INTERNAL_ERROR with its message as details, except a
+        database error, reported without details: its message carries the SQL statement,
+        which must not reach the stored report.
+
         Args:
             file_import_id: ID of the FileImport to process
         """
@@ -860,7 +873,13 @@ class AbstractImportService(abc.ABC):
 
             except Exception as ex:
                 logger.error(f"Import error for {file_import_id}: {ex}")
-                report.add_global_error(REPORT_MESSAGE_NO_FILE, str(ex))
+                # Undo everything the failed import wrote before recording the failure:
+                # committing on top of it would persist a half-done import. A database
+                # error also leaves the session unusable until it is rolled back, and the
+                # FAILED status would then never be saved.
+                session.rollback()
+                details = None if isinstance(ex, SQLAlchemyError) else str(ex)
+                report.add_global_error(REPORT_MESSAGE_INTERNAL_ERROR, details)
                 file_import_service.update_progress(
                     file_import,
                     FILE_IMPORT_STATUS_FAILED,
