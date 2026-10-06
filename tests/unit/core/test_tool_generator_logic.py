@@ -17,7 +17,7 @@ Tests cover:
 
 import inspect
 import types
-from datetime import datetime
+from datetime import date, datetime
 from typing import List, Optional, Union
 from unittest.mock import MagicMock, patch
 
@@ -105,12 +105,48 @@ class TestPythonTypeToJsonSchema:
             "_graphql_type": "DateTime!",
         }
 
+    def test_date_required(self):
+        """A calendar date is the Date scalar — declared String, the server refuses the query."""
+        from lys.core.utils.tool_generator import python_type_to_json_schema
+
+        result = python_type_to_json_schema(date)
+        assert result == {"type": "string", "format": "date", "_graphql_type": "Date!"}
+
+    def test_date_optional(self):
+        from lys.core.utils.tool_generator import python_type_to_json_schema
+
+        result = python_type_to_json_schema(date, is_optional=True)
+        assert result["_graphql_type"] == "Date"
+
     def test_optional_str_via_union(self):
-        """Test Optional[str] (Union[str, None]) is handled as optional string."""
+        """Optional[str] is a nullable string: the model can send a real null."""
         from lys.core.utils.tool_generator import python_type_to_json_schema
 
         result = python_type_to_json_schema(Optional[str])
-        assert result == {"type": "string", "_graphql_type": "String"}
+        assert result == {"type": ["string", "null"], "_graphql_type": "String"}
+
+    def test_a_required_argument_stays_non_nullable(self):
+        from lys.core.utils.tool_generator import python_type_to_json_schema
+
+        assert python_type_to_json_schema(str) == {"type": "string", "_graphql_type": "String!"}
+
+    def test_an_optional_date_is_nullable_and_keeps_its_format(self):
+        from datetime import date
+        from lys.core.utils.tool_generator import python_type_to_json_schema
+
+        result = python_type_to_json_schema(Optional[date])
+        assert result == {"type": ["string", "null"], "format": "date", "_graphql_type": "Date"}
+
+    def test_an_optional_type_is_not_nullable_when_asked(self):
+        """A mutation argument: left out keeps the field, so null is not offered."""
+        from lys.core.utils.tool_generator import python_type_to_json_schema
+
+        assert python_type_to_json_schema(Optional[str], nullable=False) == {
+            "type": "string", "_graphql_type": "String"
+        }
+        assert python_type_to_json_schema(StrawberryOptional(), nullable=False) == {
+            "type": "string", "_graphql_type": "String"
+        }
 
     def test_list_of_int(self):
         """Test List[int] converts to array schema with integer items."""
@@ -138,7 +174,7 @@ class TestPythonTypeToJsonSchema:
 
         wrapper = StrawberryOptional(of_type=str)
         result = python_type_to_json_schema(wrapper)
-        assert result == {"type": "string", "_graphql_type": "String"}
+        assert result == {"type": ["string", "null"], "_graphql_type": "String"}
 
     def test_strawberry_optional_without_of_type(self):
         """Test StrawberryOptional without of_type defaults to string."""
@@ -146,7 +182,7 @@ class TestPythonTypeToJsonSchema:
 
         wrapper = StrawberryOptional()
         result = python_type_to_json_schema(wrapper)
-        assert result == {"type": "string"}
+        assert result == {"type": ["string", "null"], "_graphql_type": "String"}
 
     def test_strawberry_list_with_of_type(self):
         """Test StrawberryList wrapper with of_type produces array schema."""
@@ -825,6 +861,41 @@ class TestExtractToolFromField:
         result = extract_tool_from_field(field)
         assert result["function"]["description"] == "List all items in the system."
         assert "page" not in result["function"]["parameters"].get("required", [])
+
+    def test_a_query_declares_its_optional_arguments_nullable(self):
+        from lys.core.utils.tool_generator import extract_tool_from_field
+
+        def list_contracts(info, end_date: Optional[date] = None) -> None:
+            """List contracts."""
+
+        field = MagicMock()
+        field.base_resolver.wrapped_func = list_contracts
+        field.type = None
+
+        result = extract_tool_from_field(field, operation_type="query")
+        props = result["function"]["parameters"]["properties"]
+        assert props["end_date"]["type"] == ["string", "null"]
+
+    def test_a_mutation_does_not_declare_its_optional_arguments_nullable(self):
+        """Optional arguments and flattened input fields alike: left out, a field stays."""
+        from lys.core.utils.tool_generator import extract_tool_from_field
+
+        @strawberry.input
+        class EditContractInput:
+            end_date: Optional[date] = None
+
+        def edit_contract(info, inputs: EditContractInput, note: Optional[str] = None) -> None:
+            """Edit a contract."""
+
+        field = MagicMock()
+        field.base_resolver.wrapped_func = edit_contract
+        field.type = None
+
+        result = extract_tool_from_field(field, operation_type="mutation")
+        props = result["function"]["parameters"]["properties"]
+        assert props["end_date"]["type"] == "string"
+        assert props["end_date"]["_graphql_type"] == "Date"
+        assert props["note"]["type"] == "string"
 
     def test_strawberry_input_flattening(self):
         """Test strawberry input parameter is flattened into tool properties with input_wrappers."""

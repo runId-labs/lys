@@ -177,11 +177,14 @@ rendered to the model; only the ones marked `"writable": true` may the model SET
   `update_page_params` frontend action — the front applies it to the URL, the
   screen refilters, no review card: view state is reversible and the filter bar
   shows the change. Apply all-or-nothing on any refusal — a partial filter set
-  must never land silently.
+  must never land silently. `null` removes a writable filter (the front drops
+  the key, the page falls back to its default — `{"companyId": null}` is back
+  to the whole perimeter); it still needs the `writable` grant.
 - **`navigate` arrival filters** — `navigate({path, params})` validates `params`
   against the TARGET page's declared schema (the route entry carries it) and
   lands the user directly on the state described. The target's writable params
   are listed in the tool description, so the model knows what it may set.
+  `null` is refused there: an arrival state has nothing to remove.
 
 A frontend action leaves the server TWICE on the streaming path, and the client
 must handle it once. It is streamed in a `frontend_actions` event as soon as the
@@ -324,6 +327,14 @@ RULES:
   translations (see the front guides), or users see a raw technical name.
 - **R4 — Don't leak internals**: the system prompt must forbid naming tools
   or the model/provider (mirror the boilerplate placeholder).
+- **R5 — Left out vs null are two intents.** An `Optional` argument of a
+  query is declared nullable in the generated schema; a mutation's is not
+  (left out, the field stays as it is). Left out, it takes the page
+  param of the same name (`companyId` → `company_id`); a JSON null is an
+  explicit "no value" kept over that default — on a query it is sent as
+  null (no filter), on a mutation the argument is dropped (null never clears
+  a field: an edit that clears goes through an explicit flag, like
+  `clear_<field>`).
 
 ## Special tools (handlers that do not go through GraphQL)
 

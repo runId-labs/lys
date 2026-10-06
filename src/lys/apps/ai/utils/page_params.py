@@ -380,6 +380,7 @@ def writable_page_params(
     params: Optional[Dict[str, Any]],
     schema: Optional[Dict[str, Any]],
     page_name: str = "",
+    allow_clear: bool = False,
 ) -> Tuple[Dict[str, Any], Dict[str, str]]:
     """
     Model-supplied params gate: the same type validation as
@@ -395,6 +396,11 @@ def writable_page_params(
         params: The model-supplied params (a tool call's ``params`` argument).
         schema: The page's declared params, or None when the page declares none.
         page_name: The page, for the log lines only.
+        allow_clear: Accept ``None`` for a writable param, meaning "remove this
+            filter" (the page falls back to its default, e.g. the whole perimeter
+            instead of one company). Only where the page state is CHANGED —
+            ``set_page_params`` — never for ``navigate`` arrival filters, which
+            describe a state to land on and have nothing to remove.
 
     Returns:
         ``(accepted, refusals)`` — the validated params the model may set, and
@@ -425,6 +431,12 @@ def writable_page_params(
             )
             continue
 
+        if value is None and allow_clear:
+            # A removal carries no value to validate: the writable grant is
+            # what it needs, and was checked above.
+            accepted[key] = None
+            continue
+
         ok, coerced = _check_value(value, spec)
         if not ok:
             refusals[key] = "invalid_value"
@@ -453,7 +465,9 @@ SET_PAGE_PARAMS_TOOL = {
             "params' JSON section of the dynamic context: pass ids and values exactly "
             "as that section carries them. The change applies immediately — the screen "
             "refilters and the section reflects it on the next turn — so tell the user "
-            "what you changed. Use it when the user asks to see another period, "
+            "what you changed. Pass null to REMOVE a filter and return the page to its "
+            "default (e.g. {\"companyId\": null} back to the whole perimeter). Use it "
+            "when the user asks to see another period, "
             "company, indicator or scope; never to answer a question (read the current "
             "params instead), and never invent a value the page has not shown you."
         ),
@@ -465,7 +479,8 @@ SET_PAGE_PARAMS_TOOL = {
                     "description": (
                         "The filters to set, keyed as in the 'Page params' section "
                         "(e.g. {\"pastMonths\": 24}). Only the keys the page declares "
-                        "writable are accepted; an id goes in as the GlobalID you read."
+                        "writable are accepted; an id goes in as the GlobalID you read; "
+                        "null removes the filter."
                     ),
                 },
             },

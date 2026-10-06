@@ -6,7 +6,7 @@ Executes tools via GraphQL calls to Apollo Gateway (microservice mode).
 
 import inspect
 import logging
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional, Set, Tuple
 
 import httpx
 
@@ -223,11 +223,24 @@ class GraphQLToolExecutor(ToolExecutor):
         parameters = definition.get("function", {}).get("parameters", {})
         properties = parameters.get("properties", {})
 
+        # An explicit "no value" from the model: a JSON null (optional arguments are
+        # declared nullable), or the text "null" a model may still write — a text that
+        # fails the argument's own validation (a GlobalID, a date). It stays explicit
+        # through the injection below: an argument left out would get the page focus
+        # injected in its place.
+        arguments, nulled = self._explicit_nulls(arguments, properties)
+
         # Inject page-context params. Pin ids to the focus ONLY when this executor has no user
         # bearer (service auth) — there the gateway applies no per-user filtering, so an
         # LLM-chosen id must not be trusted. With a user bearer, ids default to the focus but
         # the LLM may override them to roam (gateway enforces access; writes go through review).
         arguments = self._inject_page_params(arguments, force_ids=not self._user_authed)
+
+        if operation_type == "mutation":
+            # A mutation writes a None (an edit clears the column), while the model's
+            # "null" means "leave it": the argument is dropped instead — unless the
+            # injection pinned it to the focus.
+            arguments = {k: v for k, v in arguments.items() if not (k in nulled and v is None)}
 
         # Filter arguments by those the tool accepts (ignore unknown params like dStack)
         filtered_out = {k: v for k, v in arguments.items() if k not in properties}
@@ -433,6 +446,33 @@ class GraphQLToolExecutor(ToolExecutor):
 
         return query.strip(), variables
 
+    @staticmethod
+    def _explicit_nulls(
+        arguments: Dict[str, Any], properties: Dict[str, Any]
+    ) -> Tuple[Dict[str, Any], Set[str]]:
+        """
+        The optional arguments the model explicitly set to no value.
+
+        A JSON null is one as it is. The text "null" (or "none") is read as one too:
+        a model may still write it, and it is never a value an argument means.
+        Required arguments (``_graphql_type`` ending with ``!``) are left alone: a
+        null there is an error the server reports, not an intent to honour.
+
+        Returns:
+            The arguments with those values set to None, and the keys concerned.
+        """
+        result = dict(arguments)
+        nulled: Set[str] = set()
+        for key, value in arguments.items():
+            is_null_text = isinstance(value, str) and value.strip().lower() in ("null", "none")
+            if value is not None and not is_null_text:
+                continue
+            graphql_type = (properties.get(key) or {}).get("_graphql_type", "")
+            if graphql_type and not graphql_type.endswith("!"):
+                result[key] = None
+                nulled.add(key)
+        return result, nulled
+
     def _json_type_to_graphql(self, prop_schema: Dict[str, Any]) -> str:
         """
         Convert JSON Schema type to GraphQL type.
@@ -448,6 +488,10 @@ class GraphQLToolExecutor(ToolExecutor):
             return prop_schema["_graphql_type"]
 
         json_type = prop_schema.get("type", "string")
+        if isinstance(json_type, list):
+            # A nullable type (["integer", "null"]): the GraphQL type is the other one,
+            # nullable already since no "!" is added here.
+            json_type = next((t for t in json_type if t != "null"), "string")
 
         type_mapping = {
             "string": "String",

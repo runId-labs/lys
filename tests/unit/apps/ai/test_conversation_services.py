@@ -3268,6 +3268,27 @@ class TestSetPageParams:
         assert info.context.frontend_actions == []
 
     @pytest.mark.asyncio
+    async def test_handler_removes_a_filter_with_null(self):
+        """null returns the page to its default: the URL loses the key."""
+        from lys.apps.ai.modules.conversation.services import AIConversationService
+
+        schema = {
+            "companyId": {"type": "global_id", "writable": True},
+            "pastMonths": {"type": "int", "writable": True},
+        }
+        handler = AIConversationService._build_set_page_params_handler("SomePage", schema)
+
+        info = MagicMock()
+        info.context.frontend_actions = []
+        result = await handler({"params": {"companyId": None, "pastMonths": "24"}}, {"info": info})
+
+        assert result["status"] == "success"
+        assert info.context.frontend_actions == [{
+            "type": "update_page_params",
+            "params": {"companyId": None, "pastMonths": 24},
+        }]
+
+    @pytest.mark.asyncio
     async def test_handler_refuses_empty_params(self):
         from lys.apps.ai.modules.conversation.services import AIConversationService
 

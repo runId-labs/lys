@@ -1450,8 +1450,10 @@ class AIConversationService(EntityService[AIConversation]):
                     "message": "Missing context info for set_page_params",
                 }
 
+            # A filter can be removed here (null): this changes the page the user
+            # is on. Not on `navigate`, whose arrival filters describe a state.
             accepted, refusals = writable_page_params(
-                arguments.get("params") or {}, schema, page_name
+                arguments.get("params") or {}, schema, page_name, allow_clear=True
             )
             if refusals:
                 reasons = ", ".join(f"'{key}': {reason}" for key, reason in refusals.items())

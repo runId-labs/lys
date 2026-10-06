@@ -7,7 +7,7 @@ fields, compatible with LLM function calling APIs (MistralAI, OpenAI, etc.).
 
 import inspect
 import types
-from datetime import datetime
+from datetime import date, datetime
 from typing import Annotated, Any, Dict, List, Optional, Union, get_args, get_origin
 
 import strawberry
@@ -119,13 +119,35 @@ def node_to_dict(node) -> dict:
     }
 
 
-def python_type_to_json_schema(python_type: Any, is_optional: bool = False) -> Dict[str, Any]:
+def _nullable(schema: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Let an optional argument take JSON null.
+
+    Declared as a plain type, an optional argument gave the model no way to say "no
+    value": it wrote the text "null" instead, which the executor then had to guess
+    about. Declared nullable, the model sends a real null — read as an explicit None,
+    distinct from an argument left out (which the page context fills).
+    """
+    json_type = schema.get("type")
+    if isinstance(json_type, str) and json_type != "null":
+        schema["type"] = [json_type, "null"]
+    elif "anyOf" in schema and {"type": "null"} not in schema["anyOf"]:
+        schema["anyOf"].append({"type": "null"})
+    return schema
+
+
+def python_type_to_json_schema(
+    python_type: Any, is_optional: bool = False, nullable: bool = True
+) -> Dict[str, Any]:
     """
     Convert a Python type annotation to JSON Schema type definition.
 
     Args:
         python_type: Python type annotation (str, int, Optional[str], etc.)
         is_optional: Whether this type is optional (for GraphQL type suffix)
+        nullable: Declare an optional type as taking JSON null. False for a
+            mutation: there an optional argument left out keeps the field as it
+            is, and the executor drops a null rather than clear the field.
 
     Returns:
         JSON Schema type definition dict
@@ -143,15 +165,16 @@ def python_type_to_json_schema(python_type: Any, is_optional: bool = False) -> D
     # StrawberryOptional (Strawberry's wrapper for Optional types)
     if type_class_name == "StrawberryOptional":
         if hasattr(python_type, "of_type"):
-            return python_type_to_json_schema(python_type.of_type, is_optional=True)
-        return {"type": "string"}
+            schema = python_type_to_json_schema(python_type.of_type, is_optional=True, nullable=nullable)
+            return _nullable(schema) if nullable else schema
+        return {"type": ["string", "null"] if nullable else "string", "_graphql_type": "String"}
 
     # StrawberryList (Strawberry's wrapper for List types)
     if type_class_name == "StrawberryList":
         if hasattr(python_type, "of_type"):
             return {
                 "type": "array",
-                "items": python_type_to_json_schema(python_type.of_type)
+                "items": python_type_to_json_schema(python_type.of_type, nullable=nullable)
             }
         return {"type": "array"}
 
@@ -160,11 +183,12 @@ def python_type_to_json_schema(python_type: Any, is_optional: bool = False) -> D
         non_none_args = [arg for arg in args if arg is not type(None)]
         if len(non_none_args) == 1:
             # It's Optional[X]
-            return python_type_to_json_schema(non_none_args[0], is_optional=True)
+            schema = python_type_to_json_schema(non_none_args[0], is_optional=True, nullable=nullable)
+            return _nullable(schema) if nullable else schema
         else:
             # It's a real Union, use anyOf
             return {
-                "anyOf": [python_type_to_json_schema(arg) for arg in args]
+                "anyOf": [python_type_to_json_schema(arg, nullable=nullable) for arg in args]
             }
 
     # Handle List
@@ -172,7 +196,7 @@ def python_type_to_json_schema(python_type: Any, is_optional: bool = False) -> D
         if args:
             return {
                 "type": "array",
-                "items": python_type_to_json_schema(args[0])
+                "items": python_type_to_json_schema(args[0], nullable=nullable)
             }
         return {"type": "array"}
 
@@ -187,6 +211,11 @@ def python_type_to_json_schema(python_type: Any, is_optional: bool = False) -> D
         return {"type": "boolean", "_graphql_type": "Boolean" if is_optional else "Boolean!"}
     if python_type is datetime:
         return {"type": "string", "format": "date-time", "_graphql_type": "DateTime" if is_optional else "DateTime!"}
+    # A calendar date is the GraphQL Date scalar, not a String: declared String, the
+    # generated query is refused by the server ("String! used in position expecting
+    # Date!") and the tool fails on every call that passes a date.
+    if python_type is date:
+        return {"type": "string", "format": "date", "_graphql_type": "Date" if is_optional else "Date!"}
 
     # Handle strawberry.ID and relay.GlobalID
     type_name = getattr(python_type, "__name__", str(python_type))
@@ -195,7 +224,7 @@ def python_type_to_json_schema(python_type: Any, is_optional: bool = False) -> D
 
     # Handle Strawberry input types
     if hasattr(python_type, "__strawberry_definition__"):
-        schema = extract_strawberry_input_schema(python_type)
+        schema = extract_strawberry_input_schema(python_type, nullable=nullable)
         # Add the GraphQL type name for proper query building
         type_name = getattr(python_type, "__name__", "")
         if type_name:
@@ -206,12 +235,14 @@ def python_type_to_json_schema(python_type: Any, is_optional: bool = False) -> D
     return {"type": "string", "_graphql_type": "String" if is_optional else "String!"}
 
 
-def extract_strawberry_input_schema(input_class: type) -> Dict[str, Any]:
+def extract_strawberry_input_schema(input_class: type, nullable: bool = True) -> Dict[str, Any]:
     """
     Extract JSON Schema from a Strawberry input class.
 
     Args:
         input_class: Strawberry input class decorated with @strawberry.input
+        nullable: Declare optional fields as taking JSON null (see
+            :func:`python_type_to_json_schema`).
 
     Returns:
         JSON Schema object definition with properties
@@ -250,7 +281,7 @@ def extract_strawberry_input_schema(input_class: type) -> Dict[str, Any]:
                     actual_type = pydantic_field.annotation
 
             # Convert to JSON schema
-            schema = python_type_to_json_schema(actual_type)
+            schema = python_type_to_json_schema(actual_type, nullable=nullable)
 
             # Add description if available
             if hasattr(field, "description") and field.description:
@@ -441,7 +472,8 @@ def extract_node_fields(node_type: type) -> List[str]:
 def extract_tool_from_field(
     field: StrawberryField,
     description: Optional[str] = None,
-    node_type: type = None
+    node_type: type = None,
+    operation_type: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Extract an LLM tool definition from a Strawberry field.
@@ -452,6 +484,9 @@ def extract_tool_from_field(
     Args:
         field: StrawberryField containing the resolver and type information
         description: Optional description override (uses field description if not provided)
+        node_type: The node the operation returns, for GlobalID conversion
+        operation_type: "query", "mutation"... On a mutation the optional arguments
+            are not declared nullable: left out, a field stays as it is.
 
     Returns:
         Tool definition dict in the format:
@@ -486,6 +521,8 @@ def extract_tool_from_field(
             # Get first line of docstring
             tool_description = docstring.strip().split("\n")[0]
 
+    nullable = operation_type != "mutation"
+
     # Extract parameters
     properties = {}
     required = []
@@ -519,7 +556,7 @@ def extract_tool_from_field(
         # Check if it's a Strawberry input type
         if hasattr(param_type, "__strawberry_definition__"):
             # Flatten the input type into parameters
-            input_schema = extract_strawberry_input_schema(param_type)
+            input_schema = extract_strawberry_input_schema(param_type, nullable=nullable)
             input_field_names = list(input_schema.get("properties", {}).keys())
             for prop_name, prop_schema in input_schema.get("properties", {}).items():
                 properties[prop_name] = prop_schema
@@ -533,7 +570,7 @@ def extract_tool_from_field(
             })
         else:
             # Regular parameter
-            schema = python_type_to_json_schema(param_type)
+            schema = python_type_to_json_schema(param_type, nullable=nullable)
 
             # Add description if found
             if param_description:

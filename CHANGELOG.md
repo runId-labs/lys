@@ -7,6 +7,30 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.53.0] - 2026-10-06
+
+### Added
+- `set_page_params` accepts `null` for a writable param, meaning "remove this filter":
+  the front drops the key and the page falls back to its default (`{"companyId": null}`
+  returns to the whole perimeter). Without it, the model could narrow a page but never
+  widen it back. The writable grant is still required; `navigate` arrival filters keep
+  refusing `null` (`writable_page_params(..., allow_clear=False)`, the default).
+
+### Fixed
+- Generated AI tools declared a `date` argument as `String`: the query was refused by the
+  server ("String! used in position expecting Date!"), so every tool taking a calendar
+  date failed whenever the model passed one. `date` now maps to the `Date` scalar.
+- The model could not send JSON null to a tool: optional arguments were declared as plain
+  types, so it wrote the text "null" — which failed the argument's validation (a GlobalID,
+  a date), and, once dropped, let the page focus be injected in its place. Optional
+  arguments of a query are now declared nullable in the generated schema (`"type":
+  ["string", "null"]`, `anyOf` gains `{"type": "null"}`); a mutation's are not, a field
+  left out staying as it is (`extract_tool_from_field(..., operation_type=)`). A JSON
+  null on an OPTIONAL argument is an explicit None, kept over the page-context injection;
+  required arguments are left alone. The text "null" (or "none") is still read the same
+  way, for a model that writes it anyway. In a mutation a null that still arrives is
+  dropped — an edit writes a None and would clear the field the model meant to leave as is.
+
 ## [0.52.0] - 2026-10-05
 
 ### Changed

@@ -27,6 +27,11 @@ class TestGraphQLToolExecutorBuildOperation:
             )
             return executor
 
+    def test_json_type_to_graphql_reads_a_nullable_type(self, executor):
+        """A nullable JSON type (a list) maps to its non-null member, not a crash."""
+        assert executor._json_type_to_graphql({"type": ["integer", "null"]}) == "Int"
+        assert executor._json_type_to_graphql({"type": ["null"]}) == "String"
+
     def test_build_operation_without_input_wrappers(self, executor):
         """Test building a simple operation without input wrappers."""
         query, variables = executor._build_operation(
@@ -907,3 +912,145 @@ class TestToolExecutorInjectPageParams:
         executor._page_context = self._ctx({"company_id": None})
         out = executor._inject_page_params({}, force_ids=True)
         assert "company_id" not in out
+
+
+class TestToolExecutorExplicitNulls:
+    """The text "null" on an optional argument is an explicit no-value — never the page focus."""
+
+    PROPERTIES = {
+        "company_id": {"type": "string", "_graphql_type": "ID"},
+        "client_id": {"type": "string", "_graphql_type": "ID!"},
+        "start_date": {"type": "string", "format": "date", "_graphql_type": "Date"},
+        "search": {"type": "string", "_graphql_type": "String"},
+    }
+
+    def test_null_text_on_an_optional_argument_becomes_none(self):
+        result, nulled = GraphQLToolExecutor._explicit_nulls(
+            {"company_id": "null", "start_date": " None "}, self.PROPERTIES
+        )
+        assert result == {"company_id": None, "start_date": None}
+        assert nulled == {"company_id", "start_date"}
+
+    def test_a_required_argument_is_left_alone(self):
+        result, nulled = GraphQLToolExecutor._explicit_nulls({"client_id": "null"}, self.PROPERTIES)
+        assert result == {"client_id": "null"}
+        assert nulled == set()
+
+    def test_a_string_argument_becomes_none_too(self):
+        """On a String the model's "null" means no filter, not a search for the text."""
+        result, nulled = GraphQLToolExecutor._explicit_nulls({"search": "None"}, self.PROPERTIES)
+        assert result == {"search": None}
+        assert nulled == {"search"}
+
+    def test_other_values_and_unknown_arguments_are_untouched(self):
+        result, nulled = GraphQLToolExecutor._explicit_nulls(
+            {"company_id": "Q29tcGFueU5vZGU6MQ==", "search": "nullable", "other": "null"}, self.PROPERTIES
+        )
+        assert result == {"company_id": "Q29tcGFueU5vZGU6MQ==", "search": "nullable", "other": "null"}
+        assert nulled == set()
+
+    def test_a_json_null_on_an_optional_argument_is_explicit_too(self):
+        """The schema declares optional arguments nullable: the model sends a real null."""
+        result, nulled = GraphQLToolExecutor._explicit_nulls({"company_id": None}, self.PROPERTIES)
+        assert result == {"company_id": None}
+        assert nulled == {"company_id"}
+
+    def test_an_explicit_none_survives_the_page_injection(self):
+        """Kept explicit, the argument is not replaced by the page focus."""
+        executor = GraphQLToolExecutor.__new__(GraphQLToolExecutor)
+        executor._page_context = MagicMock(params={"companyId": "Q29tcGFueU5vZGU6MQ=="})
+        arguments, _ = GraphQLToolExecutor._explicit_nulls({"company_id": "null"}, self.PROPERTIES)
+        assert executor._inject_page_params(arguments, force_ids=False) == {"company_id": None}
+
+
+class TestGraphQLToolExecutorExplicitNullsExecute:
+    """End to end: a query sends the explicit null, a mutation never writes it."""
+
+    PROPERTIES = {
+        "id": {"type": "string", "_graphql_type": "ID!"},
+        "company_id": {"type": "string", "_graphql_type": "ID"},
+        "end_date": {"type": "string", "format": "date", "_graphql_type": "Date"},
+    }
+
+    @pytest.fixture
+    def executor(self):
+        with patch("lys.apps.ai.modules.core.executors.graphql.GraphQLClient") as MockClient:
+            mock_client = AsyncMock()
+            MockClient.return_value = mock_client
+            executor = GraphQLToolExecutor(
+                gateway_url="http://test:4000/graphql",
+                secret_key="secret",
+                service_name="test",
+            )
+            executor._client = mock_client
+            executor._initialized = True
+            mock_client.execute.return_value = {"data": {"op": {"id": "x"}}}
+            return executor
+
+    def _register(self, executor, operation_type, input_wrappers=None):
+        graphql_meta = {"operation_name": "op", "return_fields": "id", "node_type": "ContractNode"}
+        if input_wrappers:
+            graphql_meta["input_wrappers"] = input_wrappers
+        executor._tools = {
+            "op": {
+                "definition": {
+                    "type": "function",
+                    "function": {"name": "op", "parameters": {"type": "object", "properties": self.PROPERTIES}},
+                    "_graphql": graphql_meta,
+                },
+                "operation_type": operation_type,
+            },
+        }
+
+    @pytest.mark.asyncio
+    async def test_a_query_sends_the_explicit_null(self, executor):
+        self._register(executor, "query")
+        await executor.execute(tool_name="op", arguments={"end_date": "null"}, context={})
+        variables = executor._client.execute.call_args[0][1]
+        assert variables == {"endDate": None}
+
+    @pytest.mark.asyncio
+    async def test_a_mutation_drops_the_argument_instead_of_clearing_it(self, executor):
+        """An edit writes a None: the model's "null" means leave the field as it is."""
+        self._register(executor, "mutation", input_wrappers=[{
+            "param_name": "inputs", "graphql_type": "EditContractInput!", "fields": ["end_date"],
+        }])
+        await executor.execute(
+            tool_name="op", arguments={"id": "Q29udHJhY3ROb2RlOjE=", "end_date": "null"}, context={}
+        )
+        query, variables = executor._client.execute.call_args[0]
+        assert "endDate" not in query
+        assert "inputs" not in variables
+        assert variables == {"id": "Q29udHJhY3ROb2RlOjE="}
+
+    @pytest.mark.asyncio
+    async def test_a_query_sends_a_json_null_over_the_page_focus(self, executor):
+        """With a user bearer, ids default to the focus — a JSON null overrides that default."""
+        self._register(executor, "query")
+        executor._user_authed = True
+        executor._page_context = MagicMock(params={"companyId": "Q29tcGFueU5vZGU6MQ=="})
+        await executor.execute(tool_name="op", arguments={"company_id": None}, context={})
+        variables = executor._client.execute.call_args[0][1]
+        assert variables == {"companyId": None}
+
+    @pytest.mark.asyncio
+    async def test_a_mutation_drops_a_json_null_too(self, executor):
+        self._register(executor, "mutation", input_wrappers=[{
+            "param_name": "inputs", "graphql_type": "EditContractInput!", "fields": ["end_date"],
+        }])
+        await executor.execute(
+            tool_name="op", arguments={"id": "Q29udHJhY3ROb2RlOjE=", "end_date": None}, context={}
+        )
+        variables = executor._client.execute.call_args[0][1]
+        assert variables == {"id": "Q29udHJhY3ROb2RlOjE="}
+
+    @pytest.mark.asyncio
+    async def test_a_mutation_keeps_an_id_pinned_to_the_focus(self, executor):
+        """Service auth pins ids to the focus: the pinned value is sent, not dropped."""
+        self._register(executor, "mutation")
+        executor._page_context = MagicMock(params={"companyId": "Q29tcGFueU5vZGU6MQ=="})
+        await executor.execute(
+            tool_name="op", arguments={"id": "Q29udHJhY3ROb2RlOjE=", "company_id": "null"}, context={}
+        )
+        variables = executor._client.execute.call_args[0][1]
+        assert variables["companyId"] == "Q29tcGFueU5vZGU6MQ=="

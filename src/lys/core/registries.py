@@ -425,7 +425,7 @@ class AppRegistry:
                         node_type = field_type
 
                     # Generate tool definition for Auth Server fixture only
-                    ai_tool = extract_tool_from_field(field_or_fct, description, node_type)
+                    ai_tool = extract_tool_from_field(field_or_fct, description, node_type, operation_type)
                 except Exception as e:
                     logging.warning(f"⚠ Could not generate tool for '{webservice_name}': {e}")
 

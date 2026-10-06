@@ -49,12 +49,12 @@ class TestPythonTypeToJsonSchema:
 
     def test_optional_string(self):
         result = python_type_to_json_schema(Optional[str])
-        assert result["type"] == "string"
+        assert result["type"] == ["string", "null"]
         assert result["_graphql_type"] == "String"  # No ! for optional
 
     def test_optional_int(self):
         result = python_type_to_json_schema(Optional[int])
-        assert result["type"] == "integer"
+        assert result["type"] == ["integer", "null"]
         assert result["_graphql_type"] == "Int"  # No ! for optional
 
     def test_list_of_strings(self):
@@ -152,8 +152,8 @@ class TestExtractStrawberryInputSchema:
         # Check types - Strawberry resolves them from Pydantic model
         assert result["properties"]["email"]["type"] == "string"
         assert result["properties"]["password"]["type"] == "string"
-        assert result["properties"]["first_name"]["type"] == "string"
-        assert result["properties"]["age"]["type"] == "integer"
+        assert result["properties"]["first_name"]["type"] == ["string", "null"]
+        assert result["properties"]["age"]["type"] == ["integer", "null"]
         # Note: Descriptions are not preserved by Strawberry's Pydantic integration
         # when using strawberry.field(description=...). Use Pydantic Field() instead.
 
@@ -175,7 +175,7 @@ class TestExtractStrawberryInputSchema:
         assert "age" in result["properties"]
         # Check types
         assert result["properties"]["email"]["type"] == "string"
-        assert result["properties"]["age"]["type"] == "integer"
+        assert result["properties"]["age"]["type"] == ["integer", "null"]
         # Check descriptions - these ARE preserved from Pydantic Field()
         assert result["properties"]["email"].get("description") == "User email address"
         assert result["properties"]["age"].get("description") == "User age in years"

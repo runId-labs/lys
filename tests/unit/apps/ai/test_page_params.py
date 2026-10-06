@@ -354,6 +354,24 @@ class TestWritablePageParams:
         accepted, refusals = writable_page_params({}, SCHEMA, "p")
         assert accepted == {} and refusals == {}
 
+    def test_null_refused_unless_clearing_is_allowed(self):
+        """null is not a value of any type: refused by default (the navigate
+        arrival filters), accepted as a removal where the caller allows it."""
+        accepted, refusals = writable_page_params({"pastMonths": None}, SCHEMA, "p")
+        assert accepted == {} and refusals == {"pastMonths": "invalid_value"}
+
+        accepted, refusals = writable_page_params({"pastMonths": None}, SCHEMA, "p", allow_clear=True)
+        assert accepted == {"pastMonths": None} and refusals == {}
+
+    def test_clearing_still_needs_the_writable_grant(self):
+        """Removing a filter changes the page as much as setting one."""
+        accepted, refusals = writable_page_params({"clientId": None}, SCHEMA, "p", allow_clear=True)
+        assert accepted == {}
+        assert refusals == {"clientId": "not_writable"}
+
+        accepted, refusals = writable_page_params({"nope": None}, SCHEMA, "p", allow_clear=True)
+        assert refusals == {"nope": "undeclared"}
+
     def test_valid_and_invalid_mixed(self):
         """A mixed call reports both sides; the HANDLER applies all-or-nothing
         on any refusal, so a partial filter set never lands silently."""
