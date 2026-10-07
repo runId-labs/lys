@@ -7,6 +7,19 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.53.1] - 2026-10-07
+
+### Fixed
+- A whiteboard patch item carrying a field the drawing tool does not declare was applied
+  with that field skipped and reported as a success: a link sent as `{"arrow": {"from":
+  ..., "to": ...}}` drew a free stroke with no ends. Such a patch is now refused
+  (`WHITEBOARD_INVALID_OPERATION`), naming the unknown fields and the ones the item takes
+  (`ADD_ITEM_FIELDS` / `UPDATE_ITEM_FIELDS`).
+- A `kind` sent on an existing element (an update, or an add reusing a name) was ignored:
+  asking a note to become an ellipse reported success and changed nothing. The current
+  kind is still accepted; a different one is refused, a change of kind being a delete
+  then an add.
+
 ## [0.53.0] - 2026-10-06
 
 ### Added

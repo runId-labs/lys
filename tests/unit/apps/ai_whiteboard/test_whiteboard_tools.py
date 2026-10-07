@@ -13,6 +13,7 @@ import pytest
 
 from lys.apps.ai_whiteboard.modules.conversation.services import AIConversationService
 from lys.apps.ai_whiteboard.modules.conversation.tools import DRAW_ON_WHITEBOARD_TOOL, READ_WHITEBOARD_TOOL
+from lys.apps.ai_whiteboard.modules.whiteboard.consts import ADD_ITEM_FIELDS, UPDATE_ITEM_FIELDS
 from lys.core.errors import LysError
 from lys.apps.ai_whiteboard.errors import WHITEBOARD_NOT_FOUND, WHITEBOARD_UNKNOWN_ELEMENT
 
@@ -66,6 +67,16 @@ class TestDefinitions:
         assert tool["type"] == "function"
         assert tool["function"]["name"] == name
         assert tool["function"]["parameters"]["type"] == "object"
+
+    @pytest.mark.parametrize("operation,fields", [("add", ADD_ITEM_FIELDS), ("update", UPDATE_ITEM_FIELDS)])
+    def test_the_fields_the_schema_declares_are_the_fields_the_scene_accepts(self, operation, fields):
+        # The scene refuses any field outside its list, and the model only ever sends
+        # what the schema declares: the two must name the same fields, or a declared
+        # field would be refused - or an undeclared one accepted and ignored.
+        declared = DRAW_ON_WHITEBOARD_TOOL["function"]["parameters"]["properties"][operation]["items"]["properties"]
+        # The scene tolerates a repeated "kind" on an update that the schema does not declare.
+        assert set(declared) <= set(fields)
+        assert set(fields) - set(declared) <= {"kind"}
 
     def test_draw_declares_the_three_operations(self):
         properties = DRAW_ON_WHITEBOARD_TOOL["function"]["parameters"]["properties"]

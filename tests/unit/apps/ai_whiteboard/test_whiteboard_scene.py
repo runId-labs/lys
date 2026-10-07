@@ -64,6 +64,42 @@ class TestNaming:
         with pytest.raises(LysError):
             draw({"move": []})
 
+    def test_an_unknown_field_is_refused_and_named(self):
+        # Observed: a link sent with its ends nested under an "arrow" key. Skipped, it
+        # drew a free stroke with no ends and reported success; refused, the writer is
+        # told which field is wrong and what the item takes instead.
+        with pytest.raises(LysError) as refused:
+            draw({"add": [
+                {"name": "a"}, {"name": "b"},
+                {"name": "link", "kind": "arrow", "arrow": {"from": "a", "to": "b", "label": "then"}},
+            ]})
+        # debug_message is what the tool handler hands back to the model.
+        assert "'arrow'" in refused.value.debug_message
+        assert "'link'" in refused.value.debug_message
+        assert "from" in refused.value.debug_message
+
+    def test_an_unknown_field_on_an_update_is_refused(self):
+        with pytest.raises(LysError):
+            draw(
+                {"add": [{"name": "a"}]},
+                {"update": [{"name": "a", "to": "b"}]},
+            )
+
+    def test_a_repeated_kind_on_an_update_is_tolerated(self):
+        board = draw(
+            {"add": [{"name": "a", "kind": "ellipse", "text": "old"}]},
+            {"update": [{"name": "a", "kind": "ellipse", "text": "new"}]},
+        )
+        assert described(board)["a"]["text"] == "new"
+
+    @pytest.mark.parametrize("key", ["add", "update"])
+    def test_a_different_kind_on_an_existing_element_is_refused(self, key):
+        # Nothing turns a note into an ellipse in place: ignoring the kind would report
+        # a change that was never made.
+        with pytest.raises(LysError) as refused:
+            draw({"add": [{"name": "a"}]}, {key: [{"name": "a", "kind": "ellipse"}]})
+        assert "note" in refused.value.debug_message
+
 
 class TestPlacement:
     """Coordinates are the caller's when given, and the board's when not."""

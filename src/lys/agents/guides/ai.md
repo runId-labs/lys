@@ -392,6 +392,11 @@ inherit from the app's, or the tools are silently absent.
 - A link (`from`/`to`) is routed by the server: straight, or round the elements standing
   between its ends along a free lane (`scene._route_between`). The whole patch is routed
   once applied, so the order it names things in does not matter.
+- A patch item carries only the fields the tool declares for its operation
+  (`consts.ADD_ITEM_FIELDS` / `UPDATE_ITEM_FIELDS`, kept equal to the tool schema by a
+  test): an undeclared field refuses the whole patch (`WHITEBOARD_INVALID_OPERATION`)
+  rather than being skipped. A `kind` on an existing element (update, or add under a
+  taken name) must repeat its current kind - changing kind is a delete then an add.
 - A named element's position is its top-left corner whatever it is made of
   (`scene._box`): a bar chart, anchored on its baseline, records its box.
 - `read_whiteboard` never opens a board: one opened in the turn's session would be

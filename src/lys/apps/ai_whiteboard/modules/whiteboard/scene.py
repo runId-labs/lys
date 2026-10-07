@@ -47,6 +47,7 @@ from lys.apps.ai_whiteboard.errors import (
     WHITEBOARD_UNKNOWN_OPERATION,
 )
 from lys.apps.ai_whiteboard.modules.whiteboard.consts import (
+    ADD_ITEM_FIELDS,
     BOUND_TEXT_PADDING,
     TABLE_COLUMN_MAX_WIDTH,
     TABLE_COLUMN_MIN_WIDTH,
@@ -95,6 +96,7 @@ from lys.apps.ai_whiteboard.modules.whiteboard.consts import (
     STROKE_COLOR,
     TABLE_ROW_HEIGHT,
     TRANSPARENT,
+    UPDATE_ITEM_FIELDS,
     ElementKind,
 )
 from lys.core.errors import LysError
@@ -1367,6 +1369,16 @@ def _update(elements: List[Dict[str, Any]], operation: Dict[str, Any], element_i
     if element_id not in _index(elements):
         raise LysError(WHITEBOARD_UNKNOWN_ELEMENT, f"Element '{element_id}' is not on the board")
 
+    # A repeated kind is tolerated, a different one refused: nothing turns an element into
+    # another kind in place, and ignoring the request would report a change never made.
+    current_kind = _kind_on_board(_index(elements)[element_id])
+    if operation.get("kind") is not None and operation["kind"] != current_kind:
+        raise LysError(
+            WHITEBOARD_INVALID_OPERATION,
+            f"'{element_id}' is a {current_kind} and cannot become a {operation['kind']} in place. "
+            f"Delete it and add it again under the new kind",
+        )
+
     if operation.get("chart") is not None:
         return _redraw(elements, operation, element_id)
     if operation.get("headers") is not None or operation.get("rows") is not None:
@@ -1471,7 +1483,7 @@ def _check_patch_shape(operations: Any) -> None:
     if not isinstance(operations, dict):
         raise LysError(WHITEBOARD_INVALID_OPERATION, "A patch is an object with add, update and delete")
 
-    for key in (OPERATION_ADD, OPERATION_UPDATE):
+    for key, fields in ((OPERATION_ADD, ADD_ITEM_FIELDS), (OPERATION_UPDATE, UPDATE_ITEM_FIELDS)):
         items = operations.get(key)
         if items is None:
             continue
@@ -1479,6 +1491,17 @@ def _check_patch_shape(operations: Any) -> None:
             raise LysError(WHITEBOARD_INVALID_OPERATION, f"'{key}' is a list of objects")
         if not all(isinstance(item.get("name"), str) for item in items):
             raise LysError(WHITEBOARD_INVALID_OPERATION, f"Every item of '{key}' needs a 'name' string")
+        # A field the tool does not declare is a field nothing reads. Skipping it draws
+        # something other than what was asked and reports success: a link whose ends
+        # were nested under a key of their own came out as a free stroke with no ends.
+        for item in items:
+            unknown = sorted(set(item) - set(fields))
+            if unknown:
+                raise LysError(
+                    WHITEBOARD_INVALID_OPERATION,
+                    f"Unknown field(s) {', '.join(repr(f) for f in unknown)} on '{item['name']}' in '{key}'. "
+                    f"An item of '{key}' takes only: {', '.join(fields)} - all at the top level of the item",
+                )
 
     names = operations.get(OPERATION_DELETE)
     if names is not None and (not isinstance(names, list) or not all(isinstance(n, str) for n in names)):
@@ -1584,6 +1607,25 @@ def apply_operations(scene: Dict[str, Any], operations: Dict[str, Any]) -> Dict[
     return {**scene, "elements": elements}
 
 
+def _kind_on_board(element: Dict[str, Any]) -> str:
+    """The kind an anchor element was drawn as, read back from its Excalidraw shape."""
+    custom = element.get("customData") or {}
+    if custom.get(KIND_KEY) in (ElementKind.TABLE.value, ElementKind.CHART.value):
+        return custom[KIND_KEY]
+    if element.get("type") == "arrow":
+        return ElementKind.ARROW.value
+    if element.get("type") == "line":
+        return ElementKind.LINE.value
+    if element.get("type") == "frame":
+        return ElementKind.FRAME.value
+    if element.get("type") == "text":
+        return ElementKind.TEXT.value
+    return next(
+        (kind.value for kind, shape in LABELLED_SHAPES.items() if shape == element.get("type")),
+        ElementKind.NOTE.value,
+    )
+
+
 def describe(scene: Dict[str, Any]) -> List[Dict[str, Any]]:
     """
     What is on the board, as the caller that drew it can read it back.
@@ -1613,26 +1655,19 @@ def describe(scene: Dict[str, Any]) -> List[Dict[str, Any]]:
         }
         label = by_id.get(f"{element['id']}{TEXT_SUFFIX}")
 
-        if custom.get(KIND_KEY) in (ElementKind.TABLE.value, ElementKind.CHART.value):
-            entry["kind"] = custom[KIND_KEY]
+        entry["kind"] = kind = _kind_on_board(element)
+        if kind in (ElementKind.TABLE.value, ElementKind.CHART.value):
             entry["data"] = custom.get(SPEC_KEY)
-        elif element.get("type") in ("arrow", "line"):
-            entry["kind"] = ElementKind.ARROW.value if element["type"] == "arrow" else ElementKind.LINE.value
+        elif kind in (ElementKind.ARROW.value, ElementKind.LINE.value):
             entry["from"] = (element.get("startBinding") or {}).get("elementId")
             entry["to"] = (element.get("endBinding") or {}).get("elementId")
             if label:
                 entry["label"] = label.get("text", "")
-        elif element.get("type") == "frame":
-            entry["kind"] = ElementKind.FRAME.value
+        elif kind == ElementKind.FRAME.value:
             entry["text"] = element.get("name") or ""
-        elif element.get("type") == "text":
-            entry["kind"] = ElementKind.TEXT.value
+        elif kind == ElementKind.TEXT.value:
             entry["text"] = element.get("text", "")
         else:
-            entry["kind"] = next(
-                (kind.value for kind, shape in LABELLED_SHAPES.items() if shape == element.get("type")),
-                ElementKind.NOTE.value,
-            )
             entry["text"] = (label or element).get("text", "")
 
         if element.get("frameId"):

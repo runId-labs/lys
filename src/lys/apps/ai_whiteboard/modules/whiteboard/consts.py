@@ -185,6 +185,20 @@ OPERATION_UPDATE = "update"
 OPERATION_DELETE = "delete"
 OPERATION_KEYS = (OPERATION_ADD, OPERATION_UPDATE, OPERATION_DELETE)
 
+# The fields an item of a patch may carry - the ones the drawing tool declares, and
+# nothing else. A field outside this list is refused rather than skipped: skipped, a
+# link sent as ``{"arrow": {"from": ..., "to": ...}}`` read as a link with no ends,
+# six free strokes landed on the origin, and the writer was told it had succeeded.
+ITEM_GEOMETRY_FIELDS = ("x", "y", "width", "height", "color", "background")
+ADD_ITEM_FIELDS = (
+    "name", "kind", "text", "label", "from", "to", "frame", "headers", "rows", "chart",
+    *ITEM_GEOMETRY_FIELDS,
+)
+# ``kind`` is tolerated on an update though nothing reads it there: a writer redrawing a
+# table from new data repeats the kind it gave, and refusing that would refuse a
+# well-formed redraw.
+UPDATE_ITEM_FIELDS = ("name", "kind", "text", "label", "headers", "rows", "chart", *ITEM_GEOMETRY_FIELDS)
+
 
 # Title of a board the chatbot opens for a conversation that has none yet. Conversation
 # titles are written by a background task on the first exchange, so a board opened early
