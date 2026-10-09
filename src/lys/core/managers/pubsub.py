@@ -11,9 +11,36 @@ import asyncio
 import json
 import logging
 from typing import AsyncIterator, Optional
+from urllib.parse import urlsplit, urlunsplit
 
 import redis.asyncio as redis_async
 import redis as redis_sync
+
+
+def redacted_url(url: str) -> str:
+    """
+    Hide the password of a connection URL before it is logged.
+
+    A Redis URL carries the password in clear in its authority
+    (redis://:password@host:6379/0), and a log line is read by more people
+    than the configuration is. The host part is kept verbatim (case, IPv6
+    brackets, port).
+
+    Args:
+        url: Connection URL, possibly carrying credentials.
+
+    Returns:
+        The URL with its password replaced by "***", the URL unchanged when it
+        has no password, or "<unparsable url>" when it cannot be parsed.
+    """
+    try:
+        parts = urlsplit(url)
+    except ValueError:
+        return "<unparsable url>"
+    if parts.password is None:
+        return url
+    host = parts.netloc.rpartition("@")[2]
+    return urlunsplit(parts._replace(netloc=f"{parts.username or ''}:***@{host}"))
 
 
 class PubSubManager:
@@ -81,7 +108,7 @@ class PubSubManager:
         """
         self._async_pool = redis_async.ConnectionPool.from_url(self.redis_url)
         self._async_redis = redis_async.Redis(connection_pool=self._async_pool)
-        logging.info(f"PubSubManager async initialized: {self.redis_url}")
+        logging.info(f"PubSubManager async initialized: {redacted_url(self.redis_url)}")
 
     async def shutdown(self):
         """
@@ -177,7 +204,7 @@ class PubSubManager:
         """
         self._sync_pool = redis_sync.ConnectionPool.from_url(self.redis_url)
         self._sync_redis = redis_sync.Redis(connection_pool=self._sync_pool)
-        logging.info(f"PubSubManager sync initialized: {self.redis_url}")
+        logging.info(f"PubSubManager sync initialized: {redacted_url(self.redis_url)}")
 
     def shutdown_sync(self):
         """

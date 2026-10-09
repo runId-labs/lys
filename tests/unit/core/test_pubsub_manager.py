@@ -14,11 +14,13 @@ Tests cover:
 import asyncio
 import inspect
 import json
+import logging
+from unittest.mock import patch
 
 import pytest
 import fakeredis
 
-from lys.core.managers.pubsub import PubSubManager
+from lys.core.managers.pubsub import PubSubManager, redacted_url
 
 
 # ==================== Fixtures ====================
@@ -437,3 +439,33 @@ class TestSyncLifecycle:
         """Sync shutdown after publish completes without error."""
         sync_manager.publish_sync("ch", "EVT")
         sync_manager.shutdown_sync()
+
+
+class TestRedactedUrl:
+    """A connection URL never reaches a log with its password."""
+
+    def test_password_is_hidden(self):
+        assert redacted_url("redis://:s3cret@redis-master.svc:6379/0") == "redis://:***@redis-master.svc:6379/0"
+        assert redacted_url("redis://user:s3cret@host:6379/0") == "redis://user:***@host:6379/0"
+
+    def test_host_is_kept_verbatim(self):
+        assert redacted_url("redis://:s3cret@[::1]:6379/0") == "redis://:***@[::1]:6379/0"
+        assert redacted_url("redis://:s3cret@Redis.Svc:6379/0") == "redis://:***@Redis.Svc:6379/0"
+
+    def test_url_without_password_is_unchanged(self):
+        assert redacted_url("redis://localhost:6379/0") == "redis://localhost:6379/0"
+
+    def test_sync_initialisation_logs_hide_the_password(self, caplog):
+        manager = PubSubManager("redis://:s3cret@localhost:6379/0")
+        with patch("lys.core.managers.pubsub.redis_sync.ConnectionPool.from_url"), \
+                patch("lys.core.managers.pubsub.redis_sync.Redis"), caplog.at_level(logging.INFO):
+            manager.initialize_sync()
+        assert "s3cret" not in caplog.text and "***" in caplog.text
+
+    @pytest.mark.asyncio
+    async def test_async_initialisation_logs_hide_the_password(self, caplog):
+        manager = PubSubManager("redis://:s3cret@localhost:6379/0")
+        with patch("lys.core.managers.pubsub.redis_async.ConnectionPool.from_url"), \
+                patch("lys.core.managers.pubsub.redis_async.Redis"), caplog.at_level(logging.INFO):
+            await manager.initialize()
+        assert "s3cret" not in caplog.text and "***" in caplog.text

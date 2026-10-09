@@ -7,6 +7,13 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.53.2] - 2026-10-10
+
+### Fixed
+- `PubSubManager` logged its Redis URL with the password in clear when initialised
+  (`redis://:password@host:6379/0`). The password is now shown as `***`
+  (`redacted_url`), the host part (case, IPv6 brackets, port) left as configured.
+
 ## [0.53.1] - 2026-10-07
 
 ### Fixed
