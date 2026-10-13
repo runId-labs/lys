@@ -46,7 +46,7 @@ class OrganizationRoleFixtures(RoleFixtures):
             "id": USER_ADMIN_ROLE,
             "attributes": {
                 "enabled": True,
-                "description": "Administrator role for managing client users. Can create, update, and search client users within their organization.",
+                "description": "Invites the organization's users, edits their details and assigns their roles.",
                 "role_webservices": USER_ADMIN_ROLE_WEBSERVICES,
                 "supervisor_only": False
             }

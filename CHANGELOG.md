@@ -7,6 +7,22 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.54.0] - 2026-10-13
+
+### Added
+- `all_roles` is generated as an AI tool (`generate_tool`): read-only, it lets the
+  assistant explain a role or advise which roles fit a person, never assign them.
+- `RoleService.visible_roles_statement(session, connected_user, enabled, supervisor_only)`
+  builds the `all_roles` statement; `all_roles` delegates to it. Apps narrow the list
+  by overriding it.
+- `OrganizationRoleService` (organization app) hides supervisor-only roles from
+  organization members (client users and client owners, read from the database). The
+  filter is added to the caller's own: a member asking for `supervisor_only=true` gets
+  an empty list. Supervisors and super users keep the full list.
+
+### Changed
+- `USER_ADMIN` role fixture description rewritten to state what the role allows.
+
 ## [0.53.2] - 2026-10-10
 
 ### Fixed
