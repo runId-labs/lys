@@ -29,6 +29,7 @@ from lys.apps.sso.errors import (
     SSO_ISSUER_NOT_TRUSTED,
     SSO_PROVIDER_MISCONFIGURED,
     SSO_TENANT_NOT_ALLOWED,
+    SSO_USER_BLOCKED,
 )
 from lys.apps.user_auth.modules.user.consts import ENABLED_USER_STATUS
 from lys.core.errors import LysError
@@ -378,7 +379,7 @@ class SSOAuthService(Service):
         # whatever the credential.
         if user.status_id != ENABLED_USER_STATUS:
             logger.warning(f"SSO login refused for disabled user '{user.id}'")
-            return f"{front_url}?error=SSO_USER_BLOCKED"
+            return f"{front_url}?error={SSO_USER_BLOCKED[1]}"
 
         # Same login history as the password path: a session opened by SSO is a login.
         await auth_service.record_successful_login(user, session)

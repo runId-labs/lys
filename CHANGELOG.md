@@ -7,6 +7,13 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.55.1] - 2026-10-14
+
+### Changed
+- `SSO_USER_BLOCKED` is declared in `lys.apps.sso.errors` with the other SSO errors;
+  `SSOAuthService.handle_login` builds its `?error=SSO_USER_BLOCKED` redirect from it
+  instead of a literal. The redirect is unchanged.
+
 ## [0.55.0] - 2026-10-14
 
 ### Added
