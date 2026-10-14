@@ -17,7 +17,7 @@ Test approach: Unit (mocked Redis via PubSub, mocked httpx, mocked app_manager)
 
 import json
 import pytest
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, call, patch
 
 from lys.apps.sso.consts import SSO_STATE_PREFIX, SSO_SESSION_PREFIX, SSO_SESSION_TTL
 from lys.apps.sso.errors import (
@@ -33,6 +33,7 @@ from lys.apps.sso.errors import (
     SSO_PROVIDER_MISCONFIGURED,
 )
 from lys.apps.sso.modules.auth.services import SSOAuthService
+from lys.apps.user_auth.modules.user.consts import DISABLED_USER_STATUS, ENABLED_USER_STATUS
 from lys.core.errors import LysError
 
 from tests.mocks.utils import configure_classes_for_testing
@@ -85,13 +86,9 @@ def sso_app_manager(mock_pubsub):
     mock_app.register_service("user", mock_user_service)
 
     mock_auth_service = MagicMock()
-    mock_auth_service.generate_access_token = AsyncMock(return_value=("token", {"xsrf_token": "xsrf"}))
-    mock_auth_service.set_auth_cookies = AsyncMock()
+    mock_auth_service.record_successful_login = AsyncMock()
+    mock_auth_service.open_session = AsyncMock(return_value={"xsrf_token": "xsrf"})
     mock_app.register_service("auth", mock_auth_service)
-
-    mock_refresh_service = MagicMock()
-    mock_refresh_service.generate = AsyncMock()
-    mock_app.register_service("user_refresh_token", mock_refresh_service)
 
     configure_classes_for_testing(mock_app, SSOAuthService)
 
@@ -323,8 +320,8 @@ class TestHandleLogin:
         assert "error=SSO_USER_NOT_FOUND" in redirect_url
 
     @pytest.mark.asyncio
-    async def test_login_success_sets_cookies(self, sso_app_manager):
-        """Successful SSO login generates tokens and sets cookies."""
+    async def test_login_success_opens_a_session(self, sso_app_manager):
+        """Successful SSO login records the login, then opens the session (tokens + cookies)."""
         user_info = {
             "provider": "microsoft",
             "external_user_id": "ext-123",
@@ -340,21 +337,52 @@ class TestHandleLogin:
 
         mock_user = MagicMock()
         mock_user.id = "user-123"
+        mock_user.status_id = ENABLED_USER_STATUS
         user_service = sso_app_manager.get_service("user")
         user_service.get_by_id.return_value = mock_user
 
-        mock_refresh_token = MagicMock()
-        mock_refresh_token.id = "refresh-token-id"
-        refresh_service = sso_app_manager.get_service("user_refresh_token")
-        refresh_service.generate.return_value = mock_refresh_token
+        calls = MagicMock()
+        auth_service = sso_app_manager.get_service("auth")
+        calls.attach_mock(auth_service.record_successful_login, "record_successful_login")
+        calls.attach_mock(auth_service.open_session, "open_session")
 
         redirect_url = await SSOAuthService.handle_login(user_info, response, session)
 
         # Should return front_url (no error)
         assert redirect_url == "https://app.example.com"
-        # Cookies should be set
+        # An SSO login is a login: it lands in the same history as a password one,
+        # recorded before the session reads the previous login
+        assert calls.mock_calls == [
+            call.record_successful_login(mock_user, session),
+            call.open_session(mock_user, response, session),
+        ]
+
+    @pytest.mark.asyncio
+    async def test_login_refused_for_disabled_user(self, sso_app_manager):
+        """A disabled account opens no session by SSO, as with a password."""
+        user_info = {
+            "provider": "microsoft",
+            "external_user_id": "ext-123",
+        }
+        session = AsyncMock()
+
+        mock_link = MagicMock()
+        mock_link.user_id = "user-123"
+        sso_link_service = sso_app_manager.get_service("user_sso_link")
+        sso_link_service.find_by_provider_and_external_id.return_value = mock_link
+
+        mock_user = MagicMock()
+        mock_user.id = "user-123"
+        mock_user.status_id = DISABLED_USER_STATUS
+        user_service = sso_app_manager.get_service("user")
+        user_service.get_by_id.return_value = mock_user
+
+        redirect_url = await SSOAuthService.handle_login(user_info, MagicMock(), session)
+
+        assert redirect_url == "https://app.example.com?error=SSO_USER_BLOCKED"
         auth_service = sso_app_manager.get_service("auth")
-        auth_service.set_auth_cookies.assert_called_once()
+        auth_service.record_successful_login.assert_not_awaited()
+        auth_service.open_session.assert_not_awaited()
 
 
 class TestHandleLink:

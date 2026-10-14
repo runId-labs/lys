@@ -252,3 +252,127 @@ class TestAuthenticateUserAntiEnumeration:
 
             result = await AuthService.authenticate_user("user@test.com", "wrong-pw", mock_session)
             assert result is None
+
+
+class TestRecordSuccessfulLogin:
+    """Tests for AuthService.record_successful_login() — the success row of the login history."""
+
+    @pytest.mark.asyncio
+    async def test_adds_a_success_row_for_the_user(self):
+        from lys.apps.user_auth.modules.auth.services import AuthService
+        from lys.apps.user_auth.modules.auth.consts import SUCCEED_LOGIN_ATTEMPT_STATUS
+
+        mock_session = AsyncMock()
+        mock_session.add = MagicMock()
+        mock_user = Mock()
+        mock_user.id = "user-1"
+        mock_attempt_entity = Mock()
+
+        with patch.object(AuthService, "app_manager", create=True) as mock_am:
+            mock_am.get_entity.return_value = mock_attempt_entity
+            row = await AuthService.record_successful_login(mock_user, mock_session)
+
+        mock_attempt_entity.assert_called_once_with(
+            status_id=SUCCEED_LOGIN_ATTEMPT_STATUS, user_id="user-1", attempt_count=1, blocked_until=None
+        )
+        mock_session.add.assert_called_once_with(row)
+
+
+class TestGetPreviousSuccessfulLoginAt:
+    """Tests for AuthService.get_previous_successful_login_at()."""
+
+    @pytest.mark.asyncio
+    async def test_flushes_the_pending_login_before_reading(self):
+        """The login just recorded may be pending: without a flush, offset(1) would skip the wrong row."""
+        from datetime import datetime, timezone
+        from lys.apps.user_auth.modules.auth.entities import UserLoginAttempt
+        from lys.apps.user_auth.modules.auth.services import AuthService
+
+        previous = datetime(2026, 10, 1, tzinfo=timezone.utc)
+        calls = []
+        mock_session = AsyncMock()
+        mock_session.flush.side_effect = lambda: calls.append("flush")
+        result = MagicMock()
+        result.scalar_one_or_none.return_value = previous
+
+        async def execute(stmt):
+            calls.append("execute")
+            return result
+
+        mock_session.execute.side_effect = execute
+
+        with patch.object(AuthService, "app_manager", create=True) as mock_am:
+            mock_am.get_entity.return_value = UserLoginAttempt
+            value = await AuthService.get_previous_successful_login_at("user-1", mock_session)
+
+        assert value == previous
+        assert calls == ["flush", "execute"]
+        stmt = mock_session.execute.call_args.args[0]
+        assert stmt._offset_clause.value == 1
+
+
+class TestOpenSession:
+    """Tests for AuthService.open_session() — tokens of a new session, shared by every credential path."""
+
+    @pytest.mark.asyncio
+    async def test_previous_login_is_carried_by_both_tokens(self):
+        from datetime import datetime, timezone
+        from lys.apps.user_auth.modules.auth.services import AuthService
+
+        previous = datetime(2026, 10, 1, tzinfo=timezone.utc)
+        mock_session = AsyncMock()
+        response = Mock()
+        mock_user = Mock()
+        mock_user.id = "user-1"
+        refresh_token = Mock()
+        refresh_token.id = "refresh-1"
+        refresh_service = Mock()
+        refresh_service.generate = AsyncMock(return_value=refresh_token)
+        claims = {"sub": "user-1", "xsrf_token": "xsrf-1"}
+
+        with patch.object(AuthService, "app_manager", create=True) as mock_am, \
+             patch.object(AuthService, "get_previous_successful_login_at",
+                          new_callable=AsyncMock, return_value=previous), \
+             patch.object(AuthService, "generate_access_token",
+                          new_callable=AsyncMock, return_value=("access-1", claims)) as mock_access, \
+             patch.object(AuthService, "set_auth_cookies", new_callable=AsyncMock) as mock_cookies:
+            mock_am.get_service.return_value = refresh_service
+            result = await AuthService.open_session(mock_user, response, mock_session)
+
+        assert result is claims
+        refresh_service.generate.assert_awaited_once_with(
+            mock_user, session=mock_session, previous_login_at=previous
+        )
+        mock_access.assert_awaited_once_with(mock_user, mock_session, previous_login_at=previous)
+        mock_cookies.assert_awaited_once_with(response, "refresh-1", "access-1", "xsrf-1")
+
+
+class TestGenerateAccessTokenPreviousLoginClaim:
+    """Tests for the previous_login_at claim set by AuthService.generate_access_token()."""
+
+    async def _claims(self, **kwargs):
+        from lys.apps.user_auth.modules.auth.services import AuthService
+
+        store = Mock()
+        store.create = AsyncMock(return_value="token-1")
+        with patch.object(AuthService, "auth_utils", create=True) as mock_utils, \
+             patch.object(AuthService, "generate_access_claims",
+                          new_callable=AsyncMock, return_value={"sub": "user-1"}), \
+             patch.object(AuthService, "_require_access_token_store", return_value=store):
+            mock_utils.config = {"access_token_expire_minutes": 15}
+            _, claims = await AuthService.generate_access_token(Mock(), AsyncMock(), **kwargs)
+        store.create.assert_awaited_once()
+        assert store.create.call_args.args[0] is claims
+        return claims
+
+    @pytest.mark.asyncio
+    async def test_claim_is_iso_8601(self):
+        from datetime import datetime, timezone
+        previous = datetime(2026, 10, 1, 8, 30, tzinfo=timezone.utc)
+        claims = await self._claims(previous_login_at=previous)
+        assert claims["previous_login_at"] == "2026-10-01T08:30:00+00:00"
+
+    @pytest.mark.asyncio
+    async def test_claim_is_null_on_a_first_login(self):
+        claims = await self._claims()
+        assert claims["previous_login_at"] is None

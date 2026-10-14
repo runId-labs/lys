@@ -7,6 +7,44 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.55.0] - 2026-10-14
+
+### Added
+- `UserNode.previous_login_at`: the successful login before the one that opened the
+  current session. Null on a first login, and null for anyone but the user themselves
+  (login history is personal: an administrator listing users does not read it). Read
+  once when the session opens and carried by its tokens — a login on another device
+  does not shift it: stored on `user_refresh_token.previous_login_at` (copied on each
+  refresh) and exposed as the `previous_login_at` access-token claim. Sessions opened
+  before the upgrade answer null until the next login. **Migration**: new nullable
+  column `user_refresh_token.previous_login_at`.
+- `all_notifications(created_after)`: only the notifications created after an instant —
+  what happened since a given moment, such as the previous login.
+- `AuthService.record_successful_login`: the success row of the login history, shared
+  by every credential path.
+- `AuthService.open_session(user, response, session)`: issues the refresh and access
+  tokens of a new session and sets the cookies — shared by the password and SSO logins.
+  `UserRefreshTokenService.generate` and `AuthService.generate_access_token` take an
+  optional `previous_login_at`.
+- Index `ix_user_login_attempt_user_id_created_at` on `user_login_attempt (user_id,
+  created_at)`: every login reads the user's latest attempts. **Migration**: new index.
+- `load_routes_manifest` logs a warning when no route declares `main_webservices`
+  (a manifest older than lys-front 0.21.0): the `navigate` tool then lists every page
+  to every user.
+
+### Fixed
+- A disabled user could log in by SSO: `SSOAuthService.handle_login` never checked the
+  account status, which the password and refresh paths do. The login is now refused
+  with a redirect to `?error=SSO_USER_BLOCKED`, no session and no login-history row.
+- An SSO login left no row in the login history (`user_login_attempt`), which only the
+  password path wrote: the history now records every login, whatever the credential.
+- `filter_routes_by_permissions` (the pages the `navigate` tool lists) reads the
+  route's `main_webservices` — the page's access gate as the routes manifest
+  emits it, any-of — instead of a `webservice` key the manifest never carried, which
+  let every route through for every user. A page the menu hides from a user is now
+  absent from the assistant's page list too. Needs a manifest generated with
+  lys-front ≥ 0.21.0; an older manifest (no `main_webservices`) keeps every page listed.
+
 ## [0.54.0] - 2026-10-13
 
 ### Added

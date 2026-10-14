@@ -98,6 +98,27 @@ class UserNode(EntityNode[UserService], relay.Node):
         """Get the user's private data (nullable)."""
         return await self._lazy_load_relation('private_data', UserPrivateDataNode, info)
 
+    @strawberry.field(
+        description="The successful login before the one that opened the current session. Null on a "
+                    "first login, and null for anyone but the user themselves."
+    )
+    def previous_login_at(self, info: Info) -> Optional[datetime]:
+        """
+        The previous successful login — the viewer's own only.
+
+        Read from the session's claims, set when the session opened: a login on
+        another device since then does not shift it. Login history is personal:
+        an administrator listing users does not read when each of them last came
+        in. The field answers null rather than erroring so the listings that
+        select it keep working.
+        """
+        connected_user = getattr(info.context, "connected_user", None)
+        if not connected_user or connected_user.get("sub") != self._entity.id:
+            return None
+
+        previous_login_at = connected_user.get("previous_login_at")
+        return datetime.fromisoformat(previous_login_at) if previous_login_at else None
+
     @classproperty
     def order_by_attribute_map(self) -> Dict[str, Any]:
         """

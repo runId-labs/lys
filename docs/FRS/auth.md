@@ -161,6 +161,13 @@ The authentication system provides secure user authentication with JWT tokens, r
 - Create new record
 - Status: `success`
 - Attempt count: `1`
+- Written by every credential path (password and SSO), so the history holds every login
+
+**Previous login**:
+- When a session opens, the success record before the one just written is read once
+- It is stored on the refresh token (carried over on refresh) and exposed as the
+  `previous_login_at` claim and `UserNode.previous_login_at` (own user only)
+- A login on another device does not shift the value of a session already open
 
 ### Data Retention
 

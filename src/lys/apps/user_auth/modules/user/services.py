@@ -1099,7 +1099,20 @@ class UserService(EntityService[User]):
 class UserRefreshTokenService(EntityService[UserRefreshToken]):
 
     @classmethod
-    async def generate(cls, user: User, session: AsyncSession) -> UserRefreshToken:
+    async def generate(
+        cls,
+        user: User,
+        session: AsyncSession,
+        previous_login_at: datetime | None = None
+    ) -> UserRefreshToken:
+        """
+            generate a refresh token for the user
+        :param user: user the session belongs to
+        :param session: database session
+        :param previous_login_at: successful login before the one that opened the session,
+            kept on the token so that every refresh of the session carries it
+        :return: the new refresh token
+        """
         auth_utils = AuthUtils()
         once_refresh_token_expire_minutes = auth_utils.config.get("once_refresh_token_expire_minutes")
         connection_expire_minutes = auth_utils.config.get("connection_expire_minutes")
@@ -1111,7 +1124,7 @@ class UserRefreshTokenService(EntityService[UserRefreshToken]):
             once_expire_at=now_utc() + timedelta(minutes=once_refresh_token_expire_minutes)
             if once_refresh_token_expire_minutes else None,
             connection_expire_at=now_utc() + timedelta(minutes=connection_expire_minutes),
-
+            previous_login_at=previous_login_at,
         )
 
         return new_token
@@ -1184,7 +1197,11 @@ class UserRefreshTokenService(EntityService[UserRefreshToken]):
         """
         # get token to refresh
         refresh_token = await cls.revoke(data, session=session)
-        new_token: UserRefreshToken = await cls.generate(refresh_token.user, session=session)
+        new_token: UserRefreshToken = await cls.generate(
+            refresh_token.user,
+            session=session,
+            previous_login_at=refresh_token.previous_login_at
+        )
 
         return new_token
 

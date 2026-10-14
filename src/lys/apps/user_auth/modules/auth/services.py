@@ -1,7 +1,7 @@
 import bcrypt
 import logging
 import os
-from datetime import timedelta
+from datetime import datetime, timedelta
 from typing import Optional, Type
 
 from sqlalchemy import select, ColumnElement, or_, func
@@ -239,18 +239,94 @@ class AuthService(Service):
                 raise LysError(INVALID_CREDENTIALS_ERROR, f"user '{login}' is blocked")
 
             # successful login: always create new success line
-            user_login_attempt_obj = user_login_attempt_entity(
-                status_id=SUCCEED_LOGIN_ATTEMPT_STATUS,
-                user_id=user.id,
-                attempt_count=1,
-                blocked_until=None
-            )
-            session.add(user_login_attempt_obj)
-
-            # log successful login
-            logger.info(f"Successful login for user '{login}'")
+            await cls.record_successful_login(user, session)
 
         return user
+
+    @classmethod
+    async def record_successful_login(cls, user: User, session: AsyncSession) -> UserLoginAttempt:
+        """
+        Append a success row to the user's login history.
+
+        One row per successful login, whatever the credential (password, SSO): the
+        history is what tells when a user last came in, and a login that leaves no
+        row is invisible to it.
+
+        :param user: Authenticated user
+        :param session: Database session
+        :return: The success row, added to the session (not flushed)
+        """
+        user_login_attempt_entity: Type[UserLoginAttempt] = cls.app_manager.get_entity("user_login_attempt")
+
+        user_login_attempt_obj = user_login_attempt_entity(
+            status_id=SUCCEED_LOGIN_ATTEMPT_STATUS,
+            user_id=user.id,
+            attempt_count=1,
+            blocked_until=None
+        )
+        session.add(user_login_attempt_obj)
+
+        logger.info(f"Successful login for user '{user.id}'")
+
+        return user_login_attempt_obj
+
+    @classmethod
+    async def get_previous_successful_login_at(cls, user_id: str, session: AsyncSession) -> Optional[datetime]:
+        """
+        The successful login before the latest one.
+
+        Meant to be read once, right after a login was recorded: the latest success
+        row is then that login, and the one before it is where the user left off.
+        Read later, another device may have logged in since — which is why the
+        value is computed when the session opens and carried by its tokens
+        (see ``open_session``), not re-read per request.
+
+        :param user_id: User id
+        :param session: Database session (pending rows are flushed first)
+        :return: Date of the previous successful login, or None on a first login
+        """
+        user_login_attempt_entity: Type[UserLoginAttempt] = cls.app_manager.get_entity("user_login_attempt")
+
+        # the login just recorded may still be pending in the session
+        await session.flush()
+
+        stmt = select(user_login_attempt_entity.created_at).where(
+            user_login_attempt_entity.user_id == user_id,
+            user_login_attempt_entity.status_id == SUCCEED_LOGIN_ATTEMPT_STATUS,
+        ).order_by(user_login_attempt_entity.created_at.desc()).offset(1).limit(1)
+        result = await session.execute(stmt)
+
+        return result.scalar_one_or_none()
+
+    @classmethod
+    async def open_session(cls, user: User, response: Response, session: AsyncSession) -> dict:
+        """
+        Issue the tokens of a new session and set them as cookies.
+
+        Shared by every credential path (password, SSO). The caller has already
+        recorded the login (``record_successful_login``); the previous login is
+        read here, once, and stored on the refresh token so that every access
+        token of the session — refreshed ones included — exposes the same value.
+
+        :param user: Authenticated user, whose login was just recorded
+        :param response: Response receiving the auth cookies
+        :param session: Database session
+        :return: The access token claims
+        """
+        refresh_token_service: Type[UserRefreshTokenService] = cls.app_manager.get_service("user_refresh_token")
+
+        previous_login_at = await cls.get_previous_successful_login_at(user.id, session)
+
+        refresh_token = await refresh_token_service.generate(
+            user, session=session, previous_login_at=previous_login_at
+        )
+        access_token, claims = await cls.generate_access_token(
+            user, session, previous_login_at=previous_login_at
+        )
+
+        await cls.set_auth_cookies(response, refresh_token.id, access_token, claims.get("xsrf_token"))
+
+        return claims
 
     @classmethod
     async def login(
@@ -260,8 +336,6 @@ class AuthService(Service):
         session: AsyncSession,
         request: Optional[Request] = None,
     ):
-        refresh_token_service: Type[UserRefreshTokenService] = cls.app_manager.get_service("user_refresh_token")
-
         # find out the user based on his email address and his password
         try:
             user = await cls.authenticate_user(data.login, data.password, session)
@@ -288,13 +362,8 @@ class AuthService(Service):
             previous_token_id = request.cookies.get(ACCESS_COOKIE_KEY)
             await cls.revoke_access_token(previous_token_id)
 
-        # generate the user refresh token
-        refresh_token = await refresh_token_service.generate(user, session=session)
-        # generate the user access token
-        access_token, claims = await cls.generate_access_token(user, session)
-
-        # set authentication cookies
-        await cls.set_auth_cookies(response, refresh_token.id, access_token, claims.get("xsrf_token"))
+        # generate the refresh and access tokens, set as cookies
+        claims = await cls.open_session(user, response, session)
 
         # success result
         return user, claims
@@ -454,7 +523,12 @@ class AuthService(Service):
         return webservice_access
 
     @classmethod
-    async def generate_access_token(cls, user: User, session: AsyncSession = None) -> tuple[str, dict]:
+    async def generate_access_token(
+        cls,
+        user: User,
+        session: AsyncSession = None,
+        previous_login_at: Optional[datetime] = None,
+    ) -> tuple[str, dict]:
         """
         Generate an opaque access token for the user and store the claims server-side.
 
@@ -471,11 +545,14 @@ class AuthService(Service):
         Args:
             user: The authenticated user entity
             session: Database session used by ``generate_access_claims`` overrides
+            previous_login_at: Successful login before the one that opened the
+                session (carried by its refresh token), stored as the
+                ``previous_login_at`` claim in ISO 8601 — null on a first login
 
         Returns:
             Tuple of (opaque_token_id, claims_dict). ``claims_dict`` keeps the
             same shape as before (sub, is_super_user, webservices, exp,
-            xsrf_token, plus subclass extensions) so callers — login/refresh
+            xsrf_token, previous_login_at, plus subclass extensions) so callers — login/refresh
             mutations, tests — continue to work as before.
         """
         access_token_expire_minutes = cls.auth_utils.config.get("access_token_expire_minutes")
@@ -491,6 +568,7 @@ class AuthService(Service):
         access_token_expire_seconds = int(access_token_expire_minutes * 60)
         claims["exp"] = int(round((now_utc() + timedelta(seconds=access_token_expire_seconds)).timestamp()))
         claims["xsrf_token"] = str(await cls.generate_xsrf_token())
+        claims["previous_login_at"] = previous_login_at.isoformat() if previous_login_at else None
 
         store = cls._require_access_token_store()
         token_id = await store.create(claims, ttl_seconds=access_token_expire_seconds)

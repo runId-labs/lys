@@ -1096,6 +1096,52 @@ class TestLoginPurgesPreviousToken:
         assert remaining[0] != stale_key
 
 
+class TestPreviousLoginAt:
+    """The previous login is read once, when the session opens, and carried by its tokens."""
+
+    @pytest.mark.asyncio
+    async def test_login_exposes_the_login_before_it(self, user_auth_app_manager, fake_pubsub):
+        user_service = user_auth_app_manager.get_service("user")
+        auth_service = user_auth_app_manager.get_service("auth")
+        user_login_attempt_entity = user_auth_app_manager.get_entity("user_login_attempt")
+
+        email = unique_email()
+        async with user_auth_app_manager.database.get_session() as session:
+            user = await user_service._create_user_internal(
+                session=session, email=email, password="Password123!",
+                language_id="en", is_super_user=False, send_verification_email=False
+            )
+            await session.commit()
+
+            original_config = auth_service.auth_utils.config
+            auth_service.auth_utils.config = _TEST_AUTH_CONFIG
+            try:
+                with patch("lys.apps.user_auth.modules.user.services.AuthUtils") as mock_auth:
+                    mock_auth.return_value.config = _TEST_AUTH_CONFIG
+                    all_claims = []
+                    for _ in range(3):
+                        _, claims = await auth_service.login(
+                            LoginInputModel(login=email, password="Password123!"), Response(), session
+                        )
+                        await session.commit()
+                        all_claims.append(claims)
+            finally:
+                auth_service.auth_utils.config = original_config
+
+            result = await session.execute(
+                select(user_login_attempt_entity.created_at).where(
+                    user_login_attempt_entity.user_id == user.id,
+                    user_login_attempt_entity.status_id == SUCCEED_LOGIN_ATTEMPT_STATUS,
+                ).order_by(user_login_attempt_entity.created_at.asc())
+            )
+            login_times = list(result.scalars())
+
+        assert len(login_times) == 3
+        assert all_claims[0]["previous_login_at"] is None
+        assert all_claims[1]["previous_login_at"] == login_times[0].isoformat()
+        assert all_claims[2]["previous_login_at"] == login_times[1].isoformat()
+
+
 class TestAccessTokenStoreRoundtrip:
     """Verify the middleware contract: a freshly issued token resolves back to its claims."""
 

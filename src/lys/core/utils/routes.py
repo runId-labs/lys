@@ -66,7 +66,14 @@ def load_routes_manifest(path: str) -> Optional[Dict[str, Any]]:
     try:
         with open(path, "r", encoding="utf-8") as f:
             manifest = json.load(f)
-            logger.debug(f"Loaded routes manifest from {path}: {len(manifest.get('routes', []))} routes")
+            routes = manifest.get("routes", [])
+            logger.debug(f"Loaded routes manifest from {path}: {len(routes)} routes")
+            if routes and not any(isinstance(route, dict) and "main_webservices" in route for route in routes):
+                # filter_routes_by_permissions reads no gate: every page is offered to every user
+                logger.warning(
+                    f"Routes manifest {path} declares no 'main_webservices': the navigate tool lists "
+                    f"every page to every user. Regenerate it with lys-front >= 0.21.0."
+                )
             return manifest
     except FileNotFoundError:
         logger.warning(f"Routes manifest not found at {path}")
@@ -81,15 +88,17 @@ def filter_routes_by_permissions(
     accessible_webservice_ids: Set[str]
 ) -> List[Dict[str, Any]]:
     """
-    Filter routes based on user's accessible webservices.
+    Keep the routes the user can open.
 
-    Routes are included if:
-    - webservice is null (public page, no permission required)
-    - webservice (converted to snake_case) is in accessible_webservice_ids
+    A route's gate is its ``main_webservices`` (the page's ``mainWebserviceName``,
+    as the manifest generator emits it): a list of webservice names in camelCase.
+    The route is kept when the list is empty or absent (no gate), or when the
+    user can access AT LEAST ONE of them — the any-of rule the front applies to
+    its menus and links, so the assistant never offers a page the menu hides.
 
     Args:
         routes: List of route dicts from the manifest
-        accessible_webservice_ids: Set of webservice IDs the user can access
+        accessible_webservice_ids: Set of webservice IDs (snake_case) the user can access
 
     Returns:
         Filtered list of routes the user can navigate to
@@ -97,16 +106,13 @@ def filter_routes_by_permissions(
     filtered = []
 
     for route in routes:
-        webservice = route.get("webservice")
+        gate = route.get("main_webservices") or []
 
-        if webservice is None:
-            # Public page, no permission required
+        if not gate:
+            # No gate: the page is open to every connected user
             filtered.append(route)
-        else:
-            # Convert camelCase to snake_case and check permission
-            webservice_snake = camel_to_snake(webservice)
-            if webservice_snake in accessible_webservice_ids:
-                filtered.append(route)
+        elif any(camel_to_snake(webservice) in accessible_webservice_ids for webservice in gate):
+            filtered.append(route)
 
     logger.debug(
         f"Filtered routes: {len(filtered)}/{len(routes)} "

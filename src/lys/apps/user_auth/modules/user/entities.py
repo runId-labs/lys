@@ -213,6 +213,12 @@ class UserRefreshToken(Entity):
         nullable=True
     )
 
+    previous_login_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        comment="successful login before the one that opened this session, carried over on refresh",
+        nullable=True
+    )
+
     user_id: Mapped[str] = mapped_column(ForeignKey("user.id", ondelete='CASCADE'))
 
     @declared_attr

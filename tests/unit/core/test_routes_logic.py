@@ -5,6 +5,7 @@ Tests camel_to_snake, load_routes_manifest, filter_routes_by_permissions, and bu
 """
 
 import json
+import logging
 import os
 import tempfile
 
@@ -86,30 +87,53 @@ class TestLoadRoutesManifest:
             os.unlink(temp_path)
 
 
+    @staticmethod
+    def _load(manifest, tmp_path):
+        path = tmp_path / "routes-manifest.json"
+        path.write_text(json.dumps(manifest), encoding="utf-8")
+        return load_routes_manifest(str(path))
+
+    def test_warns_when_no_route_declares_a_gate(self, tmp_path, caplog):
+        """A manifest older than main_webservices lists every page to every user: say so."""
+        with caplog.at_level(logging.WARNING, logger="lys.core.utils.routes"):
+            self._load({"routes": [{"path": "/home"}, {"path": "/users", "webservices": ["allUsers"]}]}, tmp_path)
+        assert "main_webservices" in caplog.text
+
+    def test_no_warning_when_routes_declare_gates(self, tmp_path, caplog):
+        with caplog.at_level(logging.WARNING, logger="lys.core.utils.routes"):
+            self._load({"routes": [{"path": "/home", "main_webservices": []}]}, tmp_path)
+        assert caplog.text == ""
+
 class TestFilterRoutesByPermissions:
 
-    def test_public_routes_always_included(self):
-        routes = [{"path": "/home", "webservice": None}]
+    def test_ungated_routes_always_included(self):
+        routes = [{"path": "/home", "main_webservices": []}]
         result = filter_routes_by_permissions(routes, set())
         assert len(result) == 1
         assert result[0]["path"] == "/home"
 
     def test_permitted_route_included(self):
-        routes = [{"path": "/users", "webservice": "allUsers"}]
+        routes = [{"path": "/users", "main_webservices": ["allUsers"]}]
         result = filter_routes_by_permissions(routes, {"all_users"})
         assert len(result) == 1
         assert result[0]["path"] == "/users"
 
     def test_non_permitted_route_excluded(self):
-        routes = [{"path": "/admin", "webservice": "adminPanel"}]
+        routes = [{"path": "/admin", "main_webservices": ["adminPanel"]}]
         result = filter_routes_by_permissions(routes, {"all_users"})
         assert len(result) == 0
 
+    def test_any_of_gate_needs_one_of_them(self):
+        routes = [{"path": "/users", "main_webservices": ["allUsers", "allClients"]}]
+        assert len(filter_routes_by_permissions(routes, {"all_clients"})) == 1
+        assert len(filter_routes_by_permissions(routes, {"all_users"})) == 1
+        assert len(filter_routes_by_permissions(routes, {"all_products"})) == 0
+
     def test_mixed_routes(self):
         routes = [
-            {"path": "/home", "webservice": None},
-            {"path": "/users", "webservice": "allUsers"},
-            {"path": "/admin", "webservice": "adminPanel"},
+            {"path": "/home", "main_webservices": []},
+            {"path": "/users", "main_webservices": ["allUsers"]},
+            {"path": "/admin", "main_webservices": ["adminPanel"]},
         ]
         result = filter_routes_by_permissions(routes, {"all_users"})
         assert len(result) == 2
@@ -123,11 +147,11 @@ class TestFilterRoutesByPermissions:
         assert result == []
 
     def test_no_permissions(self):
-        routes = [{"path": "/users", "webservice": "allUsers"}]
+        routes = [{"path": "/users", "main_webservices": ["allUsers"]}]
         result = filter_routes_by_permissions(routes, set())
         assert len(result) == 0
 
-    def test_route_without_webservice_key(self):
+    def test_route_without_gate_key(self):
         routes = [{"path": "/about"}]
         result = filter_routes_by_permissions(routes, set())
         assert len(result) == 1

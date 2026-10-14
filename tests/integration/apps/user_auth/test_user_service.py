@@ -18,7 +18,7 @@ Test approach: Real SQLite in-memory database with actual UserService operations
 
 import pytest
 import pytest_asyncio
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from unittest.mock import patch, MagicMock
 from uuid import uuid4
 
@@ -1677,6 +1677,37 @@ class TestUserRefreshTokenService:
             t2 = await refresh_token_service.get_by_id(token2.id, session)
             assert t1.revoked_at is not None
             assert t2.revoked_at is not None
+
+    @pytest.mark.asyncio
+    async def test_refresh_carries_previous_login_at(self, user_auth_app_manager):
+        """The previous login is fixed when the session opens and survives every refresh."""
+        user_service = user_auth_app_manager.get_service("user")
+        refresh_token_service = user_auth_app_manager.get_service("user_refresh_token")
+        from lys.apps.user_auth.modules.user.models import GetUserRefreshTokenInputModel
+
+        previous_login_at = datetime.now(timezone.utc) - timedelta(days=2)
+        email = _unique_email()
+        async with user_auth_app_manager.database.get_session() as session:
+            user = await user_service._create_user_internal(
+                session=session, email=email, password="Password123!",
+                language_id="en", is_super_user=False, send_verification_email=False
+            )
+            await session.commit()
+
+            with patch("lys.apps.user_auth.modules.user.services.AuthUtils") as mock_auth:
+                mock_auth.return_value.config = _TEST_AUTH_CONFIG
+                token = await refresh_token_service.generate(
+                    user, session=session, previous_login_at=previous_login_at
+                )
+                await session.commit()
+
+                refreshed = await refresh_token_service.refresh(
+                    GetUserRefreshTokenInputModel(refresh_token_id=token.id), session=session
+                )
+                await session.commit()
+
+            assert refreshed.id != token.id
+            assert refreshed.previous_login_at == previous_login_at
 
     @pytest.mark.asyncio
     async def test_get_revoked_token_raises_error(self, user_auth_app_manager):

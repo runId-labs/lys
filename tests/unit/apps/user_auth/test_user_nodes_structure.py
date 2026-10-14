@@ -111,6 +111,43 @@ class TestUserNodeStructure:
         from lys.apps.user_auth.modules.user.nodes import UserNode
         assert hasattr(UserNode, "status")
 
+    def test_has_previous_login_at_field(self):
+        """Test UserNode has previous_login_at field."""
+        from lys.apps.user_auth.modules.user.nodes import UserNode
+        assert hasattr(UserNode, "previous_login_at")
+
+    @staticmethod
+    def _resolve_previous_login_at(entity_id, connected_user):
+        """Call the previous_login_at resolver for a node on ``entity_id`` viewed by ``connected_user``."""
+        from types import SimpleNamespace
+        from lys.apps.user_auth.modules.user.nodes import UserNode
+        node = SimpleNamespace(_entity=SimpleNamespace(id=entity_id))
+        info = SimpleNamespace(context=SimpleNamespace(connected_user=connected_user))
+        return UserNode.previous_login_at.base_resolver.wrapped_func(node, info)
+
+    def test_previous_login_at_reads_the_session_claim(self):
+        """The viewer's own node answers the value fixed when the session opened."""
+        from datetime import datetime, timezone
+        value = self._resolve_previous_login_at(
+            "user-1", {"sub": "user-1", "previous_login_at": "2026-10-01T08:30:00+00:00"}
+        )
+        assert value == datetime(2026, 10, 1, 8, 30, tzinfo=timezone.utc)
+
+    def test_previous_login_at_is_null_for_another_user(self):
+        """Login history is personal: another user's node answers null, not the viewer's value."""
+        value = self._resolve_previous_login_at(
+            "user-2", {"sub": "user-1", "previous_login_at": "2026-10-01T08:30:00+00:00"}
+        )
+        assert value is None
+
+    def test_previous_login_at_is_null_without_a_previous_login(self):
+        """First login, or a session opened before the claim existed."""
+        assert self._resolve_previous_login_at("user-1", {"sub": "user-1", "previous_login_at": None}) is None
+        assert self._resolve_previous_login_at("user-1", {"sub": "user-1"}) is None
+
+    def test_previous_login_at_is_null_when_anonymous(self):
+        assert self._resolve_previous_login_at("user-1", None) is None
+
     def test_status_is_async(self):
         """Test UserNode.status has an async resolver."""
         from lys.apps.user_auth.modules.user.nodes import UserNode

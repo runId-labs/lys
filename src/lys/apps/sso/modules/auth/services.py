@@ -30,6 +30,7 @@ from lys.apps.sso.errors import (
     SSO_PROVIDER_MISCONFIGURED,
     SSO_TENANT_NOT_ALLOWED,
 )
+from lys.apps.user_auth.modules.user.consts import ENABLED_USER_STATUS
 from lys.core.errors import LysError
 from lys.core.registries import register_service
 from lys.core.services import Service
@@ -363,7 +364,6 @@ class SSOAuthService(Service):
         sso_link_service = cls.app_manager.get_service("user_sso_link")
         user_service = cls.app_manager.get_service("user")
         auth_service = cls.app_manager.get_service("auth")
-        refresh_token_service = cls.app_manager.get_service("user_refresh_token")
 
         # Find user by SSO link only (no auto-link by email to prevent account takeover)
         link = await sso_link_service.find_by_provider_and_external_id(provider, external_user_id, session)
@@ -374,10 +374,17 @@ class SSOAuthService(Service):
         if not user:
             return f"{front_url}?error=SSO_USER_NOT_FOUND"
 
+        # Same gate as the password path: a disabled account opens no session,
+        # whatever the credential.
+        if user.status_id != ENABLED_USER_STATUS:
+            logger.warning(f"SSO login refused for disabled user '{user.id}'")
+            return f"{front_url}?error=SSO_USER_BLOCKED"
+
+        # Same login history as the password path: a session opened by SSO is a login.
+        await auth_service.record_successful_login(user, session)
+
         # Generate tokens and set cookies
-        refresh_token = await refresh_token_service.generate(user, session=session)
-        access_token, claims = await auth_service.generate_access_token(user, session)
-        await auth_service.set_auth_cookies(response, refresh_token.id, access_token, claims.get("xsrf_token"))
+        await auth_service.open_session(user, response, session)
 
         return front_url
 

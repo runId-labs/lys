@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from sqlalchemy import ForeignKey, SmallInteger
+from sqlalchemy import ForeignKey, Index, SmallInteger
 from sqlalchemy.orm import Mapped, mapped_column, relationship, declared_attr
 from sqlalchemy.types import DateTime
 
@@ -35,6 +35,11 @@ class LoginAttempt(Entity):
 @register_entity()
 class UserLoginAttempt(LoginAttempt):
     __tablename__ = "user_login_attempt"
+
+    # Every login reads the user's latest attempts (lockout state, previous login)
+    __table_args__ = (
+        Index("ix_user_login_attempt_user_id_created_at", "user_id", "created_at"),
+    )
 
     user_id: Mapped[str] = mapped_column(ForeignKey("user.id", ondelete='CASCADE'))
 

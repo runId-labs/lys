@@ -99,6 +99,42 @@ class TestAuthServiceGetUserLastLoginAttempt:
         assert "session" in params
 
 
+class TestAuthServiceRecordSuccessfulLogin:
+    """The success row of the login history, shared by every credential path."""
+
+    def test_method_exists(self):
+        from lys.apps.user_auth.modules.auth.services import AuthService
+        assert hasattr(AuthService, "record_successful_login")
+
+    def test_method_is_async(self):
+        from lys.apps.user_auth.modules.auth.services import AuthService
+        assert inspect.iscoroutinefunction(AuthService.record_successful_login)
+
+    def test_method_signature(self):
+        from lys.apps.user_auth.modules.auth.services import AuthService
+        params = list(inspect.signature(AuthService.record_successful_login).parameters.keys())
+        assert "user" in params
+        assert "session" in params
+
+
+class TestAuthServiceGetPreviousSuccessfulLoginAt:
+    """Where the user left off: the successful login before the current one."""
+
+    def test_method_exists(self):
+        from lys.apps.user_auth.modules.auth.services import AuthService
+        assert hasattr(AuthService, "get_previous_successful_login_at")
+
+    def test_method_is_async(self):
+        from lys.apps.user_auth.modules.auth.services import AuthService
+        assert inspect.iscoroutinefunction(AuthService.get_previous_successful_login_at)
+
+    def test_method_signature(self):
+        from lys.apps.user_auth.modules.auth.services import AuthService
+        params = list(inspect.signature(AuthService.get_previous_successful_login_at).parameters.keys())
+        assert "user_id" in params
+        assert "session" in params
+
+
 class TestAuthServiceGetLockoutDuration:
     """Tests for AuthService._get_lockout_duration method."""
 

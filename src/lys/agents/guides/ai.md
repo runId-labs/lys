@@ -68,6 +68,7 @@ is a declaration, not a filter: **each page declares its params under the route'
   "name": "dossierDetail",
   "path": "/dossiers/:id",
   "webservices": ["dossierById"],
+  "main_webservices": ["dossierById"],
   "params": {
     "dossierId": {"type": "global_id"},
     "statuses":  {"type": "enum", "values": ["draft", "sent", "paid"], "multiple": true},

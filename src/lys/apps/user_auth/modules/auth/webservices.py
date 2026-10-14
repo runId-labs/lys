@@ -103,7 +103,9 @@ class AuthTokenMutation(Mutation):
         await auth_service.revoke_access_token(request.cookies.get(ACCESS_COOKIE_KEY))
 
         # generate the user access token
-        access_token, claims = await auth_service.generate_access_token(refresh_token.user, session)
+        access_token, claims = await auth_service.generate_access_token(
+            refresh_token.user, session, previous_login_at=refresh_token.previous_login_at
+        )
 
         # set authentication cookies
         await auth_service.set_auth_cookies(response, refresh_token.id, access_token, claims.get("xsrf_token"))

@@ -85,6 +85,7 @@ Auth Server                             Business Microservice
     "is_super_user": false,
     "exp": 1734000000,
     "xsrf_token": "abc123...",
+    "previous_login_at": "2026-10-13T08:42:11.402000+00:00",
 
     "webservices": {
         "logout": "full",
@@ -118,6 +119,7 @@ Auth Server                             Business Microservice
 | `is_super_user` | boolean | Super user bypass flag |
 | `exp` | integer | Expiration timestamp |
 | `xsrf_token` | string | CSRF protection token |
+| `previous_login_at` | string \| null | Successful login before the one that opened the session (ISO 8601), carried over on refresh; null on a first login |
 | `webservices` | dict | Webservice name -> access type ("full" or "owner") |
 | `organizations` | dict | Organization ID -> {level, webservices[]} |
 

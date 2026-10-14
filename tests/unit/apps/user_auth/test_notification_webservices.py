@@ -68,6 +68,14 @@ class TestNotificationQueryStructure:
         assert sig.parameters["is_read"].annotation == Optional[bool]
         assert sig.parameters["severity_id"].annotation == Optional[str]
 
+    def test_all_notifications_accepts_created_after_optional(self):
+        from datetime import datetime
+        mod = _get_mod()
+        sig = inspect.signature(mod.NotificationQuery.all_notifications)
+        assert "created_after" in sig.parameters
+        assert sig.parameters["created_after"].default is None
+        assert sig.parameters["created_after"].annotation == Optional[datetime]
+
     def test_has_unread_notifications_count_method(self):
         mod = _get_mod()
         assert hasattr(mod.NotificationQuery, "unread_notifications_count")

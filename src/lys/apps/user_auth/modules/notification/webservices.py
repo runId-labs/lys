@@ -7,6 +7,7 @@ Provides queries and mutations for:
 - Marking multiple notifications as read in bulk
 - Dispatching notification batches (internal service use)
 """
+from datetime import datetime
 from typing import List, Optional
 
 import strawberry
@@ -49,6 +50,7 @@ class NotificationQuery(Query):
         info: Info,
         is_read: Optional[bool] = None,
         severity_id: Optional[str] = None,
+        created_after: Optional[datetime] = None,
     ) -> Select:
         """
         Get all notifications for the authenticated user.
@@ -61,6 +63,8 @@ class NotificationQuery(Query):
             is_read: If set, filter on read state (False → only unread, True → only read).
             severity_id: If set, restrict to notifications whose type carries this
                 severity code (e.g. "ERROR"). Null → all severities.
+            created_after: If set, only the notifications created strictly after this
+                instant — what happened since a given moment (the previous login).
         """
         notification_entity = info.context.app_manager.get_entity("notification")
 
@@ -68,6 +72,9 @@ class NotificationQuery(Query):
 
         if is_read is not None:
             stmt = stmt.where(notification_entity.is_read == is_read)
+
+        if created_after is not None:
+            stmt = stmt.where(notification_entity.created_at > created_after)
 
         if severity_id:
             batch_entity = info.context.app_manager.get_entity("notification_batch")
