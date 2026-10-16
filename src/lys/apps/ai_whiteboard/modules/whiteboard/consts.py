@@ -115,6 +115,27 @@ BOUND_TEXT_PADDING = 5
 # Size floor for a labelled shape, so a one-word note is still a box and not a sliver.
 MIN_SHAPE_WIDTH = 120
 MIN_SHAPE_HEIGHT = 60
+# The text sizes a caller may ask for, by name. Named, not numeric: a slide read from
+# across a room needs "large" and "title", a diagram on a desk "normal", and the names
+# keep a deck consistent where free numbers would give every box its own size.
+TEXT_SIZES = {"small": 13, "normal": FONT_SIZE, "large": 24, "title": 36}
+DEFAULT_TEXT_SIZE = "normal"
+# Unnamed, a text in a frame is set large: a frame is a slide, read from across a room.
+FRAME_TEXT_SIZE = "large"
+# The looks a caller may ask for, by name, mapped to the editor's own knobs. Named for
+# the same reason as the sizes: "clean" and "sketch" are what a presenter chooses between,
+# a roughness of 0 or 1 is how the editor spells it.
+STROKES = {"clean": 0, "sketch": 1}
+CORNERS = {"square": None, "round": {"type": 3}}
+THICKNESSES = {"thin": 1, "bold": 2}
+# Ruled lines by default: what is drawn here is a diagram, a table, a deck for a board
+# meeting - finished work, not a sketch. The hand-drawn stroke stays a theme away.
+DEFAULT_STROKE = "clean"
+# What an element is drawn with when it names no corners and no thickness.
+DEFAULT_CORNERS = "square"
+DEFAULT_THICKNESS = "thin"
+# How a text sits in its box, by the editor's own names.
+ALIGNMENTS = ("left", "center", "right")
 
 
 # ==================== Palette ====================
@@ -183,13 +204,23 @@ CHART_VALUE_GAP = 2
 OPERATION_ADD = "add"
 OPERATION_UPDATE = "update"
 OPERATION_DELETE = "delete"
-OPERATION_KEYS = (OPERATION_ADD, OPERATION_UPDATE, OPERATION_DELETE)
+# The board's look, set once for the whole board: the background, and the stroke every
+# new element is drawn with unless it says otherwise.
+OPERATION_THEME = "theme"
+OPERATION_KEYS = (OPERATION_ADD, OPERATION_UPDATE, OPERATION_DELETE, OPERATION_THEME)
+THEME_FIELDS = ("background", "stroke")
+# Where the board keeps its default stroke: in the scene's appState, next to the
+# background colour the editor already keeps there, so the two travel and save together.
+THEME_STROKE_KEY = "whiteboardStroke"
+DEFAULT_BACKGROUND = "#ffffff"
 
 # The fields an item of a patch may carry - the ones the drawing tool declares, and
 # nothing else. A field outside this list is refused rather than skipped: skipped, a
 # link sent as ``{"arrow": {"from": ..., "to": ...}}`` read as a link with no ends,
 # six free strokes landed on the origin, and the writer was told it had succeeded.
-ITEM_GEOMETRY_FIELDS = ("x", "y", "width", "height", "color", "background")
+ITEM_GEOMETRY_FIELDS = (
+    "x", "y", "width", "height", "color", "background", "size", "align", "stroke", "corners", "thickness",
+)
 ADD_ITEM_FIELDS = (
     "name", "kind", "text", "label", "from", "to", "frame", "headers", "rows", "chart",
     *ITEM_GEOMETRY_FIELDS,
@@ -197,7 +228,19 @@ ADD_ITEM_FIELDS = (
 # ``kind`` is tolerated on an update though nothing reads it there: a writer redrawing a
 # table from new data repeats the kind it gave, and refusing that would refuse a
 # well-formed redraw.
-UPDATE_ITEM_FIELDS = ("name", "kind", "text", "label", "headers", "rows", "chart", *ITEM_GEOMETRY_FIELDS)
+UPDATE_ITEM_FIELDS = ("name", "kind", "text", "label", "frame", "headers", "rows", "chart", *ITEM_GEOMETRY_FIELDS)
+
+# The sheet a slide is drawn on, and the gap between two slides stacked in a column.
+# Only the tool description uses them: a frame takes whatever size its caller gives.
+SLIDE_WIDTH = 1280
+SLIDE_HEIGHT = 720
+SLIDE_GAP = 100
+
+# Two frames whose vertical extents overlap by more than this share of the shorter one
+# sit on the same row of the deck. Without it, a three-pixel offset laid by hand would
+# swap two slides. Mirrored by the editor's own ordering: the two must agree, or the
+# assistant and the screen would not read the same deck.
+SLIDE_ROW_OVERLAP_SHARE = 0.5
 
 
 # Title of a board the chatbot opens for a conversation that has none yet. Conversation

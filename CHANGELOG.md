@@ -7,6 +7,34 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.56.0] - 2026-10-16
+
+### Added
+- `ai_whiteboard` decks: frames are presented as slides in reading order (rows top to
+  bottom, left to right; `consts.SLIDE_ROW_OVERLAP_SHARE`). `scene.slides` /
+  `WhiteboardService.slides` list them, and `read_whiteboard` and the drawing result
+  return `slides`. The `draw_on_whiteboard` description tells the model to draw a story as
+  one frame per step with speaker notes in a `notes-<frame>` sticky note.
+- Coordinates inside a frame count from the frame's corner (add, update, read-back); an
+  unplaced element lands in its frame's grid. `frame` on an update moves an element and
+  its parts into a frame (empty string: out of any); without `x`/`y` it lands in the
+  frame's grid. Frames do not nest.
+- Board theme: a `theme` patch operation (`background`, `stroke` clean/sketch) kept in
+  the scene's `appState` (`THEME_STROKE_KEY`), returned by `read_whiteboard`. Theme keys
+  saved by the editor are read back with a fallback on the default.
+- Named element looks: `size` (small/normal/large/title, default `large` in a frame),
+  `align` (left/center/right), `stroke`, `corners`, `thickness`. A look asked for a
+  bare text is refused. Tables align like a financial table by default (headers
+  centred, figures right, labels left).
+- A table or chart redrawn from new data, a new `size` or a new `align` keeps its frame,
+  colours, look and layout (`customData.whiteboardLayout`), stored apart from its data.
+
+### Changed
+- New whiteboard elements are drawn with ruled lines (`stroke: clean`) unless the
+  board's theme says `sketch`; elements already on a board are unchanged.
+- `draw_on_whiteboard` refuses a non-string `frame`, `size`, `align`, `stroke`, `corners`
+  or `thickness` with `WHITEBOARD_INVALID_OPERATION`.
+
 ## [0.55.1] - 2026-10-14
 
 ### Changed

@@ -528,6 +528,68 @@ class TestFrame:
         with pytest.raises(LysError):
             draw({"add": [{"name": "A", "frame": "nowhere"}]})
 
+    def test_an_update_moves_an_element_and_all_its_parts_into_another_frame(self):
+        board = draw(
+            {"add": [
+                {"name": "slide 1", "kind": "frame", "text": "1", "x": 0, "y": 0},
+                {"name": "slide 2", "kind": "frame", "text": "2", "x": 0, "y": 900},
+                {"name": "chiffres", "kind": "table", "headers": ["a"], "rows": [["1"]], "frame": "slide 1"},
+            ]},
+            {"update": [{"name": "chiffres", "frame": "slide 2", "x": 40, "y": 940}]},
+        )
+        parts = [e for e in board["elements"] if scene_tools._owner(e) == "chiffres" or e["id"] == "chiffres"]
+        assert len(parts) > 1
+        assert {e["frameId"] for e in parts} == {"slide-2"}
+        assert described(board)["chiffres"]["frame"] == "slide-2"
+
+    def test_an_update_carries_the_label_along(self):
+        board = draw(
+            {"add": [
+                {"name": "zone", "kind": "frame", "text": "", "x": 0, "y": 0},
+                {"name": "note", "text": "hello", "x": 600, "y": 600},
+            ]},
+            {"update": [{"name": "note", "frame": "zone"}]},
+        )
+        assert scene_tools.find(board, "note")["frameId"] == "zone"
+        assert scene_tools.find(board, "note-text")["frameId"] == "zone"
+
+    def test_an_empty_frame_takes_the_element_out(self):
+        board = draw(
+            {"add": [
+                {"name": "zone", "kind": "frame", "text": "", "x": 0, "y": 0},
+                {"name": "note", "frame": "zone", "x": 20, "y": 20},
+            ]},
+            {"update": [{"name": "note", "frame": ""}]},
+        )
+        assert scene_tools.find(board, "note")["frameId"] is None
+        assert "frame" not in described(board)["note"]
+
+    def test_moving_into_an_unknown_frame_is_refused(self):
+        with pytest.raises(LysError):
+            draw(
+                {"add": [{"name": "note"}]},
+                {"update": [{"name": "note", "frame": "nowhere"}]},
+            )
+
+    @pytest.mark.parametrize("patches", [
+        # At creation...
+        ({"add": [
+            {"name": "outer", "kind": "frame", "text": "", "x": 0, "y": 0},
+            {"name": "inner", "kind": "frame", "text": "", "frame": "outer", "x": 20, "y": 20},
+        ]},),
+        # ...and afterwards.
+        (
+            {"add": [
+                {"name": "outer", "kind": "frame", "text": "", "x": 0, "y": 0},
+                {"name": "inner", "kind": "frame", "text": "", "x": 900, "y": 0},
+            ]},
+            {"update": [{"name": "inner", "frame": "outer"}]},
+        ),
+    ])
+    def test_a_frame_cannot_sit_in_a_frame(self, patches):
+        with pytest.raises(LysError):
+            draw(*patches)
+
 
 class TestAtomicity:
     """A patch is drawn whole or not at all."""
@@ -820,7 +882,6 @@ class TestContentSizedTable:
             "headers": ["N°", "Société"],
             "rows": [["1", "PREFA BLOC AGREGATS"]],
         }]})
-        columns = {e["id"] for e in board["elements"] if "-col-" in e["id"]}
         rule = next(e for e in board["elements"] if e["id"] == "t-col-1")
         cell = self.cells(board)["t-cell-0-1"]
         # The Société column starts wide (its content), the N° column narrow.
@@ -891,3 +952,482 @@ class TestContentSizedTable:
         described_entry = described(board)["t"]
         assert described_entry["data"]["headers"] == ["a", "Société"]
         assert table["width"] > 80
+
+
+def frame(name, x, y):
+    return {"name": name, "kind": "frame", "text": name, "x": x, "y": y, "width": 1280, "height": 720}
+
+
+class TestSlides:
+    """The deck is the frames in reading order; nothing stores the order."""
+
+    def order(self, *frames):
+        return [slide["name"] for slide in scene_tools.slides(draw({"add": list(frames)}))]
+
+    def test_a_board_without_frames_has_no_deck(self):
+        assert scene_tools.slides(draw({"add": [{"name": "a"}]})) == []
+
+    def test_a_column_reads_top_to_bottom(self):
+        assert self.order(frame("third", 0, 1600), frame("first", 0, 0), frame("second", 0, 800)) == [
+            "first", "second", "third",
+        ]
+
+    def test_a_grid_reads_row_by_row(self):
+        assert self.order(
+            frame("bottom-right", 1400, 800), frame("top-right", 1400, 0),
+            frame("bottom-left", 0, 800), frame("top-left", 0, 0),
+        ) == ["top-left", "top-right", "bottom-left", "bottom-right"]
+
+    def test_a_hand_drawn_offset_keeps_two_frames_on_one_row(self):
+        assert self.order(frame("right", 1400, 40), frame("left", 0, 0)) == ["left", "right"]
+
+    def test_less_than_half_an_overlap_starts_a_new_row(self):
+        assert self.order(
+            frame("second-row", 0, 420), frame("first-row-right", 1400, 0), frame("first-row-left", 0, 0),
+        ) == ["first-row-left", "first-row-right", "second-row"]
+
+    def test_slides_are_numbered_from_one_with_their_title(self):
+        deck = scene_tools.slides(draw({"add": [frame("b", 0, 800), frame("a", 0, 0)]}))
+        assert deck == [{"index": 1, "name": "a", "title": "a"}, {"index": 2, "name": "b", "title": "b"}]
+
+
+class TestSize:
+    """Text sizes are named, measured, and reported back."""
+
+    def test_a_title_is_drawn_in_the_title_face_and_measured_for_it(self):
+        board = draw({"add": [
+            {"name": "small", "kind": "text", "text": "Trésorerie", "x": 0, "y": 0},
+            {"name": "big", "kind": "text", "text": "Trésorerie", "x": 0, "y": 100, "size": "title"},
+        ]})
+        small, big = scene_tools.find(board, "small"), scene_tools.find(board, "big")
+        assert big["fontSize"] == 36 and small["fontSize"] == 16
+        assert big["width"] > small["width"] * 2 and big["height"] > small["height"] * 2
+        assert described(board)["big"]["size"] == "title"
+        assert "size" not in described(board)["small"]
+
+    def test_a_large_note_gets_a_wider_box_and_a_large_label(self):
+        board = draw({"add": [
+            {"name": "normal", "text": "Délais clients passés de 45 à 62 jours", "x": 0, "y": 0},
+            {"name": "large", "text": "Délais clients passés de 45 à 62 jours", "x": 0, "y": 300, "size": "large"},
+        ]})
+        assert scene_tools.find(board, "large-text")["fontSize"] == 24
+        assert scene_tools.find(board, "large")["width"] > scene_tools.find(board, "normal")["width"]
+
+    def test_an_update_resizes_the_text_and_regrows_the_box(self):
+        board = draw(
+            {"add": [{"name": "note", "text": "Délais clients passés de 45 à 62 jours", "x": 0, "y": 0}]},
+            {"update": [{"name": "note", "size": "large"}]},
+        )
+        note, label = scene_tools.find(board, "note"), scene_tools.find(board, "note-text")
+        assert label["fontSize"] == 24
+        # Same width, so the larger face wraps on more lines: the box grew to hold them.
+        assert note["height"] > 60
+        assert label["height"] == note["height"] - 10
+
+    def test_an_unknown_size_is_refused(self):
+        with pytest.raises(LysError):
+            draw({"add": [{"name": "a", "text": "x", "size": "huge"}]})
+
+    def test_a_table_takes_a_size_and_keeps_it_through_a_redraw(self):
+        board = draw(
+            {"add": [{"name": "t", "kind": "table", "headers": ["Mois", "CA"], "rows": [["Juillet", "412"]]}]},
+            {"update": [{"name": "t", "size": "large"}]},
+            {"update": [{"name": "t", "rows": [["Juillet", "412"], ["Août", "380"]]}]},
+        )
+        cells = [e for e in board["elements"] if e.get("type") == "text" and scene_tools._owner(e) == "t"]
+        assert cells and all(cell["fontSize"] == 24 for cell in cells)
+        assert described(board)["t"]["height"] > 3 * 36
+
+    def test_a_chart_is_resized_by_a_redraw(self):
+        board = draw(
+            {"add": [
+                {
+                    "name": "c", "kind": "chart",
+                    "chart": {"type": "bar", "title": "CA", "data": [{"label": "a", "value": 1}]},
+                },
+            ]},
+            {"update": [{"name": "c", "size": "large"}]},
+        )
+        assert scene_tools.find(board, "c-title")["fontSize"] == 24
+        assert described(board)["c"]["size"] == "large"
+        assert described(board)["c"]["data"]["title"] == "CA"
+
+    def test_the_size_and_alignment_are_not_read_back_as_data(self):
+        board = draw({"add": [
+            {"name": "t", "kind": "table", "headers": ["a"], "rows": [["1"]], "size": "large", "align": "center"},
+        ]})
+        entry = described(board)["t"]
+        assert entry["data"] == {"headers": ["a"], "rows": [["1"]]}
+        assert (entry["size"], entry["align"]) == ("large", "center")
+
+
+class TestFrameCoordinates:
+    """Inside a frame, coordinates are the frame's: a slide is a sheet, wherever it sits."""
+
+    def test_an_element_in_a_frame_is_placed_from_the_frames_corner(self):
+        board = draw({"add": [
+            frame("slide", 0, 820),
+            {"name": "titre", "kind": "text", "text": "Causes", "x": 60, "y": 40, "frame": "slide"},
+        ]})
+        element = scene_tools.find(board, "titre")
+        assert (element["x"], element["y"]) == (60, 860)
+        # And read back the way it was given.
+        assert (described(board)["titre"]["x"], described(board)["titre"]["y"]) == (60, 40)
+
+    def test_an_unplaced_element_lands_inside_its_frame(self):
+        board = draw({"add": [
+            frame("slide", 0, 820),
+            {"name": "a", "frame": "slide"},
+            {"name": "b", "frame": "slide"},
+        ]})
+        a, b = scene_tools.find(board, "a"), scene_tools.find(board, "b")
+        assert 820 <= a["y"] < 820 + 720 and 820 <= b["y"] < 820 + 720
+        assert (a["x"], a["y"]) != (b["x"], b["y"])
+
+    def test_an_update_moves_from_the_frames_corner(self):
+        board = draw(
+            {"add": [frame("slide", 0, 820), {"name": "a", "frame": "slide", "x": 0, "y": 0}]},
+            {"update": [{"name": "a", "x": 700, "y": 100}]},
+        )
+        a = scene_tools.find(board, "a")
+        assert (a["x"], a["y"]) == (700, 920)
+
+    def test_moving_into_another_frame_counts_from_that_frame(self):
+        board = draw(
+            {"add": [
+                frame("un", 0, 0), frame("deux", 0, 820),
+                {"name": "a", "frame": "un", "x": 100, "y": 100},
+            ]},
+            {"update": [{"name": "a", "frame": "deux", "x": 100, "y": 100}]},
+        )
+        a = scene_tools.find(board, "a")
+        assert a["frameId"] == "deux" and (a["x"], a["y"]) == (100, 920)
+
+
+class TestLook:
+    """A board has a look, and an element may differ from it - by name, never by number."""
+
+    def test_the_theme_sets_the_background_and_the_stroke_of_what_follows(self):
+        board = draw({"theme": {"background": "#f8f4e8", "stroke": "clean"}, "add": [{"name": "a"}]})
+        assert scene_tools.theme(board) == {"background": "#f8f4e8", "stroke": "clean"}
+        assert scene_tools.find(board, "a")["roughness"] == 0
+
+    def test_a_board_starts_ruled_on_white(self):
+        board = draw({"add": [{"name": "a"}]})
+        assert scene_tools.theme(board) == {"background": "#ffffff", "stroke": "clean"}
+        assert scene_tools.find(board, "a")["roughness"] == 0
+
+    @pytest.mark.parametrize("stroke", ["garbage", ["sketch"], 1])
+    def test_a_stroke_saved_by_the_editor_that_no_name_covers_reads_as_the_default(self, stroke):
+        scene = {**scene_tools.empty_scene(), "appState": {"whiteboardStroke": stroke}}
+        assert scene_tools.theme(scene)["stroke"] == "clean"
+        board = scene_tools.apply_operations(scene, {"add": [{"name": "a"}]})
+        assert scene_tools.find(board, "a")["roughness"] == 0
+
+    @pytest.mark.parametrize("background", ["javascript:alert(1)", {"r": 255}, ""])
+    def test_a_background_that_is_not_a_colour_reads_as_white(self, background):
+        scene = {**scene_tools.empty_scene(), "appState": {"viewBackgroundColor": background}}
+        assert scene_tools.theme(scene)["background"] == "#ffffff"
+
+    def test_the_theme_does_not_redraw_what_is_there(self):
+        board = draw({"add": [{"name": "a"}]}, {"theme": {"stroke": "sketch"}, "add": [{"name": "b"}]})
+        assert scene_tools.find(board, "a")["roughness"] == 0
+        assert scene_tools.find(board, "b")["roughness"] == 1
+
+    def test_an_element_overrides_the_theme_and_says_so(self):
+        board = draw({"theme": {"stroke": "clean"}, "add": [
+            {"name": "a", "stroke": "sketch", "corners": "round", "thickness": "bold"},
+        ]})
+        a = scene_tools.find(board, "a")
+        assert (a["roughness"], a["roundness"], a["strokeWidth"]) == (1, {"type": 3}, 2)
+        assert {k: described(board)["a"][k] for k in ("stroke", "corners", "thickness")} == {
+            "stroke": "sketch", "corners": "round", "thickness": "bold",
+        }
+
+    def test_a_text_cannot_be_dressed_afterwards_either(self):
+        with pytest.raises(LysError):
+            draw(
+                {"add": [{"name": "t", "kind": "text", "text": "Titre"}]},
+                {"update": [{"name": "t", "thickness": "bold"}]},
+            )
+
+    def test_an_update_redresses_the_whole_figure(self):
+        board = draw(
+            {"add": [{"name": "t", "kind": "table", "headers": ["a"], "rows": [["1"]]}]},
+            {"update": [{"name": "t", "stroke": "clean", "thickness": "bold"}]},
+        )
+        parts = [
+            e for e in board["elements"]
+            if e.get("type") != "text" and (scene_tools._owner(e) == "t" or e["id"] == "t")
+        ]
+        assert parts and all(p["roughness"] == 0 and p["strokeWidth"] == 2 for p in parts)
+
+    @pytest.mark.parametrize("patch", [
+        {"theme": {"stroke": "wobbly"}},
+        {"theme": {"background": "blue"}},
+        {"theme": {"font": "hand"}},
+        {"theme": "clean"},
+        {"add": [{"name": "a", "corners": "sharp"}]},
+        # A text has no line: asking for one is refused, not dropped.
+        {"add": [{"name": "t", "kind": "text", "text": "Titre", "thickness": "bold"}]},
+    ])
+    def test_an_unknown_look_is_refused(self, patch):
+        with pytest.raises(LysError):
+            draw(patch)
+
+
+class TestAlign:
+    """Where a text sits, by name, on texts, boxes and every cell of a table."""
+
+    def test_a_table_centres_its_cells_and_keeps_it_through_a_redraw(self):
+        board = draw(
+            {"add": [
+                {
+                    "name": "t", "kind": "table", "headers": ["Mois", "CA"], "rows": [["Juillet", "412"]],
+                    "align": "center",
+                },
+            ]},
+            {"update": [{"name": "t", "rows": [["Juillet", "412"], ["Août", "380"]]}]},
+        )
+        cells = [e for e in board["elements"] if e.get("type") == "text" and scene_tools._owner(e) == "t"]
+        assert cells and all(cell["textAlign"] == "center" for cell in cells)
+        assert described(board)["t"]["align"] == "center"
+
+    def test_a_table_reads_like_a_financial_one_by_default(self):
+        board = draw({"add": [{
+            "name": "t", "kind": "table", "headers": ["Indicateur", "2024", "2025"],
+            "rows": [["CA", "6 145 k€", "5 624 k€"], ["Marge", "-8,5 %", "n/a"], ["Délais", "45 j", "+17 j"]],
+        }]})
+        cells = {
+            e["id"]: e["textAlign"]
+            for e in board["elements"] if e.get("type") == "text" and scene_tools._owner(e) == "t"
+        }
+        assert cells["t-cell-0-0"] == cells["t-cell-0-2"] == "center"
+        assert cells["t-cell-1-0"] == "left" and cells["t-cell-1-1"] == "right"
+        assert cells["t-cell-2-1"] == "right" and cells["t-cell-2-2"] == "left"
+        assert cells["t-cell-3-1"] == "right" and cells["t-cell-3-2"] == "right"
+        assert "align" not in described(board)["t"]
+
+    def test_a_table_is_realigned_in_place(self):
+        board = draw(
+            {"add": [{"name": "t", "kind": "table", "headers": ["a"], "rows": [["1"]]}]},
+            {"update": [{"name": "t", "align": "right"}]},
+        )
+        cells = [e for e in board["elements"] if e.get("type") == "text" and scene_tools._owner(e) == "t"]
+        assert all(cell["textAlign"] == "right" for cell in cells)
+
+    def test_a_text_and_a_box_take_an_alignment(self):
+        board = draw(
+            {"add": [
+                {"name": "titre", "kind": "text", "text": "Titre", "align": "center"},
+                {"name": "note", "text": "Note", "align": "left"},
+                {"name": "plain", "text": "Plain"},
+            ]},
+            {"update": [{"name": "plain", "align": "right"}]},
+        )
+        assert scene_tools.find(board, "titre")["textAlign"] == "center"
+        assert scene_tools.find(board, "note-text")["textAlign"] == "left"
+        assert scene_tools.find(board, "plain-text")["textAlign"] == "right"
+        assert described(board)["titre"]["align"] == "center"
+        assert described(board)["plain"]["align"] == "right"
+
+    def test_an_unknown_alignment_is_refused(self):
+        with pytest.raises(LysError):
+            draw({"add": [{"name": "a", "text": "x", "align": "justify"}]})
+
+
+class TestRedrawKeepsWhatItWasDrawnWith:
+    """A redraw from new data changes the data, not the frame, the look or the layout."""
+
+    def test_a_table_in_a_frame_stays_in_it_when_resized(self):
+        board = draw(
+            {"add": [
+                frame("slide", 1000, 1000),
+                {"name": "t", "kind": "table", "frame": "slide", "x": 10, "y": 10, "headers": ["a"], "rows": [["1"]]},
+            ]},
+            {"update": [{"name": "t", "size": "normal"}]},
+        )
+        parts = [e for e in board["elements"] if scene_tools._owner(e) == "t"]
+        assert parts and {e["frameId"] for e in parts} == {"slide"}
+        entry = described(board)["t"]
+        assert (entry["x"], entry["y"], entry["frame"]) == (10, 10, "slide")
+
+    def test_new_rows_with_coordinates_count_from_the_frame(self):
+        board = draw(
+            {"add": [
+                frame("slide", 1000, 1000),
+                {"name": "t", "kind": "table", "frame": "slide", "x": 10, "y": 10, "headers": ["a"], "rows": [["1"]]},
+            ]},
+            {"update": [{"name": "t", "rows": [["1"], ["2"]], "x": 50, "y": 60}]},
+        )
+        table = scene_tools.find(board, "t")
+        assert (table["x"], table["y"], table["frameId"]) == (1050, 1060, "slide")
+
+    def test_a_table_moved_into_a_frame_with_new_rows_is_not_offset_twice(self):
+        board = draw(
+            {"add": [frame("slide", 1000, 1000), {"name": "t", "kind": "table", "headers": ["a"], "rows": [["1"]]}]},
+            {"update": [{"name": "t", "frame": "slide", "rows": [["2"]], "x": 20, "y": 30}]},
+        )
+        table = scene_tools.find(board, "t")
+        assert (table["x"], table["y"], table["frameId"]) == (1020, 1030, "slide")
+
+    def test_a_default_large_table_stays_large(self):
+        board = draw(
+            {"add": [
+                frame("slide", 0, 0),
+                {"name": "t", "kind": "table", "frame": "slide", "headers": ["a"], "rows": [["1"]]},
+            ]},
+            {"update": [{"name": "t", "rows": [["2"]]}]},
+        )
+        assert scene_tools.find(board, "t-cell-1-0")["fontSize"] == 24
+
+    def test_the_look_and_colour_survive_new_data(self):
+        board = draw(
+            {"theme": {"stroke": "sketch"}, "add": [
+                {
+                    "name": "t", "kind": "table", "headers": ["a"], "rows": [["1"]],
+                    "thickness": "bold", "color": "#c92a2a",
+                },
+            ]},
+            {"theme": {"stroke": "clean"}},
+            {"update": [{"name": "t", "rows": [["1"], ["2"]]}]},
+        )
+        table = scene_tools.find(board, "t")
+        assert (table["roughness"], table["strokeWidth"], table["strokeColor"]) == (1, 2, "#c92a2a")
+
+    def test_a_chart_keeps_the_width_it_was_given(self):
+        chart = {"type": "bar", "data": [{"label": "a", "value": 1}]}
+        board = draw(
+            {"add": [{"name": "c", "kind": "chart", "chart": chart, "width": 640, "height": 360}]},
+            {"update": [{"name": "c", "chart": {**chart, "data": [{"label": "a", "value": 2}]}}]},
+        )
+        assert (described(board)["c"]["width"], described(board)["c"]["height"]) == (640, 365)
+
+
+class TestReframeCoordinates:
+    """Coordinates on an update count from the frame the element ends up in."""
+
+    def test_leaving_a_frame_counts_from_the_board(self):
+        board = draw(
+            {"add": [frame("slide", 0, 820), {"name": "a", "frame": "slide", "x": 10, "y": 10}]},
+            {"update": [{"name": "a", "frame": "", "x": 2000, "y": 50}]},
+        )
+        a = scene_tools.find(board, "a")
+        assert (a["x"], a["y"], a["frameId"]) == (2000, 50, None)
+
+    def test_entering_a_frame_without_coordinates_lands_inside_it(self):
+        board = draw(
+            {"add": [frame("slide", 0, 820), {"name": "a", "x": 3000, "y": 0}]},
+            {"update": [{"name": "a", "frame": "slide"}]},
+        )
+        a = scene_tools.find(board, "a")
+        assert a["frameId"] == "slide"
+        assert 0 <= a["x"] < 1280 and 820 <= a["y"] < 820 + 720
+
+    def test_restating_the_current_frame_does_not_move_the_element(self):
+        board = draw(
+            {"add": [frame("slide", 0, 820), {"name": "a", "frame": "slide", "x": 300, "y": 200}]},
+            {"update": [{"name": "a", "frame": "slide"}]},
+        )
+        a = scene_tools.find(board, "a")
+        assert (a["x"], a["y"]) == (300, 1020)
+
+
+class TestReadBackLook:
+    """A look is reported only where it means something."""
+
+    def test_a_free_text_reports_no_stroke(self):
+        board = draw({"add": [{"name": "t", "kind": "text", "text": "Titre"}, {"name": "n", "stroke": "sketch"}]})
+        assert "stroke" not in described(board)["t"]
+        assert described(board)["n"]["stroke"] == "sketch"
+
+
+class TestNamedFieldTypes:
+    """A named field that is not a string is refused, never a TypeError."""
+
+    @pytest.mark.parametrize("patch", [
+        {"add": [{"name": "a", "size": ["large"]}]},
+        {"add": [{"name": "a", "align": {"x": 1}}]},
+        {"add": [{"name": "a", "stroke": ["clean"]}]},
+        {"add": [{"name": "a", "frame": 3}]},
+        {"update": [{"name": "a", "corners": ["round"]}]},
+        {"theme": {"stroke": ["sketch"]}},
+    ])
+    def test_refused(self, patch):
+        with pytest.raises(LysError):
+            draw({"add": [{"name": "a"}]}, patch)
+
+    def test_a_long_run_of_spaces_is_text(self):
+        assert scene_tools._cell_align("1" + " " * 2000 + "!", is_header=False) == "left"
+
+
+class TestTextRefit:
+    """A text changed in content or size is measured again at its size."""
+
+    def test_a_free_text_rewritten_longer_grows(self):
+        board = draw(
+            {"add": [{"name": "t", "kind": "text", "text": "Court", "size": "large"}]},
+            {"update": [{"name": "t", "text": "Un titre nettement plus long"}]},
+        )
+        t = scene_tools.find(board, "t")
+        assert t["fontSize"] == 24 and t["width"] > 200
+
+    def test_a_free_text_resized_grows(self):
+        board = draw(
+            {"add": [{"name": "t", "kind": "text", "text": "Trésorerie"}]},
+            {"update": [{"name": "t", "size": "title"}]},
+        )
+        t = scene_tools.find(board, "t")
+        assert t["fontSize"] == 36 and t["height"] > 36
+
+    def test_an_arrow_label_is_measured_at_its_size(self):
+        board = draw(
+            {"add": [
+                {"name": "a", "x": 0, "y": 0}, {"name": "b", "x": 600, "y": 0},
+                {"name": "flux", "kind": "arrow", "from": "a", "to": "b", "label": "x"},
+            ]},
+            {"update": [{"name": "flux", "label": "1,2 M€ par an"}]},
+            {"update": [{"name": "flux", "size": "large"}]},
+        )
+        label = scene_tools.find(board, "flux-text")
+        assert label["fontSize"] == 24 and label["width"] > 100
+
+    def test_a_fixed_width_text_set_in_the_editor_keeps_its_box(self):
+        board = draw({"add": [{"name": "t", "kind": "text", "text": "Court"}]})
+        fixed = {**scene_tools.find(board, "t"), "autoResize": False, "width": 80, "height": 20}
+        board = {**board, "elements": [fixed]}
+        board = scene_tools.apply_operations(board, {"update": [{"name": "t", "text": "Un texte bien plus long"}]})
+        t = scene_tools.find(board, "t")
+        assert (t["width"], t["height"]) == (80, 20)
+
+    @pytest.mark.parametrize("field, value", [("align", "center"), ("size", "large")])
+    def test_a_frame_carries_no_text_to_change(self, field, value):
+        with pytest.raises(LysError):
+            draw({"add": [frame("slide", 0, 0)]}, {"update": [{"name": "slide", field: value}]})
+
+
+class TestImageChartLayout:
+    """An image chart resized by hand keeps its size when its data changes."""
+
+    def test_the_new_size_survives_a_redraw(self):
+        chart = {"type": "pie", "data": [{"label": "A", "value": 3}]}
+        board = draw(
+            {"add": [{"name": "c", "kind": "chart", "chart": chart}]},
+            {"update": [{"name": "c", "width": 500, "height": 400}]},
+            {"update": [{"name": "c", "chart": {**chart, "data": [{"label": "A", "value": 4}]}}]},
+        )
+        c = scene_tools.find(board, "c")
+        assert (c["width"], c["height"]) == (500, 400)
+
+
+class TestFullFrame:
+    """A frame with no free cell left stacks the next element under its members."""
+
+    def test_an_unplaced_element_goes_under_what_fills_the_frame(self):
+        board = draw({"add": [
+            {"name": "small", "kind": "frame", "text": "", "x": 0, "y": 0, "width": 100, "height": 100},
+            {"name": "a", "frame": "small"},
+            {"name": "b", "frame": "small"},
+        ]})
+        a, b = scene_tools.find(board, "a"), scene_tools.find(board, "b")
+        assert b["x"] == 0 and b["y"] >= a["y"] + a["height"]

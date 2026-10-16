@@ -28,7 +28,7 @@ import re
 import time
 import unicodedata
 from random import randint
-from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
+from typing import Any, Collection, Dict, Iterable, List, Optional, Sequence, Tuple
 
 from lys.apps.ai_whiteboard.modules.whiteboard.font_metrics import CHAR_WIDTHS
 from lys.apps.ai_whiteboard.errors import (
@@ -48,23 +48,28 @@ from lys.apps.ai_whiteboard.errors import (
 )
 from lys.apps.ai_whiteboard.modules.whiteboard.consts import (
     ADD_ITEM_FIELDS,
+    ALIGNMENTS,
     BOUND_TEXT_PADDING,
-    TABLE_COLUMN_MAX_WIDTH,
-    TABLE_COLUMN_MIN_WIDTH,
     CELL_HEIGHT,
     CELL_WIDTH,
     CHAR_WIDTH_RATIO,
-    CHART_HEIGHT,
     CHART_CAPTION_FONT_RATIO,
+    CHART_HEIGHT,
     CHART_LABEL_BAND,
     CHART_VALUE_BAND,
     CHART_VALUE_GAP,
     CHART_WIDTH,
-    ChartType,
+    CORNERS,
+    DEFAULT_BACKGROUND,
+    DEFAULT_CORNERS,
+    DEFAULT_STROKE,
+    DEFAULT_TEXT_SIZE,
+    DEFAULT_THICKNESS,
     DIAMOND_PADDING_FACTOR,
     ELLIPSE_PADDING_FACTOR,
     FONT_FAMILY,
     FONT_SIZE,
+    FRAME_TEXT_SIZE,
     GRID_COLUMNS,
     IMAGE_CHART_TYPES,
     LABELLED_SHAPES,
@@ -75,8 +80,8 @@ from lys.apps.ai_whiteboard.modules.whiteboard.consts import (
     MAX_CHART_POINTS,
     MAX_COORDINATE,
     MAX_ELEMENTS,
-    MAX_REPORTED_OVERLAPS,
     MAX_GRID_ROWS,
+    MAX_REPORTED_OVERLAPS,
     MAX_SIZE,
     MAX_TABLE_COLUMNS,
     MAX_TABLE_ROWS,
@@ -89,14 +94,24 @@ from lys.apps.ai_whiteboard.modules.whiteboard.consts import (
     OPERATION_ADD,
     OPERATION_DELETE,
     OPERATION_KEYS,
+    OPERATION_THEME,
     OPERATION_UPDATE,
     OVERLAP_TOLERANCE,
     SERIES_COLORS,
+    SLIDE_ROW_OVERLAP_SHARE,
     STACK_GAP,
     STROKE_COLOR,
+    STROKES,
+    TABLE_COLUMN_MAX_WIDTH,
+    TABLE_COLUMN_MIN_WIDTH,
     TABLE_ROW_HEIGHT,
+    TEXT_SIZES,
+    THEME_FIELDS,
+    THEME_STROKE_KEY,
+    THICKNESSES,
     TRANSPARENT,
     UPDATE_ITEM_FIELDS,
+    ChartType,
     ElementKind,
 )
 from lys.core.errors import LysError
@@ -117,6 +132,24 @@ SPEC_KEY = "whiteboardSpec"
 # line with no height - so that "where is it" and "put it there" mean the figure's
 # top-left corner for every kind, the way a caller thinks of it.
 BOX_KEY = "whiteboardBox"
+# What a table or a chart was drawn with beyond its data - text size, alignment, the
+# width and height its caller gave - so a redraw from new figures keeps it. Kept apart
+# from the spec: the spec is what the figure says, and is read back as its data.
+LAYOUT_KEY = "whiteboardLayout"
+LAYOUT_FIELDS = ("size", "align", "width", "height")
+
+# The parts of an element that carry no line: a look (stroke, corners, thickness) does
+# not apply to them.
+_UNDRESSED_TYPES = ("text", "image", "frame")
+# Each named look: the operation field, its choices, the editor field it resolves to.
+_LOOK_FIELDS = (
+    ("stroke", STROKES, "roughness"),
+    ("corners", CORNERS, "roundness"),
+    ("thickness", THICKNESSES, "strokeWidth"),
+)
+# The fields of an item that name a choice or a frame: strings, checked before anything
+# reads them - a list there would surface as a TypeError, not as an answer to the model.
+_NAME_FIELDS = ("frame", "size", "align", "stroke", "corners", "thickness")
 
 _COLOR_PATTERN = re.compile(r"^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$")
 
@@ -339,6 +372,12 @@ def _owner(element: Dict[str, Any]) -> Optional[str]:
     return (element.get("customData") or {}).get(OWNER_KEY)
 
 
+def _family(elements: Sequence[Dict[str, Any]], element_id: str) -> List[Dict[str, Any]]:
+    """A named element and every part drawn under its name - its bound label aside."""
+    by_id = _index(elements)
+    return [by_id[element_id]] + [e for e in elements if _owner(e) == element_id and e["id"] != element_id]
+
+
 def _is_anchor(element: Dict[str, Any]) -> bool:
     """
     Whether an element is one a caller named.
@@ -398,7 +437,9 @@ def _overlaps(a: Tuple[float, float, float, float], b: Tuple[float, float, float
     return not (a[0] + a[2] <= b[0] or b[0] + b[2] <= a[0] or a[1] + a[3] <= b[1] or b[1] + b[3] <= a[1])
 
 
-def _auto_position(elements: Sequence[Dict[str, Any]], width: float, height: float) -> Tuple[float, float]:
+def _auto_position(
+    elements: Sequence[Dict[str, Any]], width: float, height: float, frame: Optional[Dict[str, Any]] = None,
+) -> Tuple[float, float]:
     """
     Where an element goes when the caller did not say.
 
@@ -407,20 +448,47 @@ def _auto_position(elements: Sequence[Dict[str, Any]], width: float, height: flo
     caller that positions a diagram by hand and then adds a note without coordinates gets
     the note beside the diagram, not on top of it.
 
-    A board dense enough to fill the scanned rows gets the element stacked underneath
-    everything, which is always free.
+    In a frame, the grid is the frame's: it starts at its corner and stays inside it,
+    among the frame's own members. A board dense enough to fill the scanned rows gets the
+    element stacked underneath everything, which is always free.
     """
     occupied = [
         _footprint(e) for e in elements
-        if not e.get("containerId") and e.get("type") not in ("arrow", "line")
+        if not e.get("containerId") and e.get("type") not in ("arrow", "line", "frame")
+        and (frame is None or e.get("frameId") == frame["id"])
     ]
-    for row in range(MAX_GRID_ROWS):
-        for column in range(GRID_COLUMNS):
-            candidate = (column * CELL_WIDTH, row * CELL_HEIGHT, width, height)
+    origin_x, origin_y = (frame["x"], frame["y"]) if frame else (0.0, 0.0)
+    columns = max(1, int(frame["width"] // CELL_WIDTH)) if frame else GRID_COLUMNS
+    rows = max(1, int(frame["height"] // CELL_HEIGHT)) if frame else MAX_GRID_ROWS
+    for row in range(rows):
+        for column in range(columns):
+            candidate = (origin_x + column * CELL_WIDTH, origin_y + row * CELL_HEIGHT, width, height)
             if not any(_overlaps(candidate, taken) for taken in occupied):
                 return candidate[0], candidate[1]
-    bottom = max((y + h for _, y, _, h in occupied), default=0.0)
-    return 0.0, bottom + STACK_GAP
+    bottom = max((y + h for _, y, _, h in occupied), default=origin_y)
+    return origin_x, bottom + STACK_GAP
+
+
+def _frame_id_for(frame_name: str, by_id: Dict[str, Any]) -> str:
+    """The id of a named frame that is on the board - and is a frame."""
+    frame_id = slugify(frame_name)
+    frame = by_id.get(frame_id)
+    if frame is None or frame.get("type") != "frame":
+        raise LysError(WHITEBOARD_UNKNOWN_ELEMENT, f"Frame '{frame_id}' is not on the board")
+    return frame_id
+
+
+def _frame_named(operation: Dict[str, Any], elements: Sequence[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    """The frame an operation names, checked to be on the board; None when it names none."""
+    if not operation.get("frame"):
+        return None
+    by_id = _index(elements)
+    return by_id[_frame_id_for(operation["frame"], by_id)]
+
+
+def _origin(frame: Optional[Dict[str, Any]]) -> Tuple[float, float]:
+    """Where coordinates count from: a frame's top-left corner, or the board's origin."""
+    return (frame["x"], frame["y"]) if frame is not None else (0.0, 0.0)
 
 
 def _resolve_position(
@@ -429,13 +497,24 @@ def _resolve_position(
     width: float,
     height: float,
 ) -> Tuple[float, float]:
-    """The position the caller gave, or the first free cell. Both, never half of each."""
+    """
+    The position the caller gave, or the first free cell. Both, never half of each.
+
+    In a frame, both count from the frame: a given position is offset by it, and the
+    free cell is looked for inside it, so an unplaced element lands on its slide and
+    not on the board's first empty row. A slide is a sheet whatever row of the deck it
+    sits on - that is how anyone thinks of one, and what a caller laying out five of
+    them did unasked: the same y for the same thing on every slide. Read as the
+    board's, those landed five slides' worth of elements on the first one.
+    """
+    frame = _frame_named(operation, elements)
+    origin_x, origin_y = _origin(frame)
     has_x, has_y = operation.get("x") is not None, operation.get("y") is not None
     if has_x and has_y:
-        return _coordinate(operation["x"], "x"), _coordinate(operation["y"], "y")
+        return origin_x + _coordinate(operation["x"], "x"), origin_y + _coordinate(operation["y"], "y")
     if has_x or has_y:
         raise LysError(WHITEBOARD_INVALID_GEOMETRY, "'x' and 'y' go together: give both or neither")
-    return _auto_position(elements, width, height)
+    return _auto_position(elements, width, height, frame)
 
 
 # ==================== Shapes ====================
@@ -454,7 +533,167 @@ def _style(operation: Dict[str, Any], default_background: str = TRANSPARENT) -> 
     return style
 
 
-def _label_element(container_id: str, text: str, container: Dict[str, Any]) -> Dict[str, Any]:
+def _named(operation: Dict[str, Any], field: str, choices: Collection[str]) -> Optional[str]:
+    """A named choice an operation makes, validated; None when it makes none."""
+    name = operation.get(field)
+    if name is None:
+        return None
+    if not isinstance(name, str) or name not in choices:
+        raise LysError(
+            WHITEBOARD_INVALID_OPERATION, f"Unknown {field} {name!r}. Use one of: {', '.join(choices)}",
+        )
+    return name
+
+
+def _size_choice(operation: Dict[str, Any]) -> str:
+    """
+    The text size an operation asks for, by name - or, unnamed, the one where it lands.
+
+    "large" inside a frame, "normal" elsewhere: a frame is a slide, read from across a
+    room, and a caller that forgot to say so must not produce a deck nobody at the table
+    can read.
+    """
+    return _named(operation, "size", TEXT_SIZES) or (FRAME_TEXT_SIZE if operation.get("frame") else DEFAULT_TEXT_SIZE)
+
+
+def _font_size(operation: Dict[str, Any]) -> float:
+    """The font size an operation asks for, or the one where it lands (see ``_size_choice``)."""
+    return TEXT_SIZES[_size_choice(operation)]
+
+
+# What a cell holds when it holds a figure: digits with their separators, a sign, a unit
+# or a percentage, nothing else - "7 356 k€", "-8,5 %", "62 j", "+123 k€/an", "n/a" is text.
+# The digit run and the unit share no character, so a long cell is matched in linear time.
+_FIGURE_PATTERN = re.compile(r"^[+\-−~≈]?\s*\d[\d\s.,\u202f\u00a0]*[a-zA-Z€$%/]{0,8}$")
+
+
+def _cell_align(cell: str, is_header: bool) -> str:
+    """
+    Where a table cell's text sits when nobody said: the way a financial table reads.
+
+    Headers centred, figures right so their units and decimals line up, labels left.
+    """
+    if is_header:
+        return "center"
+    return "right" if _FIGURE_PATTERN.match(cell.strip()) else "left"
+
+
+def _align(operation: Dict[str, Any], current: str = "left") -> str:
+    """How a text is aligned, by name; the current way when the operation says nothing."""
+    return _named(operation, "align", ALIGNMENTS) or current
+
+
+def _size_name(font_size: Any) -> Optional[str]:
+    """The name of a text size, for reading a board back; None for the default."""
+    for name, value in TEXT_SIZES.items():
+        if value == font_size and name != DEFAULT_TEXT_SIZE:
+            return name
+    return None
+
+
+def theme(scene: Dict[str, Any]) -> Dict[str, str]:
+    """
+    The board's look: its background and the stroke its elements are drawn with.
+
+    Read defensively: the appState is saved wholesale by the editor and only its envelope
+    is validated, so a value no name covers falls back on the default rather than being
+    trusted - an unknown stroke would otherwise fail every later drawing on the board.
+    """
+    app_state = scene.get("appState") or {}
+    background = app_state.get("viewBackgroundColor")
+    stroke = app_state.get(THEME_STROKE_KEY)
+    return {
+        "background": background if isinstance(background, str) and _COLOR_PATTERN.match(background)
+        else DEFAULT_BACKGROUND,
+        "stroke": stroke if isinstance(stroke, str) and stroke in STROKES else DEFAULT_STROKE,
+    }
+
+
+def _set_theme(scene: Dict[str, Any], operation: Any) -> Dict[str, Any]:
+    """The scene with its look changed. Nothing already drawn is redrawn: a theme is a default."""
+    if not isinstance(operation, dict):
+        raise LysError(WHITEBOARD_INVALID_OPERATION, "'theme' is an object with background and stroke")
+    unknown = sorted(set(operation) - set(THEME_FIELDS))
+    if unknown:
+        raise LysError(WHITEBOARD_INVALID_OPERATION, f"Unknown theme field(s) {', '.join(map(repr, unknown))}")
+    app_state = dict(scene.get("appState") or {})
+    if operation.get("background") is not None:
+        app_state["viewBackgroundColor"] = _color(operation["background"], "background")
+    stroke = _named(operation, "stroke", STROKES)
+    if stroke is not None:
+        app_state[THEME_STROKE_KEY] = stroke
+    return {**scene, "appState": app_state}
+
+
+def _asks_look(operation: Dict[str, Any]) -> bool:
+    """Whether an operation names any part of an element's look."""
+    return any(operation.get(field) is not None for field, _, _ in _LOOK_FIELDS)
+
+
+def _look(operation: Dict[str, Any], default_stroke: Optional[str] = None) -> Dict[str, Any]:
+    """
+    The editor fields an operation's named look resolves to.
+
+    A new element takes the board's stroke when it names none (``default_stroke``); an
+    update changes only what it names.
+    """
+    look: Dict[str, Any] = {}
+    for field, choices, key in _LOOK_FIELDS:
+        name = _named(operation, field, choices)
+        if name is None and field == "stroke":
+            name = default_stroke
+        if name is not None:
+            look[key] = choices[name]
+    return look
+
+
+def _look_names(element: Dict[str, Any]) -> Dict[str, str]:
+    """
+    The named look an element is drawn with, as far as names reach.
+
+    Nothing for an element with no line - its roughness is the editor's default and
+    means nothing on a text. A value no name maps to (a stroke set by hand in the
+    editor) is left out rather than guessed.
+    """
+    if element.get("type") in _UNDRESSED_TYPES:
+        return {}
+    names: Dict[str, str] = {}
+    for field, choices, key in _LOOK_FIELDS:
+        name = next((n for n, value in choices.items() if value == element.get(key)), None)
+        if name is not None:
+            names[field] = name
+    return names
+
+
+def _apply_look(parts: Sequence[Dict[str, Any]], look: Dict[str, Any], asked: bool = False) -> None:
+    """
+    Dress every drawn part of an element; its texts carry no stroke.
+
+    An element made of nothing but text or picture - a free text, an image chart - has
+    no line to dress. A look asked for it is refused rather than dropped: dropped, the
+    caller is told its title is bold when nothing changed.
+    """
+    dressed = [part for part in parts if part.get("type") not in _UNDRESSED_TYPES]
+    if asked and not dressed:
+        raise LysError(
+            WHITEBOARD_INVALID_OPERATION,
+            f"'{parts[0]['id']}' has no line to dress: stroke, corners and thickness apply to shapes, "
+            "links, tables and bar charts - use 'color' and 'size' on a text",
+        )
+    for part in dressed:
+        part.update(look)
+        _touch(part)
+
+
+def _relook(elements: List[Dict[str, Any]], element_id: str, operation: Dict[str, Any]) -> None:
+    """Change the look of a named element and everything it is made of, keeping what is not said."""
+    if _asks_look(operation):
+        _apply_look(_family(elements, element_id), _look(operation), asked=True)
+
+
+def _label_element(
+    container_id: str, text: str, container: Dict[str, Any], font_size: float = FONT_SIZE,
+) -> Dict[str, Any]:
     """The text bound inside a shape. Its geometry is the container's, always."""
     return _base_element(
         f"{container_id}{TEXT_SUFFIX}", "text",
@@ -463,14 +702,16 @@ def _label_element(container_id: str, text: str, container: Dict[str, Any]) -> D
         width=max(container["width"] - 2 * BOUND_TEXT_PADDING, 1),
         height=max(container["height"] - 2 * BOUND_TEXT_PADDING, 1),
         text=text, originalText=text,
-        fontSize=FONT_SIZE, fontFamily=FONT_FAMILY, lineHeight=LINE_HEIGHT,
+        fontSize=font_size, fontFamily=FONT_FAMILY, lineHeight=LINE_HEIGHT,
         textAlign="center", verticalAlign="middle",
         autoResize=False,
         containerId=container_id,
     )
 
 
-def _shape_size(kind: ElementKind, operation: Dict[str, Any], text: str) -> Tuple[float, float]:
+def _shape_size(
+    kind: ElementKind, operation: Dict[str, Any], text: str, font_size: float = FONT_SIZE,
+) -> Tuple[float, float]:
     """
     How big a labelled shape has to be to hold its text.
 
@@ -492,13 +733,18 @@ def _shape_size(kind: ElementKind, operation: Dict[str, Any], text: str) -> Tupl
     # after, a diamond came out ten pixels short of its own label, which the editor then
     # broke in the middle of a word. The text is rounded up first: the editor rounds the
     # room it gives, and an exact fit here is a pixel short there.
+    # A bigger face gets a proportionally wider box, so a note at "large" wraps on as
+    # many words as one at "normal", not on half of them.
+    scale = font_size / FONT_SIZE
     if width is None:
-        natural, _ = _text_size(text)
-        width = max(MIN_SHAPE_WIDTH, min(NOTE_WIDTH, (math.ceil(natural) + 2 * BOUND_TEXT_PADDING) * factor))
+        natural, _ = _text_size(text, font_size)
+        width = max(
+            MIN_SHAPE_WIDTH * scale, min(NOTE_WIDTH * scale, (math.ceil(natural) + 2 * BOUND_TEXT_PADDING) * factor),
+        )
     if height is None:
         usable = max(width / factor - 2 * BOUND_TEXT_PADDING, 1)
-        _, needed = _text_size(text, max_width=usable)
-        height = max(MIN_SHAPE_HEIGHT, (math.ceil(needed) + 2 * BOUND_TEXT_PADDING) * factor)
+        _, needed = _text_size(text, font_size, max_width=usable)
+        height = max(MIN_SHAPE_HEIGHT * scale, (math.ceil(needed) + 2 * BOUND_TEXT_PADDING) * factor)
     return width, height
 
 
@@ -510,7 +756,8 @@ def _make_labelled_shape(
     text: str,
 ) -> List[Dict[str, Any]]:
     """A shape and the text bound inside it, which move and resize together."""
-    width, height = _shape_size(kind, operation, text)
+    font_size = _font_size(operation)
+    width, height = _shape_size(kind, operation, text, font_size)
     x, y = _resolve_position(operation, elements, width, height)
     default_background = NOTE_BACKGROUND if kind is ElementKind.NOTE else TRANSPARENT
     container = _base_element(
@@ -519,7 +766,9 @@ def _make_labelled_shape(
         boundElements=[{"type": "text", "id": f"{element_id}{TEXT_SUFFIX}"}],
         **_style(operation, default_background),
     )
-    return [container, _label_element(element_id, text, container)]
+    label = _label_element(element_id, text, container, font_size)
+    label["textAlign"] = _align(operation, "center")
+    return [container, label]
 
 
 def _make_text(
@@ -535,20 +784,21 @@ def _make_text(
     the box with the real font the moment the user touches it, and our approximation only
     has to be right enough to place the next element.
     """
-    natural_width, natural_height = _text_size(text)
+    font_size = _font_size(operation)
+    natural_width, natural_height = _text_size(text, font_size)
     width = _size(operation["width"], "width") if operation.get("width") is not None else max(natural_width, 1)
     if operation.get("height") is not None:
         height = _size(operation["height"], "height")
     else:
-        _, height = _text_size(text, max_width=width)
+        _, height = _text_size(text, font_size, max_width=width)
     x, y = _resolve_position(operation, elements, width, height)
     style = _style(operation)
     return [_base_element(
         element_id, "text",
         x=x, y=y, width=width, height=max(height, 1),
         text=text, originalText=text,
-        fontSize=FONT_SIZE, fontFamily=FONT_FAMILY, lineHeight=LINE_HEIGHT,
-        textAlign="left", verticalAlign="top",
+        fontSize=font_size, fontFamily=FONT_FAMILY, lineHeight=LINE_HEIGHT,
+        textAlign=_align(operation), verticalAlign="top",
         autoResize=True,
         strokeColor=style["strokeColor"],
     )]
@@ -927,15 +1177,20 @@ def _make_table(
     headers, rows = _read_table(operation)
     columns = len(headers)
     grid = [headers] + rows
+    # The face scales the whole grid: a table at "large" keeps its proportions and
+    # its wrapping, only bigger - what a slide read from across a room needs.
+    font_size = _font_size(operation)
+    scale = font_size / FONT_SIZE
+    forced_align = _named(operation, "align", ALIGNMENTS)
 
     # Column widths: the widest natural cell decides, inside [min, cap].
     natural_widths = [
-        max(_text_size(row[column])[0] for row in grid) for column in range(columns)
+        max(_text_size(row[column], font_size)[0] for row in grid) for column in range(columns)
     ]
     column_widths = [
         min(
-            max(natural + 2 * BOUND_TEXT_PADDING, TABLE_COLUMN_MIN_WIDTH),
-            TABLE_COLUMN_MAX_WIDTH,
+            max(natural + 2 * BOUND_TEXT_PADDING, TABLE_COLUMN_MIN_WIDTH * scale),
+            TABLE_COLUMN_MAX_WIDTH * scale,
         )
         for natural in natural_widths
     ]
@@ -952,11 +1207,11 @@ def _make_table(
     for row in grid:
         needed = max(
             _text_size(
-                row[column], max_width=column_widths[column] - 2 * BOUND_TEXT_PADDING
+                row[column], font_size, max_width=column_widths[column] - 2 * BOUND_TEXT_PADDING
             )[1]
             for column in range(columns)
         )
-        row_heights.append(max(needed + 2 * BOUND_TEXT_PADDING, TABLE_ROW_HEIGHT))
+        row_heights.append(max(needed + 2 * BOUND_TEXT_PADDING, TABLE_ROW_HEIGHT * scale))
 
     width, height = sum(column_widths), sum(row_heights)
     x, y = _resolve_position(operation, elements, width, height)
@@ -994,14 +1249,27 @@ def _make_table(
                 y=y + row_edges[line] + BOUND_TEXT_PADDING,
                 width=max(column_widths[column] - 2 * BOUND_TEXT_PADDING, 1),
                 height=max(row_heights[line] - 2 * BOUND_TEXT_PADDING, 1),
-                text=_wrapped(cell, column_widths[column] - 2 * BOUND_TEXT_PADDING), originalText=cell,
-                fontSize=FONT_SIZE, fontFamily=FONT_FAMILY, lineHeight=LINE_HEIGHT,
-                textAlign="left", verticalAlign="middle", autoResize=False,
+                text=_wrapped(cell, column_widths[column] - 2 * BOUND_TEXT_PADDING, font_size), originalText=cell,
+                fontSize=font_size, fontFamily=FONT_FAMILY, lineHeight=LINE_HEIGHT,
+                textAlign=forced_align or _cell_align(cell, is_header=line == 0),
+                verticalAlign="middle", autoResize=False,
                 groupIds=[element_id], customData=dict(tag),
                 strokeColor=parts[0]["strokeColor"],
             ))
-    parts[0]["customData"] = {**tag, SPEC_KEY: {"headers": headers, "rows": rows}}
+    parts[0]["customData"] = {**tag, SPEC_KEY: {"headers": headers, "rows": rows}, LAYOUT_KEY: _layout(operation)}
     return parts
+
+
+def _layout(operation: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    What a figure is drawn with beyond its data, recorded so a redraw keeps it.
+
+    The size is recorded resolved: a table drawn "large" by default in a frame stays
+    large when a redraw no longer says so.
+    """
+    layout: Dict[str, Any] = {field: operation[field] for field in LAYOUT_FIELDS if operation.get(field) is not None}
+    layout["size"] = _size_choice(operation)
+    return layout
 
 
 def _cumulative_edges(sizes: Sequence[float]) -> List[float]:
@@ -1091,11 +1359,12 @@ def _make_bar_chart(
     x, y = _resolve_position(operation, elements, width, height + CHART_LABEL_BAND)
     tag = {OWNER_KEY: element_id, KIND_KEY: ElementKind.CHART.value}
 
-    title_height = FONT_SIZE * LINE_HEIGHT if title else 0
+    font_size = _font_size(operation)
+    title_height = font_size * LINE_HEIGHT if title else 0
     # The tallest bar stops short of the title by one band: the room its figure needs.
     plot_height = height - title_height - CHART_VALUE_BAND - CHART_LABEL_BAND
     baseline = y + title_height + CHART_VALUE_BAND + plot_height
-    caption_font_size = FONT_SIZE * CHART_CAPTION_FONT_RATIO
+    caption_font_size = font_size * CHART_CAPTION_FONT_RATIO
     caption_line = caption_font_size * LINE_HEIGHT
     slot = width / len(values)
     bar_width = slot * 0.7
@@ -1114,14 +1383,15 @@ def _make_bar_chart(
             },
             # From the title's top to the bottom of the names under the bars.
             BOX_KEY: [0, y - baseline, width, height + BOUND_TEXT_PADDING],
+            LAYOUT_KEY: _layout(operation),
         },
     )]
     if title:
         parts.append(_base_element(
             f"{element_id}-title", "text",
-            x=x, y=y, width=max(_text_size(title)[0], 1), height=title_height,
+            x=x, y=y, width=max(_text_size(title, font_size)[0], 1), height=title_height,
             text=title, originalText=title,
-            fontSize=FONT_SIZE, fontFamily=FONT_FAMILY, lineHeight=LINE_HEIGHT,
+            fontSize=font_size, fontFamily=FONT_FAMILY, lineHeight=LINE_HEIGHT,
             textAlign="left", verticalAlign="top", autoResize=True,
             groupIds=[element_id], customData=dict(tag),
         ))
@@ -1190,6 +1460,7 @@ def _make_image_chart(
                 "type": chart_type.value, "title": title,
                 "data": [{"label": label, "value": value} for label, value in zip(labels, values)],
             },
+            LAYOUT_KEY: _layout(operation),
         },
     )]
 
@@ -1220,20 +1491,93 @@ def _kind_of(operation: Dict[str, Any]) -> ElementKind:
         )
 
 
-def _attach_to_frame(created: List[Dict[str, Any]], operation: Dict[str, Any], by_id: Dict[str, Any]) -> None:
+def _refuse_nesting(elements: Sequence[Dict[str, Any]]) -> None:
+    """
+    Frames hold elements, never frames.
+
+    The editor does not nest them: a frame given a frameId is clipped by its parent and
+    moves with it, but keeps its own members, and what the user sees no longer matches
+    what the board says. Refused rather than drawn wrong.
+    """
+    for element in elements:
+        if element.get("type") == "frame":
+            raise LysError(
+                WHITEBOARD_INVALID_OPERATION, f"'{element['id']}' is a frame, and a frame cannot sit in a frame",
+            )
+
+
+def _attach_to_frame(created: List[Dict[str, Any]], operation: Dict[str, Any], elements: List[Dict[str, Any]]) -> None:
     """Put new elements inside a named frame, so the editor moves them with it."""
-    frame_name = operation.get("frame")
-    if not frame_name:
+    frame = _frame_named(operation, elements)
+    if frame is None:
         return
-    frame_id = slugify(frame_name)
-    frame = by_id.get(frame_id)
-    if frame is None or frame.get("type") != "frame":
-        raise LysError(WHITEBOARD_UNKNOWN_ELEMENT, f"Frame '{frame_id}' is not on the board")
+    _refuse_nesting(created)
     for element in created:
-        element["frameId"] = frame_id
+        element["frameId"] = frame["id"]
 
 
-def _add(elements: List[Dict[str, Any]], operation: Dict[str, Any], element_id: str) -> None:
+def _target_frame(
+    elements: List[Dict[str, Any]], element_id: str, operation: Dict[str, Any],
+) -> Optional[Dict[str, Any]]:
+    """
+    The frame an updated element ends up in, which its coordinates count from.
+
+    The one the update names; none for an empty name, which takes the element out of
+    any; otherwise the one it already sits in. A frame named for a frame is refused.
+    """
+    by_id = _index(elements)
+    anchor = by_id[element_id]
+    name = operation.get("frame")
+    if name is None:
+        current = by_id.get(anchor.get("frameId") or "")
+        return current if current is not None and current.get("type") == "frame" else None
+    if name == "":
+        return None
+    frame = by_id[_frame_id_for(name, by_id)]
+    _refuse_nesting([anchor])
+    return frame
+
+
+def _placed_in_frame(
+    elements: List[Dict[str, Any]], element_id: str, operation: Dict[str, Any], target: Optional[Dict[str, Any]],
+) -> Dict[str, Any]:
+    """
+    The update with a place in the frame it moves the element into, when it gives none.
+
+    An element entering a frame without coordinates lands in the frame's own grid, as an
+    unplaced add does: kept where it stood on the board, it would most often sit outside
+    its new frame - and the editor clips an element to the frame it names.
+    """
+    anchor = _index(elements)[element_id]
+    entering = target is not None and target["id"] != anchor.get("frameId")
+    if not entering or operation.get("x") is not None or operation.get("y") is not None:
+        return operation
+    _, _, width, height = _box(anchor, elements)
+    x, y = _auto_position(elements, width, height, target)
+    return {**operation, "x": x - target["x"], "y": y - target["y"]}
+
+
+def _reframe(
+    elements: List[Dict[str, Any]], element_id: str, operation: Dict[str, Any], target: Optional[Dict[str, Any]],
+) -> None:
+    """
+    Move a named element, and everything it is made of, into a frame - or out of any.
+
+    Geometry alone does not do it: the editor shows an element where its frameId says,
+    clipped to that frame, so a note moved by its coordinates onto another frame stays
+    clipped by the first and disappears. An empty frame name takes the element out.
+    """
+    if operation.get("frame") is None:
+        return
+    label = _index(elements).get(f"{element_id}{TEXT_SUFFIX}")
+    for element in _family(elements, element_id) + ([label] if label else []):
+        element["frameId"] = target["id"] if target is not None else None
+        _touch(element)
+
+
+def _add(
+    elements: List[Dict[str, Any]], operation: Dict[str, Any], element_id: str, default_stroke: str = DEFAULT_STROKE,
+) -> None:
     """Apply one add. An add naming an existing element updates it - see apply_operations."""
     kind = _kind_of(operation)
     text = _text_value(operation.get("text") if operation.get("text") is not None else operation.get("name"))
@@ -1254,7 +1598,8 @@ def _add(elements: List[Dict[str, Any]], operation: Dict[str, Any], element_id: 
     else:  # pragma: no cover - ElementKind is exhaustive above
         raise LysError(WHITEBOARD_UNKNOWN_ELEMENT_KIND, f"Nothing draws a '{kind.value}'")
 
-    _attach_to_frame(created, operation, _index(elements))
+    _attach_to_frame(created, operation, elements)
+    _apply_look(created, _look(operation, default_stroke), asked=_asks_look(operation))
     elements.extend(created)
 
 
@@ -1278,6 +1623,7 @@ def _set_text(elements: List[Dict[str, Any]], element_id: str, text: str) -> Non
         element["text"] = text
         element["originalText"] = text
         _touch(element)
+        _fit_text(element)
         return
 
     label["text"] = text
@@ -1285,15 +1631,67 @@ def _set_text(elements: List[Dict[str, Any]], element_id: str, text: str) -> Non
     _touch(label)
 
     if element.get("type") in ("arrow", "line"):
-        label["width"], label["height"] = (max(size, 1) for size in _text_size(text))
+        label["width"], label["height"] = (max(size, 1) for size in _text_size(text, label.get("fontSize", FONT_SIZE)))
         return
 
-    usable = max(element["width"] - 2 * BOUND_TEXT_PADDING, 1)
-    _, needed = _text_size(text, max_width=usable)
-    if needed + 2 * BOUND_TEXT_PADDING > element["height"]:
-        element["height"] = needed + 2 * BOUND_TEXT_PADDING
-        _touch(element)
-    _resize_label(element, label)
+    _fit_label(element, label)
+
+
+def _fit_text(element: Dict[str, Any]) -> None:
+    """
+    Give a free text the room its words need at its size: never narrower than it was,
+    and as wide as its longest line - the way the editor sizes an auto-resizing text.
+    """
+    if element.get("type") != "text" or element.get("autoResize") is False:
+        return
+    font_size = element.get("fontSize", FONT_SIZE)
+    natural_width, _ = _text_size(element.get("text", ""), font_size)
+    element["width"] = max(element.get("width", 0), natural_width, 1)
+    _, element["height"] = _text_size(element.get("text", ""), font_size, max_width=element["width"])
+    element["height"] = max(element["height"], 1)
+
+
+def _fit_label(container: Dict[str, Any], label: Dict[str, Any]) -> None:
+    """Grow a shape until its label fits, at the label's size."""
+    usable = max(container["width"] - 2 * BOUND_TEXT_PADDING, 1)
+    _, needed = _text_size(label.get("text", ""), label.get("fontSize", FONT_SIZE), max_width=usable)
+    if needed + 2 * BOUND_TEXT_PADDING > container["height"]:
+        container["height"] = needed + 2 * BOUND_TEXT_PADDING
+        _touch(container)
+    _resize_label(container, label)
+
+
+def _realign(elements: List[Dict[str, Any]], element_id: str, operation: Dict[str, Any]) -> None:
+    """Align the text of a named element - its label, or itself."""
+    if operation.get("align") is None:
+        return
+    by_id = _index(elements)
+    element = by_id[element_id]
+    target = by_id.get(f"{element_id}{TEXT_SUFFIX}") or element
+    if target.get("type") != "text":
+        raise LysError(WHITEBOARD_INVALID_OPERATION, f"'{element_id}' carries no text to align")
+    target["textAlign"] = _align(operation)
+    _touch(target)
+
+
+def _resize_text(elements: List[Dict[str, Any]], element_id: str, operation: Dict[str, Any]) -> None:
+    """Change the text size of a named element - its label, or itself - and refit it."""
+    if operation.get("size") is None:
+        return
+    by_id = _index(elements)
+    element = by_id[element_id]
+    label = by_id.get(f"{element_id}{TEXT_SUFFIX}")
+    target = label if label is not None else element
+    if target.get("type") != "text":
+        raise LysError(WHITEBOARD_INVALID_OPERATION, f"'{element_id}' carries no text to size")
+    target["fontSize"] = _font_size(operation)
+    _touch(target)
+    if label is None:
+        _fit_text(element)
+    elif element.get("type") in ("arrow", "line"):
+        label["width"], label["height"] = (max(size, 1) for size in _text_size(label["text"], target["fontSize"]))
+    else:
+        _fit_label(element, label)
 
 
 def _resize_label(container: Dict[str, Any], label: Dict[str, Any]) -> None:
@@ -1303,9 +1701,14 @@ def _resize_label(container: Dict[str, Any], label: Dict[str, Any]) -> None:
     label["height"] = max(container["height"] - 2 * BOUND_TEXT_PADDING, 1)
 
 
-def _move_and_resize(elements: List[Dict[str, Any]], element_id: str, operation: Dict[str, Any]) -> bool:
+def _move_and_resize(
+    elements: List[Dict[str, Any]], element_id: str, operation: Dict[str, Any], target: Optional[Dict[str, Any]],
+) -> bool:
     """
     Move or resize a named element, carrying with it everything it is made of.
+
+    Coordinates count from the corner of the frame the element ends up in (``target``),
+    or from the board's origin when it ends up in none.
 
     Returns whether anything changed, so the caller knows whether links need redrawing.
     A table is fifty elements behind one name; a caller that moved "the comparison" must
@@ -1313,7 +1716,7 @@ def _move_and_resize(elements: List[Dict[str, Any]], element_id: str, operation:
     """
     by_id = _index(elements)
     anchor = by_id[element_id]
-    family = [anchor] + [e for e in elements if _owner(e) == element_id and e["id"] != element_id]
+    family = _family(elements, element_id)
     label = by_id.get(f"{element_id}{TEXT_SUFFIX}")
 
     changed = False
@@ -1322,8 +1725,9 @@ def _move_and_resize(elements: List[Dict[str, Any]], element_id: str, operation:
         raise LysError(WHITEBOARD_INVALID_GEOMETRY, "'x' and 'y' go together: give both or neither")
     if has_x:
         left, top, _, _ = _box(anchor, elements)
-        dx = _coordinate(operation["x"], "x") - left
-        dy = _coordinate(operation["y"], "y") - top
+        origin_x, origin_y = _origin(target)
+        dx = origin_x + _coordinate(operation["x"], "x") - left
+        dy = origin_y + _coordinate(operation["y"], "y") - top
         for element in family + ([label] if label else []):
             element["x"] += dx
             element["y"] += dy
@@ -1339,6 +1743,10 @@ def _move_and_resize(elements: List[Dict[str, Any]], element_id: str, operation:
                 f"'{element_id}' is drawn from its data: change the data to resize it, or delete and redraw it",
             )
         anchor[field] = _size(operation[field], field)
+        custom = anchor.get("customData") or {}
+        if LAYOUT_KEY in custom:
+            # A figure of one element (an image chart) keeps its new size through a redraw.
+            anchor["customData"] = {**custom, LAYOUT_KEY: {**custom[LAYOUT_KEY], field: anchor[field]}}
         _touch(anchor)
         changed = True
     if label and changed:
@@ -1348,8 +1756,7 @@ def _move_and_resize(elements: List[Dict[str, Any]], element_id: str, operation:
 
 def _restyle(elements: List[Dict[str, Any]], element_id: str, operation: Dict[str, Any]) -> None:
     """Recolour a named element and everything drawn under its name."""
-    by_id = _index(elements)
-    family = [by_id[element_id]] + [e for e in elements if _owner(e) == element_id and e["id"] != element_id]
+    family = _family(elements, element_id)
     for field, key in (("color", "strokeColor"), ("background", "backgroundColor")):
         if operation.get(field) is None:
             continue
@@ -1361,7 +1768,7 @@ def _restyle(elements: List[Dict[str, Any]], element_id: str, operation: Dict[st
 
 def _update(elements: List[Dict[str, Any]], operation: Dict[str, Any], element_id: str) -> bool:
     """
-    Apply one update: text, geometry, colour, or a redraw from new data.
+    Apply one update: text, geometry, colour, frame, look, or a redraw from new data.
 
     Returns whether the element moved, so links can be redrawn once at the end rather
     than after every operation.
@@ -1379,17 +1786,32 @@ def _update(elements: List[Dict[str, Any]], operation: Dict[str, Any], element_i
             f"Delete it and add it again under the new kind",
         )
 
-    if operation.get("chart") is not None:
-        return _redraw(elements, operation, element_id)
-    if operation.get("headers") is not None or operation.get("rows") is not None:
-        return _redraw(elements, _complete_table_data(elements, operation, element_id), element_id)
+    target = _target_frame(elements, element_id, operation)
+    operation = _placed_in_frame(elements, element_id, operation, target)
 
-    moved = _move_and_resize(elements, element_id, operation)
+    # A figure is a function of its data and its layout: a change to either redraws it.
+    if operation.get("chart") is not None:
+        return _redraw(elements, operation, element_id, target)
+    if operation.get("headers") is not None or operation.get("rows") is not None:
+        return _redraw(elements, _complete_table_data(elements, operation, element_id), element_id, target)
+    if current_kind == ElementKind.TABLE.value and any(operation.get(f) is not None for f in ("size", "align")):
+        return _redraw(elements, _complete_table_data(elements, operation, element_id), element_id, target)
+    if current_kind == ElementKind.CHART.value and operation.get("size") is not None:
+        return _redraw(elements, _complete_chart_data(elements, operation, element_id), element_id, target)
+
+    moved = _move_and_resize(elements, element_id, operation, target)
     _restyle(elements, element_id, operation)
+    _reframe(elements, element_id, operation, target)
+    _resize_text(elements, element_id, operation)
+    _realign(elements, element_id, operation)
+    _relook(elements, element_id, operation)
     text = operation.get("text") if operation.get("text") is not None else operation.get("label")
     if text is not None:
         _set_text(elements, element_id, _text_value(text))
-    elif not moved and not any(operation.get(field) is not None for field in ("color", "background")):
+    elif not moved and not any(
+        operation.get(field) is not None
+        for field in ("color", "background", "frame", "size", "align", "stroke", "corners", "thickness")
+    ):
         _touch(_index(elements)[element_id])
     return moved
 
@@ -1420,18 +1842,51 @@ def _complete_table_data(
     }
 
 
-def _redraw(elements: List[Dict[str, Any]], operation: Dict[str, Any], element_id: str) -> bool:
+def _complete_chart_data(
+    elements: List[Dict[str, Any]], operation: Dict[str, Any], element_id: str,
+) -> Dict[str, Any]:
+    """The update with the chart's data taken from the board: resizing its text redraws it."""
+    custom = _index(elements)[element_id].get("customData") or {}
+    return {**operation, "chart": custom.get(SPEC_KEY)}
+
+
+def _drawn_with(anchor: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    What a figure was drawn with beyond its data, as the fields of an operation.
+
+    Its layout, its colours and its look: a redraw from new figures keeps them, as a
+    theme change does - nothing already drawn changes look unless asked. A figure drawn
+    before layouts were recorded was drawn at the normal size.
+    """
+    custom = anchor.get("customData") or {}
+    drawn: Dict[str, Any] = dict(custom.get(LAYOUT_KEY) or {"size": DEFAULT_TEXT_SIZE})
+    # Only a colour this module could have written: one picked by hand in the editor may
+    # be spelled in a way the validation refuses, and must not make the redraw fail.
+    for field, key, default in (("color", "strokeColor", STROKE_COLOR), ("background", "backgroundColor", TRANSPARENT)):
+        value = anchor.get(key)
+        if isinstance(value, str) and value != default and _COLOR_PATTERN.match(value):
+            drawn[field] = value
+    drawn.update(_look_names(anchor))
+    return drawn
+
+
+def _redraw(
+    elements: List[Dict[str, Any]], operation: Dict[str, Any], element_id: str, target: Optional[Dict[str, Any]],
+) -> bool:
     """
     Rebuild a table or a chart from new data, where the old one stood.
 
     Redrawn rather than patched: the parts are a function of the data, so recomputing
     them is the only way to stay consistent with a row added or a value corrected - and
     the caller keeps the name it has been using, which is what it reaches the figure by.
+
+    The figure stays in the frame it ends up in (``target``), with what it was drawn
+    with (see ``_drawn_with``) unless the update says otherwise. Its coordinates count
+    from that frame, like any update's.
     """
     by_id = _index(elements)
     anchor = by_id[element_id]
     left, top, _, _ = _box(anchor, elements)
-    position = {"x": left, "y": top}
     removed = _collect_removals(elements, element_id)
     # The links to this figure survive, labels included: only the drawing is rebuilt,
     # and they are redrawn against the new geometry by the caller. The figure's OWN
@@ -1446,14 +1901,15 @@ def _redraw(elements: List[Dict[str, Any]], operation: Dict[str, Any], element_i
     # name it as their endpoint.
     carried = [bound for bound in anchor.get("boundElements") or [] if bound.get("id") in links]
 
-    remaining = [e for e in elements if e["id"] not in removed]
-    rebuilt = dict(operation)
-    rebuilt.setdefault("x", position["x"])
-    rebuilt.setdefault("y", position["y"])
+    rebuilt = {**_drawn_with(anchor), **operation}
     kind = ElementKind.TABLE if operation.get("headers") is not None else ElementKind.CHART
     rebuilt["kind"] = kind.value
+    rebuilt["frame"] = target["id"] if target is not None else None
+    if operation.get("x") is None and operation.get("y") is None:
+        origin_x, origin_y = _origin(target)
+        rebuilt["x"], rebuilt["y"] = left - origin_x, top - origin_y
 
-    elements[:] = remaining
+    elements[:] = [e for e in elements if e["id"] not in removed]
     _add(elements, rebuilt, element_id)
     if carried:
         rebuilt_anchor = _index(elements)[element_id]
@@ -1481,7 +1937,7 @@ def _check_patch_shape(operations: Any) -> None:
     expects and nothing hands back to the model.
     """
     if not isinstance(operations, dict):
-        raise LysError(WHITEBOARD_INVALID_OPERATION, "A patch is an object with add, update and delete")
+        raise LysError(WHITEBOARD_INVALID_OPERATION, "A patch is an object with add, update, delete and theme")
 
     for key, fields in ((OPERATION_ADD, ADD_ITEM_FIELDS), (OPERATION_UPDATE, UPDATE_ITEM_FIELDS)):
         items = operations.get(key)
@@ -1502,6 +1958,11 @@ def _check_patch_shape(operations: Any) -> None:
                     f"Unknown field(s) {', '.join(repr(f) for f in unknown)} on '{item['name']}' in '{key}'. "
                     f"An item of '{key}' takes only: {', '.join(fields)} - all at the top level of the item",
                 )
+            for field in _NAME_FIELDS:
+                if item.get(field) is not None and not isinstance(item[field], str):
+                    raise LysError(
+                        WHITEBOARD_INVALID_OPERATION, f"'{field}' on '{item['name']}' in '{key}' is a string",
+                    )
 
     names = operations.get(OPERATION_DELETE)
     if names is not None and (not isinstance(names, list) or not all(isinstance(n, str) for n in names)):
@@ -1575,6 +2036,10 @@ def apply_operations(scene: Dict[str, Any], operations: Dict[str, Any]) -> Dict[
     if unknown:
         raise LysError(WHITEBOARD_UNKNOWN_OPERATION, f"Unknown operations: {', '.join(sorted(unknown))}")
 
+    if operations.get(OPERATION_THEME) is not None:
+        scene = _set_theme(scene, operations[OPERATION_THEME])
+    default_stroke = theme(scene)["stroke"]
+
     elements: List[Dict[str, Any]] = [dict(e) for e in scene.get("elements", [])]
     # What changed place or appeared: the links touching it are routed again at the end.
     moved: List[str] = []
@@ -1585,7 +2050,7 @@ def apply_operations(scene: Dict[str, Any], operations: Dict[str, Any]) -> Dict[
             if _update(elements, operation, element_id):
                 moved.append(element_id)
         else:
-            _add(elements, operation, element_id)
+            _add(elements, operation, element_id, default_stroke)
             moved.append(element_id)
 
     for operation in operations.get(OPERATION_UPDATE) or []:
@@ -1640,12 +2105,17 @@ def describe(scene: Dict[str, Any]) -> List[Dict[str, Any]]:
     """
     elements = scene.get("elements", [])
     by_id = _index(elements)
+    board_stroke = theme(scene)["stroke"]
     described: List[Dict[str, Any]] = []
     for element in elements:
         if not _is_anchor(element):
             continue
         custom = element.get("customData") or {}
         left, top, width, height = _box(element, elements)
+        if element.get("frameId") and element["frameId"] in by_id:
+            # Reported as they are given: from the frame's corner.
+            left -= by_id[element["frameId"]]["x"]
+            top -= by_id[element["frameId"]]["y"]
         entry: Dict[str, Any] = {
             "name": element["id"],
             "x": round(left),
@@ -1670,10 +2140,65 @@ def describe(scene: Dict[str, Any]) -> List[Dict[str, Any]]:
         else:
             entry["text"] = (label or element).get("text", "")
 
+        if kind in (ElementKind.TABLE.value, ElementKind.CHART.value):
+            # A figure's size and alignment are the ones it was drawn with, not its cells'.
+            layout = custom.get(LAYOUT_KEY) or {}
+            if layout.get("size", DEFAULT_TEXT_SIZE) != DEFAULT_TEXT_SIZE:
+                entry["size"] = layout["size"]
+            if layout.get("align"):
+                entry["align"] = layout["align"]
+        elif kind != ElementKind.FRAME.value:
+            text_element = label or element
+            size = _size_name(text_element.get("fontSize"))
+            if size:
+                entry["size"] = size
+            default_align = "center" if label else "left"
+            if text_element.get("type") == "text" and text_element.get("textAlign", default_align) != default_align:
+                entry["align"] = text_element["textAlign"]
+        # Only what departs from the board's theme: that is what a reader has to know.
+        defaults = {"stroke": board_stroke, "corners": DEFAULT_CORNERS, "thickness": DEFAULT_THICKNESS}
+        for field, name in _look_names(element).items():
+            if name != defaults[field]:
+                entry[field] = name
         if element.get("frameId"):
             entry["frame"] = element["frameId"]
         described.append(entry)
     return described
+
+
+def slides(scene: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """
+    The deck: the board's frames in reading order, numbered from one, with their titles.
+
+    Rows from the top, left to right inside a row; two frames share a row when their
+    vertical extents overlap by more than half the shorter one. The editor orders its
+    slides by the same rule, and nothing else orders them: a frame's position IS its
+    rank, so the reader and the writer of the board agree on the deck without storing
+    it anywhere.
+    """
+    frames = sorted(
+        (e for e in scene.get("elements", []) if e.get("type") == "frame" and not e.get("isDeleted")),
+        key=lambda e: (e.get("y", 0), e.get("x", 0)),
+    )
+    rows: List[List[Dict[str, Any]]] = []
+    row_top = row_bottom = 0.0
+    for frame in frames:
+        top, height = frame.get("y", 0), max(frame.get("height", 0), 0)
+        if rows:
+            overlap = min(row_bottom, top + height) - max(row_top, top)
+            shorter = min(row_bottom - row_top, height)
+            if overlap > shorter * SLIDE_ROW_OVERLAP_SHARE:
+                rows[-1].append(frame)
+                row_bottom = max(row_bottom, top + height)
+                continue
+        rows.append([frame])
+        row_top, row_bottom = top, top + height
+
+    deck: List[Dict[str, Any]] = []
+    for row in rows:
+        for frame in sorted(row, key=lambda e: e.get("x", 0)):
+            deck.append({"index": len(deck) + 1, "name": frame["id"], "title": frame.get("name") or ""})
+    return deck
 
 
 def drawn_names(operations: Dict[str, Any]) -> List[str]:

@@ -400,6 +400,32 @@ inherit from the app's, or the tools are silently absent.
   taken name) must repeat its current kind - changing kind is a delete then an add.
 - A named element's position is its top-left corner whatever it is made of
   (`scene._box`): a bar chart, anchored on its baseline, records its box.
+- Frames are the deck: the consumer's editor may present a board frame by frame, in
+  reading order on the canvas (rows top to bottom, left to right) - no order is stored.
+  The tool description tells the model to draw a story as one frame per step, speaker notes
+  as a `notes-<frame>` sticky note beside (outside) the frame. `frame` on
+  an update moves an element and its parts into a frame (empty string: out of any);
+  without `x`/`y` it lands in the frame's grid. Moving by coordinates alone leaves
+  `frameId` behind, and the editor clips the element to the frame it still names.
+  Frames do not nest (`WHITEBOARD_INVALID_OPERATION`).
+- Editor contract (consumer side): order slides by the same rule as `scene.slides`
+  (`consts.SLIDE_ROW_OVERLAP_SHARE`), and persist `appState.whiteboardStroke`
+  (`THEME_STROKE_KEY`) when saving the scene - Excalidraw's `restoreAppState` drops
+  unknown keys, which silently resets the board's stroke to `clean`. The theme keys the
+  editor saves are not validated on write: `scene.theme` reads them back with a fallback
+  on the default (`clean`, `#ffffff`) for any value no name or colour covers.
+- Inside a frame, `x`/`y` count from the frame's corner (add, update, read-back), and an
+  unplaced element lands in the frame's own grid. Text size is named (`size`:
+  small/normal/large/title, `consts.TEXT_SIZES`) and defaults to `large` in a frame. The
+  board has a `theme` (`background`, `stroke` clean/sketch) kept in the scene's `appState`
+  (`THEME_STROKE_KEY`); elements take named looks (`stroke`, `corners`, `thickness`) on
+  every drawn part, refused on a bare text; `align` (left/center/right) on texts, boxes
+  and tables. `read_whiteboard` returns `theme` and reports
+  a look only where it departs from it.
+- A table or chart is redrawn (not patched) on new data or a new `size`/`align`; the
+  redraw keeps its frame, colours, look and layout (`customData.whiteboardLayout`:
+  resolved size, align, given width/height), kept apart from its data
+  (`whiteboardSpec`, read back as `data`).
 - `read_whiteboard` never opens a board: one opened in the turn's session would be
   invisible to that separate transaction, which would then open a second one. With no
   board yet it returns `NO_WHITEBOARD`, and drawing is what opens one.

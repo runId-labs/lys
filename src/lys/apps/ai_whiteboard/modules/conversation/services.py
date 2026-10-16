@@ -97,7 +97,7 @@ class AIConversationService(BaseAIConversationService):
 
         operations = {
             key: arguments[key]
-            for key in ("add", "update", "delete")
+            for key in ("add", "update", "delete", "theme")
             if arguments.get(key)
         }
         focus = arguments.get("focus") or None
@@ -175,4 +175,6 @@ class AIConversationService(BaseAIConversationService):
             "whiteboard_id": whiteboard.id,
             "title": whiteboard.title,
             "elements": whiteboard_service.describe(whiteboard),
+            "slides": whiteboard_service.slides(whiteboard),
+            "theme": whiteboard_service.theme(whiteboard),
         }

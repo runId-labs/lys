@@ -10,6 +10,8 @@ touch a surface spends its turn choosing between them. The vocabulary lives insi
 single draw call instead, where one patch can lay out a whole diagram at once.
 """
 
+from lys.apps.ai_whiteboard.modules.whiteboard.consts import SLIDE_GAP, SLIDE_HEIGHT, SLIDE_WIDTH
+
 # Shared by add and update: everything about how an element looks and where it sits.
 # Declared once so the two operations cannot drift apart - a field the model can set on
 # creation and not afterwards is a board it can draw but not fix.
@@ -33,6 +35,37 @@ _GEOMETRY_PROPERTIES = {
         "description": (
             "Fill colour, hexadecimal ('#ffc9c9') or 'transparent'. Use it to group by "
             "meaning - one colour per theme, or red for what is at risk."
+        ),
+    },
+    "align": {
+        "type": "string",
+        "enum": ["left", "center", "right"],
+        "description": (
+            "Where the text sits: in a box (centred unless said), a free text (left unless "
+            "said), or every cell of a table. Unsaid, a table reads like a financial one: "
+            "headers centred, figures right, labels left - say it only to override that."
+        ),
+    },
+    "stroke": {
+        "type": "string",
+        "enum": ["clean", "sketch"],
+        "description": (
+            "How the lines are drawn: 'clean' is ruled, 'sketch' hand-drawn. Unsaid, the "
+            "board's theme decides."
+        ),
+    },
+    "corners": {"type": "string", "enum": ["square", "round"], "description": "Box corners."},
+    "thickness": {
+        "type": "string",
+        "enum": ["thin", "bold"],
+        "description": "Line weight. 'bold' to single something out.",
+    },
+    "size": {
+        "type": "string",
+        "enum": ["small", "normal", "large", "title"],
+        "description": (
+            "Text size. 'normal' for a diagram worked on at a desk; on a slide, read from "
+            "across a room, 'title' for the slide's title and 'large' for everything else."
         ),
     },
 }
@@ -96,7 +129,14 @@ _ADD_ITEM = {
         "label": {"type": "string", "description": "For an arrow or a line: a couple of words written on it."},
         "from": {"type": "string", "description": "For an arrow or a line: name of the source element."},
         "to": {"type": "string", "description": "For an arrow or a line: name of the target element."},
-        "frame": {"type": "string", "description": "Name of a frame this element belongs inside."},
+        "frame": {
+            "type": "string",
+            "description": (
+                "Name of a frame this element belongs inside. Inside a frame, 'x' and 'y' "
+                f"count from the frame's top-left corner: a slide is 0 to {SLIDE_WIDTH} across "
+                f"and 0 to {SLIDE_HEIGHT} down, whatever row of the deck it sits on."
+            ),
+        },
         "headers": {
             "type": "array",
             "items": {"type": "string"},
@@ -119,6 +159,16 @@ _UPDATE_ITEM = {
         "name": {"type": "string", "description": "Name of the element to change."},
         "text": {"type": "string", "description": "Its new text. The box grows if the text no longer fits."},
         "label": {"type": "string", "description": "For an arrow or a line: its new label."},
+        "frame": {
+            "type": "string",
+            "description": (
+                "Name of the frame to move the element into, with everything it is made of "
+                "- moving it by 'x' and 'y' alone leaves it attached to its old frame. "
+                "Without 'x' and 'y' it lands in the frame's next free slot. An empty string "
+                "takes it out of its frame, its 'x' and 'y' then counting from the board's "
+                "corner. Inside a frame, 'x' and 'y' count from the frame's top-left corner."
+            ),
+        },
         "headers": {
             "type": "array",
             "items": {"type": "string"},
@@ -158,6 +208,27 @@ DRAW_ON_WHITEBOARD_TOOL = {
             "above it, and send the whole layout in ONE call so it appears at once. "
             "Coordinates are optional: elements you do not place are dropped in the next "
             "free slot, which is fine for a lone note and wrong for a diagram.\n"
+            "**A story is a deck.** When what you have to say unfolds in steps - a finding, "
+            f"its causes, the options, a recommendation - draw one frame per step, {SLIDE_WIDTH} "
+            f"wide and {SLIDE_HEIGHT} tall, stacked in a column {SLIDE_GAP} apart (y: 0, "
+            f"{SLIDE_HEIGHT + SLIDE_GAP}, {2 * (SLIDE_HEIGHT + SLIDE_GAP)}…). The frame's 'text' "
+            "is the slide's title as the user's slide list shows it ('1. Findings') - never a "
+            "code like 's1' - and the slide repeats it as a 'text' at its top. Put every "
+            "element of a step inside its frame with 'frame' - its coordinates then count "
+            "from the frame's corner, so the title of every slide is at the same 'y'. The "
+            "user presents the frames as slides in the order they read on "
+            "the board: top to bottom, then left to right - so a new step goes below the "
+            "last, and reordering is moving frames. Keep a step's elements within its "
+            "frame: what sticks out is cut off the slide. A slide is read from across a room: "
+            "a 'text' title at the top in size 'title', everything else in size 'large', "
+            "at most five boxes, each 400 to 560 wide, laid out in two columns or a row - "
+            "fill the frame, its lower half included: two rows of boxes, or a chart 360 tall "
+            "beside them; never pile small boxes in one corner. A table on a slide takes "
+            "size 'large' too; a chart takes a 'width' of 560 to 700 and a 'height' of 320 "
+            "to 400. Put the speaker notes of a slide - "
+            "the points to make, what to say - in a 'note' (a sticky, 420 wide) named "
+            "'notes-<frame name>' placed just RIGHT of the frame, outside it: on the board "
+            "for the user to work on with you, off the slide when it is presented.\n"
             "You place blind: a box is as tall as its text turns out to need, and you only "
             "learn sizes from the result. When the result carries 'overlaps' - each entry "
             "an 'element' you drew sitting on a 'with', over a 'width' and a 'height' - "
@@ -167,6 +238,9 @@ DRAW_ON_WHITEBOARD_TOOL = {
             "rewrites it instead of adding a near-duplicate beside it, so keep a name "
             "stable once you have used it, even if you would phrase the title differently "
             "today. Moving an element carries its label and its arrows with it.\n"
+            "The board never stands in for what another of your tools records: when a tool "
+            "exists for it, propose it with that tool; drawing it instead leaves the user "
+            "with a picture of something that was never recorded.\n"
             "Revisit as much as you add: when something on the board turns out wrong or "
             "outdated, update or delete it. A board only ever added to stops being "
             "readable, and the user relies on it to still be true.\n"
@@ -193,6 +267,19 @@ DRAW_ON_WHITEBOARD_TOOL = {
                         "and the arrows attached to it."
                     ),
                     "items": {"type": "string"},
+                },
+                "theme": {
+                    "type": "object",
+                    "description": (
+                        "The board's look, for the whole board: 'background' (a hexadecimal "
+                        "colour) and 'stroke' ('clean', ruled lines, the default - or 'sketch', "
+                        "hand-drawn, only when the user asks for it). The stroke applies to "
+                        "what is drawn from then on; set it before drawing a deck."
+                    ),
+                    "properties": {
+                        "background": {"type": "string"},
+                        "stroke": {"type": "string", "enum": ["clean", "sketch"]},
+                    },
                 },
                 "focus": {
                     "type": "array",
@@ -225,7 +312,9 @@ READ_WHITEBOARD_TOOL = {
         "description": (
             "List what is on a whiteboard: the name, the kind, the text and the position "
             "and size of each element, what the arrows link, and the data behind each "
-            "table and chart. Call it before changing a board you did not fill during this "
+            "table and chart - and the deck: 'slides', the frames in the order the user "
+            "presents them, with their titles; a slide's notes are the 'notes-<frame>' text. "
+            "Call it before changing a board you did not fill during this "
             "exchange - you cannot see it, and a board built over weeks holds things you "
             "never wrote. Also call it when the user refers to something 'on the board' "
             "without saying which element, and before adding to a board you placed by hand "

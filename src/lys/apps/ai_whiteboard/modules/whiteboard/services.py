@@ -77,6 +77,16 @@ class WhiteboardService(EntityService[Whiteboard]):
         """What is on a board, in the terms its writer used to draw it."""
         return scene_tools.describe(whiteboard.scene_json or scene_tools.empty_scene())
 
+    @classmethod
+    def theme(cls, whiteboard: Whiteboard) -> Dict[str, str]:
+        """The board's look: background and default stroke."""
+        return scene_tools.theme(whiteboard.scene_json or scene_tools.empty_scene())
+
+    @classmethod
+    def slides(cls, whiteboard: Whiteboard) -> List[Dict[str, Any]]:
+        """The board's deck: its frames in the order they are presented."""
+        return scene_tools.slides(whiteboard.scene_json or scene_tools.empty_scene())
+
     # ==================== Target resolution ====================
 
     @classmethod
@@ -321,6 +331,8 @@ class WhiteboardService(EntityService[Whiteboard]):
             "whiteboard_id": whiteboard.id,
             "title": whiteboard.title,
             "elements": cls.describe(whiteboard),
+            "slides": cls.slides(whiteboard),
+            "theme": cls.theme(whiteboard),
         }
         # What the patch put on top of something else. Reported, not refused: the caller
         # chose its coordinates before any size existed and cannot see the board, so the

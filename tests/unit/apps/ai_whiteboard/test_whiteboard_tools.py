@@ -32,6 +32,8 @@ def whiteboard_service():
     service.open_for_conversation = AsyncMock(return_value=BOARD)
     service.resolve_for_conversation = AsyncMock(return_value=BOARD)
     service.describe = MagicMock(return_value=[{"name": "a"}])
+    service.slides = MagicMock(return_value=[{"index": 1}])
+    service.theme = MagicMock(return_value={"background": "#ffffff", "stroke": "clean"})
     return service
 
 
@@ -204,7 +206,10 @@ class TestReadHandler:
     @pytest.mark.asyncio
     async def test_reads_the_board_back(self, service):
         result = await service._handle_read_whiteboard({}, context())
-        assert result == {"whiteboard_id": "board-1", "title": "Board", "elements": [{"name": "a"}]}
+        assert result == {
+            "whiteboard_id": "board-1", "title": "Board", "elements": [{"name": "a"}], "slides": [{"index": 1}],
+            "theme": {"background": "#ffffff", "stroke": "clean"},
+        }
 
     @pytest.mark.asyncio
     async def test_unreachable_board_goes_back_to_the_model(self, service, whiteboard_service):
