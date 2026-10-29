@@ -7,6 +7,25 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.57.0] - 2026-10-29
+
+### Added
+- `AIConversationService.user_answered_tools`: a call of such a tool that put a frontend
+  action in front of the user is left open — no result written, the turn ends after the
+  tool batch, and its actions carry `toolCallId`. The client posts the user's answers as
+  `tool_answers` (`AIToolAnswerModel`, bounded by `MAX_TOOL_ANSWER_LENGTH`, at most
+  `MAX_TOOL_ANSWERS` per request) with no message; the service checks them against the
+  open calls under a row lock on the conversation, writes them as the calls' results and
+  resumes the model on them. A resume writes no user message; its answers stay recorded
+  if the model then fails, and the next message reads them.
+- A new message sent while calls are open closes them with `UNANSWERED_TOOL_RESULT`.
+- `sendAiMessage` takes `toolAnswers` (`AIToolAnswerInput`); `FrontendAction.toolCallId`.
+- Errors `INVALID_CHAT_INPUT` (both or neither of a message and tool answers) and
+  `INVALID_TOOL_ANSWERS` in `lys.apps.ai.errors`.
+
+### Changed
+- `AIMessageInput.message` is optional: a turn carries either a message or tool answers.
+
 ## [0.56.0] - 2026-10-16
 
 ### Added

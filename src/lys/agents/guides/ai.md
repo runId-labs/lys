@@ -438,8 +438,51 @@ generic handler; project proposal types (mutation + messages per type) are
 registered through the `proposalConfigs` prop of `ChatbotRestricted` — see
 `agents/guides/front/restricted-feature.md` and the ChatbotRestricted types.
 
+### A proposal is answered by the user (`user_answered_tools`)
+
+A special tool that only puts a proposal in front of the user (a form to
+review, a draft to validate) must not answer its own call: a result such as
+"sent for validation" lets the model carry on as if the user had decided.
+Declare it on the conversation service:
+
+```python
+class AIConversationService(BaseAIConversationService):
+    user_answered_tools = frozenset({"propose_thing"})
+```
+
+A call of such a tool that produced a frontend action is LEFT OPEN:
+
+- its actions carry `toolCallId` (tagged before they are streamed);
+- no result is written, and the turn ends after that tool batch — no further
+  model call, `done` goes out with the actions, as for a continued navigation;
+- the client posts the user's answers, one per open call and all at once, as
+  `tool_answers` (`AIToolAnswerModel`: `tool_call_id`, `result` — a JSON
+  object, bounded by `MAX_TOOL_ANSWER_LENGTH`; at most `MAX_TOOL_ANSWERS` per
+  request) with no message content, on the conversation id — `toolAnswers`
+  on the `sendAiMessage` mutation, the same field on an SSE endpoint. A turn
+  carrying both or neither is refused (`INVALID_CHAT_INPUT`). The service
+  checks the answers against the calls it left open (latest assistant
+  message, user-answered tool, no result yet; the conversation row locked)
+  and refuses any other set (`INVALID_TOOL_ANSWERS`); the answers become the
+  calls' results and the model resumes on them. A resume writes no user
+  message.
+- an accepted answer is durable: the client acted on it before posting it.
+  A resume the model then fails to answer (provider error) keeps its
+  answers; the calls are no longer open, and the next message reads them.
+- a new message sent instead closes the open calls with
+  `UNANSWERED_TOOL_RESULT`, before the history is read.
+
+A call that produced no action (its arguments refused) is answered by the
+tool as usual: there is nothing for the user to answer. The answer is the
+client's word: the model reads it as data, and what it claims to have done
+(a created entity) is the client's to have done under the user's rights.
+
 ## SSE endpoints (already wired in `api/src/app.py`)
 
 `POST /sse/chat` (streaming conversation, page context, message limits) and
-`GET /sse/signals` (user channel). Custom endpoints are exceptional — extend
-through services and tools instead.
+`GET /sse/signals` (user channel). An endpoint serving user-answered tools also
+takes the answers in place of the message and passes them as `tool_answers`.
+A refused input raises `LysError` from inside the stream, once the response
+has started: the endpoint turns it into an `error` event carrying its code
+(`INVALID_CHAT_INPUT`, `INVALID_TOOL_ANSWERS`), not a generic internal error. Custom
+endpoints are exceptional — extend through services and tools instead.

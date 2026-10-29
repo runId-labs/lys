@@ -4,12 +4,13 @@ AI Conversation models.
 Pydantic models for AI conversation data validation.
 """
 
-from typing import Optional, Dict, Any
+import json
+from typing import Optional, Dict, Any, List
 from uuid import UUID
 
 from pydantic import BaseModel, Field, field_validator
 
-from lys.apps.ai.modules.conversation.consts import DISPLAY_TITLE_MAX_LENGTH
+from lys.apps.ai.modules.conversation.consts import DISPLAY_TITLE_MAX_LENGTH, MAX_TOOL_ANSWER_LENGTH
 from lys.core.graphql.client import extract_id_from_global_id
 
 
@@ -53,11 +54,38 @@ class PageContextModel(BaseModel):
     params: Optional[Dict[str, Any]] = None
 
 
+class AIToolAnswerModel(BaseModel):
+    """
+    The user's answer to an open tool call (see AIConversationService.user_answered_tools).
+
+    Written by the client, read by the model as that call's result: the id must name a call
+    the server left open — checked by the service, not here — and the result is bounded.
+    """
+    tool_call_id: str = Field(..., min_length=1, max_length=100)
+    result: Dict[str, Any]
+
+    @field_validator("result")
+    @classmethod
+    def validate_result(cls, value: Dict[str, Any]) -> Dict[str, Any]:
+        """Refuse an answer the model would read as a wall of text."""
+        if len(json.dumps(value, ensure_ascii=False)) > MAX_TOOL_ANSWER_LENGTH:
+            raise ValueError(f"Tool answer exceeds {MAX_TOOL_ANSWER_LENGTH} characters")
+
+        return value
+
+
 class AIMessageInputModel(BaseModel):
-    """Pydantic model for AI message input validation."""
-    message: str
+    """
+    Pydantic model for AI message input validation.
+
+    A turn carries either ``message`` or ``tool_answers`` — the user's answers to the
+    calls the last turn left open (see AIConversationService.user_answered_tools). The
+    service refuses both or neither, for every entry point.
+    """
+    message: Optional[str] = None
     conversation_id: Optional[str] = None
     context: Optional[PageContextModel] = None
+    tool_answers: Optional[List[AIToolAnswerModel]] = None
 
     @field_validator("conversation_id", mode="before")
     @classmethod

@@ -8,13 +8,14 @@ import json
 import logging
 import time
 from datetime import datetime, timedelta, UTC
-from typing import AsyncGenerator, AsyncIterator, Callable, Optional, List, Dict, Any
+from typing import AsyncGenerator, AsyncIterator, Callable, FrozenSet, Optional, List, Dict, Any
 
 from sqlalchemy import cast, func, select, tuple_
 from sqlalchemy.dialects.postgresql import REGCONFIG
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Session
 
+from lys.apps.ai.errors import INVALID_CHAT_INPUT, INVALID_TOOL_ANSWERS
 from lys.apps.ai.modules.conversation.consts import (
     MESSAGE_TIMESTAMP_FORMAT,
     AIFeedbackRating,
@@ -36,15 +37,17 @@ from lys.apps.ai.modules.conversation.consts import (
     EMBEDDING_MAX_BATCH_CHARS,
     EMBEDDING_MAX_CHARS,
     MAX_SEMANTIC_DISTANCE,
+    MAX_TOOL_ANSWERS,
     RANK_FUSION_CONSTANT,
     TRIGRAM_SIMILARITY_THRESHOLD,
+    UNANSWERED_TOOL_RESULT,
 )
 from lys.apps.ai.modules.conversation.entities import (
     AIConversation,
     AIMessage,
     AIMessageFeedback,
 )
-from lys.apps.ai.modules.conversation.models import PageContextModel
+from lys.apps.ai.modules.conversation.models import AIToolAnswerModel, PageContextModel
 from lys.apps.ai.modules.conversation.spoken_block import (
     SpokenBlockConfig,
     SpokenBlockPipeline,
@@ -70,6 +73,7 @@ from lys.apps.ai.utils.search import (
 )
 from lys.core.graphql.client import build_global_id
 from lys.apps.ai.utils.providers.config import parse_plugin_config
+from lys.core.errors import LysError
 from lys.core.registries import register_service
 from lys.core.services import EntityService
 from lys.core.utils.routes import filter_routes_by_permissions, build_navigate_tool
@@ -80,6 +84,15 @@ logger = logging.getLogger(__name__)
 @register_service()
 class AIConversationService(EntityService[AIConversation]):
     """Service for managing AI conversations."""
+
+    # Tools whose call the USER answers, not the tool. Such a tool only puts a proposal in
+    # front of the user (a frontend action): calling it ends the turn with the call left
+    # open, and the client posts the user's answer as that call's result (``tool_answers``),
+    # on which the model resumes. Answered by the tool itself ("sent for validation"), the
+    # call let the model carry on as if the user had already decided. A call that produced
+    # no action (arguments refused) is answered by the tool as usual: there is nothing for
+    # the user to answer. Consumers declare theirs by name.
+    user_answered_tools: FrozenSet[str] = frozenset()
 
     @staticmethod
     def _usage_fields(usage: Optional[Dict[str, Any]]) -> Dict[str, Optional[int]]:
@@ -1506,13 +1519,14 @@ class AIConversationService(EntityService[AIConversation]):
     async def _prepare_chat_context(
         cls,
         user_id: str,
-        content: str,
+        content: Optional[str],
         session: AsyncSession,
         connected_user: Dict[str, Any],
         info: Any,
         conversation_id: Optional[str] = None,
         page_context: Optional[PageContextModel] = None,
         client_id: Optional[str] = None,
+        tool_answers: Optional[List[AIToolAnswerModel]] = None,
     ) -> Dict[str, Any]:
         """
         Prepare the shared context for both streaming and non-streaming chat.
@@ -1522,7 +1536,7 @@ class AIConversationService(EntityService[AIConversation]):
 
         Args:
             user_id: User ID
-            content: User message content
+            content: User message content; None when the turn resumes on tool answers
             session: Database session
             connected_user: Connected user dict from JWT
             info: GraphQL info context (or _StreamingInfo shim)
@@ -1533,11 +1547,25 @@ class AIConversationService(EntityService[AIConversation]):
                 resolved — a consumer overriding this method (e.g. to enforce a
                 tenant-scoped quota) resolves it from its own trust boundary and passes
                 it through to super().
+            tool_answers: The user's answers to the calls the last turn left open (see
+                ``user_answered_tools``). The turn then resumes on them: no user message
+                is written, and the conversation must exist and be the user's.
 
         Returns:
             Dict with keys: tools, llm_tools, executor, conversation,
-            message_service, ai_service, messages, info
+            message_service, ai_service, messages, info, user_message_id
+
+        Raises:
+            LysError(INVALID_CHAT_INPUT): both or neither of content and tool_answers.
+            LysError(INVALID_TOOL_ANSWERS): the answers do not match the open calls.
         """
+        # Checked here rather than at each endpoint: every entry point (the GraphQL mutation,
+        # a consumer's SSE route) goes through this method.
+        if (content is None) == (tool_answers is None):
+            raise LysError(INVALID_CHAT_INPUT, "A chat turn takes either a message or tool answers")
+        if tool_answers is not None and len(tool_answers) > MAX_TOOL_ANSWERS:
+            raise LysError(INVALID_TOOL_ANSWERS, f"{len(tool_answers)} tool answers exceed {MAX_TOOL_ANSWERS}")
+
         app_manager = cls.app_manager
 
         # Get tools via AIToolService filtered by JWT claims
@@ -1639,7 +1667,14 @@ class AIConversationService(EntityService[AIConversation]):
 
         # Conversation + its current compaction summary, loaded before the system prompt
         # so the summary can be injected as a volatile system segment.
-        conversation = await cls.get_or_create(user_id, session, conversation_id, client_id=client_id)
+        if tool_answers is not None:
+            # A resume answers calls of an existing conversation: never open a new one for
+            # an unknown or foreign id, as a new message would.
+            conversation = await cls.get_by_id(conversation_id, session) if conversation_id else None
+            if conversation is None or conversation.user_id != user_id:
+                raise LysError(INVALID_TOOL_ANSWERS, "Tool answers posted without a conversation of the user")
+        else:
+            conversation = await cls.get_or_create(user_id, session, conversation_id, client_id=client_id)
         current_summary = await cls._load_current_summary(conversation.id, session)
         stable_context = await cls._get_stable_context(session, connected_user, page_context, info)
         volatile_context = await cls._composed_volatile_context(session, connected_user, page_context, info)
@@ -1687,6 +1722,12 @@ class AIConversationService(EntityService[AIConversation]):
         # Build messages with system prompt and history. When a compaction summary exists,
         # _build_messages returns only the verbatim window (messages after the summary
         # boundary); the older turns are carried by the summary system segment above.
+        # The open calls are settled first, so this turn reads the answers it resumes on — or,
+        # on a new message, the calls the user left unanswered. Settled last before the
+        # history read, so a failure while assembling the context (a context tool, the
+        # executor) refuses the resume before any answer is recorded.
+        if conversation_id:
+            await cls._settle_open_tool_calls(conversation, session, tool_answers)
         history = await cls._build_messages(conversation, session, current_summary=current_summary)
         # One system message per segment, carrying its cache flag. The base prompt is
         # prepended (uncached) by the AIService entry point and sits before these.
@@ -1710,30 +1751,33 @@ class AIConversationService(EntityService[AIConversation]):
         # several assistant ones (agent loop), and because everything it needs is assembled
         # above. See AIMessage.request_context for what each key holds. The prompt version
         # comes from the boot cache (best-effort: None leaves the FK unset rather than
-        # failing the turn).
-        user_message = await message_service.create(
-            session,
-            conversation_id=conversation.id,
-            role=AIMessageRole.USER.value,
-            content=content,
-            prompt_version_id=ai_service.get_prompt_version_id(conversation.purpose),
-            request_context=cls._build_request_context(
-                page_context=page_context,
-                llm_tools=llm_tools,
-                volatile_context=volatile_context,
-                ai_service=ai_service,
-            ),
-        )
+        # failing the turn). A resume writes none: its input is the answers, already in the
+        # history read above.
+        user_message = None
+        if tool_answers is None:
+            user_message = await message_service.create(
+                session,
+                conversation_id=conversation.id,
+                role=AIMessageRole.USER.value,
+                content=content,
+                prompt_version_id=ai_service.get_prompt_version_id(conversation.purpose),
+                request_context=cls._build_request_context(
+                    page_context=page_context,
+                    llm_tools=llm_tools,
+                    volatile_context=volatile_context,
+                    ai_service=ai_service,
+                ),
+            )
 
-        # Through the same hook as the history, and from the row that was just written, so
-        # this turn reads exactly as it will when replayed from the database later.
-        messages.append(cls._format_message(
-            {"role": AIMessageRole.USER.value, "content": content}, user_message
-        ))
+            # Through the same hook as the history, and from the row that was just written, so
+            # this turn reads exactly as it will when replayed from the database later.
+            messages.append(cls._format_message(
+                {"role": AIMessageRole.USER.value, "content": content}, user_message
+            ))
 
-        # Title the conversation off the request path, from this message when it is the
-        # opening one. Never blocks or fails the turn.
-        await cls.maybe_enqueue_title(conversation, session)
+            # Title the conversation off the request path, from this message when it is the
+            # opening one. Never blocks or fails the turn.
+            await cls.maybe_enqueue_title(conversation, session)
 
         return {
             "tools": tools,
@@ -1744,8 +1788,101 @@ class AIConversationService(EntityService[AIConversation]):
             "ai_service": ai_service,
             "messages": messages,
             "info": info,
-            "user_message_id": user_message.id,
+            "user_message_id": user_message.id if user_message is not None else None,
         }
+
+    @classmethod
+    async def _settle_open_tool_calls(
+        cls,
+        conversation: "AIConversation",
+        session: AsyncSession,
+        tool_answers: Optional[List[AIToolAnswerModel]],
+    ) -> None:
+        """
+        Give the calls the last turn left open for the user (see ``user_answered_tools``)
+        their result: the user's answers on a resume, ``UNANSWERED_TOOL_RESULT`` when a new
+        message comes instead.
+
+        Open = a call of a user-answered tool in the latest assistant message, with no result
+        yet. Answers must cover exactly the open calls, all at once: the model resumes once,
+        on the whole turn's outcome. Anything else — an unknown, already answered or
+        tool-answered id, a partial set, nothing open — is refused, never half-applied.
+
+        The conversation row is locked first and the results committed before returning:
+        two posts of the same answers (a double click, a retried request) would otherwise
+        both find the calls open and both resume the model; committing releases the lock
+        instead of holding it for the whole model call. Once committed, an answer is durable:
+        the client acted on it before posting it, so a resume the model then fails to answer
+        keeps it, and the next message reads it.
+
+        Raises:
+            LysError(INVALID_TOOL_ANSWERS): the answers do not match the open calls.
+        """
+        conversation_entity = cls.app_manager.get_entity("ai_conversation")
+        message_entity = cls.app_manager.get_entity("ai_message")
+        message_service = cls.app_manager.get_service("ai_message")
+
+        await session.execute(
+            select(conversation_entity.id)
+            .where(conversation_entity.id == conversation.id)
+            .with_for_update()
+        )
+
+        last_assistant = (await session.execute(
+            select(message_entity)
+            .where(
+                message_entity.conversation_id == conversation.id,
+                message_entity.role == AIMessageRole.ASSISTANT.value,
+            )
+            .order_by(message_entity.created_at.desc(), message_entity.id.desc())
+            .limit(1)
+        )).scalar_one_or_none()
+
+        open_call_ids: List[str] = []
+        if last_assistant is not None and last_assistant.tool_calls:
+            candidate_ids = [
+                tool_call["id"] for tool_call in last_assistant.tool_calls
+                if tool_call.get("id")
+                and tool_call.get("function", {}).get("name") in cls.user_answered_tools
+            ]
+            if candidate_ids:
+                answered_ids = set((await session.execute(
+                    select(message_entity.tool_call_id).where(
+                        message_entity.conversation_id == conversation.id,
+                        message_entity.role == AIMessageRole.TOOL.value,
+                        message_entity.tool_call_id.in_(candidate_ids),
+                    )
+                )).scalars().all())
+                open_call_ids = [call_id for call_id in candidate_ids if call_id not in answered_ids]
+
+        if tool_answers is None:
+            results = {call_id: dict(UNANSWERED_TOOL_RESULT) for call_id in open_call_ids}
+        else:
+            results = {answer.tool_call_id: answer.result for answer in tool_answers}
+            if not open_call_ids or len(results) != len(tool_answers) or set(results) != set(open_call_ids):
+                raise LysError(
+                    INVALID_TOOL_ANSWERS,
+                    f"Answers {sorted(results)} do not match the open calls {open_call_ids}",
+                )
+
+        for call_id in open_call_ids:
+            await message_service.add_tool_result(conversation.id, call_id, results[call_id], session)
+        await session.commit()
+
+    @classmethod
+    def _leave_open_for_user(cls, tool_name: str, produced: List[Dict[str, Any]], tool_call_id: str) -> bool:
+        """
+        Whether this call is left for the user to answer (see ``user_answered_tools``) — and
+        if so, tag what it put in front of the user with the id the answer must quote.
+
+        The actions are tagged in place, before they are streamed: the client learns which
+        call each proposal answers from the action itself.
+        """
+        if tool_name not in cls.user_answered_tools or not produced or not tool_call_id:
+            return False
+        for action in produced:
+            action["toolCallId"] = tool_call_id
+        return True
 
     @classmethod
     async def _close_turn(
@@ -1853,12 +1990,13 @@ class AIConversationService(EntityService[AIConversation]):
     async def chat_with_tools(
         cls,
         user_id: str,
-        content: str,
+        content: Optional[str],
         session: AsyncSession,
         info: Any,
         conversation_id: Optional[str] = None,
         page_context: Optional[PageContextModel] = None,
         max_tool_iterations: int = 10,
+        tool_answers: Optional[List[AIToolAnswerModel]] = None,
     ) -> Dict[str, Any]:
         """
         Send a message with tool execution support (agent loop).
@@ -1867,12 +2005,14 @@ class AIConversationService(EntityService[AIConversation]):
 
         Args:
             user_id: User ID
-            content: User message content
+            content: User message content; None when resuming on ``tool_answers``
             session: Database session
             info: GraphQL info context
             conversation_id: Optional conversation ID to continue
             page_context: Optional page context for tool filtering and param injection
             max_tool_iterations: Maximum number of tool call iterations
+            tool_answers: The user's answers to the calls the last turn left open
+                (see ``user_answered_tools``); the turn resumes on them
 
         Returns:
             Dict with content, conversation_id, tool_calls_count, tool_results, frontend_actions
@@ -1880,7 +2020,7 @@ class AIConversationService(EntityService[AIConversation]):
         connected_user = info.context.connected_user
         ctx = await cls._prepare_chat_context(
             user_id, content, session, connected_user, info,
-            conversation_id=conversation_id, page_context=page_context,
+            conversation_id=conversation_id, page_context=page_context, tool_answers=tool_answers,
         )
         executor = ctx["executor"]
         conversation = ctx["conversation"]
@@ -1961,6 +2101,7 @@ class AIConversationService(EntityService[AIConversation]):
 
             # Execute each tool and collect results
             actions_before_tools = len(getattr(info.context, "frontend_actions", []))
+            awaits_user = False
             for tool_call in tool_calls:
                 tool_name = tool_call.get("function", {}).get("name", "")
                 tool_args_str = tool_call.get("function", {}).get("arguments", "{}")
@@ -1968,6 +2109,7 @@ class AIConversationService(EntityService[AIConversation]):
 
                 try:
                     tool_args = json.loads(tool_args_str) if isinstance(tool_args_str, str) else tool_args_str
+                    actions_before_call = len(getattr(info.context, "frontend_actions", []))
                     result = await executor.execute(
                         tool_name=tool_name,
                         arguments=tool_args,
@@ -1978,6 +2120,12 @@ class AIConversationService(EntityService[AIConversation]):
                         "result": str(result),
                         "success": True,
                     })
+
+                    # Left open for the user: no result now, the client posts the answer.
+                    produced_by_call = list(getattr(info.context, "frontend_actions", []))[actions_before_call:]
+                    if cls._leave_open_for_user(tool_name, produced_by_call, tool_call_id):
+                        awaits_user = True
+                        continue
 
                     # Add tool result to messages
                     tool_msg = {
@@ -2025,10 +2173,11 @@ class AIConversationService(EntityService[AIConversation]):
 
             # A navigation the client continues on its own ends the turn here
             # (see _hands_over_to_client): no further model call, the answer
-            # comes on the new page. The text written before the call is the
-            # assistant message already persisted with its tool calls.
+            # comes on the new page. So does a call left open for the user: the
+            # model resumes on the answers. The text written before the call is
+            # the assistant message already persisted with its tool calls.
             produced = list(getattr(info.context, "frontend_actions", []))[actions_before_tools:]
-            if _hands_over_to_client(produced):
+            if awaits_user or _hands_over_to_client(produced):
                 return await cls._close_turn(
                     conversation, session, info, response.content,
                     tool_calls_count, tool_results, response.usage,
@@ -2051,7 +2200,7 @@ class AIConversationService(EntityService[AIConversation]):
     async def chat_with_tools_streaming(
         cls,
         user_id: str,
-        content: str,
+        content: Optional[str],
         session: "AsyncSession",
         connected_user: Dict[str, Any],
         access_token: str,
@@ -2059,13 +2208,18 @@ class AIConversationService(EntityService[AIConversation]):
         page_context: Optional[PageContextModel] = None,
         max_tool_iterations: int = 10,
         voice: bool = False,
+        tool_answers: Optional[List[AIToolAnswerModel]] = None,
     ) -> AsyncGenerator[str, None]:
         """
         Streaming version of chat_with_tools. Yields SSE-formatted strings.
 
+        A call of a ``user_answered_tools`` tool ends the turn after its tool batch:
+        its frontend actions carry ``toolCallId``, and the client resumes the turn by
+        posting the user's answers as ``tool_answers`` (no ``content``).
+
         Args:
             user_id: User ID
-            content: User message content
+            content: User message content; None when resuming on ``tool_answers``
             session: Database session
             connected_user: Connected user dict from JWT
             access_token: User's access token for tool execution
@@ -2079,6 +2233,8 @@ class AIConversationService(EntityService[AIConversation]):
                 endpoint naming a voice; a voice it cannot serve is dropped
                 silently on the wire and logged server-side — the text stream
                 is never failed for it, and no ``voice`` event is emitted.
+            tool_answers: The user's answers to the calls the last turn left open;
+                the turn resumes on them
 
         Yields:
             SSE-formatted event strings. Event names: ``token``, ``tool_start``,
@@ -2114,7 +2270,7 @@ class AIConversationService(EntityService[AIConversation]):
 
         ctx = await cls._prepare_chat_context(
             user_id, content, session, connected_user, info,
-            conversation_id=conversation_id, page_context=page_context,
+            conversation_id=conversation_id, page_context=page_context, tool_answers=tool_answers,
         )
         executor = ctx["executor"]
         conversation = ctx["conversation"]
@@ -2239,8 +2395,10 @@ class AIConversationService(EntityService[AIConversation]):
 
                 except Exception as e:
                     logger.error(f"Streaming provider error: {e}")
-                    # Delete the orphaned user message to keep conversation history valid
-                    if iteration == 0:
+                    # Delete the orphaned user message to keep conversation history valid.
+                    # A resume wrote none; its answers stay: the user did answer, and the
+                    # next message reads them.
+                    if iteration == 0 and user_message_id is not None:
                         try:
                             await message_service.delete(user_message_id, session)
                         except Exception as del_err:
@@ -2318,6 +2476,7 @@ class AIConversationService(EntityService[AIConversation]):
 
                 # Execute each tool
                 actions_before_tools = len(getattr(info.context, "frontend_actions", []))
+                awaits_user = False
                 for tool_call in finalized_tool_calls:
                     tool_name = tool_call.get("function", {}).get("name", "")
                     tool_args_str = tool_call.get("function", {}).get("arguments", "{}")
@@ -2327,6 +2486,7 @@ class AIConversationService(EntityService[AIConversation]):
 
                     try:
                         tool_args = json.loads(tool_args_str) if isinstance(tool_args_str, str) else tool_args_str
+                        actions_before_call = len(getattr(info.context, "frontend_actions", []))
                         result = await executor.execute(
                             tool_name=tool_name,
                             arguments=tool_args,
@@ -2344,6 +2504,11 @@ class AIConversationService(EntityService[AIConversation]):
                             "success": True,
                         })
 
+                        # Tagged before they are streamed, so the client knows which
+                        # call each proposal answers.
+                        produced_by_call = list(getattr(info.context, "frontend_actions", []))[actions_before_call:]
+                        left_open = cls._leave_open_for_user(tool_name, produced_by_call, tool_call_id)
+
                         # The actions this tool just produced, on their way out
                         # immediately. `fromIndex` is their position in the list
                         # "done" carries in full, so a client that handles this
@@ -2356,6 +2521,11 @@ class AIConversationService(EntityService[AIConversation]):
                                 "frontendActions": collected[streamed_action_count:],
                             })
                             streamed_action_count = len(collected)
+
+                        # Left open for the user: no result now, the client posts the answer.
+                        if left_open:
+                            awaits_user = True
+                            continue
 
                         tool_msg = {
                             "role": "tool",
@@ -2402,11 +2572,12 @@ class AIConversationService(EntityService[AIConversation]):
 
                 # A navigation the client continues on its own ends the turn
                 # here (see _hands_over_to_client): no further model call —
-                # the answer comes on the new page. The sentence streamed
-                # before the call is the assistant message already persisted
-                # with its tool calls; "done" carries the actions as usual.
+                # the answer comes on the new page. So does a call left open
+                # for the user: the model resumes on the answers. The sentence
+                # streamed before the call is the assistant message already
+                # persisted with its tool calls; "done" carries the actions.
                 produced = list(getattr(info.context, "frontend_actions", []))[actions_before_tools:]
-                if _hands_over_to_client(produced):
+                if awaits_user or _hands_over_to_client(produced):
                     async for event in cls._close_streaming_turn(
                         conversation, session, info, accumulated_content,
                         tool_calls_count, tool_results, last_usage, voice_pipeline,

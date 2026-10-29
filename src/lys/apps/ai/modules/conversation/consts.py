@@ -119,6 +119,19 @@ DEFAULT_COMPACTION_PROMPT = (
 # two utterances - what was said before acting, and what is said once it is done.
 TURN_SEGMENT_BREAK = "\n\n"
 
+# A tool the USER answers (see AIConversationService.user_answered_tools) leaves its call
+# open until the client posts the answer. The answer is written by the client, so it is
+# bounded: how many answers one request may carry, and the size of each once serialized.
+MAX_TOOL_ANSWERS = 20
+MAX_TOOL_ANSWER_LENGTH = 4000
+
+# The result an open call receives when the user sends a new message instead of answering
+# it: the history says what happened, rather than the sanitizer's "interrupted" marker.
+UNANSWERED_TOOL_RESULT = {
+    "status": "unanswered",
+    "message": "The user did not answer this proposal and sent a new message instead.",
+}
+
 
 class AIMessageRole(str, Enum):
     """Role of a message in a conversation."""

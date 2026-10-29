@@ -260,7 +260,7 @@ class AIMutation(Mutation):
         Send a message to the AI assistant and get a response.
 
         Args:
-            inputs: Input containing the user message and optional conversation ID
+            inputs: The user message, or the answers to the open tool calls, and optional conversation ID
             info: GraphQL context
 
         Returns:
@@ -293,6 +293,7 @@ class AIMutation(Mutation):
             info=info,
             conversation_id=input_data.conversation_id,
             page_context=input_data.context,
+            tool_answers=input_data.tool_answers,
         )
 
         # Convert tool results to Strawberry types
@@ -315,7 +316,8 @@ class AIMutation(Mutation):
                     type=fa["type"],
                     path=fa.get("path"),
                     params=fa.get("params"),
-                    nodes=fa.get("nodes")
+                    nodes=fa.get("nodes"),
+                    tool_call_id=fa.get("toolCallId"),
                 )
                 for fa in result["frontend_actions"]
             ]

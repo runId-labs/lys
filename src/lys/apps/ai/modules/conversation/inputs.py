@@ -11,6 +11,7 @@ from strawberry.scalars import JSON
 
 from lys.apps.ai.modules.conversation.models import (
     AIMessageInputModel,
+    AIToolAnswerModel,
     AIToolResultModel,
     PageContextModel,
     UpdateAIConversationTitleInputModel,
@@ -29,12 +30,20 @@ class PageContextInput:
     params: Optional[JSON] = None
 
 
+@strawberry.experimental.pydantic.input(model=AIToolAnswerModel)
+class AIToolAnswerInput:
+    """The user's answer to a tool call the assistant left open (its frontend action's toolCallId)."""
+    tool_call_id: strawberry.auto
+    result: JSON
+
+
 @strawberry.experimental.pydantic.input(model=AIMessageInputModel)
 class AIMessageInput:
-    """Input for sending a message to the AI assistant."""
+    """Input for sending a message to the AI assistant, or the answers to its open tool calls."""
     message: strawberry.auto
     conversation_id: strawberry.auto
     context: Optional[PageContextInput] = None
+    tool_answers: Optional[List[AIToolAnswerInput]] = None
 
 
 @strawberry.experimental.pydantic.input(model=UpdateAIConversationTitleInputModel)
@@ -59,3 +68,4 @@ class FrontendAction:
     params: Optional[JSON] = None
     nodes: Optional[List[str]] = None  # Node types to refresh (e.g., ["ClientNode"])
     continue_action: Optional[bool] = None  # If true, frontend should send "Continue" after navigate
+    tool_call_id: Optional[str] = None  # Set on a proposal the user answers (see AIToolAnswerInput)

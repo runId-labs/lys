@@ -78,3 +78,24 @@ class TestFrontendAction:
         """Test FrontendAction has nodes field."""
         from lys.apps.ai.modules.conversation.inputs import FrontendAction
         assert "nodes" in FrontendAction.__annotations__
+
+
+class TestAIMessageInputToolAnswers:
+    """The mutation carries the answers to the open tool calls in place of the message."""
+
+    def test_converts_the_answers_to_the_model(self):
+        from lys.apps.ai.modules.conversation.inputs import AIMessageInput, AIToolAnswerInput
+        from lys.apps.ai.modules.conversation.models import AIToolAnswerModel
+
+        inputs = AIMessageInput(
+            message=None, conversation_id=None,
+            tool_answers=[AIToolAnswerInput(tool_call_id="call-1", result={"outcome": "created"})],
+        )
+
+        model = inputs.to_pydantic()
+        assert model.message is None
+        assert model.tool_answers == [AIToolAnswerModel(tool_call_id="call-1", result={"outcome": "created"})]
+
+    def test_frontend_action_carries_the_call_id(self):
+        from lys.apps.ai.modules.conversation.inputs import FrontendAction
+        assert "tool_call_id" in FrontendAction.__annotations__

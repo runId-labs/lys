@@ -151,6 +151,47 @@ class TestSendAiMessageLogic:
         finally:
             AIMessageNode.__init__ = original_init
 
+    def test_tool_answers_are_passed_and_the_call_id_returned(self):
+        """The answers reach the service; a proposal's toolCallId reaches the client."""
+        from lys.apps.ai.modules.conversation.nodes import AIMessageNode
+        original_init = _make_node_constructable(AIMessageNode)
+        try:
+            resolver = self._get_resolver()
+
+            answers = [MagicMock()]
+            mock_inputs = MagicMock()
+            mock_input_data = MagicMock()
+            mock_input_data.conversation_id = "conv-123"
+            mock_input_data.message = None
+            mock_input_data.context = None
+            mock_input_data.tool_answers = answers
+            mock_inputs.to_pydantic.return_value = mock_input_data
+
+            mock_info = MagicMock()
+            mock_info.context.connected_user = {"sub": "user-uuid"}
+            mock_info.context.session = AsyncMock()
+
+            mock_conv_service = MagicMock()
+            mock_conv_service.chat_with_tools = AsyncMock(return_value={
+                "content": "Je te propose ceci.",
+                "conversation_id": "conv-123",
+                "tool_calls_count": 1,
+                "tool_results": None,
+                "frontend_actions": [{"type": "thing_proposal", "toolCallId": "call-1"}],
+            })
+            mock_info.context.app_manager.get_service.return_value = mock_conv_service
+
+            loop = asyncio.new_event_loop()
+            try:
+                result = loop.run_until_complete(resolver(None, inputs=mock_inputs, info=mock_info))
+            finally:
+                loop.close()
+
+            assert mock_conv_service.chat_with_tools.await_args.kwargs["tool_answers"] is answers
+            assert result.frontend_actions[0].tool_call_id == "call-1"
+        finally:
+            AIMessageNode.__init__ = original_init
+
     def test_user_with_empty_sub_returns_error(self):
         from lys.apps.ai.modules.conversation.nodes import AIMessageNode
         original_init = _make_node_constructable(AIMessageNode)

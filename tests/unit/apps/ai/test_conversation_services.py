@@ -815,6 +815,7 @@ class TestPrepareChatContext:
              patch.object(AIConversationService, "_load_current_summary", new_callable=AsyncMock, return_value=None), \
              patch.object(AIConversationService, "_get_tool_executor", new_callable=AsyncMock) as mock_executor, \
              patch.object(AIConversationService, "get_or_create", new_callable=AsyncMock, return_value=mock_conversation), \
+             patch.object(AIConversationService, "_settle_open_tool_calls", new_callable=AsyncMock) as mock_settle, \
              patch.object(AIConversationService, "_build_messages", new_callable=AsyncMock, return_value=[]), \
              patch.object(AIConversationService, "app_manager", mock_app_manager):
 
@@ -829,6 +830,7 @@ class TestPrepareChatContext:
                 "mock_conversation": mock_conversation,
                 "mock_message_service": mock_message_service,
                 "mock_ai_service": mock_ai_service,
+                "mock_settle": mock_settle,
             }
 
     @pytest.mark.asyncio
@@ -844,7 +846,10 @@ class TestPrepareChatContext:
             info=mock_info,
         )
 
-        expected_keys = {"tools", "llm_tools", "executor", "conversation", "message_service", "ai_service", "messages", "info", "user_message_id"}
+        expected_keys = {
+            "tools", "llm_tools", "executor", "conversation", "message_service", "ai_service", "messages", "info",
+            "user_message_id",
+        }
         assert set(ctx.keys()) == expected_keys
 
     @pytest.mark.asyncio
@@ -1065,6 +1070,265 @@ class TestPrepareChatContext:
         AIConversationService.get_or_create.assert_called_once_with(
             "user-123", mock_session, None, client_id=None,
         )
+
+    @pytest.mark.asyncio
+    async def test_new_message_settles_the_open_calls_first(
+        self, connected_user, mock_session, mock_info, _setup_mocks,
+    ):
+        """A message in an existing conversation closes the calls left open, with no answers."""
+        from lys.apps.ai.modules.conversation.services import AIConversationService
+
+        await AIConversationService._prepare_chat_context(
+            user_id="user-123", content="Hello", session=mock_session,
+            connected_user=connected_user, info=mock_info, conversation_id="conv-existing",
+        )
+
+        _setup_mocks["mock_settle"].assert_awaited_once_with(_setup_mocks["mock_conversation"], mock_session, None)
+
+    @pytest.mark.asyncio
+    async def test_new_conversation_settles_nothing(self, connected_user, mock_session, mock_info, _setup_mocks):
+        """A brand-new conversation has no call to settle."""
+        from lys.apps.ai.modules.conversation.services import AIConversationService
+
+        await AIConversationService._prepare_chat_context(
+            user_id="user-123", content="Hello", session=mock_session,
+            connected_user=connected_user, info=mock_info,
+        )
+
+        _setup_mocks["mock_settle"].assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_resume_writes_no_user_message(self, connected_user, mock_session, mock_info, _setup_mocks):
+        """A resume settles the answers, writes no user row and never titles again."""
+        from lys.apps.ai.modules.conversation.models import AIToolAnswerModel
+        from lys.apps.ai.modules.conversation.services import AIConversationService
+
+        conversation = _setup_mocks["mock_conversation"]
+        conversation.user_id = "user-123"
+        answers = [AIToolAnswerModel(tool_call_id="call-1", result={"outcome": "created"})]
+
+        with patch.object(AIConversationService, "get_by_id", new_callable=AsyncMock, return_value=conversation), \
+             patch.object(AIConversationService, "maybe_enqueue_title", new_callable=AsyncMock) as title:
+            ctx = await AIConversationService._prepare_chat_context(
+                user_id="user-123", content=None, session=mock_session,
+                connected_user=connected_user, info=mock_info,
+                conversation_id="conv-existing", tool_answers=answers,
+            )
+
+        assert ctx["user_message_id"] is None
+        assert ctx["conversation"] is conversation
+        _setup_mocks["mock_message_service"].create.assert_not_awaited()
+        _setup_mocks["mock_settle"].assert_awaited_once_with(conversation, mock_session, answers)
+        AIConversationService.get_or_create.assert_not_called()
+        title.assert_not_awaited()
+        assert all(message["role"] != "user" for message in ctx["messages"])
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("found", [None, "foreign"])
+    async def test_resume_refuses_a_conversation_not_of_the_user(
+        self, connected_user, mock_session, mock_info, _setup_mocks, found,
+    ):
+        """Answers for an unknown or foreign conversation are refused, never a new conversation."""
+        from lys.apps.ai.modules.conversation.models import AIToolAnswerModel
+        from lys.apps.ai.modules.conversation.services import AIConversationService
+        from lys.core.errors import LysError
+
+        conversation = SimpleNamespace(id="conv-existing", user_id="someone-else") if found else None
+        answers = [AIToolAnswerModel(tool_call_id="call-1", result={"outcome": "created"})]
+
+        with patch.object(AIConversationService, "get_by_id", new_callable=AsyncMock, return_value=conversation):
+            with pytest.raises(LysError):
+                await AIConversationService._prepare_chat_context(
+                    user_id="user-123", content=None, session=mock_session,
+                    connected_user=connected_user, info=mock_info,
+                    conversation_id="conv-existing", tool_answers=answers,
+                )
+
+        AIConversationService.get_or_create.assert_not_called()
+        _setup_mocks["mock_settle"].assert_not_awaited()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("content,with_answers", [(None, False), ("Hello", True)])
+    async def test_refuses_both_or_neither_input(
+        self, connected_user, mock_session, mock_info, _setup_mocks, content, with_answers,
+    ):
+        """A turn is a message or tool answers: both or neither is refused before any work."""
+        from lys.apps.ai.errors import INVALID_CHAT_INPUT
+        from lys.apps.ai.modules.conversation.models import AIToolAnswerModel
+        from lys.apps.ai.modules.conversation.services import AIConversationService
+        from lys.core.errors import LysError
+
+        answers = [AIToolAnswerModel(tool_call_id="call-1", result={})] if with_answers else None
+        with pytest.raises(LysError) as error:
+            await AIConversationService._prepare_chat_context(
+                user_id="user-123", content=content, session=mock_session,
+                connected_user=connected_user, info=mock_info,
+                conversation_id="conv-existing", tool_answers=answers,
+            )
+
+        assert error.value.detail == INVALID_CHAT_INPUT[1]
+        _setup_mocks["mock_settle"].assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_refuses_too_many_answers(self, connected_user, mock_session, mock_info, _setup_mocks):
+        from lys.apps.ai.errors import INVALID_TOOL_ANSWERS
+        from lys.apps.ai.modules.conversation.consts import MAX_TOOL_ANSWERS
+        from lys.apps.ai.modules.conversation.models import AIToolAnswerModel
+        from lys.apps.ai.modules.conversation.services import AIConversationService
+        from lys.core.errors import LysError
+
+        answers = [AIToolAnswerModel(tool_call_id=f"call-{i}", result={}) for i in range(MAX_TOOL_ANSWERS + 1)]
+        with pytest.raises(LysError) as error:
+            await AIConversationService._prepare_chat_context(
+                user_id="user-123", content=None, session=mock_session,
+                connected_user=connected_user, info=mock_info,
+                conversation_id="conv-existing", tool_answers=answers,
+            )
+
+        assert error.value.detail == INVALID_TOOL_ANSWERS[1]
+        _setup_mocks["mock_settle"].assert_not_awaited()
+
+
+class TestSettleOpenToolCalls:
+    """
+    The calls a turn left open for the user get their result before the next turn reads
+    the history: the user's answers on a resume, an "unanswered" result on a new message.
+    """
+
+    PROPOSE_CALL = {"id": "call-1", "type": "function", "function": {"name": "propose_thing", "arguments": "{}"}}
+    OTHER_PROPOSE_CALL = {"id": "call-2", "type": "function", "function": {"name": "propose_thing", "arguments": "{}"}}
+    READ_CALL = {"id": "call-3", "type": "function", "function": {"name": "read_thing", "arguments": "{}"}}
+
+    @staticmethod
+    def _result(scalar=None, ids=()):
+        result = MagicMock()
+        result.scalar_one_or_none.return_value = scalar
+        result.scalars.return_value.all.return_value = list(ids)
+        return result
+
+    async def _settle(self, tool_calls, answered_ids=(), tool_answers=None):
+        """
+        Run the settlement over a last assistant message carrying these calls. The
+        statements are mocks (the entities are built by the app manager): what is
+        checked is what the settlement does with each result, and that it locks first.
+        """
+        from lys.apps.ai.modules.conversation.services import AIConversationService
+
+        last_assistant = SimpleNamespace(tool_calls=tool_calls) if tool_calls is not None else None
+        session = AsyncMock()
+        session.execute = AsyncMock(side_effect=[
+            self._result(),
+            self._result(scalar=last_assistant),
+            self._result(ids=answered_ids),
+        ])
+        message_service = MagicMock()
+        message_service.add_tool_result = AsyncMock()
+        app_manager = MagicMock()
+        app_manager.get_service.return_value = message_service
+        self.select = MagicMock()
+
+        with patch.object(AIConversationService, "app_manager", new=app_manager), \
+             patch.object(AIConversationService, "user_answered_tools", new=frozenset({"propose_thing"})), \
+             patch("lys.apps.ai.modules.conversation.services.select", new=self.select):
+            await AIConversationService._settle_open_tool_calls(
+                SimpleNamespace(id="conv-1"), session, tool_answers,
+            )
+        return session, message_service
+
+    @staticmethod
+    def _answers(*ids, result=None):
+        from lys.apps.ai.modules.conversation.models import AIToolAnswerModel
+        return [AIToolAnswerModel(tool_call_id=call_id, result=result or {"outcome": "created"}) for call_id in ids]
+
+    @pytest.mark.asyncio
+    async def test_locks_the_conversation_first(self):
+        session, _ = await self._settle([self.PROPOSE_CALL])
+
+        lock = self.select.return_value.where.return_value.with_for_update.return_value
+        assert session.execute.await_args_list[0].args[0] is lock
+
+    @pytest.mark.asyncio
+    async def test_new_message_marks_the_open_calls_unanswered(self):
+        from lys.apps.ai.modules.conversation.consts import UNANSWERED_TOOL_RESULT
+
+        session, message_service = await self._settle([self.PROPOSE_CALL, self.READ_CALL])
+
+        message_service.add_tool_result.assert_awaited_once_with(
+            "conv-1", "call-1", UNANSWERED_TOOL_RESULT, session,
+        )
+        session.commit.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_new_message_with_nothing_open_writes_nothing_and_releases_the_lock(self):
+        session, message_service = await self._settle(None)
+
+        message_service.add_tool_result.assert_not_awaited()
+        session.commit.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_answered_call_is_not_open_again(self):
+        session, message_service = await self._settle([self.PROPOSE_CALL], answered_ids=["call-1"])
+
+        message_service.add_tool_result.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_resume_writes_each_answer_on_its_call(self):
+        answers = self._answers("call-2", "call-1")
+        session, message_service = await self._settle(
+            [self.PROPOSE_CALL, self.OTHER_PROPOSE_CALL], tool_answers=answers,
+        )
+
+        written = {call.args[1]: call.args[2] for call in message_service.add_tool_result.await_args_list}
+        assert written == {"call-1": {"outcome": "created"}, "call-2": {"outcome": "created"}}
+        session.commit.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("answer_ids,answered_ids", [
+        (("call-1",), ()),                    # a partial set: call-2 is open too
+        (("call-1", "call-2", "call-3"), ()),  # a tool-answered call
+        (("call-1", "call-1", "call-2"), ()),  # the same call answered twice
+        (("call-9", "call-2"), ()),            # an unknown id
+        (("call-1", "call-2"), ("call-1",)),   # an already answered call
+    ])
+    async def test_resume_refuses_answers_that_do_not_match_the_open_calls(self, answer_ids, answered_ids):
+        from lys.core.errors import LysError
+
+        with pytest.raises(LysError):
+            await self._settle(
+                [self.PROPOSE_CALL, self.OTHER_PROPOSE_CALL, self.READ_CALL],
+                answered_ids=answered_ids, tool_answers=self._answers(*answer_ids),
+            )
+
+    @pytest.mark.asyncio
+    async def test_resume_with_nothing_open_is_refused(self):
+        from lys.core.errors import LysError
+
+        with pytest.raises(LysError):
+            await self._settle(None, tool_answers=self._answers("call-1"))
+
+
+class TestLeaveOpenForUser:
+    """A call stays open only for a user-answered tool that put something in front of the user."""
+
+    @pytest.mark.parametrize("tool_name,produced,expected", [
+        ("propose_thing", [{"type": "thing_proposal"}], True),
+        ("propose_thing", [], False),
+        ("read_thing", [{"type": "refresh"}], False),
+    ])
+    def test_decision(self, tool_name, produced, expected):
+        from lys.apps.ai.modules.conversation.services import AIConversationService
+
+        with patch.object(AIConversationService, "user_answered_tools", new=frozenset({"propose_thing"})):
+            assert AIConversationService._leave_open_for_user(tool_name, produced, "call-1") is expected
+
+    def test_tags_the_actions_with_the_call_id(self):
+        from lys.apps.ai.modules.conversation.services import AIConversationService
+
+        produced = [{"type": "thing_proposal"}]
+        with patch.object(AIConversationService, "user_answered_tools", new=frozenset({"propose_thing"})):
+            AIConversationService._leave_open_for_user("propose_thing", produced, "call-1")
+
+        assert produced == [{"type": "thing_proposal", "toolCallId": "call-1"}]
 
 
 # ========== chat_with_tools ==========
@@ -3518,3 +3782,236 @@ class TestTurnEndsOnContinuedNavigation:
         assert result["frontend_actions"] == [{"type": "navigate", "path": "/target", "continueAction": True}]
         assert ctx["message_service"].create.call_count == 1
         ctx["message_service"].add_tool_result.assert_awaited_once()
+
+
+class TestTurnEndsOnUserAnsweredCall:
+    """
+    A call of a user-answered tool that put a proposal in front of the user ends the turn
+    with the call open: no result written, the action tagged with the call id, no second
+    provider call — on both loops. A call that produced nothing is answered as usual.
+    """
+
+    PROPOSE_CALL = {
+        "id": "call-1",
+        "type": "function",
+        "function": {"name": "propose_thing", "arguments": json.dumps({"title": "Thing"})},
+    }
+
+    @staticmethod
+    def _executor(produces: bool):
+        """A proposal tool that puts its proposal in front of the user (or refuses its arguments)."""
+        async def execute(tool_name, arguments, context):
+            if not produces:
+                return {"status": "error", "message": "refused"}
+            context["info"].context.frontend_actions.append({"type": "thing_proposal", "params": arguments})
+            return {"status": "success"}
+
+        executor = MagicMock()
+        executor.execute = AsyncMock(side_effect=execute)
+        return executor
+
+    _context = staticmethod(TestTurnEndsOnContinuedNavigation._context)
+
+    @pytest.mark.asyncio
+    async def test_streaming_turn_ends_with_the_call_open(self):
+        from lys.apps.ai.modules.conversation.services import AIConversationService
+
+        stream_calls = []
+
+        async def chat_stream_with_purpose(messages, purpose, tools, cache_key=None):
+            stream_calls.append(list(messages))
+            if len(stream_calls) > 1:
+                raise AssertionError("the provider was called again before the user answered")
+            yield SimpleNamespace(content="Je te propose ceci.", reasoning=None, tool_calls=None,
+                                  finish_reason=None, usage=None, model="model-x", provider="provider-x")
+            yield SimpleNamespace(content=None, reasoning=None,
+                                  tool_calls=[{"index": 0, **self.PROPOSE_CALL}],
+                                  finish_reason="tool_calls", usage=None, model=None, provider=None)
+
+        ai_service = MagicMock()
+        ai_service.chat_stream_with_purpose = chat_stream_with_purpose
+        ctx = self._context(ai_service, self._executor(produces=True))
+        app_manager = MagicMock()
+        app_manager.settings.get_plugin_config.return_value = {}
+
+        with patch.object(AIConversationService, "app_manager", new=app_manager), \
+             patch.object(AIConversationService, "user_answered_tools", new=frozenset({"propose_thing"})), \
+             patch.object(AIConversationService, "_prepare_chat_context", new=AsyncMock(return_value=ctx)), \
+             patch.object(AIConversationService, "maybe_enqueue_compaction", new=AsyncMock()):
+            events = [
+                event async for event in AIConversationService.chat_with_tools_streaming(
+                    user_id="user-1", content="Propose", session=MagicMock(),
+                    connected_user={"sub": "user-1"}, access_token="token",
+                )
+            ]
+
+        names = [event.split("\n", 1)[0] for event in events]
+        assert names.count("event: done") == 1
+        assert len(stream_calls) == 1
+        tagged = {"type": "thing_proposal", "params": {"title": "Thing"}, "toolCallId": "call-1"}
+        streamed = json.loads(events[names.index("event: frontend_actions")].split("data: ", 1)[1])
+        assert streamed["frontendActions"] == [tagged]
+        done = json.loads(events[names.index("event: done")].split("data: ", 1)[1])
+        assert done["frontendActions"] == [tagged]
+        # The assistant row with its call is written; its result is the user's to give.
+        assert ctx["message_service"].create.call_count == 1
+        ctx["message_service"].add_tool_result.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_non_streaming_turn_ends_with_the_call_open(self):
+        from lys.apps.ai.modules.conversation.services import AIConversationService
+
+        calls = []
+
+        async def chat_with_purpose(messages, purpose, tools, cache_key=None):
+            calls.append(list(messages))
+            if len(calls) > 1:
+                raise AssertionError("the provider was called again before the user answered")
+            return SimpleNamespace(content="Je te propose ceci.", tool_calls=[self.PROPOSE_CALL],
+                                   provider="provider-x", model="model-x", usage=None)
+
+        ai_service = MagicMock()
+        ai_service.chat_with_purpose = chat_with_purpose
+        ctx = self._context(ai_service, self._executor(produces=True))
+        info = SimpleNamespace(context=SimpleNamespace(connected_user={"sub": "user-1"}, frontend_actions=[]))
+        app_manager = MagicMock()
+        app_manager.settings.get_plugin_config.return_value = {}
+
+        with patch.object(AIConversationService, "app_manager", new=app_manager), \
+             patch.object(AIConversationService, "user_answered_tools", new=frozenset({"propose_thing"})), \
+             patch.object(AIConversationService, "_prepare_chat_context", new=AsyncMock(return_value=ctx)), \
+             patch.object(AIConversationService, "maybe_enqueue_compaction", new=AsyncMock()):
+            result = await AIConversationService.chat_with_tools(
+                user_id="user-1", content="Propose", session=MagicMock(), info=info,
+            )
+
+        assert len(calls) == 1
+        assert result["frontend_actions"] == [
+            {"type": "thing_proposal", "params": {"title": "Thing"}, "toolCallId": "call-1"}
+        ]
+        ctx["message_service"].add_tool_result.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_refused_proposal_is_answered_by_the_tool(self):
+        """Nothing put in front of the user: the tool's refusal is the result, the model goes on."""
+        from lys.apps.ai.modules.conversation.services import AIConversationService
+
+        calls = []
+
+        async def chat_with_purpose(messages, purpose, tools, cache_key=None):
+            calls.append(list(messages))
+            if len(calls) == 1:
+                return SimpleNamespace(content="", tool_calls=[self.PROPOSE_CALL],
+                                       provider="provider-x", model="model-x", usage=None)
+            return SimpleNamespace(content="Je corrige.", tool_calls=[], provider="provider-x",
+                                   model="model-x", usage=None)
+
+        ai_service = MagicMock()
+        ai_service.chat_with_purpose = chat_with_purpose
+        ctx = self._context(ai_service, self._executor(produces=False))
+        info = SimpleNamespace(context=SimpleNamespace(connected_user={"sub": "user-1"}, frontend_actions=[]))
+        app_manager = MagicMock()
+        app_manager.settings.get_plugin_config.return_value = {}
+
+        with patch.object(AIConversationService, "app_manager", new=app_manager), \
+             patch.object(AIConversationService, "user_answered_tools", new=frozenset({"propose_thing"})), \
+             patch.object(AIConversationService, "_prepare_chat_context", new=AsyncMock(return_value=ctx)), \
+             patch.object(AIConversationService, "maybe_enqueue_compaction", new=AsyncMock()):
+            result = await AIConversationService.chat_with_tools(
+                user_id="user-1", content="Propose", session=MagicMock(), info=info,
+            )
+
+        assert len(calls) == 2
+        assert result["content"] == "Je corrige."
+        ctx["message_service"].add_tool_result.assert_awaited_once()
+
+
+class TestFailedResumeKeepsTheAnswers:
+    """
+    A provider failure on the first call of a resume keeps the answers: the client acted on
+    them before posting them, and the next message reads them — on both loops.
+    """
+
+    @staticmethod
+    def _context(ai_service):
+        ctx = TestTurnEndsOnContinuedNavigation._context(ai_service, MagicMock())
+        ctx["user_message_id"] = None
+        return ctx
+
+    @pytest.mark.asyncio
+    async def test_streaming(self):
+        from lys.apps.ai.modules.conversation.services import AIConversationService
+
+        async def failing_stream(*args, **kwargs):
+            raise ConnectionError("Provider down")
+            yield  # pragma: no cover
+
+        ai_service = MagicMock()
+        ai_service.chat_stream_with_purpose = failing_stream
+        ctx = self._context(ai_service)
+        session = MagicMock()
+        session.rollback = AsyncMock()
+        app_manager = MagicMock()
+        app_manager.settings.get_plugin_config.return_value = {}
+
+        with patch.object(AIConversationService, "app_manager", new=app_manager), \
+             patch.object(AIConversationService, "_prepare_chat_context", new=AsyncMock(return_value=ctx)):
+            events = [
+                event async for event in AIConversationService.chat_with_tools_streaming(
+                    user_id="user-1", content=None, session=session,
+                    connected_user={"sub": "user-1"}, access_token="token",
+                    conversation_id="conv-1", tool_answers=[MagicMock()],
+                )
+            ]
+
+        assert events[-1].startswith("event: error")
+        ctx["message_service"].delete.assert_not_awaited()
+        session.rollback.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_non_streaming(self):
+        from lys.apps.ai.modules.conversation.services import AIConversationService
+
+        ai_service = MagicMock()
+        ai_service.chat_with_purpose = AsyncMock(side_effect=ConnectionError("Provider down"))
+        ctx = self._context(ai_service)
+        session = MagicMock()
+        session.rollback = AsyncMock()
+        info = SimpleNamespace(context=SimpleNamespace(connected_user={"sub": "user-1"}, frontend_actions=[]))
+        app_manager = MagicMock()
+        app_manager.settings.get_plugin_config.return_value = {}
+
+        with patch.object(AIConversationService, "app_manager", new=app_manager), \
+             patch.object(AIConversationService, "_prepare_chat_context", new=AsyncMock(return_value=ctx)):
+            with pytest.raises(ConnectionError):
+                await AIConversationService.chat_with_tools(
+                    user_id="user-1", content=None, session=session, info=info,
+                    conversation_id="conv-1", tool_answers=[MagicMock()],
+                )
+
+        ctx["message_service"].delete.assert_not_awaited()
+        session.rollback.assert_not_awaited()
+
+class TestToolAnswerModel:
+    """The client writes the answer: its size is bounded."""
+
+    def test_accepts_a_bounded_answer(self):
+        from lys.apps.ai.modules.conversation.models import AIToolAnswerModel
+
+        answer = AIToolAnswerModel(tool_call_id="call-1", result={"outcome": "created"})
+        assert answer.result == {"outcome": "created"}
+
+    def test_refuses_an_oversized_answer(self):
+        from pydantic import ValidationError
+        from lys.apps.ai.modules.conversation.consts import MAX_TOOL_ANSWER_LENGTH
+        from lys.apps.ai.modules.conversation.models import AIToolAnswerModel
+
+        with pytest.raises(ValidationError):
+            AIToolAnswerModel(tool_call_id="call-1", result={"text": "x" * MAX_TOOL_ANSWER_LENGTH})
+
+    def test_refuses_an_empty_call_id(self):
+        from pydantic import ValidationError
+        from lys.apps.ai.modules.conversation.models import AIToolAnswerModel
+
+        with pytest.raises(ValidationError):
+            AIToolAnswerModel(tool_call_id="", result={})
