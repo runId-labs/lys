@@ -954,9 +954,42 @@ class TestPrepareChatContext:
             conversation_id="conv-123",
             role=AIMessageRole.USER.value,
             content="Test message",
+            is_client_generated=False,
             prompt_version_id="version-123",
             request_context=ANY,
         )
+
+    @pytest.mark.asyncio
+    async def test_user_message_triggers_titling(self, connected_user, mock_session, mock_info, _setup_mocks):
+        """A message the user wrote may be the one the conversation is titled from."""
+        from lys.apps.ai.modules.conversation.services import AIConversationService
+
+        with patch.object(AIConversationService, "maybe_enqueue_title", new_callable=AsyncMock) as title:
+            await AIConversationService._prepare_chat_context(
+                user_id="user-123", content="What's our runway?", session=mock_session,
+                connected_user=connected_user, info=mock_info,
+            )
+
+        title.assert_awaited_once_with(_setup_mocks["mock_conversation"], mock_session)
+
+    @pytest.mark.asyncio
+    async def test_client_generated_message_is_flagged_and_never_titles(
+        self, connected_user, mock_session, mock_info, _setup_mocks
+    ):
+        """A message the client wrote on its own is stored as such and never titles the conversation."""
+        from lys.apps.ai.modules.conversation.services import AIConversationService
+
+        with patch.object(AIConversationService, "maybe_enqueue_title", new_callable=AsyncMock) as title:
+            ctx = await AIConversationService._prepare_chat_context(
+                user_id="user-123", content="Brief the user", session=mock_session,
+                connected_user=connected_user, info=mock_info, client_generated=True,
+            )
+
+        create_kwargs = _setup_mocks["mock_message_service"].create.call_args.kwargs
+        assert create_kwargs["is_client_generated"] is True
+        # The model still reads it as a user turn.
+        assert ctx["messages"][-1]["role"] == "user"
+        title.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_user_message_carries_request_context(
@@ -1186,6 +1219,27 @@ class TestPrepareChatContext:
             )
 
         assert error.value.detail == INVALID_TOOL_ANSWERS[1]
+        _setup_mocks["mock_settle"].assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_refuses_client_generated_tool_answers(
+        self, connected_user, mock_session, mock_info, _setup_mocks,
+    ):
+        """client_generated qualifies a written message; on tool answers it would be dropped."""
+        from lys.apps.ai.errors import INVALID_CHAT_INPUT
+        from lys.apps.ai.modules.conversation.models import AIToolAnswerModel
+        from lys.apps.ai.modules.conversation.services import AIConversationService
+        from lys.core.errors import LysError
+
+        answers = [AIToolAnswerModel(tool_call_id="call-1", result={})]
+        with pytest.raises(LysError) as error:
+            await AIConversationService._prepare_chat_context(
+                user_id="user-123", content=None, session=mock_session,
+                connected_user=connected_user, info=mock_info,
+                conversation_id="conv-existing", tool_answers=answers, client_generated=True,
+            )
+
+        assert error.value.detail == INVALID_CHAT_INPUT[1]
         _setup_mocks["mock_settle"].assert_not_awaited()
 
 
@@ -2292,13 +2346,14 @@ class TestAIConversationServiceUsageFields:
         }
 
 
-def _role_msg(role, content=None, tool_calls=None, mid="m"):
+def _role_msg(role, content=None, tool_calls=None, mid="m", client_generated=False):
     """Build a lightweight message stand-in with the attributes the service reads."""
     m = MagicMock()
     m.role = role
     m.content = content
     m.tool_calls = tool_calls
     m.id = mid
+    m.is_client_generated = client_generated
     return m
 
 
@@ -2710,6 +2765,14 @@ class TestIsSearchable:
             _role_msg(AIMessageRole.USER.value, content=None)
         ) is False
 
+    def test_client_generated_message_is_not_searchable(self):
+        """An instruction the client sent is not something the user said: never indexed."""
+        from lys.apps.ai.modules.conversation.services import AIConversationService
+
+        assert AIConversationService._is_searchable(
+            _role_msg(AIMessageRole.USER.value, content="Brief the user", client_generated=True)
+        ) is False
+
 
 class TestIndexPendingTextSearch:
     """Tests for AIConversationService._index_pending_text_search."""
@@ -2931,6 +2994,8 @@ class TestFillTitle:
             [{"role": "user", "content": "What's our runway?"}],
             AI_PURPOSE_CONVERSATION_TITLE,
         )
+        # Titled from what the user wrote, never from a client-generated instruction.
+        message_entity.is_client_generated.is_.assert_called_once_with(False)
         assert conversation.title == "Runway question"
         session.add.assert_called_once_with(conversation)
 

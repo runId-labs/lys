@@ -11,7 +11,7 @@ closed over one could not be registered here at all.
 """
 
 import logging
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from lys.apps.ai.modules.conversation.services import AIConversationService as BaseAIConversationService
 from lys.apps.ai_whiteboard.modules.conversation.tools import (
@@ -31,6 +31,23 @@ NO_WHITEBOARD = "NO_WHITEBOARD"
 def _no_whiteboard(message: str) -> Dict[str, str]:
     """A tool result saying there is no board, in the shape the executor expects."""
     return {"error": NO_WHITEBOARD, "message": message}
+
+
+def _board_title(arguments: Dict[str, Any]) -> Optional[str]:
+    """
+    The name the model gave a board it opens, or None.
+
+    The model names what it creates, at the moment it creates it: it knows the subject
+    then, whereas the conversation title is written in the background and may not exist
+    yet on the turn that opens the board. Anything but a non-blank string reads as no
+    name, so the board falls back to the conversation title. Whitespace is collapsed: a
+    name is shown on one line, in a header and a list.
+    """
+    title = arguments.get("title")
+    if not isinstance(title, str):
+        return None
+
+    return " ".join(title.split()) or None
 
 
 @register_service()
@@ -114,7 +131,7 @@ class AIConversationService(BaseAIConversationService):
             # written, and its first sentence is already being spoken.
             drawn = await whiteboard_service.draw(
                 user_id=conversation.user_id,
-                title=conversation.title,
+                title=_board_title(arguments) or conversation.title,
                 current_whiteboard_id=conversation.whiteboard_id,
                 named_whiteboard_id=arguments.get("whiteboard_id"),
                 operations=operations,

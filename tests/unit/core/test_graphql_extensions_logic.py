@@ -498,8 +498,39 @@ class TestDatabaseSessionExtensionExceptionPath:
         # commit should NOT be called when there's an exception
         mock_session.commit.assert_not_awaited()
 
+    def test_cancelled_operation_releases_its_connection(self):
+        """A cancellation is a BaseException: the session must still be rolled back and closed."""
+        ext, mock_session = self._make_extension()
+
+        async def consume():
+            gen = ext.on_execute()
+            await gen.__anext__()
+            with pytest.raises(asyncio.CancelledError):
+                await gen.athrow(asyncio.CancelledError())
+
+        self._run(consume())
+
+        mock_session.rollback.assert_awaited_once()
+        mock_session.close.assert_awaited_once()
+        mock_session.commit.assert_not_awaited()
+
+    def test_closed_generator_releases_its_connection(self):
+        """An operation whose generator is closed (GeneratorExit) releases its connection too."""
+        ext, mock_session = self._make_extension()
+
+        async def consume():
+            gen = ext.on_execute()
+            await gen.__anext__()
+            await gen.aclose()
+
+        self._run(consume())
+
+        mock_session.rollback.assert_awaited_once()
+        mock_session.close.assert_awaited_once()
+        mock_session.commit.assert_not_awaited()
+
     def test_rollback_error_during_exception_is_suppressed(self):
-        """If rollback itself fails during exception handling, the original exception is still raised."""
+        """If rollback fails, the original exception is still raised and the connection is discarded."""
         ext, mock_session = self._make_extension()
         mock_session.rollback.side_effect = Exception("rollback failed")
 
@@ -512,7 +543,9 @@ class TestDatabaseSessionExtensionExceptionPath:
         self._run(consume())
 
         mock_session.rollback.assert_awaited_once()
-        mock_session.close.assert_awaited_once()
+        # A connection in an unknown state never goes back to the pool.
+        mock_session.invalidate.assert_awaited_once()
+        mock_session.close.assert_not_awaited()
 
 
 class TestDatabaseSessionExtensionCommitFailure:
@@ -556,7 +589,7 @@ class TestDatabaseSessionExtensionCommitFailure:
         mock_session.close.assert_awaited_once()
 
     def test_rollback_failure_after_commit_failure_is_suppressed(self):
-        """If both commit and rollback fail, errors are suppressed and session is still closed."""
+        """If both commit and rollback fail, errors are suppressed and the connection is discarded."""
         ext, mock_session = self._make_extension()
         mock_session.commit.side_effect = Exception("commit failed")
         mock_session.rollback.side_effect = Exception("rollback also failed")
@@ -571,7 +604,8 @@ class TestDatabaseSessionExtensionCommitFailure:
 
         mock_session.commit.assert_awaited_once()
         mock_session.rollback.assert_awaited_once()
-        mock_session.close.assert_awaited_once()
+        mock_session.invalidate.assert_awaited_once()
+        mock_session.close.assert_not_awaited()
 
 
 class TestDatabaseSessionExtensionCloseFailure:
@@ -613,6 +647,7 @@ class TestDatabaseSessionExtensionCloseFailure:
 
         mock_session.commit.assert_awaited_once()
         mock_session.close.assert_awaited_once()
+        mock_session.invalidate.assert_awaited_once()
 
     def test_close_failure_is_suppressed_on_exception(self):
         """If session close fails after execution error, close error is suppressed, original re-raised."""
@@ -629,3 +664,105 @@ class TestDatabaseSessionExtensionCloseFailure:
 
         mock_session.rollback.assert_awaited_once()
         mock_session.close.assert_awaited_once()
+
+
+class TestSessionEndWaitsForAbandonedResolvers:
+    """
+    graphql-core abandons, without cancelling, the siblings of a non-null field that failed.
+
+    Observed on PostgreSQL: the session was closed while such a sibling was still querying on
+    its connection, the connection went back to the pool inside a transaction, and the next
+    request checking it out failed - even a legitimate one.
+    """
+
+    def _run(self, coro):
+        loop = asyncio.new_event_loop()
+        try:
+            return loop.run_until_complete(coro)
+        finally:
+            loop.close()
+
+    def test_end_waits_for_the_query_in_flight(self):
+        session = AsyncMock()
+        order = []
+        release = None
+
+        async def slow_execute(*args, **kwargs):
+            order.append("query started")
+            await release.wait()
+            order.append("query finished")
+            return "rows"
+
+        async def recording_close():
+            order.append("closed")
+
+        session.execute.side_effect = slow_execute
+        session.close.side_effect = recording_close
+        proxy = ThreadSafeSessionProxy(session)
+
+        async def scenario():
+            nonlocal release
+            release = asyncio.Event()
+            abandoned = asyncio.create_task(proxy.execute("SELECT 1"))
+            await asyncio.sleep(0)
+            ending = asyncio.create_task(proxy.end(commit=True))
+            await asyncio.sleep(0)
+            assert order == ["query started"]
+            release.set()
+            await asyncio.gather(abandoned, ending)
+
+        self._run(scenario())
+
+        assert order == ["query started", "query finished", "closed"]
+
+    def test_an_operation_after_the_end_is_refused(self):
+        session = AsyncMock()
+        proxy = ThreadSafeSessionProxy(session)
+
+        async def scenario():
+            await proxy.end(commit=True)
+            with pytest.raises(RuntimeError, match="has ended"):
+                await proxy.execute("SELECT 1")
+
+        self._run(scenario())
+
+        session.execute.assert_not_awaited()
+
+    def test_synchronous_methods_after_the_end_are_refused(self):
+        """An instance added after the end would be silently dropped: refused instead."""
+        session = MagicMock()
+        session.commit = AsyncMock()
+        session.close = AsyncMock()
+        proxy = ThreadSafeSessionProxy(session)
+
+        self._run(proxy.end(commit=True))
+
+        for call in (
+            lambda: proxy.add(object()),
+            lambda: proxy.add_all([object()]),
+            lambda: proxy.expunge(object()),
+            lambda: proxy.expunge_all(),
+            lambda: proxy.begin_nested,
+        ):
+            with pytest.raises(RuntimeError, match="has ended"):
+                call()
+
+        session.add.assert_not_called()
+        session.add_all.assert_not_called()
+
+    def test_dunder_lookup_after_the_end_keeps_attribute_error(self):
+        """copy/pickle probes rely on AttributeError, never on the end guard."""
+        proxy = ThreadSafeSessionProxy(MagicMock(spec=[]))
+        proxy._ended = True
+
+        assert getattr(proxy, "__deepcopy__", None) is None
+
+    def test_a_clean_end_keeps_the_connection_pooled(self):
+        session = AsyncMock()
+        proxy = ThreadSafeSessionProxy(session)
+
+        self._run(proxy.end(commit=True))
+
+        session.commit.assert_awaited_once()
+        session.close.assert_awaited_once()
+        session.invalidate.assert_not_awaited()

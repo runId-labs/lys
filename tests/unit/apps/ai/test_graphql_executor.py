@@ -595,6 +595,44 @@ class TestGraphQLToolExecutorExecute:
         assert result["status"] == "error"
         assert "bio" in result["message"]
 
+    @pytest.mark.asyncio
+    async def test_execute_names_an_unknown_id_instead_of_an_absence_of_data(self, executor):
+        """A bare NOT_FOUND read to the model as "no data loaded"; it must point at the id."""
+        executor._client.execute.return_value = {
+            "data": None,
+            "errors": [{"message": "NOT_FOUND"}],
+        }
+
+        result = await executor.execute(
+            tool_name="update_user",
+            arguments={"bio": "x", "first_name": "John"},
+            context={},
+        )
+
+        assert result["status"] == "error"
+        assert result["message"].startswith("NOT_FOUND")
+        assert "update_user" in result["message"]
+        assert "NOT an absence of data" in result["message"]
+
+    @pytest.mark.asyncio
+    async def test_execute_keeps_the_other_errors_next_to_an_unknown_id(self, executor):
+        """Only the bare NOT_FOUND is rewritten: the other errors still reach the model, once each."""
+        executor._client.execute.return_value = {
+            "data": None,
+            "errors": [{"message": "NOT_FOUND"}, {"message": "bio too long"}, {"message": "NOT_FOUND"}],
+        }
+
+        result = await executor.execute(
+            tool_name="update_user",
+            arguments={"bio": "x", "first_name": "John"},
+            context={},
+        )
+
+        assert result["status"] == "error"
+        assert result["message"].startswith("NOT_FOUND")
+        assert result["message"].count("NOT an absence of data") == 1
+        assert result["message"].endswith("; bio too long")
+
 
 # ========== Special tools dispatch ==========
 

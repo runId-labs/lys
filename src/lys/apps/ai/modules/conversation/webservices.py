@@ -294,6 +294,7 @@ class AIMutation(Mutation):
             conversation_id=input_data.conversation_id,
             page_context=input_data.context,
             tool_answers=input_data.tool_answers,
+            client_generated=input_data.client_generated,
         )
 
         # Convert tool results to Strawberry types

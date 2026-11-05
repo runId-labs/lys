@@ -219,12 +219,14 @@ class AIConversationService(EntityService[AIConversation]):
         session: AsyncSession,
     ) -> Optional[str]:
         """
-        Return the content of the message that opened a conversation, or None.
+        Return the content of the message the user opened a conversation with, or None.
 
-        The opening message is the earliest ``user`` row: assistant and tool rows
-        are answers to it, and a system row is never persisted (the system prompt
-        is assembled per turn). Ordered by ``(created_at, id)`` — the id tie-break
-        keeps ordering deterministic when two rows share a created_at.
+        The opening message is the earliest ``user`` row the person wrote: assistant and
+        tool rows are answers to it, a system row is never persisted (the system prompt
+        is assembled per turn), and a client-generated row is an instruction to the
+        model, not the person's words. None when the user has not written yet. Ordered
+        by ``(created_at, id)`` — the id tie-break keeps ordering deterministic when two
+        rows share a created_at.
         """
         message_entity = cls.app_manager.get_entity("ai_message")
         result = await session.execute(
@@ -232,6 +234,7 @@ class AIConversationService(EntityService[AIConversation]):
             .where(
                 message_entity.conversation_id == conversation_id,
                 message_entity.role == AIMessageRole.USER.value,
+                message_entity.is_client_generated.is_(False),
             )
             .order_by(message_entity.created_at, message_entity.id)
             .limit(1)
@@ -322,10 +325,11 @@ class AIConversationService(EntityService[AIConversation]):
         """
         Fill the text search vectors left empty.
 
-        Only the exchanged turns are indexed. Tool rows and the tool-call-only assistant
-        rows carry the machinery of an answer, not the answer itself: they are never shown
-        to the user and never searched for, so they are marked as handled rather than
-        indexed - otherwise every run would pick them up again forever.
+        Only the exchanged turns are indexed. Tool rows, the tool-call-only assistant rows
+        and the client-generated user rows carry the machinery of an exchange, not the
+        exchange itself: they are never shown to the user and never searched for, so they
+        are marked as handled rather than indexed - otherwise every run would pick them up
+        again forever.
 
         The vector is built by PostgreSQL rather than in Python: a tsvector is the
         database's own representation, and only the server can produce lexemes its
@@ -393,6 +397,7 @@ class AIConversationService(EntityService[AIConversation]):
                 message_entity.role.in_(
                     [AIMessageRole.USER.value, AIMessageRole.ASSISTANT.value]
                 ),
+                message_entity.is_client_generated.is_(False),
             )
             .order_by(message_entity.created_at, message_entity.id)
             .limit(batch_size)
@@ -419,7 +424,7 @@ class AIConversationService(EntityService[AIConversation]):
     @staticmethod
     def _is_searchable(message) -> bool:
         """Whether a message holds something a user would ever search for."""
-        return bool(message.content) and message.role in (
+        return bool(message.content) and not message.is_client_generated and message.role in (
             AIMessageRole.USER.value,
             AIMessageRole.ASSISTANT.value,
         )
@@ -478,6 +483,9 @@ class AIConversationService(EntityService[AIConversation]):
                 message_entity.conversation_id == conversation_id,
                 message_entity.text_search_vector.isnot(None),
                 message_entity.text_search_vector.op("@@")(ts_query),
+                # Indexing skips client-generated rows; this also keeps out a row
+                # indexed before it was flagged.
+                message_entity.is_client_generated.is_(False),
             )
             .order_by(func.ts_rank(message_entity.text_search_vector, ts_query).desc())
             .limit(limit)
@@ -511,6 +519,7 @@ class AIConversationService(EntityService[AIConversation]):
                 message_entity.role.in_(
                     [AIMessageRole.USER.value, AIMessageRole.ASSISTANT.value]
                 ),
+                message_entity.is_client_generated.is_(False),
                 score > TRIGRAM_SIMILARITY_THRESHOLD,
             )
             .order_by(score.desc())
@@ -561,6 +570,8 @@ class AIConversationService(EntityService[AIConversation]):
                 message_entity.conversation_id == conversation_id,
                 message_entity.embedding.isnot(None),
                 message_entity.embedding_model == endpoint.model,
+                # Same reason as the full-text source: a row embedded before it was flagged.
+                message_entity.is_client_generated.is_(False),
                 # Without this the source always returns its nearest rows, however far
                 # they are, and an unrelated query would still cast a vote.
                 distance < MAX_SEMANTIC_DISTANCE,
@@ -581,6 +592,9 @@ class AIConversationService(EntityService[AIConversation]):
     ) -> List["AIMessage"]:
         """
         Find the messages of a conversation that match a query, best first.
+
+        Searches the exchanged turns only: a client-generated row is an instruction to the
+        model, and returned as a result it would read as something the user said.
 
         Three ways of matching, merged rather than chosen between: full-text finds the
         stemmed words, trigrams find what was written approximately, embeddings find what
@@ -668,12 +682,14 @@ class AIConversationService(EntityService[AIConversation]):
     @classmethod
     async def maybe_enqueue_title(cls, conversation: "AIConversation", session: AsyncSession) -> None:
         """
-        Enqueue titling when a conversation has just received its opening message.
+        Enqueue titling when the user has just written their first message.
 
-        Fires at most once per conversation: the trigger is the opening user message
-        being the only one, so a later turn cannot re-enqueue even if titling failed.
-        The listing keeps falling back to that message in the meantime, which is what
-        makes not retrying acceptable.
+        Called only for a message the user wrote. Fires at most once per conversation:
+        the trigger is that message being the user's only one, so a later turn cannot
+        re-enqueue even if titling failed. Client-generated rows are not counted, so a
+        conversation the client opened on its own is titled from the user's first own
+        message. The listing keeps falling back to that message in the meantime, which
+        is what makes not retrying acceptable.
         """
         if conversation.title:
             return
@@ -685,6 +701,7 @@ class AIConversationService(EntityService[AIConversation]):
             .where(
                 message_entity.conversation_id == conversation.id,
                 message_entity.role == AIMessageRole.USER.value,
+                message_entity.is_client_generated.is_(False),
             )
         )).scalar() or 0
         if user_message_count != 1:
@@ -703,7 +720,7 @@ class AIConversationService(EntityService[AIConversation]):
     @classmethod
     def fill_title(cls, session: Session, ai_service: Any, conversation_id: str) -> None:
         """
-        Title a conversation from its opening message (background task body).
+        Title a conversation from the user's opening message (background task body).
 
         SYNCHRONOUS — runs in the Celery worker on a sync session, like ``fill_summary``.
         Does not commit — the caller owns the transaction. A conversation titled in the
@@ -729,11 +746,14 @@ class AIConversationService(EntityService[AIConversation]):
         if conversation is None or conversation.title:
             return
 
+        # Same rule as get_opening_message_content, on the sync session: a client-generated
+        # row is an instruction, and a titling model handed one tends to carry it out.
         opening = session.execute(
             select(message_entity.content)
             .where(
                 message_entity.conversation_id == conversation_id,
                 message_entity.role == AIMessageRole.USER.value,
+                message_entity.is_client_generated.is_(False),
             )
             .order_by(message_entity.created_at, message_entity.id)
             .limit(1)
@@ -1527,6 +1547,7 @@ class AIConversationService(EntityService[AIConversation]):
         page_context: Optional[PageContextModel] = None,
         client_id: Optional[str] = None,
         tool_answers: Optional[List[AIToolAnswerModel]] = None,
+        client_generated: bool = False,
     ) -> Dict[str, Any]:
         """
         Prepare the shared context for both streaming and non-streaming chat.
@@ -1550,19 +1571,26 @@ class AIConversationService(EntityService[AIConversation]):
             tool_answers: The user's answers to the calls the last turn left open (see
                 ``user_answered_tools``). The turn then resumes on them: no user message
                 is written, and the conversation must exist and be the user's.
+            client_generated: The client application wrote ``content`` on its own (see
+                AIMessage.is_client_generated). The model reads it as any user turn; it is
+                stored as such and never triggers titling.
 
         Returns:
             Dict with keys: tools, llm_tools, executor, conversation,
             message_service, ai_service, messages, info, user_message_id
 
         Raises:
-            LysError(INVALID_CHAT_INPUT): both or neither of content and tool_answers.
+            LysError(INVALID_CHAT_INPUT): both or neither of content and tool_answers, or
+                client_generated set on tool answers.
             LysError(INVALID_TOOL_ANSWERS): the answers do not match the open calls.
         """
         # Checked here rather than at each endpoint: every entry point (the GraphQL mutation,
         # a consumer's SSE route) goes through this method.
         if (content is None) == (tool_answers is None):
             raise LysError(INVALID_CHAT_INPUT, "A chat turn takes either a message or tool answers")
+        if client_generated and tool_answers is not None:
+            # The flag qualifies a written message; answers write none, so it would be dropped.
+            raise LysError(INVALID_CHAT_INPUT, "client_generated qualifies a message, not tool answers")
         if tool_answers is not None and len(tool_answers) > MAX_TOOL_ANSWERS:
             raise LysError(INVALID_TOOL_ANSWERS, f"{len(tool_answers)} tool answers exceed {MAX_TOOL_ANSWERS}")
 
@@ -1760,6 +1788,7 @@ class AIConversationService(EntityService[AIConversation]):
                 conversation_id=conversation.id,
                 role=AIMessageRole.USER.value,
                 content=content,
+                is_client_generated=client_generated,
                 prompt_version_id=ai_service.get_prompt_version_id(conversation.purpose),
                 request_context=cls._build_request_context(
                     page_context=page_context,
@@ -1776,8 +1805,9 @@ class AIConversationService(EntityService[AIConversation]):
             ))
 
             # Title the conversation off the request path, from this message when it is the
-            # opening one. Never blocks or fails the turn.
-            await cls.maybe_enqueue_title(conversation, session)
+            # first the user wrote. Never blocks or fails the turn.
+            if not client_generated:
+                await cls.maybe_enqueue_title(conversation, session)
 
         return {
             "tools": tools,
@@ -1997,6 +2027,7 @@ class AIConversationService(EntityService[AIConversation]):
         page_context: Optional[PageContextModel] = None,
         max_tool_iterations: int = 10,
         tool_answers: Optional[List[AIToolAnswerModel]] = None,
+        client_generated: bool = False,
     ) -> Dict[str, Any]:
         """
         Send a message with tool execution support (agent loop).
@@ -2013,6 +2044,8 @@ class AIConversationService(EntityService[AIConversation]):
             max_tool_iterations: Maximum number of tool call iterations
             tool_answers: The user's answers to the calls the last turn left open
                 (see ``user_answered_tools``); the turn resumes on them
+            client_generated: The client application wrote ``content`` on its own,
+                not the user (see AIMessage.is_client_generated)
 
         Returns:
             Dict with content, conversation_id, tool_calls_count, tool_results, frontend_actions
@@ -2021,6 +2054,7 @@ class AIConversationService(EntityService[AIConversation]):
         ctx = await cls._prepare_chat_context(
             user_id, content, session, connected_user, info,
             conversation_id=conversation_id, page_context=page_context, tool_answers=tool_answers,
+            client_generated=client_generated,
         )
         executor = ctx["executor"]
         conversation = ctx["conversation"]
@@ -2209,6 +2243,7 @@ class AIConversationService(EntityService[AIConversation]):
         max_tool_iterations: int = 10,
         voice: bool = False,
         tool_answers: Optional[List[AIToolAnswerModel]] = None,
+        client_generated: bool = False,
     ) -> AsyncGenerator[str, None]:
         """
         Streaming version of chat_with_tools. Yields SSE-formatted strings.
@@ -2235,6 +2270,8 @@ class AIConversationService(EntityService[AIConversation]):
                 is never failed for it, and no ``voice`` event is emitted.
             tool_answers: The user's answers to the calls the last turn left open;
                 the turn resumes on them
+            client_generated: The client application wrote ``content`` on its own,
+                not the user (see AIMessage.is_client_generated)
 
         Yields:
             SSE-formatted event strings. Event names: ``token``, ``tool_start``,
@@ -2271,6 +2308,7 @@ class AIConversationService(EntityService[AIConversation]):
         ctx = await cls._prepare_chat_context(
             user_id, content, session, connected_user, info,
             conversation_id=conversation_id, page_context=page_context, tool_answers=tool_answers,
+            client_generated=client_generated,
         )
         executor = ctx["executor"]
         conversation = ctx["conversation"]

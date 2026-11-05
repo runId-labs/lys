@@ -367,3 +367,75 @@ class TestAIConversationServiceCompaction:
             )).scalars().all()
             assert rows == []
             mock_task.delay.assert_not_called()
+
+
+class TestAIConversationServiceClientGeneratedMessages:
+    """A message the client wrote on its own is not the user's words: titling skips it."""
+
+    @staticmethod
+    def _add(session, message_entity, conversation_id, content, minute, client_generated=False):
+        session.add(message_entity(
+            conversation_id=conversation_id, role=AIMessageRole.USER.value, content=content,
+            is_client_generated=client_generated,
+            created_at=datetime(2026, 1, 1, tzinfo=UTC) + timedelta(minutes=minute),
+        ))
+
+    @pytest.mark.asyncio
+    async def test_flag_defaults_to_false(self, ai_app_manager):
+        conversation_service = ai_app_manager.get_service("ai_conversation")
+        message_entity = ai_app_manager.get_entity("ai_message")
+
+        async with ai_app_manager.database.get_session() as session:
+            conv = await conversation_service.get_or_create(str(uuid4()), session)
+            message = message_entity(conversation_id=conv.id, role=AIMessageRole.USER.value, content="Hello")
+            session.add(message)
+            await session.flush()
+            await session.refresh(message)
+
+            assert message.is_client_generated is False
+
+    @pytest.mark.asyncio
+    async def test_opening_message_skips_client_generated_rows(self, ai_app_manager):
+        conversation_service = ai_app_manager.get_service("ai_conversation")
+        message_entity = ai_app_manager.get_entity("ai_message")
+
+        async with ai_app_manager.database.get_session() as session:
+            conv = await conversation_service.get_or_create(str(uuid4()), session)
+            self._add(session, message_entity, conv.id, "Brief the user", 0, client_generated=True)
+            self._add(session, message_entity, conv.id, "What's our runway?", 1)
+            await session.flush()
+
+            opening = await conversation_service.get_opening_message_content(conv.id, session)
+
+            assert opening == "What's our runway?"
+
+    @pytest.mark.asyncio
+    async def test_opening_message_is_none_until_the_user_writes(self, ai_app_manager):
+        conversation_service = ai_app_manager.get_service("ai_conversation")
+        message_entity = ai_app_manager.get_entity("ai_message")
+
+        async with ai_app_manager.database.get_session() as session:
+            conv = await conversation_service.get_or_create(str(uuid4()), session)
+            self._add(session, message_entity, conv.id, "Brief the user", 0, client_generated=True)
+            await session.flush()
+
+            assert await conversation_service.get_opening_message_content(conv.id, session) is None
+
+    @pytest.mark.asyncio
+    async def test_titling_fires_on_the_first_message_the_user_wrote(self, ai_app_manager):
+        """A conversation the client opened is titled once the user writes their first message."""
+        conversation_service = ai_app_manager.get_service("ai_conversation")
+        message_entity = ai_app_manager.get_entity("ai_message")
+
+        async with ai_app_manager.database.get_session() as session:
+            conv = await conversation_service.get_or_create(str(uuid4()), session)
+            self._add(session, message_entity, conv.id, "Brief the user", 0, client_generated=True)
+            self._add(session, message_entity, conv.id, "What's our runway?", 1)
+            await session.flush()
+
+            with patch(
+                "lys.apps.ai.modules.conversation.services.generate_conversation_title"
+            ) as mock_task:
+                await conversation_service.maybe_enqueue_title(conv, session)
+
+            mock_task.delay.assert_called_once_with(conv.id)

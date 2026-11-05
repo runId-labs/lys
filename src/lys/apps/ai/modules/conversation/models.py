@@ -81,11 +81,16 @@ class AIMessageInputModel(BaseModel):
     A turn carries either ``message`` or ``tool_answers`` — the user's answers to the
     calls the last turn left open (see AIConversationService.user_answered_tools). The
     service refuses both or neither, for every entry point.
+
+    ``client_generated`` marks a ``message`` the client application wrote on its own
+    rather than the user (see AIMessage.is_client_generated); the service refuses it on
+    ``tool_answers``, which write no message.
     """
     message: Optional[str] = None
     conversation_id: Optional[str] = None
     context: Optional[PageContextModel] = None
     tool_answers: Optional[List[AIToolAnswerModel]] = None
+    client_generated: bool = False
 
     @field_validator("conversation_id", mode="before")
     @classmethod

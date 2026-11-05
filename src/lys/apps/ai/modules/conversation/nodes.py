@@ -37,7 +37,9 @@ class AIConversationNode(EntityNode[AIConversationService], relay.Node):
 
     @strawberry.field(
         description="Title to show in a listing: the conversation title, falling back to the "
-                    "truncated opening message while no title has been set."
+                    "truncated opening message the user wrote while no title has been set. "
+                    "Null while the user has not written yet (a conversation the client "
+                    "opened on its own)."
     )
     async def display_title(self, info: Info) -> Optional[str]:
         """
@@ -74,6 +76,13 @@ class AIConversationMessageNode(EntityNode[AIMessageService], relay.Node):
     content: Optional[str]
     created_at: datetime
     _entity: strawberry.Private[AIMessage]
+
+    @strawberry.field(
+        description="Whether the client application wrote this message on its own rather "
+                    "than the user. A thread replaying the history typically hides it."
+    )
+    def is_client_generated(self) -> bool:
+        return self._entity.is_client_generated
 
     @strawberry.field(description="Conversation this message belongs to.")
     def conversation_id(self) -> relay.GlobalID:

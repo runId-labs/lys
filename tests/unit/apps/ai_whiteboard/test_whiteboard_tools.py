@@ -82,7 +82,7 @@ class TestDefinitions:
 
     def test_draw_declares_the_three_operations(self):
         properties = DRAW_ON_WHITEBOARD_TOOL["function"]["parameters"]["properties"]
-        assert {"add", "update", "delete", "focus", "whiteboard_id"} <= set(properties)
+        assert {"add", "update", "delete", "focus", "whiteboard_id", "title"} <= set(properties)
 
 
 class TestToolExecutor:
@@ -112,6 +112,28 @@ class TestDrawHandler:
         kwargs = whiteboard_service.draw.await_args.kwargs
         assert kwargs["operations"] == {"add": [{"name": "a"}]}
         assert result == DRAWN
+
+    @pytest.mark.asyncio
+    async def test_a_board_opened_here_takes_the_name_the_model_gave_it(self, service, whiteboard_service):
+        """The model names the board it opens: no dependency on the background conversation title."""
+        await service._handle_draw_on_whiteboard(
+            {"add": [{"name": "a"}], "title": "  Charges de\npersonnel   2025 "}, context(),
+        )
+
+        assert whiteboard_service.draw.await_args.kwargs["title"] == "Charges de personnel 2025"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("title", [None, "", "   ", 42])
+    async def test_without_a_usable_name_the_board_falls_back_to_the_conversation_title(
+        self, service, whiteboard_service, title,
+    ):
+        arguments = {"add": [{"name": "a"}]}
+        if title is not None:
+            arguments["title"] = title
+
+        await service._handle_draw_on_whiteboard(arguments, context())
+
+        assert whiteboard_service.draw.await_args.kwargs["title"] == "Titre"
 
     @pytest.mark.asyncio
     async def test_the_pointer_is_written_in_the_turns_transaction(

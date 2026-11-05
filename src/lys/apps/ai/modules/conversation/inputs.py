@@ -44,6 +44,7 @@ class AIMessageInput:
     conversation_id: strawberry.auto
     context: Optional[PageContextInput] = None
     tool_answers: Optional[List[AIToolAnswerInput]] = None
+    client_generated: strawberry.auto
 
 
 @strawberry.experimental.pydantic.input(model=UpdateAIConversationTitleInputModel)

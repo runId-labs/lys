@@ -5,9 +5,13 @@ This module provides custom Strawberry extensions for the lys framework,
 including database session management for GraphQL operations.
 """
 import asyncio
+import logging
+from contextlib import asynccontextmanager
 
 from sqlalchemy.ext.asyncio import AsyncSession
 from strawberry.extensions import SchemaExtension
+
+logger = logging.getLogger(__name__)
 
 
 class _MaterializedAsyncResult:
@@ -46,26 +50,86 @@ class ThreadSafeSessionProxy:
     Usage:
         The proxy is transparent to resolvers - they continue using
         info.context.session as before, but all operations are now serialized.
+
+    The same lock guards the end of the session (see :meth:`end`): a resolver can still be
+    running when the operation is over - graphql-core abandons, without cancelling, the
+    sibling fields of a non-null field that failed - and its query must finish before the
+    session's connection is released.
     """
 
     def __init__(self, session: AsyncSession):
         self._session = session
         self._lock = asyncio.Lock()
+        self._ended = False
+
+    def _ensure_open(self) -> None:
+        """Refuse any use of the session once it has ended."""
+        if self._ended:
+            raise RuntimeError("The session of this GraphQL operation has ended")
+
+    @asynccontextmanager
+    async def _use(self):
+        """Hold the session for one operation; refused once the session has ended."""
+        async with self._lock:
+            self._ensure_open()
+            yield
+
+    async def end(self, commit: bool) -> None:
+        """
+        Commit or roll back, then release the connection - once no resolver is using it.
+
+        A connection whose state is unknown after a failure is invalidated rather than
+        returned to the pool: back in the pool, it fails the next request that checks it out,
+        whoever that request belongs to.
+        """
+        async with self._lock:
+            self._ended = True
+            if not await self._settle(commit):
+                await self._invalidate()
+                return
+            try:
+                await self._session.close()
+            except Exception:
+                logger.warning("Session close failed, invalidating its connection", exc_info=True)
+                await self._invalidate()
+
+    async def _settle(self, commit: bool) -> bool:
+        """Commit (falling back to a rollback) or roll back; whether the transaction ended cleanly."""
+        if commit:
+            try:
+                await self._session.commit()
+                return True
+            except Exception:
+                # Expected after a resolver error left the session unusable: Strawberry
+                # catches resolver errors, so the operation still ends on the success path.
+                logger.debug("Session commit failed, rolling back", exc_info=True)
+        try:
+            await self._session.rollback()
+            return True
+        except Exception:
+            logger.warning("Session rollback failed", exc_info=True)
+            return False
+
+    async def _invalidate(self) -> None:
+        try:
+            await self._session.invalidate()
+        except Exception:
+            logger.warning("Session invalidation failed", exc_info=True)
 
     async def execute(self, *args, **kwargs):
-        async with self._lock:
+        async with self._use():
             return await self._session.execute(*args, **kwargs)
 
     async def scalar(self, *args, **kwargs):
-        async with self._lock:
+        async with self._use():
             return await self._session.scalar(*args, **kwargs)
 
     async def scalars(self, *args, **kwargs):
-        async with self._lock:
+        async with self._use():
             return await self._session.scalars(*args, **kwargs)
 
     async def stream(self, *args, **kwargs):
-        async with self._lock:
+        async with self._use():
             result = await self._session.stream(*args, **kwargs)
             # Materialize all rows while holding the lock.
             # stream() returns a cursor that keeps the asyncpg connection busy
@@ -75,7 +139,7 @@ class ThreadSafeSessionProxy:
         return _MaterializedAsyncResult(rows)
 
     async def stream_scalars(self, *args, **kwargs):
-        async with self._lock:
+        async with self._use():
             result = await self._session.stream_scalars(*args, **kwargs)
             # Materialize all scalars while holding the lock.
             # stream_scalars() returns a cursor that keeps the asyncpg connection busy
@@ -85,44 +149,49 @@ class ThreadSafeSessionProxy:
         return _MaterializedAsyncResult(items)
 
     async def flush(self, *args, **kwargs):
-        async with self._lock:
+        async with self._use():
             return await self._session.flush(*args, **kwargs)
 
     async def refresh(self, *args, **kwargs):
-        async with self._lock:
+        async with self._use():
             return await self._session.refresh(*args, **kwargs)
 
     async def get(self, *args, **kwargs):
-        async with self._lock:
+        async with self._use():
             return await self._session.get(*args, **kwargs)
 
+    # The synchronous methods issue no query and need no lock, but are refused once the
+    # session has ended: an instance added then would be silently dropped.
     def add(self, instance, _warn=True):
-        # add is synchronous but we still protect state consistency
+        self._ensure_open()
         return self._session.add(instance, _warn=_warn)
 
     def add_all(self, instances):
+        self._ensure_open()
         return self._session.add_all(instances)
 
     async def delete(self, instance):
-        async with self._lock:
+        async with self._use():
             return await self._session.delete(instance)
 
     async def merge(self, instance, *args, **kwargs):
-        async with self._lock:
+        async with self._use():
             return await self._session.merge(instance, *args, **kwargs)
 
     async def commit(self):
-        async with self._lock:
+        async with self._use():
             return await self._session.commit()
 
     async def rollback(self):
-        async with self._lock:
+        async with self._use():
             return await self._session.rollback()
 
     def expunge(self, instance):
+        self._ensure_open()
         return self._session.expunge(instance)
 
     def expunge_all(self):
+        self._ensure_open()
         return self._session.expunge_all()
 
     @property
@@ -142,7 +211,10 @@ class ThreadSafeSessionProxy:
         return self._session.deleted
 
     def __getattr__(self, name):
-        # Fallback for any other attributes/methods not explicitly wrapped
+        # Fallback for any other attributes/methods not explicitly wrapped. Dunder lookups
+        # (copy, pickle, introspection probes) keep their AttributeError semantics.
+        if not name.startswith("__"):
+            self._ensure_open()
         return getattr(self._session, name)
 
 
@@ -190,44 +262,26 @@ class DatabaseSessionExtension(SchemaExtension):
             yield
 
         else:
-            # Create session manually (not using async with) to handle close errors
-            # When parallel resolvers share a session and one fails while another
-            # has an operation in progress, the session close can fail.
             session = app_manager.database.session_factory()
 
             # Wrap session in thread-safe proxy to handle concurrent resolver access
             # Multiple root field resolvers may execute in parallel, and AsyncSession
             # is not safe for concurrent use. The proxy serializes all access.
-            self.execution_context.context.session = ThreadSafeSessionProxy(session)
+            proxy = ThreadSafeSessionProxy(session)
+            self.execution_context.context.session = proxy
 
             try:
                 # Yield to allow the GraphQL operation to execute with session open
                 # This includes the main resolver and all nested field resolvers
                 yield
-            except Exception:
-                # If an exception occurred during execution, rollback before closing
-                # to ensure the session is in a clean state
-                try:
-                    await session.rollback()
-                except Exception:
-                    pass  # Ignore rollback errors
+            except BaseException:
+                # BaseException, not Exception: a cancelled operation (timeout, closed
+                # socket) must release its connection too. Shielded so that a second
+                # cancellation cannot interrupt the release halfway.
+                await asyncio.shield(proxy.end(commit=False))
                 raise
             else:
-                # Commit changes after successful execution
-                # Note: GraphQL resolver errors are caught by Strawberry and don't
-                # propagate here, so we may try to commit a session in invalid state.
-                # Handle commit errors gracefully.
-                try:
-                    await session.commit()
-                except Exception:
-                    try:
-                        await session.rollback()
-                    except Exception:
-                        pass  # Ignore rollback errors
-            finally:
-                # Close session, ignoring errors if session is in invalid state
-                # This can happen when parallel resolvers have operations in progress
-                try:
-                    await session.close()
-                except Exception:
-                    pass  # Session will be garbage collected
+                # GraphQL resolver errors are caught by Strawberry and do not propagate
+                # here, so a session left unusable by one still ends on this path: end()
+                # falls back to a rollback when the commit fails.
+                await proxy.end(commit=True)

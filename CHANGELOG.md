@@ -7,6 +7,41 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.58.0] - 2026-11-05
+
+### Added
+- `AIMessage.is_client_generated` (non-null, `false` by default; needs a migration): a user
+  row the client sent on its own — a continuation, a login briefing — rather than the user.
+  Sent as `client_generated` (`AIMessageInputModel` / `sendAiMessage` `clientGenerated`,
+  `chat_with_tools[_streaming](client_generated=...)`) and exposed as
+  `AIConversationMessageNode.isClientGenerated`. The model reads it as any user turn. Set on
+  `tool_answers`, which write no message, it is refused (`INVALID_CHAT_INPUT`).
+- `draw_on_whiteboard` takes `title`: the name of a board the call opens. The board falls
+  back to the conversation title only when the model gives none.
+
+### Changed
+- Titling fires on the first message the user wrote and titles from it; a client-generated
+  row never triggers it nor serves as its source.
+- `displayTitle` falls back to the first message the user wrote, and is null while there is
+  none (a conversation the client opened on its own).
+- Client-generated rows are neither indexed nor embedded, and `search_conversation` never
+  returns them.
+- **Breaking for overrides**: `_prepare_chat_context` is now called with
+  `client_generated`; a consumer overriding it must accept the argument and forward it to
+  `super()`.
+- A chatbot GraphQL tool whose call returns `NOT_FOUND` tells the model the id is wrong
+  rather than handing it the bare code, which it read as "no data". The other errors of the
+  response are still passed along.
+
+### Fixed
+- A GraphQL operation whose non-null field failed while a sibling field was still querying
+  closed its session under that query, and returned the connection to the pool inside a
+  transaction: the next request checking it out failed, whoever made it. The session now
+  ends once no resolver uses it (`ThreadSafeSessionProxy.end`), refuses any operation
+  afterwards (synchronous methods included), and a connection left in an unknown state is
+  invalidated instead of pooled. A cancelled operation (timeout, closed socket) now releases
+  its connection too.
+
 ## [0.57.0] - 2026-10-29
 
 ### Added

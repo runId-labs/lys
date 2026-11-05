@@ -300,6 +300,15 @@ DRAW_ON_WHITEBOARD_TOOL = {
                         "board is used, and opened if it does not exist yet."
                     ),
                 },
+                "title": {
+                    "type": "string",
+                    "description": (
+                        "The board's name, as the user will find it again weeks later: a few "
+                        "words naming the subject ('Personnel costs 2025'), in the user's "
+                        "language. Only read when this call opens a new board - an existing "
+                        "board keeps its name."
+                    ),
+                },
             },
         },
     },

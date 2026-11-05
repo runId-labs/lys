@@ -12,6 +12,7 @@ import httpx
 
 from lys.apps.ai.modules.core.executors.abstracts import ToolExecutor
 from lys.apps.ai.utils.page_params import route_page_params, writable_page_params
+from lys.core.consts.errors import NOT_FOUND_ERROR
 from lys.core.graphql.client import GraphQLClient, decode_global_id
 from lys.core.utils.strings import to_camel_case, to_snake_case
 
@@ -25,6 +26,17 @@ _INVALID_GLOBAL_ID_MESSAGE = (
     "or the page context returned it (the opaque base64 id of a 'TypeName:uuid' "
     "Relay id). A raw uuid or an altered id is not accepted. Re-read the id from "
     "a tool result and pass it unchanged."
+)
+
+# Message returned to the LLM when the server finds no entity behind an id the
+# call carried. A bare "NOT_FOUND" read to the model as "no data loaded", which it
+# then told the user about an entity whose data the application displays.
+_UNKNOWN_ENTITY_MESSAGE = (
+    "NOT_FOUND: an id passed to '{tool_name}' names no entity the user can access, "
+    "most often an id altered while copying it. This is NOT an absence of data: do "
+    "not tell the user that data is missing. Re-read the id from a previous tool "
+    "result or the page context and call the tool again with it unchanged, "
+    "character for character."
 )
 
 
@@ -305,6 +317,14 @@ class GraphQLToolExecutor(ToolExecutor):
                 errors = data["errors"]
                 error_messages = [e.get("message", str(e)) for e in errors]
                 logger.error(f"GraphQL errors: {error_messages}")
+                if NOT_FOUND_ERROR[1] in error_messages:
+                    # Replaces the bare code only: the other errors of the response still
+                    # reach the model.
+                    error_messages = [
+                        _UNKNOWN_ENTITY_MESSAGE.format(tool_name=tool_name)
+                        if message == NOT_FOUND_ERROR[1] else message
+                        for message in dict.fromkeys(error_messages)
+                    ]
                 return {
                     "status": "error",
                     "message": "; ".join(error_messages),

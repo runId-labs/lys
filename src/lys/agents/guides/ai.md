@@ -166,6 +166,34 @@ and its page context names the new page, it sends the continuation message
 context has moved makes the model answer with the old page. A `navigate`
 without `continue_action` triggers no continuation.
 
+### Messages the client writes on its own: `client_generated`
+
+A continuation, a briefing requested at login: any message the client sends
+without the user typing it is sent with `client_generated: true`
+(`AIMessageInputModel`, `chat_with_tools[_streaming](client_generated=...)`).
+The model reads it as any user turn; the row is stored with
+`AIMessage.is_client_generated`, and everything that reads the conversation as
+the user's words skips it:
+
+- **Titling** fires on the first message the USER wrote, and titles from it —
+  never from the instruction, which a titling model tends to carry out instead
+  of summarizing.
+- **`displayTitle`** falls back to that same message, and is null while the
+  user has not written yet: the client shows its own label for a conversation
+  it opened.
+- **`search_conversation`** never returns it, and the row is neither indexed
+  nor embedded: returned as a result, the instruction would read as something
+  the user said.
+- **History replay** exposes `isClientGenerated` on each message, so the thread
+  hides the row without recognizing it by its content.
+
+The flag is the client's word and grants nothing: set on a real message, it
+only costs that conversation its title. It qualifies a written message only:
+set on `tool_answers`, the turn is refused (`INVALID_CHAT_INPUT`).
+
+A consumer overriding `_prepare_chat_context` must accept and forward
+`client_generated` to `super()`.
+
 ### Writing params: `writable`, `set_page_params`, `navigate` arrival filters
 
 Reading a param and writing one are different grants. Every declared param is
@@ -359,7 +387,10 @@ RULES:
   registered is reachable by a model pattern-matching on earlier turns.
 - **R2 — Errors belong to the model.** A tool naming something that does not
   exist is a miss the model can act on, not an incident: return it, do not
-  raise through the turn.
+  raise through the turn. Say it as a wrong id, never as an empty result: the
+  model reports an empty result to the user as missing data. The GraphQL
+  executor does it for `NOT_FOUND`; a handler whose query swallows the error
+  checks the entity before answering "nothing found".
 - **R3 — Entity id arguments are GlobalIDs.** The ids a handler receives are
   the opaque GlobalIDs the tool results and the page context carry (see
   `rules.md` — "Entity ids at the API boundary"). Validate them at the handler
@@ -377,6 +408,10 @@ inherit from the app's, or the tools are silently absent.
 - The scene size limit is the `ai_whiteboard.max_scene_bytes` plugin setting.
 - A named `whiteboard_id` that is not the user's is refused (`WHITEBOARD_NOT_FOUND`), never
   redirected to the conversation's own board.
+- The model names a board it opens (`title` on `draw_on_whiteboard`, read only when the
+  call opens one). It falls back to the conversation title, which is written in the
+  background and may not exist yet on the turn of the user's first message - so never
+  rely on that fallback to name a board.
 - `draw_on_whiteboard` commits the board in a transaction of its own, so it reaches the
   browser while the answer is still streaming. On a single-writer backend (SQLite) it
   falls back to the turn's session — correct, but the board appears at the end of the

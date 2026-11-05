@@ -8,7 +8,7 @@ feedback and metrics, supporting analytics and fine-tuning data export.
 from datetime import datetime
 from typing import Optional, List
 
-from sqlalchemy import String, Text, ForeignKey, Integer, Uuid, JSON, DateTime
+from sqlalchemy import String, Text, ForeignKey, Integer, Uuid, JSON, DateTime, Boolean, false
 from pgvector.sqlalchemy import Vector
 from sqlalchemy.dialects.postgresql import TSVECTOR
 from sqlalchemy.orm import Mapped, mapped_column, relationship, declared_attr
@@ -101,6 +101,15 @@ class AIMessage(Entity):
     )
     role: Mapped[str] = mapped_column(String(20), nullable=False)
     content: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+
+    # A user row the client application wrote on its own - a continuation after a
+    # navigation, a briefing requested at login - rather than one the person typed. The
+    # model reads it like any user turn; what reads the conversation as the person's
+    # words (its title, the opening message a listing falls back to) skips it, so an
+    # instruction meant for the model is never shown or summarized as the subject.
+    is_client_generated: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=false()
+    )
 
     # For tool calls (role=assistant)
     tool_calls: Mapped[Optional[List[dict]]] = mapped_column(JSON, nullable=True)
