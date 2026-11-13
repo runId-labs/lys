@@ -7,13 +7,16 @@ including plans, rules, and versions for testing subscription and checker servic
 
 import os
 import tempfile
+from uuid import uuid4
 
 import pytest_asyncio
 
 from lys.apps.licensing.registries import register_validator
 from lys.core.configs import LysAppSettings
 from lys.core.consts.component_types import AppComponentTypeEnum
+from lys.core.consts.webservices import OWNER_ACCESS_LEVEL
 from lys.core.managers.app import AppManager
+from lys.core.models.webservices import WebserviceFixturesModel
 from tests.fixtures.database import create_all_tables
 
 
@@ -258,3 +261,89 @@ async def licensing_app_manager():
     # close() disposes both engines through reset_database_connection
     await app_manager.database.close()
     os.unlink(db_path)
+
+
+async def register_owner_webservices(app_manager) -> tuple[str, str]:
+    """Register one licensed and one non-licensed webservice declaring OWNER; return their ids."""
+    access_level_service = app_manager.get_service("access_level")
+    webservice_service = app_manager.get_service("webservice")
+    licensed_id = f"licensed_owner_ws_{uuid4().hex[:8]}"
+    free_id = f"free_owner_ws_{uuid4().hex[:8]}"
+
+    async with app_manager.database.get_session() as session:
+        if await access_level_service.get_by_id(OWNER_ACCESS_LEVEL, session) is None:
+            await access_level_service.create(session=session, id=OWNER_ACCESS_LEVEL, enabled=True)
+        await webservice_service.register_webservices(
+            [
+                WebserviceFixturesModel(
+                    id=ws_id,
+                    attributes=WebserviceFixturesModel.AttributesModel(
+                        public_type=None,
+                        is_licenced=is_licenced,
+                        enabled=True,
+                        access_levels=[OWNER_ACCESS_LEVEL],
+                        operation_type="query",
+                        ai_tool=None,
+                    ),
+                )
+                for ws_id, is_licenced in ((licensed_id, True), (free_id, False))
+            ],
+            "test_app",
+            session,
+        )
+        await session.commit()
+
+    return licensed_id, free_id
+
+
+async def create_license_profile_users(app_manager) -> dict[str, str]:
+    """
+    Create the user profiles licensing distinguishes; return their ids.
+
+    - owner: owns a client, which gets the FREE subscription on creation
+    - licensed_member: client user holding a seat (subscription_user)
+    - unlicensed_member: client user without a seat
+    - outsider: user outside any client
+    """
+    client_service = app_manager.get_service("client")
+    user_service = app_manager.get_service("user")
+    subscription_service = app_manager.get_service("subscription")
+    suffix = uuid4().hex[:8]
+
+    async with app_manager.database.get_session() as session:
+        client = await client_service.create_client_with_owner(
+            session=session,
+            client_name=f"OwnerLic-Corp-{suffix}",
+            email=f"ownerlic-owner-{suffix}@example.com",
+            password="Password123!",
+            language_id="en",
+            send_verification_email=False,
+        )
+        licensed_member = await user_service.create_client_user(
+            session=session, client_id=client.id, email=f"ownerlic-lic-{suffix}@example.com", language_id="en"
+        )
+        unlicensed_member = await user_service.create_client_user(
+            session=session, client_id=client.id, email=f"ownerlic-unlic-{suffix}@example.com", language_id="en"
+        )
+        outsider = await user_service.create_user(
+            session=session,
+            email=f"ownerlic-out-{suffix}@example.com",
+            password="Password123!",
+            language_id="en",
+            send_verification_email=False,
+        )
+        subscription = await subscription_service.get_client_subscription(client.id, session)
+        await subscription_service.add_user_to_subscription(subscription.id, licensed_member.id, session)
+        await session.commit()
+
+        return {
+            "client": client.id,
+            "owner": client.owner_id,
+            "licensed_member": licensed_member.id,
+            "unlicensed_member": unlicensed_member.id,
+            "outsider": outsider.id,
+        }
+
+
+# Profiles created by create_license_profile_users, with whether each holds a license
+LICENSED_PROFILES = {"owner": True, "licensed_member": True, "unlicensed_member": False, "outsider": False}

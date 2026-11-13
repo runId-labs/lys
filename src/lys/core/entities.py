@@ -72,28 +72,29 @@ class Entity(EntityInterface):
         if isinstance(access_type, bool):
             return access_type
 
-        has_right = False
+        # The access levels a webservice declares are combined with OR: the
+        # right is granted as soon as one of the keys present grants it. Every
+        # connected user carries the owner key on a webservice declaring OWNER,
+        # so the owner check must never shadow the organization one.
 
-        # if it is access by role the right is granted
-        # because normally webservice checked the permission before
+        # Access by role: the webservice permission was checked upstream
         if access_type.get(ROLE_ACCESS_KEY, False):
-            has_right = True
-        # check if the user is an owner
-        elif access_type.get(OWNER_ACCESS_KEY, False):
-            has_right = user_id in self.accessing_users()
+            return True
 
-        # check if user has access by an organization role
-        elif access_type.get(ORGANIZATION_ROLE_ACCESS_KEY, False):
+        # Access as one of the entity's users
+        if access_type.get(OWNER_ACCESS_KEY, False) and user_id in self.accessing_users():
+            return True
+
+        # Access by an organization role
+        user_organizations = access_type.get(ORGANIZATION_ROLE_ACCESS_KEY, False)
+        if user_organizations:
             for accessing_organization_key, accessing_organization_id_list in self.accessing_organizations().items():
-                user_organization_id_list = access_type[ORGANIZATION_ROLE_ACCESS_KEY].get(accessing_organization_key, [])
-                for user_organization_id in user_organization_id_list:
-                    if user_organization_id in accessing_organization_id_list:
-                        has_right = True
-                        break
-                if has_right:
-                    break
+                user_organization_id_list = user_organizations.get(accessing_organization_key, [])
+                if any(user_organization_id in accessing_organization_id_list
+                       for user_organization_id in user_organization_id_list):
+                    return True
 
-        return has_right
+        return False
 
 
 class ParametricEntity(Entity):

@@ -33,6 +33,7 @@ class LicensingAuthService(OrganizationAuthService):
     For licensed webservices (is_licenced=True):
     - Owners: need their client to have an active subscription
     - Client users: need to be in the subscription_user table
+    - OWNER access ("owner" claim): needs a license too, whoever the user is
 
     For non-licensed webservices: same behavior as OrganizationAuthService
 
@@ -62,6 +63,10 @@ class LicensingAuthService(OrganizationAuthService):
         if user.is_super_user:
             return claims
 
+        claims["webservices"] = await cls._drop_unlicensed_owner_claims(
+            user.id, claims.get("webservices", {}), session
+        )
+
         # Get subscription claims for user's clients
         subscriptions = await cls._get_subscription_claims(user.id, session)
 
@@ -69,6 +74,38 @@ class LicensingAuthService(OrganizationAuthService):
             claims["subscriptions"] = subscriptions
 
         return claims
+
+    @classmethod
+    async def _drop_unlicensed_owner_claims(
+        cls,
+        user_id: str,
+        webservices: Dict[str, str],
+        session: AsyncSession
+    ) -> Dict[str, str]:
+        """
+        Remove the "owner" claims on licensed webservices from a user without a license.
+
+        Every connected user receives "owner" on each webservice declaring OWNER; on a
+        licensed webservice that would grant row access the license never covered.
+        A "full" claim (role) is kept: roles are not licensed.
+        """
+        owner_claims = [name for name, access in webservices.items() if access == "owner"]
+        if not owner_claims:
+            return webservices
+
+        webservice_service = cls.app_manager.get_service("webservice")
+        if await webservice_service.user_is_licensed(user_id, session):
+            return webservices
+
+        webservice_entity = cls.app_manager.get_entity("webservice")
+        result = await session.execute(
+            select(webservice_entity.id).where(
+                webservice_entity.id.in_(owner_claims),
+                webservice_entity.is_licenced.is_(True),
+            )
+        )
+        licensed = {row[0] for row in result.all()}
+        return {name: access for name, access in webservices.items() if name not in licensed}
 
     @classmethod
     async def _get_subscription_claims(

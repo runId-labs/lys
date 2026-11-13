@@ -162,6 +162,8 @@ Each webservice declares its required access levels:
 | Organization | `ORGANIZATION_ROLE_ACCESS_LEVEL` | User belongs to the right organization |
 | Internal | `INTERNAL_SERVICE_ACCESS_LEVEL` | Service-to-service JWT |
 
+With the `licensing` app, the OWNER level on a licensed webservice (`is_licenced=True`) also requires a license: the user is in `subscription_user`, or owns a client that has a subscription. Without one, the `"owner"` claim is not issued for that webservice.
+
 Multiple levels can be combined — access is granted if **any** level matches:
 
 ```python
@@ -171,6 +173,8 @@ Multiple levels can be combined — access is granted if **any** level matches:
     description="Get a product."
 )
 ```
+
+On a single row (`check_permission`), the levels combine the same way: with `[OWNER_ACCESS_LEVEL, ORGANIZATION_ROLE_ACCESS_LEVEL]`, a user is granted a row they own **or** a row of one of their organizations.
 
 ## Row-Level Filtering
 

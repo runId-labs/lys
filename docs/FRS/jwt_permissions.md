@@ -266,6 +266,7 @@ LicensingAuthService (licensing)
     │   - super().generate_access_claims()
     │   - filters webservices by license status
     │   - licensed webservices require subscription_user entry
+    │   - drops "owner" claims on licensed webservices from unlicensed users
 ```
 
 ### AuthService._get_base_webservices()
@@ -321,6 +322,8 @@ Filters webservices based on license status:
 # For licensed webservices:
 # - Check if user exists in subscription_user table
 # - If not licensed, remove from organizations claim
+# - If not licensed (not in subscription_user, not owner of a subscribed client),
+#   remove the "owner" claims from the webservices claim ("full" claims are kept)
 
 # For non-licensed webservices:
 # - Include normally
@@ -554,6 +557,12 @@ if connected_user.get("is_super_user"):
 Licensed webservices require user to be in `subscription_user` table:
 - Checked during JWT generation (not at request time)
 - Filtered from `organizations` claim if not licensed
+
+OWNER access to a licensed webservice requires a license as well (in
+`subscription_user`, or owner of a client that has a subscription):
+- `"owner"` claims are dropped from the `webservices` claim if not licensed
+- `accessible_webservices` and `get_user_access_levels` leave the OWNER path out
+- Hook pair: `_owner_access_condition` (SQL) / `_can_access_as_owner` (Python) on the webservice service
 
 ---
 

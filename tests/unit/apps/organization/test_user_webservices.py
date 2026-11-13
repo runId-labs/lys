@@ -154,6 +154,13 @@ class TestAllClientUsersMethod:
         assert sig.parameters["search"].default is None
         assert sig.parameters["role_code"].default is None
 
+    def test_all_client_users_ids_is_optional(self):
+        """Test all_client_users accepts an optional ids filter (None = no filter)."""
+        mod = _get_mod()
+        sig = inspect.signature(mod.OrganizationUserQuery.all_client_users)
+        assert "ids" in sig.parameters
+        assert sig.parameters["ids"].default is None
+
 
 class TestOrganizationUserMutationStructure:
     """Tests for OrganizationUserMutation class structure."""

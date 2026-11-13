@@ -218,6 +218,54 @@ class TestEntityCheckPermission:
         result = entity.check_permission("user_123", access_type)
         assert result is False
 
+    @staticmethod
+    def _entity(users, organizations):
+        from lys.core.entities import Entity
+
+        class TestEntity(Entity):
+            __tablename__ = "test"
+            __abstract__ = False
+
+            def accessing_users(self):
+                return users
+
+            def accessing_organizations(self):
+                return organizations
+
+        return object.__new__(TestEntity)
+
+    def test_organization_access_is_not_shadowed_by_the_owner_key(self):
+        """A non-owner keeps the access its organization role grants (levels combine with OR)."""
+        from lys.core.consts.permissions import OWNER_ACCESS_KEY, ORGANIZATION_ROLE_ACCESS_KEY
+
+        entity = self._entity(users=["user_456"], organizations={"client": ["client_1"]})
+        access_type = {OWNER_ACCESS_KEY: True, ORGANIZATION_ROLE_ACCESS_KEY: {"client": ["client_1"]}}
+        assert entity.check_permission("user_123", access_type) is True
+
+    def test_owner_access_holds_outside_the_user_organizations(self):
+        """An owner keeps access to a row its organization roles do not cover."""
+        from lys.core.consts.permissions import OWNER_ACCESS_KEY, ORGANIZATION_ROLE_ACCESS_KEY
+
+        entity = self._entity(users=["user_123"], organizations={"client": ["client_2"]})
+        access_type = {OWNER_ACCESS_KEY: True, ORGANIZATION_ROLE_ACCESS_KEY: {"client": ["client_1"]}}
+        assert entity.check_permission("user_123", access_type) is True
+
+    def test_denied_when_no_key_grants(self):
+        """Neither owner nor in one of the user's organizations: denied."""
+        from lys.core.consts.permissions import OWNER_ACCESS_KEY, ORGANIZATION_ROLE_ACCESS_KEY
+
+        entity = self._entity(users=["user_456"], organizations={"client": ["client_2"]})
+        access_type = {OWNER_ACCESS_KEY: True, ORGANIZATION_ROLE_ACCESS_KEY: {"client": ["client_1"]}}
+        assert entity.check_permission("user_123", access_type) is False
+
+    def test_organization_access_alone(self):
+        """Organization role alone grants access to a row of that organization."""
+        from lys.core.consts.permissions import ORGANIZATION_ROLE_ACCESS_KEY
+
+        entity = self._entity(users=[], organizations={"company": ["company_1"], "client": ["client_9"]})
+        access_type = {ORGANIZATION_ROLE_ACCESS_KEY: {"company": ["company_1"]}}
+        assert entity.check_permission("user_123", access_type) is True
+
 
 class TestParametricEntityDefaults:
     """Tests for ParametricEntity default method behaviors."""

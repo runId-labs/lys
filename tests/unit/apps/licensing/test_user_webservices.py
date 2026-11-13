@@ -46,6 +46,20 @@ class TestLicensingUserQuery:
         mod = _import_licensing_user_webservices()
         assert inspect.iscoroutinefunction(mod.LicensingUserQuery.all_client_users)
 
+    def test_all_client_users_ids_is_optional(self):
+        """Test all_client_users accepts an optional ids filter (None = no filter)."""
+        mod = _import_licensing_user_webservices()
+        sig = inspect.signature(mod.LicensingUserQuery.all_client_users)
+        assert "ids" in sig.parameters
+        assert sig.parameters["ids"].default is None
+
+    def test_all_client_users_excludes_owners_by_default(self):
+        """Test client owners stay excluded unless include_owners is passed."""
+        mod = _import_licensing_user_webservices()
+        sig = inspect.signature(mod.LicensingUserQuery.all_client_users)
+        assert "include_owners" in sig.parameters
+        assert sig.parameters["include_owners"].default is False
+
 
 class TestLicensingUserMutation:
     """Tests for LicensingUserMutation webservice class structure and methods."""

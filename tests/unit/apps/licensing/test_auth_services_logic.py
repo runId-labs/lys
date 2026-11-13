@@ -1,11 +1,24 @@
 """
-Unit tests for LicensingAuthService logic (generate_access_claims, _verify_subscription_status,
-_verify_mollie_subscription).
+Unit tests for LicensingAuthService logic (generate_access_claims, _drop_unlicensed_owner_claims,
+_verify_subscription_status, _verify_mollie_subscription).
 
 Isolation: All tests use inline imports + patch.object. No global state modified.
 """
+from unittest.mock import AsyncMock, MagicMock, Mock, patch
+
 import pytest
-from unittest.mock import AsyncMock, Mock, patch
+from sqlalchemy import Boolean, Column, String
+from sqlalchemy.orm import declarative_base
+
+
+_Base = declarative_base()
+
+
+class _StandInWebservice(_Base):
+    """The columns the claim filter reads: the registry entity only exists at app boot."""
+    __tablename__ = "webservice"
+    id = Column(String, primary_key=True)
+    is_licenced = Column(Boolean)
 
 
 class TestGenerateAccessClaims:
@@ -160,3 +173,57 @@ class TestVerifyMollieSubscription:
             result = await LicensingAuthService._verify_mollie_subscription("cust-1", "sub-1")
 
         assert result == "suspended"
+
+
+class TestDropUnlicensedOwnerClaims:
+    """LicensingAuthService._drop_unlicensed_owner_claims()."""
+
+    @staticmethod
+    def _app_manager(has_license: bool):
+        webservice_service = Mock()
+        webservice_service.user_is_licensed = AsyncMock(return_value=has_license)
+        app_manager = MagicMock()
+        app_manager.get_service = Mock(return_value=webservice_service)
+        app_manager.get_entity = Mock(return_value=_StandInWebservice)
+        return app_manager
+
+    @pytest.mark.asyncio
+    async def test_unlicensed_user_loses_owner_claims_on_licensed_webservices_only(self):
+        from lys.apps.licensing.modules.auth.services import LicensingAuthService
+
+        session = AsyncMock()
+        result = MagicMock()
+        result.all.return_value = [("all_actions",)]
+        session.execute = AsyncMock(return_value=result)
+        claims = {"all_actions": "owner", "my_profile": "owner", "all_users": "full"}
+
+        with patch.object(LicensingAuthService, "app_manager", self._app_manager(False), create=True):
+            kept = await LicensingAuthService._drop_unlicensed_owner_claims("user-1", claims, session)
+
+        assert kept == {"my_profile": "owner", "all_users": "full"}
+
+    @pytest.mark.asyncio
+    async def test_licensed_user_keeps_every_claim(self):
+        from lys.apps.licensing.modules.auth.services import LicensingAuthService
+
+        session = AsyncMock()
+        claims = {"all_actions": "owner", "all_users": "full"}
+
+        with patch.object(LicensingAuthService, "app_manager", self._app_manager(True), create=True):
+            kept = await LicensingAuthService._drop_unlicensed_owner_claims("user-1", claims, session)
+
+        assert kept == claims
+        session.execute.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_no_owner_claim_needs_no_license_check(self):
+        from lys.apps.licensing.modules.auth.services import LicensingAuthService
+
+        app_manager = self._app_manager(False)
+        claims = {"all_users": "full"}
+
+        with patch.object(LicensingAuthService, "app_manager", app_manager, create=True):
+            kept = await LicensingAuthService._drop_unlicensed_owner_claims("user-1", claims, AsyncMock())
+
+        assert kept == claims
+        app_manager.get_service.assert_not_called()

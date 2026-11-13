@@ -3,19 +3,18 @@ Webservice service for licensing app.
 
 Extends OrganizationWebserviceService to add license verification.
 Users must have an active subscription (via subscription_user) to access
-webservices with ORGANIZATION_ROLE access level.
+licensed webservices through the ORGANIZATION_ROLE or the OWNER access level.
 """
 
 from typing import Any, List, Optional
 
-from sqlalchemy import Select, BinaryExpression, and_, exists, or_, select
+from sqlalchemy import Select, BinaryExpression, ColumnElement, and_, exists, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from lys.apps.base.modules.webservice.entities import Webservice
 from lys.apps.licensing.modules.subscription.entities import subscription_user
 from lys.apps.organization.consts import ORGANIZATION_ROLE_ACCESS_LEVEL
 from lys.apps.organization.modules.webservice.services import OrganizationWebserviceService
-from lys.apps.user_role.modules.webservice.services import RoleWebserviceService
 from lys.core.registries import register_service
 
 
@@ -45,9 +44,9 @@ class LicensingWebserviceService(OrganizationWebserviceService):
         Returns:
             Tuple of (statement, where_clause) with license-verified filters added
         """
-        # Call RoleWebserviceService directly (skip OrganizationWebserviceService)
-        # to avoid duplicate organization role conditions
-        stmt, where = await RoleWebserviceService._accessible_webservices_or_where(stmt, user)
+        # Skip OrganizationWebserviceService to avoid duplicate organization role conditions.
+        # super(), not a direct class call: cls stays this class, so the OWNER hooks below apply.
+        stmt, where = await super(OrganizationWebserviceService, cls)._accessible_webservices_or_where(stmt, user)
 
         # Add organization role + license verification if user is connected and not super user
         if user is not None and user.get("is_super_user", False) is False:
@@ -143,6 +142,56 @@ class LicensingWebserviceService(OrganizationWebserviceService):
                     where = org_role_condition
 
         return stmt, where
+
+    @classmethod
+    def _user_is_licensed_condition(cls, user_id: str) -> ColumnElement[bool]:
+        """
+        SQL condition: the user holds a license.
+
+        A client user holds one when they are in subscription_user; a client owner
+        when their client has a subscription (the rule ORGANIZATION_ROLE applies).
+        """
+        client_entity = cls.app_manager.get_entity("client")
+        subscription_entity = cls.app_manager.get_entity("subscription")
+        return or_(
+            exists(select(subscription_user.c.user_id).where(subscription_user.c.user_id == user_id)),
+            exists(
+                select(client_entity.id).where(
+                    client_entity.owner_id == user_id,
+                    client_entity.id.in_(select(subscription_entity.client_id))
+                )
+            ),
+        )
+
+    @classmethod
+    async def user_is_licensed(cls, user_id: str, session: AsyncSession) -> bool:
+        """Whether the user holds a license (see _user_is_licensed_condition)."""
+        return bool(await session.scalar(select(cls._user_is_licensed_condition(user_id))))
+
+    @classmethod
+    def _owner_access_condition(cls, user: dict[str, Any]) -> ColumnElement[bool]:
+        """
+        OWNER reaches a licensed webservice only with a license.
+
+        Without this, OWNER — granted to every connected user — would open any
+        licensed webservice declaring it to users the license never covered.
+        """
+        return or_(
+            cls.entity_class.is_licenced.is_(False),
+            cls._user_is_licensed_condition(user.get("sub")),
+        )
+
+    @classmethod
+    async def _can_access_as_owner(
+            cls,
+            webservice: Webservice,
+            user: dict[str, Any],
+            session: AsyncSession
+    ) -> bool:
+        """Python counterpart of _owner_access_condition, for one webservice."""
+        if not webservice.is_licenced:
+            return True
+        return await cls.user_is_licensed(user.get("sub"), session)
 
     @classmethod
     async def _user_has_org_role_for_webservice_with_license(
@@ -263,7 +312,7 @@ class LicensingWebserviceService(OrganizationWebserviceService):
                         return [al for al in webservice.access_levels if al.enabled]
                     else:
                         # No subscription, fall through to base access levels (no ORGANIZATION_ROLE)
-                        return await RoleWebserviceService.get_user_access_levels(
+                        return await super(OrganizationWebserviceService, cls).get_user_access_levels(
                             webservice, user, session
                         )
                 else:
@@ -273,7 +322,7 @@ class LicensingWebserviceService(OrganizationWebserviceService):
         # For licensed webservices, override ORGANIZATION_ROLE check with license verification
         if webservice.is_licenced:
             # Get base access levels from RoleWebserviceService (skip Organization)
-            qualified = await RoleWebserviceService.get_user_access_levels(
+            qualified = await super(OrganizationWebserviceService, cls).get_user_access_levels(
                 webservice, user, session
             )
 

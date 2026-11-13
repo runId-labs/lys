@@ -1,6 +1,6 @@
 from typing import Any, List, Optional
 
-from sqlalchemy import Select, BinaryExpression, select
+from sqlalchemy import Select, BinaryExpression, ColumnElement, and_, select, true
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from lys.apps.base.modules.access_level.entities import AccessLevel
@@ -52,13 +52,47 @@ class AuthWebserviceService(WebserviceService):
 
             if user is not None:
                 access_level_entity: type[AccessLevel] = cls.app_manager.get_entity("access_level")
-                # Connected and owner access level webservices
+                # Connected access level webservices
                 where |= cls.entity_class.access_levels.any(
-                    access_level_entity.id.in_([CONNECTED_ACCESS_LEVEL, OWNER_ACCESS_LEVEL]),
+                    access_level_entity.id == CONNECTED_ACCESS_LEVEL,
                     enabled=True
+                )
+                # Owner access level webservices, under the condition subclasses may narrow
+                where |= and_(
+                    cls.entity_class.access_levels.any(
+                        access_level_entity.id == OWNER_ACCESS_LEVEL,
+                        enabled=True
+                    ),
+                    cls._owner_access_condition(user),
                 )
 
         return stmt, where
+
+    @classmethod
+    def _owner_access_condition(cls, user: dict[str, Any]) -> ColumnElement[bool]:
+        """
+        SQL condition, on the webservice row, under which a connected user reaches it through OWNER.
+
+        Ownership itself is checked on the rows (accessing_users / user_accessing_filters);
+        this only decides whether the OWNER path is open. Open to every connected user by
+        default; an app may narrow it (e.g. licensing requires a license on licensed webservices).
+        Must stay consistent with _can_access_as_owner.
+        """
+        return true()
+
+    @classmethod
+    async def _can_access_as_owner(
+            cls,
+            webservice: Webservice,
+            user: dict[str, Any],
+            session: AsyncSession
+    ) -> bool:
+        """
+        Whether a connected user reaches this webservice through OWNER.
+
+        Python counterpart of _owner_access_condition, for one webservice.
+        """
+        return True
 
     @classmethod
     async def accessible_webservices(
@@ -135,7 +169,7 @@ class AuthWebserviceService(WebserviceService):
 
             # OWNER: user must be authenticated (actual ownership checked at entity level)
             elif access_level.id == OWNER_ACCESS_LEVEL:
-                if user is not None:
+                if user is not None and await cls._can_access_as_owner(webservice, user, session):
                     qualified.append(access_level)
 
         return qualified

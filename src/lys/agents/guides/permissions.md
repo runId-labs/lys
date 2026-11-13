@@ -26,12 +26,24 @@ Each permission returns one of:
 
 | Level | Constant (from) | Grants |
 |-------|-----------------|--------|
-| Owner | `OWNER_ACCESS_LEVEL` (`lys.core.consts.webservices`) | own rows only |
+| Owner | `OWNER_ACCESS_LEVEL` (`lys.core.consts.webservices`) | own rows only — with `licensing`, a licensed webservice requires a license too |
 | Role | `ROLE_ACCESS_LEVEL` (`lys.apps.user_role.consts`) | webservice in the user's role list |
 | Organization | `ORGANIZATION_ROLE_ACCESS_LEVEL` (`lys.apps.organization.consts`) | rows of the user's organizations |
 | Internal | `INTERNAL_SERVICE_ACCESS_LEVEL` (`lys.core.consts.webservices`) | service-to-service caller |
 
 Combined with OR: `access_levels=[ROLE_ACCESS_LEVEL, ORGANIZATION_ROLE_ACCESS_LEVEL]`.
+Every connected user carries the owner key on a webservice declaring OWNER, so on
+`[OWNER_ACCESS_LEVEL, ORGANIZATION_ROLE_ACCESS_LEVEL]` the access_type holds both
+keys: a row is granted when the user owns it **or** it belongs to one of their
+organizations — on the query filters and in `check_permission` alike.
+
+OWNER and licensing: OWNER is open to every connected user, so on a licensed
+webservice (`is_licenced=True`) the `licensing` app opens it only to licensed
+users (in `subscription_user`, or owner of a client with a subscription): the
+`"owner"` claim is dropped from the JWT and `accessible_webservices` /
+`get_user_access_levels` leave OWNER out. Another app narrows the OWNER path by
+overriding the pair `_owner_access_condition` (SQL) / `_can_access_as_owner`
+(Python) on its webservice service — the two must agree.
 
 ## JWT claims (shape your rules reason about)
 

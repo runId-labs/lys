@@ -6,6 +6,7 @@ Tests cover:
 - _get_subscription_claims for owned clients
 - _get_client_subscription_claim with active plan
 - Super user skips subscription claims
+- "owner" claims on licensed webservices dropped for unlicensed users
 """
 
 import pytest
@@ -13,7 +14,9 @@ from uuid import uuid4
 from unittest.mock import patch, AsyncMock
 
 from lys.apps.licensing.consts import FREE_PLAN, MAX_USERS
-from tests.integration.apps.licensing.conftest import DEMO_QUOTA_RULE
+from tests.integration.apps.licensing.conftest import (
+    DEMO_QUOTA_RULE, LICENSED_PROFILES, create_license_profile_users, register_owner_webservices
+)
 
 
 class TestLicensingAuthServiceClaims:
@@ -169,3 +172,22 @@ class TestLicensingAuthServiceClientSubscriptionClaim:
         async with licensing_app_manager.database.get_session() as session:
             claim = await auth_service._get_client_subscription_claim(str(uuid4()), session)
             assert claim is None
+
+
+class TestLicensingAuthServiceOwnerClaims:
+    """generate_access_claims: an "owner" claim on a licensed webservice requires a license."""
+
+    @pytest.mark.asyncio
+    async def test_owner_claims_by_profile(self, licensing_app_manager):
+        users = await create_license_profile_users(licensing_app_manager)
+        licensed_ws, free_ws = await register_owner_webservices(licensing_app_manager)
+        auth_service = licensing_app_manager.get_service("auth")
+        user_service = licensing_app_manager.get_service("user")
+
+        async with licensing_app_manager.database.get_session() as session:
+            for profile, has_license in LICENSED_PROFILES.items():
+                user = await user_service.get_by_id(users[profile], session)
+                webservices = (await auth_service.generate_access_claims(user, session))["webservices"]
+
+                assert webservices.get(free_ws) == "owner", profile
+                assert (licensed_ws in webservices) is has_license, profile

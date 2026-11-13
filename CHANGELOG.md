@@ -7,6 +7,32 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.59.0] - 2026-11-13
+
+### Added
+- `all_client_users` (organization and licensing) takes `ids`: keeps only the given users
+  (UserNode GlobalIDs); an empty list returns none.
+- Licensing `all_client_users` takes `include_owners` (`false` by default): also returns the
+  client owners.
+- Both `all_client_users` are open to internal services (`INTERNAL_SERVICE_ACCESS_LEVEL`).
+- `AuthWebserviceService._owner_access_condition` (SQL) / `_can_access_as_owner` (Python):
+  hook pair deciding whether a connected user reaches a webservice through OWNER. Open to
+  every connected user by default; an app narrows both together.
+- `LicensingWebserviceService.user_is_licensed`: a user holds a license when they are in
+  `subscription_user` or own a client that has a subscription.
+
+### Fixed
+- OWNER, granted to every connected user, opened licensed webservices to users without a
+  license. With `licensing`, OWNER on a licensed webservice now requires a license: the
+  `"owner"` claim is dropped from the JWT, and `accessible_webservices` /
+  `get_user_access_levels` leave the OWNER path out. `"full"` claims are unaffected.
+- `Entity.check_permission` checked the owner key before the organization key with an
+  `elif`: as every connected user carries the owner key on a webservice declaring OWNER,
+  a non-owner was refused a row of their organization. The keys now combine with OR, as
+  the query filters already did.
+- `LicensingWebserviceService` called `RoleWebserviceService` directly, so the parent
+  logic ran with the wrong `cls` and skipped the licensing overrides; it now uses `super()`.
+
 ## [0.58.0] - 2026-11-05
 
 ### Added

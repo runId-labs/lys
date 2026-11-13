@@ -14,6 +14,7 @@ from lys.apps.licensing.modules.user.nodes import UserNode
 from lys.apps.organization.consts import ORGANIZATION_ROLE_ACCESS_LEVEL
 from lys.apps.organization.modules.user.entities import User
 from lys.apps.user_role.consts import ROLE_ACCESS_LEVEL
+from lys.core.consts.webservices import INTERNAL_SERVICE_ACCESS_LEVEL
 from lys.core.contexts import Info
 from lys.core.graphql.connection import lys_connection
 from lys.core.graphql.edit import lys_edition
@@ -29,10 +30,11 @@ logger = logging.getLogger(__name__)
 class LicensingUserQuery(Query):
     @lys_connection(
         UserNode,
-        access_levels=[ROLE_ACCESS_LEVEL, ORGANIZATION_ROLE_ACCESS_LEVEL],
+        access_levels=[ROLE_ACCESS_LEVEL, ORGANIZATION_ROLE_ACCESS_LEVEL, INTERNAL_SERVICE_ACCESS_LEVEL],
         is_licenced=False,
         allow_override=True,
-        description="Search client users (excludes owners) with license filtering. Filter by client_id, role, or license status."
+        description="Search client users with license filtering. Owners are excluded unless 'include_owners' is true. "
+                    "Filter by client_id, role, license status, or 'ids' to read given users."
     )
     async def all_client_users(
         self,
@@ -40,14 +42,18 @@ class LicensingUserQuery(Query):
         client_id: Annotated[Optional[relay.GlobalID], strawberry.argument(description="Filter by organization/client ID")] = None,
         search: Annotated[Optional[str], strawberry.argument(description="Search by user email, first name, or last name")] = None,
         role_code: Annotated[Optional[str], strawberry.argument(description="Filter by organization role code")] = None,
-        is_licensed: Annotated[Optional[bool], strawberry.argument(description="Filter by license status: true=licensed, false=unlicensed")] = None
+        is_licensed: Annotated[Optional[bool], strawberry.argument(description="Filter by license status: true=licensed, false=unlicensed")] = None,
+        ids: Annotated[Optional[list[relay.GlobalID]], strawberry.argument(description="Keep only these users (UserNode GlobalIDs); an empty list returns none")] = None,
+        include_owners: Annotated[bool, strawberry.argument(description="Also return client owners (excluded by default)")] = False
     ) -> Select:
         """
-        Get all client users (users with client_id set, excluding client owners).
+        Get all client users (users with client_id set), client owners excluded by default.
 
-        This query is accessible to users with ROLE or ORGANIZATION_ROLE access level.
-        Returns users that belong to client organizations, excluding users who are
-        client owners (owners are managed separately).
+        This query is accessible to users with ROLE or ORGANIZATION_ROLE access level, and
+        to internal services. Returns users that belong to client organizations. Client
+        owners are left out unless `include_owners` is true: the license screens manage
+        them separately, while a caller resolving or picking any member of a client needs
+        them.
 
         Args:
             info: GraphQL context
@@ -58,6 +64,9 @@ class LicensingUserQuery(Query):
                 - True: users with a license (in subscription_user table)
                 - False: users without a license (not in subscription_user table)
                 - None: no filtering on license status
+            ids: Optional GlobalIDs of the users to keep; an empty list is an answer (none),
+                not "no filter"
+            include_owners: Also return the client owners (default: excluded)
 
         Returns:
             Select: SQLAlchemy select statement for users ordered by creation date
@@ -72,16 +81,15 @@ class LicensingUserQuery(Query):
             select(client_entity.id).where(client_entity.owner_id == user_entity.id)
         )
 
-        # Base query - only users with client_id set, excluding client owners
+        # Base query - only users with client_id set
         stmt = (
             select(user_entity)
             .join(email_entity)
             .join(private_data_entity)
-            .where(
-                user_entity.client_id.isnot(None),
-                ~is_client_owner
-            )
+            .where(user_entity.client_id.isnot(None))
         )
+        if not include_owners:
+            stmt = stmt.where(~is_client_owner)
 
         # Apply search filter if provided
         search = validate_search_input(search)
@@ -98,6 +106,10 @@ class LicensingUserQuery(Query):
         # Apply client filter if provided
         if client_id:
             stmt = stmt.where(user_entity.client_id == client_id.node_id)
+
+        # Apply ids filter if provided (an empty list keeps nothing)
+        if ids is not None:
+            stmt = stmt.where(user_entity.id.in_([gid.node_id for gid in ids]))
 
         # Apply role filter if provided
         if role_code:

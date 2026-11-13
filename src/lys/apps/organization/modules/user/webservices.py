@@ -16,6 +16,7 @@ from lys.apps.organization.modules.user.inputs import (
 from lys.apps.organization.modules.user.nodes import UserNode
 from lys.apps.user_auth.errors import INVITER_NOT_FOUND
 from lys.apps.user_role.consts import ROLE_ACCESS_LEVEL
+from lys.core.consts.webservices import INTERNAL_SERVICE_ACCESS_LEVEL
 from lys.core.contexts import Info
 from lys.core.errors import LysError
 from lys.core.graphql.connection import lys_connection
@@ -137,21 +138,23 @@ class OrganizationUserQuery(Query):
 
     @lys_connection(
         UserNode,
-        access_levels=[ROLE_ACCESS_LEVEL, ORGANIZATION_ROLE_ACCESS_LEVEL],
+        access_levels=[ROLE_ACCESS_LEVEL, ORGANIZATION_ROLE_ACCESS_LEVEL, INTERNAL_SERVICE_ACCESS_LEVEL],
         is_licenced=False,
-        description="Search users within organizations. Use 'client_id' to filter by organization, 'search' for name/email, 'role_code' for organization role."
+        description="Search users within organizations. Use 'client_id' to filter by organization, 'search' for name/email, 'role_code' for organization role, 'ids' to read given users."
     )
     async def all_client_users(
         self,
         info: Info,
         client_id: Annotated[Optional[relay.GlobalID], strawberry.argument(description="Filter by organization/client ID")] = None,
         search: Annotated[Optional[str], strawberry.argument(description="Search by user email, first name, or last name")] = None,
-        role_code: Annotated[Optional[str], strawberry.argument(description="Filter by organization role code")] = None
+        role_code: Annotated[Optional[str], strawberry.argument(description="Filter by organization role code")] = None,
+        ids: Annotated[Optional[list[relay.GlobalID]], strawberry.argument(description="Keep only these users (UserNode GlobalIDs); an empty list returns none")] = None
     ) -> Select:
         """
         Get all client users (users with client_id set) with optional filtering.
 
-        This query is accessible to users with ROLE or ORGANIZATION_ROLE access level.
+        This query is accessible to users with ROLE or ORGANIZATION_ROLE access level, and
+        to internal services.
         Returns users that belong to client organizations.
 
         Args:
@@ -159,6 +162,8 @@ class OrganizationUserQuery(Query):
             client_id: Optional GlobalID to filter by specific client
             search: Optional search string to filter by user's email, first_name, or last_name
             role_code: Optional role code to filter client users by organization role
+            ids: Optional GlobalIDs of the users to keep; an empty list is an answer (none),
+                not "no filter"
 
         Returns:
             Select: SQLAlchemy select statement for users ordered by creation date
@@ -190,6 +195,10 @@ class OrganizationUserQuery(Query):
         # Apply client filter if provided
         if client_id:
             stmt = stmt.where(user_entity.client_id == client_id.node_id)
+
+        # Apply ids filter if provided (an empty list keeps nothing)
+        if ids is not None:
+            stmt = stmt.where(user_entity.id.in_([gid.node_id for gid in ids]))
 
         # Apply role filter if provided
         if role_code:
