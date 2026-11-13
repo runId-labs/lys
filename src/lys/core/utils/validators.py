@@ -3,9 +3,11 @@ import re
 import uuid
 from urllib.parse import urlparse
 
+from strawberry import relay
+
 from lys.apps.user_auth.errors import EMPTY_PASSWORD_ERROR, WEAK_PASSWORD, INVALID_NAME, INVALID_LANGUAGE, INVALID_GENDER
 from lys.apps.user_auth.modules.user.consts import MALE_GENDER, FEMALE_GENDER, OTHER_GENDER
-from lys.core.consts.errors import NOT_UUID_ERROR, UNSAFE_URL_ERROR, SEARCH_TOO_LONG_ERROR
+from lys.core.consts.errors import NOT_UUID_ERROR, UNSAFE_URL_ERROR, SEARCH_TOO_LONG_ERROR, WRONG_GLOBAL_ID_TYPE_ERROR
 from lys.core.consts.validation import MAX_SEARCH_LENGTH  # noqa: F401  (re-exported: imported from here historically)
 from lys.core.errors import LysError
 
@@ -229,6 +231,30 @@ def validate_uuid(id_: str | None, error: tuple[int, str] = NOT_UUID_ERROR):
         raise LysError(
             error,
             "expected an uuid"
+        )
+
+
+def check_global_id_type(global_id: relay.GlobalID | None, expected_type: str, argument: str) -> None:
+    """
+    Refuse a GlobalID of another entity type.
+
+    A GlobalID carries its type, and its node_id alone does not say which entity it
+    designates: used as a filter, an id of another type reads as an empty result instead
+    of an error. None is no id: an optional argument left out passes.
+
+    Args:
+        global_id: The GlobalID received, or None
+        expected_type: The node type the argument designates (e.g. "UserNode")
+        argument: The argument's name as the caller sees it, for the message
+
+    Raises:
+        LysError: WRONG_GLOBAL_ID_TYPE_ERROR. The debug message names the argument and
+            both types.
+    """
+    if global_id is not None and global_id.type_name != expected_type:
+        raise LysError(
+            WRONG_GLOBAL_ID_TYPE_ERROR,
+            f"{argument} expects a {expected_type} GlobalID, got a {global_id.type_name}",
         )
 
 

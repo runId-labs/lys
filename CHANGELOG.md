@@ -7,6 +7,15 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.61.0] - 2026-11-13
+
+### Added
+- `lys.core.utils.validators.check_global_id_type`: refuses a GlobalID argument of
+  another node type with `WRONG_GLOBAL_ID_TYPE_ERROR` (400), instead of letting its
+  node_id read as an empty result. `None` passes (optional argument left out).
+- `WRONG_GLOBAL_ID_TYPE_ERROR` in `lys.core.consts.errors`.
+- Rules guide: a GlobalID argument checks its type.
+
 ## [0.60.0] - 2026-11-13
 
 ### Added

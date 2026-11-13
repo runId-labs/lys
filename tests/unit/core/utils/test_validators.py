@@ -335,6 +335,39 @@ class TestValidateUuid:
         assert exc_info.value.detail == "CUSTOM_UUID_ERROR"
 
 
+class TestCheckGlobalIdType:
+    """Tests for check_global_id_type function."""
+
+    def test_an_id_of_the_expected_type_passes(self):
+        from strawberry import relay
+        from lys.core.utils.validators import check_global_id_type
+        check_global_id_type(relay.GlobalID("UserNode", "u1"), "UserNode", "userId")
+
+    def test_none_passes(self):
+        """An optional argument left out is no id: nothing to check."""
+        from lys.core.utils.validators import check_global_id_type
+        check_global_id_type(None, "UserNode", "userId")
+
+    def test_an_id_of_another_type_is_refused(self):
+        from strawberry import relay
+        from lys.core.consts.errors import WRONG_GLOBAL_ID_TYPE_ERROR
+        from lys.core.errors import LysError
+        from lys.core.utils.validators import check_global_id_type
+        with pytest.raises(LysError) as exc_info:
+            check_global_id_type(relay.GlobalID("RoleNode", "r1"), "UserNode", "userId")
+        assert exc_info.value.status_code == WRONG_GLOBAL_ID_TYPE_ERROR[0]
+        assert exc_info.value.detail == WRONG_GLOBAL_ID_TYPE_ERROR[1]
+
+    def test_the_refusal_names_the_argument_and_both_types(self):
+        """The debug message says which argument is wrong and which type it expects."""
+        from strawberry import relay
+        from lys.core.errors import LysError
+        from lys.core.utils.validators import check_global_id_type
+        with pytest.raises(LysError) as exc_info:
+            check_global_id_type(relay.GlobalID("RoleNode", "r1"), "UserNode", "userId")
+        assert exc_info.value.debug_message == "userId expects a UserNode GlobalID, got a RoleNode"
+
+
 class TestValidateRedirectUrl:
     """Tests for validate_redirect_url function."""
 

@@ -75,6 +75,10 @@ an instantiation, a subclass) goes through the manager.
   tool result).
 - **A webservice taking a caller-supplied id adds an existence/access guard** so
   an unknown or foreign id errors loudly instead of reading as empty data.
+- **A GlobalID argument checks its type** (`lys.core.utils.validators.check_global_id_type`):
+  only its node_id reaches the query, so an id of another type would read as an
+  empty result. A `lys_connection` filter needs the type check only — the
+  connection already applies the caller's rights in the query.
 - **Special tool handlers enforce the same boundary** on their arguments:
   validate, return an error dict — never re-wrap, never extract to a raw uuid in
   what the model reads.
