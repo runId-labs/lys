@@ -71,6 +71,10 @@ class Context(BaseContext):
         """Original JWT access token from authenticated user."""
         return self.get_from_request_state("access_token", None)
 
+    @access_token.setter
+    def access_token(self, value: Union[str, None]):
+        self.set_to_request_state("access_token", value)
+
     @property
     def client_ip(self) -> Union[str, None]:
         """Client IP from the request connection (raw — callers minimize as needed)."""

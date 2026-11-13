@@ -7,6 +7,26 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.60.0] - 2026-11-13
+
+### Added
+- `AuthService.issue_delegated_access_token`: mints an access token carrying an
+  already-resolved user's claims (fresh `exp` and `xsrf_token`, never set as a cookie),
+  for server-side work run on that user's behalf beyond a single request.
+- AI plugin `executor.turn_token_ttl` (default 1800 s): upper bound of a chat turn's
+  access token.
+- `Context.access_token` setter.
+- `anyio` declared as a direct dependency.
+
+### Fixed
+- AI tools called the API back with the browser's access token, which expires within
+  minutes and is revoked by every refresh: a long turn, or a refresh from another tab,
+  made the tools fail with `ACCESS_DENIED_ERROR` mid-turn. A chat turn (streaming or not)
+  now runs on a delegated token of its own, revoked when the turn ends — including when
+  the client disconnects (shielded revocation, bounded by
+  `TURN_TOKEN_REVOKE_TIMEOUT_SECONDS`). Without a store, the turn runs on the caller's
+  token as before.
+
 ## [0.59.0] - 2026-11-13
 
 ### Added

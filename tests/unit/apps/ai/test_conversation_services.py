@@ -4080,3 +4080,242 @@ class TestToolAnswerModel:
 
         with pytest.raises(ValidationError):
             AIToolAnswerModel(tool_call_id="", result={})
+
+
+# ========== Turn access token ==========
+
+
+class TestTurnAccessToken:
+    """A chat turn calls the API back on a delegated token of its own, revoked when it ends."""
+
+    CLAIMS = {"sub": "user-1", "is_super_user": False, "webservices": {"ws": "full"}}
+
+    @staticmethod
+    def _app_manager(auth_service, ttl=None):
+        app_manager = MagicMock()
+        app_manager.get_service.side_effect = lambda name, nullable=False: auth_service if name == "auth" else None
+        executor_cfg = {} if ttl is None else {"turn_token_ttl": ttl}
+        app_manager.settings.get_plugin_config.return_value = {"executor": executor_cfg}
+        return app_manager
+
+    @staticmethod
+    def _auth_service(turn_token="turn-token"):
+        auth_service = MagicMock()
+        auth_service.issue_delegated_access_token = AsyncMock(return_value=turn_token)
+        auth_service.revoke_access_token = AsyncMock(return_value=True)
+        return auth_service
+
+    @staticmethod
+    def _recording_stream(seen, events=("event: token\n\n", "event: done\n\n"), fail=False, cleanup=None):
+        async def fake_stream(cls, user_id, content, session, connected_user, info, **kwargs):
+            seen.append(info.context.access_token)
+            try:
+                for event in events:
+                    yield event
+                if fail:
+                    raise RuntimeError("turn failed")
+            finally:
+                if cleanup is not None:
+                    cleanup.append("inner finally")
+        return classmethod(fake_stream)
+
+    async def _stream(self, AIConversationService, app_manager, fake_stream, access_token="browser-token"):
+        with patch.object(AIConversationService, "app_manager", new=app_manager), \
+             patch.object(AIConversationService, "_stream_chat_turn", new=fake_stream):
+            return [
+                event async for event in AIConversationService.chat_with_tools_streaming(
+                    user_id="user-1", content="Hi", session=MagicMock(),
+                    connected_user=self.CLAIMS, access_token=access_token,
+                )
+            ]
+
+    @pytest.mark.asyncio
+    async def test_streaming_turn_runs_on_its_own_token_and_revokes_it(self):
+        from lys.apps.ai.modules.conversation.services import AIConversationService
+
+        auth_service = self._auth_service()
+        seen = []
+        events = await self._stream(AIConversationService, self._app_manager(auth_service, ttl=1234),
+                                    self._recording_stream(seen))
+
+        assert events == ["event: token\n\n", "event: done\n\n"]
+        assert seen == ["turn-token"]
+        auth_service.issue_delegated_access_token.assert_awaited_once_with(self.CLAIMS, ttl_seconds=1234)
+        auth_service.revoke_access_token.assert_awaited_once_with("turn-token")
+
+    @pytest.mark.asyncio
+    async def test_default_ttl_bounds_the_longest_turn(self):
+        from lys.apps.ai.modules.conversation.services import AIConversationService
+
+        auth_service = self._auth_service()
+        await self._stream(AIConversationService, self._app_manager(auth_service), self._recording_stream([]))
+
+        auth_service.issue_delegated_access_token.assert_awaited_once_with(self.CLAIMS, ttl_seconds=1800)
+
+    @pytest.mark.asyncio
+    async def test_token_revoked_after_the_turn_cleanup_when_the_client_leaves(self):
+        from lys.apps.ai.modules.conversation.services import AIConversationService
+
+        auth_service = self._auth_service()
+        order = []
+        auth_service.revoke_access_token = AsyncMock(side_effect=lambda token: order.append("revoke"))
+
+        with patch.object(AIConversationService, "app_manager", new=self._app_manager(auth_service)), \
+             patch.object(AIConversationService, "_stream_chat_turn",
+                          new=self._recording_stream([], cleanup=order)):
+            stream = AIConversationService.chat_with_tools_streaming(
+                user_id="user-1", content="Hi", session=MagicMock(),
+                connected_user=self.CLAIMS, access_token="browser-token",
+            )
+            await stream.__anext__()
+            await stream.aclose()
+
+        assert order == ["inner finally", "revoke"]
+
+    @pytest.mark.asyncio
+    async def test_token_revoked_when_the_streaming_task_is_cancelled(self):
+        """
+        A client disconnect cancels the streaming task (Starlette's StreamingResponse
+        cancels its anyio task group) instead of closing the generator: anyio keeps
+        re-delivering the cancellation on every await, so an unshielded revocation
+        never reaches the store.
+        """
+        import anyio
+
+        from lys.apps.ai.modules.conversation.services import AIConversationService
+
+        auth_service = self._auth_service()
+        revoked = anyio.Event()
+
+        async def revoke(token):
+            await anyio.sleep(0)  # the store round-trip: a cancellation point
+            revoked.set()
+            return True
+
+        auth_service.revoke_access_token = AsyncMock(side_effect=revoke)
+        started = anyio.Event()
+
+        async def waiting_turn(cls, user_id, content, session, connected_user, info, **kwargs):
+            yield "event: token\n\n"
+            await anyio.sleep_forever()  # waiting on the model when the client leaves
+
+        async def consume():
+            async for _ in AIConversationService.chat_with_tools_streaming(
+                user_id="user-1", content="Hi", session=MagicMock(),
+                connected_user=self.CLAIMS, access_token="browser-token",
+            ):
+                started.set()
+
+        with patch.object(AIConversationService, "app_manager", new=self._app_manager(auth_service)), \
+             patch.object(AIConversationService, "_stream_chat_turn", new=classmethod(waiting_turn)):
+            async with anyio.create_task_group() as task_group:
+                task_group.start_soon(consume)
+                await started.wait()
+                task_group.cancel_scope.cancel()
+
+            with anyio.fail_after(1):
+                await revoked.wait()
+
+        auth_service.revoke_access_token.assert_awaited_once_with("turn-token")
+
+    @pytest.mark.asyncio
+    async def test_revocation_abandoned_when_the_store_hangs(self, caplog):
+        """The shielded revocation is uncancellable: a store that never answers must not hold the turn."""
+        import anyio
+
+        from lys.apps.ai.modules.conversation import services as conversation_services
+        from lys.apps.ai.modules.conversation.services import AIConversationService
+
+        auth_service = self._auth_service()
+
+        async def hanging_revoke(token):
+            await anyio.sleep_forever()
+
+        auth_service.revoke_access_token = AsyncMock(side_effect=hanging_revoke)
+        info = SimpleNamespace(context=SimpleNamespace(connected_user=self.CLAIMS, access_token="browser-token"))
+
+        with patch.object(AIConversationService, "app_manager", new=self._app_manager(auth_service)), \
+             patch.object(AIConversationService, "_run_chat_turn", new=AsyncMock(return_value={"content": "ok"})), \
+             patch.object(conversation_services, "TURN_TOKEN_REVOKE_TIMEOUT_SECONDS", 0.01):
+            with anyio.fail_after(1):
+                result = await AIConversationService.chat_with_tools(
+                    user_id="user-1", content="Hi", session=MagicMock(), info=info,
+                )
+
+        assert result == {"content": "ok"}
+        assert info.context.access_token == "browser-token"
+        assert "Revocation timed out" in caplog.text
+
+    @pytest.mark.asyncio
+    async def test_token_revoked_when_the_turn_fails(self):
+        from lys.apps.ai.modules.conversation.services import AIConversationService
+
+        auth_service = self._auth_service()
+        with pytest.raises(RuntimeError, match="turn failed"):
+            await self._stream(AIConversationService, self._app_manager(auth_service),
+                               self._recording_stream([], fail=True))
+
+        auth_service.revoke_access_token.assert_awaited_once_with("turn-token")
+
+    @pytest.mark.asyncio
+    async def test_turn_runs_on_the_callers_token_when_none_can_be_minted(self):
+        from lys.apps.ai.modules.conversation.services import AIConversationService
+
+        auth_service = self._auth_service(turn_token=None)
+        seen = []
+        await self._stream(AIConversationService, self._app_manager(auth_service), self._recording_stream(seen))
+
+        assert seen == ["browser-token"]
+        auth_service.revoke_access_token.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_turn_runs_on_the_callers_token_when_minting_raises(self):
+        from lys.apps.ai.modules.conversation.services import AIConversationService
+
+        auth_service = self._auth_service()
+        auth_service.issue_delegated_access_token = AsyncMock(side_effect=ConnectionError("redis down"))
+        seen = []
+        await self._stream(AIConversationService, self._app_manager(auth_service), self._recording_stream(seen))
+
+        assert seen == ["browser-token"]
+        auth_service.revoke_access_token.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_non_streaming_turn_runs_on_its_own_token_and_restores_the_context(self):
+        from lys.apps.ai.modules.conversation.services import AIConversationService
+
+        auth_service = self._auth_service()
+        info = SimpleNamespace(context=SimpleNamespace(connected_user=self.CLAIMS, access_token="browser-token"))
+        seen = []
+
+        async def fake_turn(cls, user_id, content, session, connected_user, info, **kwargs):
+            seen.append(info.context.access_token)
+            return {"content": "ok"}
+
+        with patch.object(AIConversationService, "app_manager", new=self._app_manager(auth_service)), \
+             patch.object(AIConversationService, "_run_chat_turn", new=classmethod(fake_turn)):
+            result = await AIConversationService.chat_with_tools(
+                user_id="user-1", content="Hi", session=MagicMock(), info=info,
+            )
+
+        assert result == {"content": "ok"}
+        assert seen == ["turn-token"]
+        assert info.context.access_token == "browser-token"
+        auth_service.revoke_access_token.assert_awaited_once_with("turn-token")
+
+    @pytest.mark.asyncio
+    async def test_no_token_minted_for_a_call_without_user_token(self):
+        """A service call carries no user token: the executor keeps its service auth."""
+        from lys.apps.ai.modules.conversation.services import AIConversationService
+
+        auth_service = self._auth_service()
+        info = SimpleNamespace(context=SimpleNamespace(connected_user=self.CLAIMS, access_token=None))
+
+        with patch.object(AIConversationService, "app_manager", new=self._app_manager(auth_service)), \
+             patch.object(AIConversationService, "_run_chat_turn", new=AsyncMock(return_value={})):
+            await AIConversationService.chat_with_tools(
+                user_id="user-1", content="Hi", session=MagicMock(), info=info,
+            )
+
+        auth_service.issue_delegated_access_token.assert_not_awaited()
+        assert info.context.access_token is None

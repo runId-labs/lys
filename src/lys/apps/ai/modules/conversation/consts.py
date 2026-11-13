@@ -132,6 +132,12 @@ UNANSWERED_TOOL_RESULT = {
     "message": "The user did not answer this proposal and sent a new message instead.",
 }
 
+# Upper bound of the shielded revocation of a turn's access token (see
+# AIConversationService._turn_access_token): the shield makes the cleanup uncancellable,
+# so a store that stops answering would hold the task forever. Past it the revocation is
+# abandoned and the token's TTL bounds it.
+TURN_TOKEN_REVOKE_TIMEOUT_SECONDS = 5
+
 
 class AIMessageRole(str, Enum):
     """Role of a message in a conversation."""

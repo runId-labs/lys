@@ -7,9 +7,11 @@ Services for managing conversations and feedback.
 import json
 import logging
 import time
+from contextlib import aclosing, asynccontextmanager
 from datetime import datetime, timedelta, UTC
 from typing import AsyncGenerator, AsyncIterator, Callable, FrozenSet, Optional, List, Dict, Any
 
+import anyio
 from sqlalchemy import cast, func, select, tuple_
 from sqlalchemy.dialects.postgresql import REGCONFIG
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -40,6 +42,7 @@ from lys.apps.ai.modules.conversation.consts import (
     MAX_TOOL_ANSWERS,
     RANK_FUSION_CONSTANT,
     TRIGRAM_SIMILARITY_THRESHOLD,
+    TURN_TOKEN_REVOKE_TIMEOUT_SECONDS,
     UNANSWERED_TOOL_RESULT,
 )
 from lys.apps.ai.modules.conversation.entities import (
@@ -1395,6 +1398,72 @@ class AIConversationService(EntityService[AIConversation]):
         return {"session": session, "info": info, "conversation_id": conversation.id}
 
     @classmethod
+    @asynccontextmanager
+    async def _turn_access_token(cls, info: Any) -> AsyncIterator[None]:
+        """
+        Run a chat turn under an access token of its own.
+
+        The tools call the API back with ``info.context.access_token``. The
+        browser's token lives a few minutes and every refresh revokes it, while a
+        turn chains model calls and tool calls for up to a few minutes: holding the
+        browser's token, the tools fail with ACCESS_DENIED as soon as it expires or
+        another tab refreshes, and the model tells the user it cannot read the data.
+
+        For the duration of the turn, the context carries a delegated token minted
+        from the same claims (rights unchanged), revoked when the turn ends —
+        including when the client goes away and the stream is closed. Must wrap
+        ``_prepare_chat_context``: the tool executor reads the token when it is
+        built.
+
+        Without a connected user or a token (service call), or when the token
+        cannot be minted, the turn runs on the caller's token as before.
+        """
+        context = info.context
+        # getattr: callers may pass a minimal info shim that carries no token
+        caller_token = getattr(context, "access_token", None)
+        connected_user = getattr(context, "connected_user", None)
+        auth_service = cls.app_manager.get_service("auth", nullable=True)
+
+        turn_token = None
+        if caller_token and connected_user and auth_service is not None:
+            ai_config = parse_plugin_config(cls.app_manager.settings.get_plugin_config("ai") or {})
+            try:
+                turn_token = await auth_service.issue_delegated_access_token(
+                    connected_user, ttl_seconds=ai_config.executor.turn_token_ttl,
+                )
+            except Exception as e:
+                logger.error(f"[TurnToken] Could not mint the turn's access token: {e}")
+            if turn_token is None:
+                logger.warning("[TurnToken] No turn token: the turn runs on the caller's access token")
+
+        if turn_token is None:
+            yield
+            return
+
+        context.access_token = turn_token
+        try:
+            yield
+        finally:
+            context.access_token = caller_token
+            try:
+                # Shielded: a client disconnect cancels the streaming task (Starlette
+                # cancels its anyio task group) while the turn awaits the model, and
+                # anyio re-delivers the cancellation on every await of this cleanup —
+                # unshielded, the revocation never runs. The shielded scope runs it to
+                # completion here, in this task, before the cancellation resumes —
+                # within a deadline, so a store that hangs cannot hold the task.
+                with anyio.move_on_after(TURN_TOKEN_REVOKE_TIMEOUT_SECONDS, shield=True) as scope:
+                    await auth_service.revoke_access_token(turn_token)
+                if scope.cancelled_caught:
+                    logger.error(
+                        f"[TurnToken] Revocation timed out after {TURN_TOKEN_REVOKE_TIMEOUT_SECONDS}s: "
+                        "the token's TTL bounds it"
+                    )
+            except Exception as e:
+                # The TTL still bounds it.
+                logger.error(f"[TurnToken] Could not revoke the turn's access token: {e}")
+
+    @classmethod
     async def _get_tool_executor(
         cls,
         tools: List[Dict[str, Any]],
@@ -2051,6 +2120,29 @@ class AIConversationService(EntityService[AIConversation]):
             Dict with content, conversation_id, tool_calls_count, tool_results, frontend_actions
         """
         connected_user = info.context.connected_user
+        async with cls._turn_access_token(info):
+            return await cls._run_chat_turn(
+                user_id, content, session, connected_user, info,
+                conversation_id=conversation_id, page_context=page_context,
+                max_tool_iterations=max_tool_iterations, tool_answers=tool_answers,
+                client_generated=client_generated,
+            )
+
+    @classmethod
+    async def _run_chat_turn(
+        cls,
+        user_id: str,
+        content: Optional[str],
+        session: AsyncSession,
+        connected_user: Dict[str, Any],
+        info: Any,
+        conversation_id: Optional[str],
+        page_context: Optional[PageContextModel],
+        max_tool_iterations: int,
+        tool_answers: Optional[List[AIToolAnswerModel]],
+        client_generated: bool,
+    ) -> Dict[str, Any]:
+        """Agent loop of ``chat_with_tools``, run under the turn's access token."""
         ctx = await cls._prepare_chat_context(
             user_id, content, session, connected_user, info,
             conversation_id=conversation_id, page_context=page_context, tool_answers=tool_answers,
@@ -2305,6 +2397,35 @@ class AIConversationService(EntityService[AIConversation]):
         # Build a shim info object for _get_tool_executor (expects info.context.access_token etc.)
         info = _StreamingInfo(connected_user=connected_user, access_token=access_token)
 
+        # aclosing: when the client goes away, the turn's own cleanup (voice abort)
+        # runs now, before the token is revoked — not whenever the inner generator
+        # is garbage-collected.
+        async with cls._turn_access_token(info):
+            async with aclosing(cls._stream_chat_turn(
+                user_id, content, session, connected_user, info,
+                conversation_id=conversation_id, page_context=page_context,
+                max_tool_iterations=max_tool_iterations, voice=voice, tool_answers=tool_answers,
+                client_generated=client_generated,
+            )) as events:
+                async for event in events:
+                    yield event
+
+    @classmethod
+    async def _stream_chat_turn(
+        cls,
+        user_id: str,
+        content: Optional[str],
+        session: "AsyncSession",
+        connected_user: Dict[str, Any],
+        info: "_StreamingInfo",
+        conversation_id: Optional[str],
+        page_context: Optional[PageContextModel],
+        max_tool_iterations: int,
+        voice: bool,
+        tool_answers: Optional[List[AIToolAnswerModel]],
+        client_generated: bool,
+    ) -> AsyncGenerator[str, None]:
+        """Agent loop of ``chat_with_tools_streaming``, run under the turn's access token."""
         ctx = await cls._prepare_chat_context(
             user_id, content, session, connected_user, info,
             conversation_id=conversation_id, page_context=page_context, tool_answers=tool_answers,

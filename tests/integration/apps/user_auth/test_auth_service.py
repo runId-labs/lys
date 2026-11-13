@@ -862,6 +862,70 @@ class TestGenerateAccessToken:
             user_auth_app_manager.pubsub = previous_test
 
 
+class TestIssueDelegatedAccessToken:
+    """Test AuthService.issue_delegated_access_token (server-side work on a user's behalf)."""
+
+    CLAIMS = {
+        "sub": "user-1",
+        "is_super_user": False,
+        "webservices": {"ws": "full"},
+        "exp": 1,
+        "xsrf_token": "browser-xsrf",
+    }
+
+    @pytest.mark.asyncio
+    async def test_carries_the_same_rights_under_a_fresh_exp_and_xsrf(self, user_auth_app_manager, fake_pubsub):
+        auth_service = user_auth_app_manager.get_service("auth")
+
+        token = await auth_service.issue_delegated_access_token(dict(self.CLAIMS), ttl_seconds=600)
+
+        UUID(token)
+        key = f"{ACCESS_TOKEN_KEY_PREFIX}{token}"
+        stored = json.loads(fake_pubsub.store[key])
+        assert fake_pubsub.ttls[key] == 600
+        assert {k: stored[k] for k in ("sub", "is_super_user", "webservices")} == {
+            k: self.CLAIMS[k] for k in ("sub", "is_super_user", "webservices")
+        }
+        # The browser's XSRF secret is never copied into a second token.
+        assert stored["xsrf_token"] != "browser-xsrf"
+        assert stored["exp"] > int(now_utc().timestamp())
+
+    @pytest.mark.asyncio
+    async def test_does_not_mutate_the_callers_claims(self, user_auth_app_manager, fake_pubsub):
+        auth_service = user_auth_app_manager.get_service("auth")
+        claims = dict(self.CLAIMS)
+
+        await auth_service.issue_delegated_access_token(claims, ttl_seconds=600)
+
+        assert claims == self.CLAIMS
+
+    @pytest.mark.asyncio
+    async def test_resolves_until_revoked(self, user_auth_app_manager, fake_pubsub):
+        auth_service = user_auth_app_manager.get_service("auth")
+
+        token = await auth_service.issue_delegated_access_token(dict(self.CLAIMS), ttl_seconds=600)
+        assert (await auth_service.resolve_access_token(token))["sub"] == "user-1"
+
+        assert await auth_service.revoke_access_token(token) is True
+        assert await auth_service.resolve_access_token(token) is None
+
+    @pytest.mark.asyncio
+    async def test_returns_none_without_a_store(self, user_auth_app_manager):
+        from lys.core.managers.app import LysAppManager
+
+        auth_service = user_auth_app_manager.get_service("auth")
+        lys_singleton = LysAppManager()
+        previous_singleton = lys_singleton.pubsub
+        previous_test = user_auth_app_manager.pubsub
+        lys_singleton.pubsub = None
+        user_auth_app_manager.pubsub = None
+        try:
+            assert await auth_service.issue_delegated_access_token(dict(self.CLAIMS), ttl_seconds=600) is None
+        finally:
+            lys_singleton.pubsub = previous_singleton
+            user_auth_app_manager.pubsub = previous_test
+
+
 class TestLogout:
     """Test AuthService.logout operations."""
 

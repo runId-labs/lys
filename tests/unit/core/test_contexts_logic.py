@@ -103,6 +103,14 @@ class TestContext:
         ctx.request = None
         assert ctx.access_token is None
 
+    def test_access_token_setter(self):
+        ctx = Context()
+        mock_request = MagicMock()
+        ctx.request = mock_request
+        ctx.access_token = "turn-token"
+        assert mock_request.state.access_token == "turn-token"
+        assert ctx.access_token == "turn-token"
+
 
 class TestGetContext:
 

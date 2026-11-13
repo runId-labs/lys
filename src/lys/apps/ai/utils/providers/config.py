@@ -55,6 +55,11 @@ class ExecutorConfig:
     service_name: Optional[str] = None  # Service name for JWT auth
     timeout: int = 30
     verify_ssl: bool = True  # Set False for self-signed certificates
+    # Upper bound, in seconds, of the access token a chat turn calls the API with
+    # (see AIConversationService._turn_access_token). The token is revoked when the
+    # turn ends; this only bounds one whose turn died before revoking it, so it must
+    # exceed the longest turn (tool iterations x model and tool timeouts).
+    turn_token_ttl: int = 1800
 
 
 @dataclass
@@ -125,7 +130,8 @@ def parse_plugin_config(plugin_config: Dict[str, Any]) -> AIConfig:
             "executor": {
                 "gateway_url": "https://gateway:8000/graphql",
                 "service_name": "my-api",
-                "timeout": 30
+                "timeout": 30,
+                "turn_token_ttl": 1800
             },
             "chatbot": {
                 "provider": "mistral",
@@ -157,6 +163,7 @@ def parse_plugin_config(plugin_config: Dict[str, Any]) -> AIConfig:
         service_name=executor_cfg.get("service_name"),
         timeout=executor_cfg.get("timeout", 30),
         verify_ssl=executor_cfg.get("verify_ssl", True),
+        turn_token_ttl=executor_cfg.get("turn_token_ttl", 1800),
     )
 
     for purpose, cfg in plugin_config.items():

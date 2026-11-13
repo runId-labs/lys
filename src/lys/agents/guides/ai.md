@@ -395,6 +395,14 @@ RULES:
   the opaque GlobalIDs the tool results and the page context carry (see
   `rules.md` — "Entity ids at the API boundary"). Validate them at the handler
   entry and return an error dict on a raw uuid — never wrap, never rewrite.
+- **R4 — Call the API back with the turn's token.** A handler that queries the
+  API uses `info.context.access_token`, read inside the turn (in
+  `_get_tool_executor` or when the handler runs). A chat turn runs on a
+  delegated token of its own (`_turn_access_token`): same claims as the
+  user, minted when the turn starts, revoked when it ends, bounded by
+  `executor.turn_token_ttl` (default 1800 s). The browser's token lives a few
+  minutes and every refresh revokes it — a handler holding it fails with
+  `ACCESS_DENIED_ERROR` mid-turn.
 
 ### Whiteboard app (`lys.apps.ai_whiteboard`)
 

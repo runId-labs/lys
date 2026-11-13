@@ -576,6 +576,42 @@ class AuthService(Service):
         return token_id, claims
 
     @classmethod
+    async def issue_delegated_access_token(cls, claims: dict, ttl_seconds: int) -> Optional[str]:
+        """
+        Public hook for minting an access token that carries an already-resolved
+        user's claims, for work the server runs on that user's behalf beyond a
+        single request (e.g. an agent loop calling the API back).
+
+        The browser's access token is short-lived and revoked by every refresh,
+        so a server-side job holding it fails mid-way once it expires or another
+        tab refreshes. The delegated token decouples the job from that rotation:
+
+        - same claims as the caller: rights are never widened, and a change of
+          the user's roles is not seen before the token ends, exactly as for a
+          regular access token;
+        - fresh ``exp`` and ``xsrf_token``: the caller's XSRF secret is never
+          copied into a second token;
+        - never set as a cookie: it is sent as a Bearer header, and the caller
+          revokes it (``revoke_access_token``) as soon as the job ends.
+          ``ttl_seconds`` only bounds a token whose caller died before revoking.
+
+        Args:
+            claims: Claims resolved by the auth middleware for the connected user
+            ttl_seconds: Upper bound of the token's lifetime
+
+        Returns:
+            The opaque token id, or None when the store is unavailable.
+        """
+        store = cls._get_access_token_store()
+        if store is None:
+            return None
+
+        delegated_claims = dict(claims)
+        delegated_claims["exp"] = int(round((now_utc() + timedelta(seconds=ttl_seconds)).timestamp()))
+        delegated_claims["xsrf_token"] = str(await cls.generate_xsrf_token())
+        return await store.create(delegated_claims, ttl_seconds=ttl_seconds)
+
+    @classmethod
     async def resolve_access_token(cls, token_id: Optional[str]) -> Optional[dict]:
         """
         Public hook for resolving an opaque access token to its claims.
