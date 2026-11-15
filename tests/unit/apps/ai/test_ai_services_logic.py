@@ -999,6 +999,27 @@ class TestRoutesManifest:
         finally:
             AIService._routes_manifest_cache = original_cache
 
+    def test_get_global_chatbot_prompt_returns_the_declared_prompt(self):
+        from lys.apps.ai.modules.core.services import AIService
+
+        original_cache = AIService._routes_manifest_cache
+        try:
+            AIService._routes_manifest_cache = {"globalPrompt": "Shared interface.", "routes": []}
+            assert AIService.get_global_chatbot_prompt() == "Shared interface."
+        finally:
+            AIService._routes_manifest_cache = original_cache
+
+    @pytest.mark.parametrize("manifest", [{}, {"routes": []}, {"globalPrompt": "  \n"}, {"globalPrompt": ["a"]}])
+    def test_get_global_chatbot_prompt_returns_none_without_a_usable_prompt(self, manifest):
+        from lys.apps.ai.modules.core.services import AIService
+
+        original_cache = AIService._routes_manifest_cache
+        try:
+            AIService._routes_manifest_cache = manifest
+            assert AIService.get_global_chatbot_prompt() is None
+        finally:
+            AIService._routes_manifest_cache = original_cache
+
 
 class TestPromptVersionCacheHelpers:
     """Tests for AIService.get_prompt_version_id() and the cache reset in

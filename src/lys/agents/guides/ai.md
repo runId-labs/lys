@@ -47,6 +47,13 @@ Two consumer hooks shape what the model knows about the session state:
 - `_get_volatile_context` — non-cacheable, re-sent in full every turn
   (current date, focus record...). Keep it small by design.
 
+App-wide context — what holds on every page (a panel beside the chat, a shared
+menu, an export) — is not a hook. The front declares it as `globalPrompt` in
+`chatbot.config.ts`; the routes manifest carries it at its root, and
+`AIService.get_global_chatbot_prompt()` reads it. It is the first segment of the
+leading system block (cacheable, ahead of the stable layer). A page prompt
+describes its own screen only.
+
 The page's URL params are NOT the consumer's to render: the base emits them
 generically as a JSON segment (`_page_params_context`) ahead of the consumer's
 prose, via `_composed_volatile_context` — an override cannot lose them. Only

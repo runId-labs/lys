@@ -361,6 +361,21 @@ class TestAIConversationServiceBuildSystemPrompt:
         assert len(result) == 2
 
     @pytest.mark.asyncio
+    async def test_build_system_prompt_puts_the_global_prompt_first(self, mock_session):
+        """The app-level prompt is the same for every user and page: the most stable layer."""
+        from lys.apps.ai.modules.conversation.services import AIConversationService
+
+        result = await AIConversationService._build_system_prompt(
+            stable_context="Stable session map.",
+            conversation_summary="Earlier summary.",
+            global_prompt="Shared interface.",
+        )
+
+        assert result[0] == {"content": "Shared interface.", "cache": True}
+        assert result[1] == {"content": "Stable session map.", "cache": True}
+        assert len(result) == 3
+
+    @pytest.mark.asyncio
     async def test_build_turn_context_returns_no_segments_without_inputs(self, mock_session):
         """Nothing to say about this turn produces nothing."""
         from lys.apps.ai.modules.conversation.services import AIConversationService
@@ -800,6 +815,7 @@ class TestPrepareChatContext:
         mock_ai_service.get_routes_manifest = MagicMock(return_value={})
         mock_ai_service.get_page_webservices = MagicMock(return_value=set())
         mock_ai_service.get_page_chatbot_behaviour = MagicMock(return_value=None)
+        mock_ai_service.get_global_chatbot_prompt = MagicMock(return_value=None)
         mock_ai_service.get_prompt_version_id = MagicMock(return_value="version-123")
 
         mock_app_manager = MagicMock()
@@ -811,7 +827,7 @@ class TestPrepareChatContext:
 
         with patch.object(AIToolService, "get_accessible_tools", new_callable=AsyncMock) as mock_tools, \
              patch.object(AIConversationService, "_build_system_prompt", new_callable=AsyncMock,
-                          return_value=[{"content": "sys prompt", "cache": True}]), \
+                          return_value=[{"content": "sys prompt", "cache": True}]) as mock_build_system, \
              patch.object(AIConversationService, "_load_current_summary", new_callable=AsyncMock, return_value=None), \
              patch.object(AIConversationService, "_get_tool_executor", new_callable=AsyncMock) as mock_executor, \
              patch.object(AIConversationService, "get_or_create", new_callable=AsyncMock, return_value=mock_conversation), \
@@ -831,7 +847,28 @@ class TestPrepareChatContext:
                 "mock_message_service": mock_message_service,
                 "mock_ai_service": mock_ai_service,
                 "mock_settle": mock_settle,
+                "mock_build_system": mock_build_system,
             }
+
+    @pytest.mark.asyncio
+    async def test_global_prompt_reaches_the_system_block(
+        self, connected_user, mock_session, mock_info, _setup_mocks
+    ):
+        """The manifest's app-level prompt is handed to the leading system block."""
+        from lys.apps.ai.modules.conversation.services import AIConversationService
+
+        _setup_mocks["mock_ai_service"].get_global_chatbot_prompt.return_value = "Shared interface."
+
+        await AIConversationService._prepare_chat_context(
+            user_id="user-123",
+            content="Hello",
+            session=mock_session,
+            connected_user=connected_user,
+            info=mock_info,
+        )
+
+        _setup_mocks["mock_build_system"].assert_awaited_once()
+        assert _setup_mocks["mock_build_system"].await_args.kwargs["global_prompt"] == "Shared interface."
 
     @pytest.mark.asyncio
     async def test_returns_expected_keys(self, connected_user, mock_session, mock_info, _setup_mocks):

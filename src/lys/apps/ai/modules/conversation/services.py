@@ -1292,15 +1292,17 @@ class AIConversationService(EntityService[AIConversation]):
         cls,
         conversation_summary: Optional[str] = None,
         stable_context: Optional[str] = None,
+        global_prompt: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
         """
         Build the leading system block: what does NOT change during a conversation.
 
         A provider reuses the longest byte-identical prefix of the previous request, so
         anything placed here sits in front of the whole history: one changed character and
-        the entire conversation is re-billed. Only two things qualify — the consumer's
-        stable layer, and the compaction summary, which changes once per compaction rather
-        than once per turn.
+        the entire conversation is re-billed. Only three things qualify — the app-level
+        prompt of the routes manifest (what holds on every page, changed by a deploy only),
+        the consumer's stable layer, and the compaction summary, which changes once per
+        compaction rather than once per turn.
 
         Everything that varies within a conversation (the page prompt, the volatile layer,
         the per-turn context) belongs to :meth:`_build_turn_context`, which is emitted
@@ -1316,6 +1318,11 @@ class AIConversationService(EntityService[AIConversation]):
         summary_header = chatbot_config.get("summary_header", DEFAULT_SUMMARY_HEADER)
 
         segments: List[Dict[str, Any]] = []
+
+        # App-level prompt: the same for every user, page and turn - the most stable layer
+        # after the base prompt, so first.
+        if global_prompt:
+            segments.append({"content": global_prompt, "cache": True})
 
         # Session-stable layer, cacheable.
         if stable_context:
@@ -1781,6 +1788,7 @@ class AIConversationService(EntityService[AIConversation]):
         system_segments = await cls._build_system_prompt(
             conversation_summary=current_summary.summary if current_summary else None,
             stable_context=stable_context,
+            global_prompt=cls.app_manager.get_service("ai").get_global_chatbot_prompt(),
         )
         turn_segments = await cls._build_turn_context(
             page_behaviour=page_behaviour,

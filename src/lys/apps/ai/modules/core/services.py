@@ -242,6 +242,27 @@ class AIService(Service):
         return None
 
     @classmethod
+    def get_global_chatbot_prompt(cls) -> Optional[str]:
+        """Get the app-level chatbot prompt, the one that holds on every page.
+
+        It describes what surrounds the pages — a panel opened beside the chat, a
+        shared menu, an export — which no page prompt can, a page prompt speaking
+        for its own screen only. Declared by the front (``chatbot.config.ts``,
+        ``globalPrompt``) and carried at the manifest's root.
+
+        Returns the prompt, or None when the manifest declares none or holds
+        something other than a non-blank string.
+        """
+        manifest = cls.get_routes_manifest()
+        if not manifest:
+            return None
+
+        prompt = manifest.get("globalPrompt")
+        if not isinstance(prompt, str) or not prompt.strip():
+            return None
+        return prompt
+
+    @classmethod
     def get_page_params_schema(cls, page_name: str) -> Optional[Dict[str, Any]]:
         """Get the declared URL params of a page, or None when it declares none.
 

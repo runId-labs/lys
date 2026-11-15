@@ -7,6 +7,15 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.63.0] - 2026-11-15
+
+### Added
+- `AIService.get_global_chatbot_prompt()`: reads the app-level `globalPrompt` at
+  the root of the routes manifest (what holds on every page — a side panel, a
+  shared menu, an export). Returns None when absent, blank or not a string.
+- The chatbot puts this prompt first in the leading system block, cacheable and
+  ahead of the consumer's stable layer.
+
 ## [0.62.0] - 2026-11-15
 
 ### Added
