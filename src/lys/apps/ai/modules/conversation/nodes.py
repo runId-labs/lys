@@ -29,6 +29,7 @@ class AIConversationNode(EntityNode[AIConversationService], relay.Node):
     created_at: datetime
     updated_at: Optional[datetime]
     archived_at: Optional[datetime]
+    pinned_at: Optional[datetime]
     _entity: strawberry.Private[AIConversation]
 
     @strawberry.field(description="Owner of the conversation.")
@@ -61,6 +62,7 @@ class AIConversationNode(EntityNode[AIConversationService], relay.Node):
         return {
             "created_at": self.entity_class.created_at,
             "updated_at": self.entity_class.updated_at,
+            "pinned_at": self.entity_class.pinned_at,
         }
 
 

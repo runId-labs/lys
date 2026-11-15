@@ -46,8 +46,11 @@ class AIConversationQuery(Query):
         access_levels=[OWNER_ACCESS_LEVEL, ROLE_ACCESS_LEVEL],
         is_licenced=False,
         description="List AI conversations, newest first - active ones by default, the archive "
-                    "alone with archived=true, both with archived=null. Restricted to the "
-                    "connected user's own conversations unless a role grants full access.",
+                    "alone with archived=true, both with archived=null. Pinned ones stay in "
+                    "the default listing; callers that present pins separately narrow with "
+                    "pinned=true (pinned ones, most recently pinned first via orderBy) or "
+                    "pinned=false. Restricted to the connected user's own conversations "
+                    "unless a role grants full access.",
         options={"generate_tool": False},
     )
     async def all_ai_conversations(
@@ -56,6 +59,7 @@ class AIConversationQuery(Query):
         user_id: Optional[relay.GlobalID] = None,
         purpose: Optional[str] = None,
         archived: Optional[bool] = False,
+        pinned: Optional[bool] = None,
     ) -> Select:
         """
         List AI conversations.
@@ -75,6 +79,10 @@ class AIConversationQuery(Query):
                 archived ones, null lists both. Archiving exists to set a conversation
                 aside, so browsing the archive shows the archive alone - mixing the active
                 ones back in would scatter what was filed away among what was not.
+            pinned: True lists only the pinned ones, False only the unpinned ones, null
+                (default) ignores the pin. Unlike archiving, a pin never hides a
+                conversation from a listing: it is a highlight the caller chooses to
+                present apart (or not at all), so the default listing keeps it.
         """
         entity = info.context.app_manager.get_entity("ai_conversation")
 
@@ -95,6 +103,11 @@ class AIConversationQuery(Query):
         if archived is not None:
             stmt = stmt.where(
                 entity.archived_at.isnot(None) if archived else entity.archived_at.is_(None)
+            )
+
+        if pinned is not None:
+            stmt = stmt.where(
+                entity.pinned_at.isnot(None) if pinned else entity.pinned_at.is_(None)
             )
 
         return stmt
@@ -236,6 +249,65 @@ class AIConversationMutation(Mutation):
             AIConversation: the restored conversation
         """
         obj.archived_at = None
+
+        return obj
+
+    @lys_edition(
+        ensure_type=AIConversationNode,
+        is_public=False,
+        access_levels=[OWNER_ACCESS_LEVEL],
+        is_licenced=False,
+        description="Pin a conversation, highlighting it in the user's listing. Required: id.",
+        options={"generate_tool": False},
+    )
+    async def pin_ai_conversation(self, obj: AIConversation, info: Info):
+        """
+        Pin a conversation.
+
+        Ownership is enforced by lys_edition, which resolves the conversation and runs
+        the OWNER check before this body: a user pins only their own conversations.
+
+        Pinned and archived are orthogonal: pinning does not restore an archived
+        conversation, and unpinning does not archive a pinned one.
+
+        Idempotent: pinning an already-pinned conversation leaves the original date
+        untouched, for the same reason archiving does - overwriting it on a second call
+        (a double click, a retry) would lose when the conversation was pinned, and
+        raising instead would turn a harmless repeat into an error the client must
+        handle. The date kept is also what a pinned listing orders by.
+
+        Args:
+            obj: AIConversation entity (fetched and validated by lys_edition)
+            info: GraphQL context
+
+        Returns:
+            AIConversation: the pinned conversation
+        """
+        if obj.pinned_at is None:
+            obj.pinned_at = datetime.now(UTC)
+
+        return obj
+
+    @lys_edition(
+        ensure_type=AIConversationNode,
+        is_public=False,
+        access_levels=[OWNER_ACCESS_LEVEL],
+        is_licenced=False,
+        description="Unpin a conversation. Required: id.",
+        options={"generate_tool": False},
+    )
+    async def unpin_ai_conversation(self, obj: AIConversation, info: Info):
+        """
+        Unpin a conversation.
+
+        Args:
+            obj: AIConversation entity (fetched and validated by lys_edition)
+            info: GraphQL context
+
+        Returns:
+            AIConversation: the unpinned conversation
+        """
+        obj.pinned_at = None
 
         return obj
 

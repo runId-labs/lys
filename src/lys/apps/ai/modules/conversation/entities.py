@@ -51,6 +51,17 @@ class AIConversation(Entity):
     archived_at: Mapped[Optional[datetime]] = mapped_column(
         DateTime(timezone=True), nullable=True,
     )
+    # Highlights a conversation the user wants kept within reach - the mirror of
+    # archiving at the other end of the listing's spectrum: an archive files it away,
+    # a pin brings it forward. Deliberately orthogonal to archived_at, so the two
+    # cross without interacting: archiving a pinned conversation keeps the pin, and
+    # unarchiving brings it back highlighted.
+    # A timestamp for the same reasons archived_at is one: a repeat call keeps the
+    # original date (pinning is idempotent), and a pinned listing orders by it - most
+    # recently pinned first - something a boolean cannot give.
+    pinned_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True,
+    )
 
     @declared_attr
     def messages(cls):

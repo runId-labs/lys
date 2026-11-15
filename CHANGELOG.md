@@ -7,6 +7,18 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.62.0] - 2026-11-15
+
+### Added
+- `AIConversation.pinned_at` (timezone-aware, nullable): new column on
+  `ai_conversation` — consuming projects must generate a migration. Exposed on
+  `AIConversationNode` and sortable via `orderBy: {pinnedAt: …}`.
+- `AIConversationMutation.pin_ai_conversation` / `unpin_ai_conversation` (OWNER).
+  Pinning is idempotent (a repeat call keeps the original date) and orthogonal to
+  archiving.
+- `all_ai_conversations` gains a `pinned` filter: `true` pinned only, `false`
+  unpinned only, `null` (default) ignores the pin.
+
 ## [0.61.0] - 2026-11-13
 
 ### Added

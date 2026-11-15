@@ -317,3 +317,140 @@ class TestUnarchiveAIConversationLogic:
 
         assert result is obj
         assert obj.archived_at is None
+
+
+class TestPinAIConversationLogic:
+    """Tests for AIConversationMutation.pin_ai_conversation() internal logic."""
+
+    def test_sets_pinned_at_when_not_already_pinned(self):
+        from lys.apps.ai.modules.conversation.webservices import AIConversationMutation
+
+        resolver = _get_edition_resolver(AIConversationMutation, "pin_ai_conversation")
+
+        obj = MagicMock()
+        obj.pinned_at = None
+
+        loop = asyncio.new_event_loop()
+        try:
+            result = loop.run_until_complete(resolver(None, obj=obj, info=MagicMock()))
+        finally:
+            loop.close()
+
+        assert result is obj
+        assert obj.pinned_at is not None
+
+    def test_is_idempotent_and_keeps_the_original_pin_date(self):
+        """A second pin call must not overwrite when the conversation was pinned."""
+        from lys.apps.ai.modules.conversation.webservices import AIConversationMutation
+        from datetime import datetime, UTC
+
+        resolver = _get_edition_resolver(AIConversationMutation, "pin_ai_conversation")
+
+        obj = MagicMock()
+        original_date = datetime(2026, 1, 1, tzinfo=UTC)
+        obj.pinned_at = original_date
+
+        loop = asyncio.new_event_loop()
+        try:
+            loop.run_until_complete(resolver(None, obj=obj, info=MagicMock()))
+        finally:
+            loop.close()
+
+        assert obj.pinned_at == original_date
+
+
+class TestUnpinAIConversationLogic:
+    """Tests for AIConversationMutation.unpin_ai_conversation() internal logic."""
+
+    def test_clears_pinned_at(self):
+        from lys.apps.ai.modules.conversation.webservices import AIConversationMutation
+        from datetime import datetime, UTC
+
+        resolver = _get_edition_resolver(AIConversationMutation, "unpin_ai_conversation")
+
+        obj = MagicMock()
+        obj.pinned_at = datetime(2026, 1, 1, tzinfo=UTC)
+
+        loop = asyncio.new_event_loop()
+        try:
+            result = loop.run_until_complete(resolver(None, obj=obj, info=MagicMock()))
+        finally:
+            loop.close()
+
+        assert result is obj
+        assert obj.pinned_at is None
+
+
+class TestAllAIConversationsFilterLogic:
+    """Tests for AIConversationQuery.all_ai_conversations() archived/pinned filters."""
+
+    @staticmethod
+    def _run(**kwargs):
+        """Run the raw listing resolver on a mocked entity and statement chain.
+
+        `select` and `noload` are patched because entity classes are not mapped in unit
+        tests; the statement mock returns itself from every builder call so each `where`
+        is recorded on it.
+        """
+        from lys.apps.ai.modules.conversation.webservices import AIConversationQuery
+
+        resolver = _get_edition_resolver(AIConversationQuery, "all_ai_conversations")
+
+        entity = MagicMock()
+        info = MagicMock()
+        info.context.app_manager.get_entity.return_value = entity
+
+        stmt = MagicMock()
+        stmt.options.return_value = stmt
+        stmt.order_by.return_value = stmt
+        stmt.where.return_value = stmt
+
+        module = "lys.apps.ai.modules.conversation.webservices"
+        with patch(f"{module}.select", return_value=stmt), patch(f"{module}.noload"):
+            loop = asyncio.new_event_loop()
+            try:
+                result = loop.run_until_complete(resolver(None, info, **kwargs))
+            finally:
+                loop.close()
+
+        assert result is stmt
+        return entity, stmt
+
+    def test_default_lists_active_conversations_and_ignores_the_pin(self):
+        entity, stmt = self._run()
+
+        stmt.where.assert_called_once_with(entity.archived_at.is_.return_value)
+        entity.archived_at.is_.assert_called_once_with(None)
+        entity.pinned_at.isnot.assert_not_called()
+        entity.pinned_at.is_.assert_not_called()
+
+    def test_archived_true_lists_the_archive_alone(self):
+        entity, stmt = self._run(archived=True)
+
+        stmt.where.assert_called_once_with(entity.archived_at.isnot.return_value)
+        entity.archived_at.isnot.assert_called_once_with(None)
+
+    def test_archived_null_applies_no_archive_filter(self):
+        entity, stmt = self._run(archived=None)
+
+        stmt.where.assert_not_called()
+
+    def test_pinned_true_lists_only_pinned_conversations(self):
+        entity, stmt = self._run(archived=None, pinned=True)
+
+        stmt.where.assert_called_once_with(entity.pinned_at.isnot.return_value)
+        entity.pinned_at.isnot.assert_called_once_with(None)
+
+    def test_pinned_false_lists_only_unpinned_conversations(self):
+        entity, stmt = self._run(archived=None, pinned=False)
+
+        stmt.where.assert_called_once_with(entity.pinned_at.is_.return_value)
+        entity.pinned_at.is_.assert_called_once_with(None)
+
+    def test_pinned_and_archived_filters_combine(self):
+        """Pin and archive are orthogonal: both filters apply side by side."""
+        entity, stmt = self._run(archived=True, pinned=True)
+
+        assert stmt.where.call_count == 2
+        stmt.where.assert_any_call(entity.archived_at.isnot.return_value)
+        stmt.where.assert_any_call(entity.pinned_at.isnot.return_value)
