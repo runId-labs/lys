@@ -8,11 +8,14 @@ their own.
 """
 
 import asyncio
+import copy
 import logging
 import uuid
-from typing import Any, Dict, List, Optional
+from datetime import datetime, UTC
+from typing import Any, Dict, List, Optional, Tuple
 
-from sqlalchemy import event, select, update
+from sqlalchemy import Update, event, select, update
+from sqlalchemy.orm.attributes import set_committed_value
 
 from lys.apps.ai_whiteboard.errors import WHITEBOARD_NOT_FOUND, WHITEBOARD_REVISION_CONFLICT
 from lys.apps.ai_whiteboard.modules.whiteboard import scene as scene_tools
@@ -200,6 +203,45 @@ class WhiteboardService(EntityService[Whiteboard]):
         return whiteboard
 
     @classmethod
+    async def copy_for_user(
+        cls,
+        source: Whiteboard,
+        title: Optional[str],
+        session,
+    ) -> Whiteboard:
+        """
+        Open a board as a copy of another, attached to nothing - "make a copy".
+
+        A board serves as a template: the same deck next month, or for another company.
+        The scene is copied whole, server side, so the copy keeps the layout, the charts
+        and the slides exactly; redrawing it element by element would lose them. The copy
+        starts its own life: revision 1, neither archived nor pinned - the source's
+        filing is about the source.
+
+        The copy belongs to the source's owner. Reaching the source is the caller's
+        check (``get_for_user``): a board is never copied across users.
+
+        Args:
+            source: The board to copy, already checked to be the caller's.
+            title: The copy's name; the source's when left out.
+            session: The session of the request.
+
+        Returns:
+            The new board, flushed, its owner told it exists.
+        """
+        whiteboard = cls.entity_class(
+            user_id=source.user_id,
+            title=(title or source.title or DEFAULT_TITLE)[:TITLE_MAX_LENGTH],
+            scene_json=copy.deepcopy(source.scene_json or scene_tools.empty_scene()),
+            revision=1,
+        )
+        session.add(whiteboard)
+        await session.flush()
+
+        cls._notify(whiteboard, session)
+        return whiteboard
+
+    @classmethod
     async def open_for_conversation(cls, conversation: Any, session) -> Whiteboard:
         """
         Open the conversation's board and point the conversation at it.
@@ -207,6 +249,20 @@ class WhiteboardService(EntityService[Whiteboard]):
         Both writes in the caller's session: the board is only visible to other
         connections once that session commits. See :meth:`resolve_for_conversation` for
         who may use this.
+
+        The board is born in step with the exchange that opened it: it takes the
+        conversation's visibility flags, so a board drawn during an archived
+        conversation starts archived too - otherwise it would escape both the sync
+        (which only fires on an action) and the cleanup that follows the archive,
+        and pile up with no one to file it away. A board opened by hand, or named by a
+        later conversation, takes nothing: the flags are inherited at birth only.
+
+        Args:
+            conversation: The AIConversation of the current turn.
+            session: The session of the request.
+
+        Returns:
+            The board to write on, already attached to the conversation.
         """
         whiteboard = await cls.create_for_user(
             conversation.user_id, conversation.title, session,
@@ -214,7 +270,13 @@ class WhiteboardService(EntityService[Whiteboard]):
 
         conversation.whiteboard_id = whiteboard.id
         session.add(conversation)
+
         await session.flush()
+
+        if conversation.archived_at is not None:
+            await cls._set_flag(whiteboard, "archived_at", conversation.archived_at, session)
+        if conversation.pinned_at is not None:
+            await cls._set_flag(whiteboard, "pinned_at", conversation.pinned_at, session)
 
         return whiteboard
 
@@ -240,6 +302,7 @@ class WhiteboardService(EntityService[Whiteboard]):
         operations: Dict[str, Any],
         caller_session,
         focus: Optional[List[str]] = None,
+        copy_from_whiteboard_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Apply a patch to a board, committed as soon as the backend allows.
@@ -278,6 +341,9 @@ class WhiteboardService(EntityService[Whiteboard]):
             caller_session: The caller's session, used only where a second one cannot be.
             focus: Names of the elements to bring into the owner's view. Without it, a
                 patch shows what it drew.
+            copy_from_whiteboard_id: A board of the owner's to copy: the patch then
+                lands on a NEW board opened as its copy (see :meth:`copy_for_user`),
+                never on the source. ``title`` names the copy.
 
         Returns:
             The board id, its title and its elements, as plain values - and ``overlaps``
@@ -289,12 +355,14 @@ class WhiteboardService(EntityService[Whiteboard]):
         """
         if not cls._can_commit_apart():
             return await cls._draw(
-                user_id, title, current_whiteboard_id, named_whiteboard_id, operations, caller_session, focus=focus,
+                user_id, title, current_whiteboard_id, named_whiteboard_id, operations, caller_session,
+                focus=focus, copy_from_whiteboard_id=copy_from_whiteboard_id,
             )
 
         async with cls.app_manager.database.get_session() as session:
             return await cls._draw(
-                user_id, title, current_whiteboard_id, named_whiteboard_id, operations, session, focus=focus,
+                user_id, title, current_whiteboard_id, named_whiteboard_id, operations, session,
+                focus=focus, copy_from_whiteboard_id=copy_from_whiteboard_id,
             )
 
     @classmethod
@@ -307,24 +375,33 @@ class WhiteboardService(EntityService[Whiteboard]):
         operations: Dict[str, Any],
         session,
         focus: Optional[List[str]] = None,
+        copy_from_whiteboard_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Resolve the target through one session, opening a board if there is none.
 
-        Only a patch opens a board: showing something on a board that does not exist is
-        refused, not answered with an empty one thrown open in front of the user.
+        Only a patch - or a copy - opens a board: showing something on a board that does
+        not exist is refused, not answered with an empty one thrown open in front of the
+        user. A copy alone is a call worth making: the board it opens is shown as it is.
         """
-        whiteboard = await cls.find_for_conversation(
-            user_id, current_whiteboard_id, named_whiteboard_id, session,
-        )
-        if whiteboard is None:
-            if not operations:
-                raise LysError(WHITEBOARD_NOT_FOUND, "There is no whiteboard to show yet: drawing on one opens it")
-            whiteboard = await cls.create_for_user(user_id, title, session)
+        if copy_from_whiteboard_id:
+            source = await cls.get_for_user(copy_from_whiteboard_id, user_id, session)
+            if source is None:
+                logger.warning(f"Whiteboard '{copy_from_whiteboard_id}' is not reachable for user '{user_id}'")
+                raise LysError(WHITEBOARD_NOT_FOUND, f"Whiteboard '{copy_from_whiteboard_id}' does not exist")
+            whiteboard = await cls.copy_for_user(source, title, session)
+        else:
+            whiteboard = await cls.find_for_conversation(
+                user_id, current_whiteboard_id, named_whiteboard_id, session,
+            )
+            if whiteboard is None:
+                if not operations:
+                    raise LysError(WHITEBOARD_NOT_FOUND, "There is no whiteboard to show yet: drawing on one opens it")
+                whiteboard = await cls.create_for_user(user_id, title, session)
 
         if operations:
             await cls.apply_operations(whiteboard, operations, session, focus=focus)
-        else:
+        elif focus:
             cls.show(whiteboard, focus, session)
 
         result: Dict[str, Any] = {
@@ -497,6 +574,248 @@ class WhiteboardService(EntityService[Whiteboard]):
         """Delete a board, and clear the conversations that pointed at it."""
         await cls.forget_everywhere(entity_id, session)
         return await super().delete(entity_id, session)
+
+    # ==================== Visibility flags ====================
+
+    @classmethod
+    async def archive(cls, whiteboard: Whiteboard, session) -> Whiteboard:
+        """
+        Archive a board, and the conversations pointing at it.
+
+        In step on purpose: the board is the artifact of the exchange that produced it,
+        and filing the one away while the other stays in every listing is a divergence
+        nobody acted on. See :meth:`follow_conversation_archive` for the other direction -
+        a conversation acted on, the board follows.
+
+        Idempotent: archiving an already-archived board leaves the original date
+        untouched, because that date records when it was archived. Overwriting it on a
+        second call - a double click, a retry - would lose that fact silently, and
+        raising instead would turn a harmless repeat into an error the client must handle.
+
+        Args:
+            whiteboard: The board to archive (fetched and validated by lys_edition)
+            session: The session of the request
+
+        Returns:
+            Whiteboard: the archived whiteboard
+        """
+        if whiteboard.archived_at is None:
+            await cls._set_flag(whiteboard, "archived_at", datetime.now(UTC), session)
+
+        await cls._spread_archive_to_conversations(whiteboard, session)
+        return whiteboard
+
+    @classmethod
+    async def unarchive(cls, whiteboard: Whiteboard, session) -> Whiteboard:
+        """
+        Restore an archived board to the default listing, conversations included.
+
+        Args:
+            whiteboard: The board to restore (fetched and validated by lys_edition)
+            session: The session of the request
+
+        Returns:
+            Whiteboard: the restored whiteboard
+        """
+        if whiteboard.archived_at is not None:
+            await cls._set_flag(whiteboard, "archived_at", None, session)
+
+        await cls._spread_archive_to_conversations(whiteboard, session)
+        return whiteboard
+
+    @classmethod
+    async def pin(cls, whiteboard: Whiteboard, session) -> Whiteboard:
+        """
+        Pin a board, and the conversations pointing at it.
+
+        Pinned and archived are orthogonal: pinning does not restore an archived board,
+        and unpinning does not archive a pinned one.
+
+        Idempotent: pinning an already-pinned board leaves the original date untouched,
+        for the same reason archiving does - overwriting it on a second call (a double
+        click, a retry) would lose when the board was pinned, and raising instead would
+        turn a harmless repeat into an error the client must handle. The date kept is
+        also what a pinned listing orders by.
+
+        Args:
+            whiteboard: The board to pin (fetched and validated by lys_edition)
+            session: The session of the request
+
+        Returns:
+            Whiteboard: the pinned whiteboard
+        """
+        if whiteboard.pinned_at is None:
+            await cls._set_flag(whiteboard, "pinned_at", datetime.now(UTC), session)
+
+        await cls._spread_pin_to_conversations(whiteboard, session)
+        return whiteboard
+
+    @classmethod
+    async def unpin(cls, whiteboard: Whiteboard, session) -> Whiteboard:
+        """
+        Unpin a board, conversations included.
+
+        Args:
+            whiteboard: The board to unpin (fetched and validated by lys_edition)
+            session: The session of the request
+
+        Returns:
+            Whiteboard: the unpinned whiteboard
+        """
+        if whiteboard.pinned_at is not None:
+            await cls._set_flag(whiteboard, "pinned_at", None, session)
+
+        await cls._spread_pin_to_conversations(whiteboard, session)
+        return whiteboard
+
+    @classmethod
+    async def follow_conversation_archive(cls, conversation: Any, session) -> None:
+        """
+        The conversation archived or unarchived; keep the board it points at in step.
+
+        The other half of the sync, reached from the conversation service's overrides
+        (this app extends it) - a flag acted on from either side lands on both. The
+        board takes the conversation's state and date when its own is empty: the first
+        date each row carries is kept, so a repeat on either side cannot move it.
+
+        The conversations sharing the board follow along, through the same spread as a
+        board-originated action: a flag is a fact about the board and every exchange
+        pointing at it, never about one of them.
+
+        Nothing to raise on: a conversation without a board, or whose pointer names a
+        deleted one, has nothing to follow - the pointer carries no foreign key, and a
+        dangling one reads as no board here exactly as it does for the drawing tools.
+
+        Args:
+            conversation: The conversation whose archive flag just moved
+            session: The session of the request
+        """
+        board = await cls._board_of_conversation(conversation, session)
+        if board is None:
+            return
+
+        if conversation.archived_at is not None:
+            if board.archived_at is None:
+                await cls._set_flag(board, "archived_at", conversation.archived_at, session)
+        elif board.archived_at is not None:
+            await cls._set_flag(board, "archived_at", None, session)
+
+        await cls._spread_archive_to_conversations(board, session)
+
+    @classmethod
+    async def follow_conversation_pin(cls, conversation: Any, session) -> None:
+        """
+        The conversation pinned or unpinned; keep the board it points at in step.
+
+        Same rule and same reasoning as :meth:`follow_conversation_archive`, for the pin.
+
+        Args:
+            conversation: The conversation whose pin flag just moved
+            session: The session of the request
+        """
+        board = await cls._board_of_conversation(conversation, session)
+        if board is None:
+            return
+
+        if conversation.pinned_at is not None:
+            if board.pinned_at is None:
+                await cls._set_flag(board, "pinned_at", conversation.pinned_at, session)
+        elif board.pinned_at is not None:
+            await cls._set_flag(board, "pinned_at", None, session)
+
+        await cls._spread_pin_to_conversations(board, session)
+
+    @classmethod
+    async def _set_flag(cls, whiteboard: Whiteboard, column: str, value: Optional[datetime], session) -> None:
+        """
+        Write a visibility flag without moving the board's updated_at.
+
+        updated_at is the board's last edit: what the listing orders by and what a
+        client shows as "modified". A flag records where the board is filed, not an edit
+        of it - written through the ORM, it would fire the column's onupdate and present
+        a pin as a change to the drawing. Naming updated_at in the SET clause keeps it as
+        it was (an explicit value suppresses onupdate), and the loaded object takes the
+        new flag as already persisted, so the flush has nothing left to write.
+
+        Args:
+            whiteboard: The board to flag, as loaded in this session
+            column: "archived_at" or "pinned_at"
+            value: The flag's new date, or None to clear it
+            session: The session of the request
+        """
+        entity = type(whiteboard)
+        await session.execute(
+            update(entity)
+            .where(entity.id == whiteboard.id)
+            .values({column: value, "updated_at": entity.updated_at})
+            .execution_options(synchronize_session=False)
+        )
+        set_committed_value(whiteboard, column, value)
+
+    @classmethod
+    async def _board_of_conversation(cls, conversation: Any, session) -> Optional[Whiteboard]:
+        """
+        The board this conversation points at, if there is one to follow.
+
+        None when the pointer is empty, and when it names a board that is gone: reaching
+        it through the owner's read (see :meth:`get_for_user`) keeps a dangling pointer
+        and a stranger's board id in the same place - a miss, not a leak.
+        """
+        if not conversation.whiteboard_id:
+            return None
+
+        return await cls.get_for_user(conversation.whiteboard_id, conversation.user_id, session)
+
+    @classmethod
+    async def _spread_archive_to_conversations(cls, whiteboard: Whiteboard, session) -> None:
+        """
+        Make every conversation pointing at this board share its archive flag.
+
+        Rows entering the state take the board's date - when the state began - rather
+        than the date of whichever action reached them: the date is a fact about the
+        state, and one clique carries one date. Rows leaving it are cleared whatever
+        their own date was: the conversation service's caller already moved its own row,
+        and the board is the single source of the state being spread.
+
+        Both directions touch only the rows whose state actually changes: a row already
+        in step is left alone, so a repeat - or an action on one conversation - never
+        bumps the updated_at of the others.
+        """
+        conversation, stmt = cls._update_conversations_of(whiteboard)
+        if whiteboard.archived_at is None:
+            stmt = stmt.where(conversation.archived_at.isnot(None)).values(archived_at=None)
+        else:
+            stmt = stmt.where(conversation.archived_at.is_(None)).values(archived_at=whiteboard.archived_at)
+
+        await session.execute(stmt)
+
+    @classmethod
+    async def _spread_pin_to_conversations(cls, whiteboard: Whiteboard, session) -> None:
+        """Same rule and same reasoning as :meth:`_spread_archive_to_conversations`, for the pin."""
+        conversation, stmt = cls._update_conversations_of(whiteboard)
+        if whiteboard.pinned_at is None:
+            stmt = stmt.where(conversation.pinned_at.isnot(None)).values(pinned_at=None)
+        else:
+            stmt = stmt.where(conversation.pinned_at.is_(None)).values(pinned_at=whiteboard.pinned_at)
+
+        await session.execute(stmt)
+
+    @classmethod
+    def _update_conversations_of(cls, whiteboard: Whiteboard) -> Tuple[Any, Update]:
+        """
+        The conversation entity, and an UPDATE scoped to the conversations of this board.
+
+        Scoped on the owner as well as the pointer. Today a conversation only ever
+        points at a board of its own user, so the owner clause filters nothing - it is
+        there so that a flag set on one user's board can never write another user's
+        conversation, should a pointer ever cross users.
+        """
+        conversation = cls.app_manager.get_entity("ai_conversation")
+        stmt = update(conversation).where(
+            conversation.whiteboard_id == whiteboard.id,
+            conversation.user_id == whiteboard.user_id,
+        )
+        return conversation, stmt
 
     # ==================== Notification ====================
 

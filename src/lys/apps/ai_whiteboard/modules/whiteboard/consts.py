@@ -258,7 +258,8 @@ TITLE_MAX_LENGTH = 255
 WHITEBOARD_UPDATED_SIGNAL = "WHITEBOARD_UPDATED"
 
 # GraphQL node type a whiteboard GlobalID carries. Clients only ever handle GlobalIDs, so
-# the signal hands one out and the query takes the same back. The chatbot tools are not
-# clients of the schema - they call the service - and keep the raw id.
+# the signal hands one out and the query takes the same back. The chatbot tools do too:
+# the model reads the board on screen from the page context as a GlobalID, so the tools
+# take and return GlobalIDs and decode at their boundary - the service keeps raw ids.
 WHITEBOARD_NODE_NAME = "WhiteboardNode"
 USER_CHANNEL_TEMPLATE = "user:{user_id}"

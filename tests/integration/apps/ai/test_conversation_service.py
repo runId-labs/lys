@@ -83,7 +83,7 @@ class TestAIConversationServiceGetOrCreate:
 
 
 class TestAIConversationServiceArchive:
-    """Test AIConversationService.archive."""
+    """Test the visibility flags: archive, unarchive, pin, unpin."""
 
     @pytest.mark.asyncio
     async def test_archive_conversation(self, ai_app_manager):
@@ -96,21 +96,64 @@ class TestAIConversationServiceArchive:
             assert conversation.archived_at is None
 
         async with ai_app_manager.database.get_session() as session:
-            result = await conversation_service.archive(conversation.id, session)
-            assert result is True
+            loaded = await conversation_service.get_by_id(conversation.id, session)
+            archived = await conversation_service.archive(loaded, session)
 
-        async with ai_app_manager.database.get_session() as session:
-            archived = await conversation_service.get_by_id(conversation.id, session)
+            assert archived is loaded
             assert archived.archived_at is not None
 
+        async with ai_app_manager.database.get_session() as session:
+            stored = await conversation_service.get_by_id(conversation.id, session)
+            assert stored.archived_at is not None
+
     @pytest.mark.asyncio
-    async def test_archive_nonexistent_conversation(self, ai_app_manager):
-        """Test archiving a nonexistent conversation returns False."""
+    async def test_archiving_twice_keeps_the_first_date(self, ai_app_manager):
+        """Test the original date is what a repeat call must not lose."""
         conversation_service = ai_app_manager.get_service("ai_conversation")
+        user_id = str(uuid4())
 
         async with ai_app_manager.database.get_session() as session:
-            result = await conversation_service.archive(str(uuid4()), session)
-            assert result is False
+            conversation = await conversation_service.get_or_create(user_id, session)
+            first = await conversation_service.archive(conversation, session)
+            archived_at = first.archived_at
+
+            second = await conversation_service.archive(first, session)
+
+            assert second.archived_at == archived_at
+
+    @pytest.mark.asyncio
+    async def test_unarchive_conversation(self, ai_app_manager):
+        """Test unarchiving clears archived_at."""
+        conversation_service = ai_app_manager.get_service("ai_conversation")
+        user_id = str(uuid4())
+
+        async with ai_app_manager.database.get_session() as session:
+            conversation = await conversation_service.get_or_create(user_id, session)
+            await conversation_service.archive(conversation, session)
+
+            restored = await conversation_service.unarchive(conversation, session)
+
+            assert restored.archived_at is None
+
+        async with ai_app_manager.database.get_session() as session:
+            stored = await conversation_service.get_by_id(conversation.id, session)
+            assert stored.archived_at is None
+
+    @pytest.mark.asyncio
+    async def test_pin_and_unpin_conversation(self, ai_app_manager):
+        """Test pinning sets pinned_at, unpinning clears it, archive stays orthogonal."""
+        conversation_service = ai_app_manager.get_service("ai_conversation")
+        user_id = str(uuid4())
+
+        async with ai_app_manager.database.get_session() as session:
+            conversation = await conversation_service.get_or_create(user_id, session)
+
+            pinned = await conversation_service.pin(conversation, session)
+            assert pinned.pinned_at is not None
+            assert pinned.archived_at is None
+
+            unpinned = await conversation_service.unpin(conversation, session)
+            assert unpinned.pinned_at is None
 
 
 # ==============================================================================

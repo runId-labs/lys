@@ -257,128 +257,64 @@ class TestUpdateAIConversationTitleLogic:
         assert obj.title == "Budget review"
 
 
-class TestArchiveAIConversationLogic:
-    """Tests for AIConversationMutation.archive_ai_conversation() internal logic."""
+class TestVisibilityFlagMutationsLogic:
+    """Tests for the visibility flag mutations.
 
-    def test_sets_archived_at_when_not_already_archived(self):
+    The flag rules themselves live in the service (archive/unarchive/pin/unpin -
+    see test_conversation_services.py); what these resolvers own is the delegation:
+    the conversation resolved and owned-checked by lys_edition is handed to the
+    registered service, and its result is what the caller receives.
+    """
+
+    def _call_with_service(self, method_name, service_result=None):
         from lys.apps.ai.modules.conversation.webservices import AIConversationMutation
 
-        resolver = _get_edition_resolver(AIConversationMutation, "archive_ai_conversation")
+        resolver = _get_edition_resolver(AIConversationMutation, method_name)
+        conversation_service = AsyncMock()
+        conversation_service.archive.return_value = service_result
+        conversation_service.unarchive.return_value = service_result
+        conversation_service.pin.return_value = service_result
+        conversation_service.unpin.return_value = service_result
 
         obj = MagicMock()
-        obj.archived_at = None
+        info = MagicMock()
+        info.context.app_manager.get_service.return_value = conversation_service
 
         loop = asyncio.new_event_loop()
         try:
-            result = loop.run_until_complete(resolver(None, obj=obj, info=MagicMock()))
+            result = loop.run_until_complete(resolver(None, obj=obj, info=info))
         finally:
             loop.close()
 
-        assert result is obj
-        assert obj.archived_at is not None
+        return obj, info, conversation_service, result
 
-    def test_is_idempotent_and_keeps_the_original_archive_date(self):
-        """A second archive call must not overwrite when the conversation was archived."""
-        from lys.apps.ai.modules.conversation.webservices import AIConversationMutation
-        from datetime import datetime, UTC
+    def test_archive_delegates_to_the_service(self):
+        obj, info, conversation_service, result = self._call_with_service(
+            "archive_ai_conversation", service_result="archived"
+        )
+        conversation_service.archive.assert_called_once_with(obj, info.context.session)
+        assert result == "archived"
 
-        resolver = _get_edition_resolver(AIConversationMutation, "archive_ai_conversation")
+    def test_unarchive_delegates_to_the_service(self):
+        obj, info, conversation_service, result = self._call_with_service(
+            "unarchive_ai_conversation", service_result="restored"
+        )
+        conversation_service.unarchive.assert_called_once_with(obj, info.context.session)
+        assert result == "restored"
 
-        obj = MagicMock()
-        original_date = datetime(2026, 1, 1, tzinfo=UTC)
-        obj.archived_at = original_date
+    def test_pin_delegates_to_the_service(self):
+        obj, info, conversation_service, result = self._call_with_service(
+            "pin_ai_conversation", service_result="pinned"
+        )
+        conversation_service.pin.assert_called_once_with(obj, info.context.session)
+        assert result == "pinned"
 
-        loop = asyncio.new_event_loop()
-        try:
-            loop.run_until_complete(resolver(None, obj=obj, info=MagicMock()))
-        finally:
-            loop.close()
-
-        assert obj.archived_at == original_date
-
-
-class TestUnarchiveAIConversationLogic:
-    """Tests for AIConversationMutation.unarchive_ai_conversation() internal logic."""
-
-    def test_clears_archived_at(self):
-        from lys.apps.ai.modules.conversation.webservices import AIConversationMutation
-        from datetime import datetime, UTC
-
-        resolver = _get_edition_resolver(AIConversationMutation, "unarchive_ai_conversation")
-
-        obj = MagicMock()
-        obj.archived_at = datetime(2026, 1, 1, tzinfo=UTC)
-
-        loop = asyncio.new_event_loop()
-        try:
-            result = loop.run_until_complete(resolver(None, obj=obj, info=MagicMock()))
-        finally:
-            loop.close()
-
-        assert result is obj
-        assert obj.archived_at is None
-
-
-class TestPinAIConversationLogic:
-    """Tests for AIConversationMutation.pin_ai_conversation() internal logic."""
-
-    def test_sets_pinned_at_when_not_already_pinned(self):
-        from lys.apps.ai.modules.conversation.webservices import AIConversationMutation
-
-        resolver = _get_edition_resolver(AIConversationMutation, "pin_ai_conversation")
-
-        obj = MagicMock()
-        obj.pinned_at = None
-
-        loop = asyncio.new_event_loop()
-        try:
-            result = loop.run_until_complete(resolver(None, obj=obj, info=MagicMock()))
-        finally:
-            loop.close()
-
-        assert result is obj
-        assert obj.pinned_at is not None
-
-    def test_is_idempotent_and_keeps_the_original_pin_date(self):
-        """A second pin call must not overwrite when the conversation was pinned."""
-        from lys.apps.ai.modules.conversation.webservices import AIConversationMutation
-        from datetime import datetime, UTC
-
-        resolver = _get_edition_resolver(AIConversationMutation, "pin_ai_conversation")
-
-        obj = MagicMock()
-        original_date = datetime(2026, 1, 1, tzinfo=UTC)
-        obj.pinned_at = original_date
-
-        loop = asyncio.new_event_loop()
-        try:
-            loop.run_until_complete(resolver(None, obj=obj, info=MagicMock()))
-        finally:
-            loop.close()
-
-        assert obj.pinned_at == original_date
-
-
-class TestUnpinAIConversationLogic:
-    """Tests for AIConversationMutation.unpin_ai_conversation() internal logic."""
-
-    def test_clears_pinned_at(self):
-        from lys.apps.ai.modules.conversation.webservices import AIConversationMutation
-        from datetime import datetime, UTC
-
-        resolver = _get_edition_resolver(AIConversationMutation, "unpin_ai_conversation")
-
-        obj = MagicMock()
-        obj.pinned_at = datetime(2026, 1, 1, tzinfo=UTC)
-
-        loop = asyncio.new_event_loop()
-        try:
-            result = loop.run_until_complete(resolver(None, obj=obj, info=MagicMock()))
-        finally:
-            loop.close()
-
-        assert result is obj
-        assert obj.pinned_at is None
+    def test_unpin_delegates_to_the_service(self):
+        obj, info, conversation_service, result = self._call_with_service(
+            "unpin_ai_conversation", service_result="unpinned"
+        )
+        conversation_service.unpin.assert_called_once_with(obj, info.context.session)
+        assert result == "unpinned"
 
 
 class TestAllAIConversationsFilterLogic:

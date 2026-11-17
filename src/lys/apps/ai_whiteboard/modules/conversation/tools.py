@@ -246,7 +246,18 @@ DRAW_ON_WHITEBOARD_TOOL = {
             "readable, and the user relies on it to still be true.\n"
             "The user's view follows you: it moves onto what a call adds or changes. To "
             "SHOW something already on the board - 'show me the org chart', 'go back to "
-            "the table' - call with 'focus' alone: nothing is redrawn, the view goes there."
+            "the table' - call with 'focus' alone: nothing is redrawn, the view goes there.\n"
+            "**Your board and the user's boards.** Without 'whiteboard_id' or 'copy_from' a "
+            "call draws on THIS conversation's board, opened if there is none. Every result "
+            "says 'conversation_board': true for that one, false for a board you reached by "
+            "id - the one on the user's screen, a deck from last month. Such a board stays "
+            "the user's: you change it in place when asked to, and it never becomes yours. "
+            "To reuse a board as a model - the same deck next month, or for another company "
+            "- call with 'copy_from' (and a 'title' for the copy): a new board opens as its "
+            "exact copy, becomes this conversation's board, and the patch of the same call "
+            "lands on the copy; the original is left untouched. Then read it back and "
+            "replace what differs - texts, figures, the data behind tables and charts - "
+            "rather than redrawing it."
         ),
         "parameters": {
             "type": "object",
@@ -296,8 +307,21 @@ DRAW_ON_WHITEBOARD_TOOL = {
                     "type": "string",
                     "description": (
                         "Only when the user is looking at a specific board and asks you to "
-                        "change THAT one. Leave it out otherwise: the conversation's own "
-                        "board is used, and opened if it does not exist yet."
+                        "change THAT one: it is changed in place and stays the user's - it "
+                        "does not become this conversation's board. Leave it out otherwise: "
+                        "the conversation's own board is used, and opened if it does not "
+                        "exist yet. The id exactly as the page context or a whiteboard tool "
+                        "result gives it."
+                    ),
+                },
+                "copy_from": {
+                    "type": "string",
+                    "description": (
+                        "A board to reuse as a model: a NEW board opens as its exact copy and "
+                        "becomes this conversation's board; this call's add, update and "
+                        "delete then apply to the copy, never to the original. Not with "
+                        "'whiteboard_id'. The id exactly as the page context or a whiteboard "
+                        "tool result gives it."
                     ),
                 },
                 "title": {
@@ -305,8 +329,8 @@ DRAW_ON_WHITEBOARD_TOOL = {
                     "description": (
                         "The board's name, as the user will find it again weeks later: a few "
                         "words naming the subject ('Personnel costs 2025'), in the user's "
-                        "language. Only read when this call opens a new board - an existing "
-                        "board keeps its name."
+                        "language. Only read when this call opens a new board - a copy "
+                        "included - an existing board keeps its name."
                     ),
                 },
             },
@@ -334,7 +358,10 @@ READ_WHITEBOARD_TOOL = {
             "properties": {
                 "whiteboard_id": {
                     "type": "string",
-                    "description": "The board to read. Leave it out for the conversation's own board.",
+                    "description": (
+                        "The board to read, exactly as the page context or a whiteboard tool "
+                        "result gives it. Leave it out for the conversation's own board."
+                    ),
                 },
             },
         },

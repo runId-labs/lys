@@ -15,10 +15,15 @@ from lys.apps.ai_whiteboard.modules.conversation.services import AIConversationS
 from lys.apps.ai_whiteboard.modules.conversation.tools import DRAW_ON_WHITEBOARD_TOOL, READ_WHITEBOARD_TOOL
 from lys.apps.ai_whiteboard.modules.whiteboard.consts import ADD_ITEM_FIELDS, UPDATE_ITEM_FIELDS
 from lys.core.errors import LysError
+from lys.core.graphql.client import build_global_id
 from lys.apps.ai_whiteboard.errors import WHITEBOARD_NOT_FOUND, WHITEBOARD_UNKNOWN_ELEMENT
 
 BOARD = SimpleNamespace(id="board-1", title="Board")
 DRAWN = {"whiteboard_id": "board-1", "title": "Board", "elements": [{"name": "a"}]}
+# The tools speak GlobalIDs to the model; the service behind them keeps raw ids.
+BOARD_GID = build_global_id("WhiteboardNode", "board-1")
+NAMED_GID = build_global_id("WhiteboardNode", "board-9")
+DRAWN_FOR_MODEL = {**DRAWN, "whiteboard_id": BOARD_GID, "conversation_board": True}
 
 
 @pytest.fixture
@@ -31,6 +36,9 @@ def whiteboard_service():
     service.apply_operations = AsyncMock()
     service.open_for_conversation = AsyncMock(return_value=BOARD)
     service.resolve_for_conversation = AsyncMock(return_value=BOARD)
+    # Flag sync, reached when the turn opened the board (it was born here, not named).
+    service.follow_conversation_archive = AsyncMock()
+    service.follow_conversation_pin = AsyncMock()
     service.describe = MagicMock(return_value=[{"name": "a"}])
     service.slides = MagicMock(return_value=[{"index": 1}])
     service.theme = MagicMock(return_value={"background": "#ffffff", "stroke": "clean"})
@@ -111,7 +119,7 @@ class TestDrawHandler:
 
         kwargs = whiteboard_service.draw.await_args.kwargs
         assert kwargs["operations"] == {"add": [{"name": "a"}]}
-        assert result == DRAWN
+        assert result == DRAWN_FOR_MODEL
 
     @pytest.mark.asyncio
     async def test_a_board_opened_here_takes_the_name_the_model_gave_it(self, service, whiteboard_service):
@@ -160,6 +168,71 @@ class TestDrawHandler:
         ctx["session"].add.assert_not_called()
 
     @pytest.mark.asyncio
+    async def test_a_board_opened_by_the_turn_inherits_the_conversations_flags(
+        self, service, whiteboard_service, conversation,
+    ):
+        """The board was born here: its flags start where the conversation's stand."""
+        ctx = context()
+
+        await service._handle_draw_on_whiteboard({"add": [{"name": "a"}]}, ctx)
+
+        whiteboard_service.follow_conversation_archive.assert_awaited_once_with(conversation, ctx["session"])
+        whiteboard_service.follow_conversation_pin.assert_awaited_once_with(conversation, ctx["session"])
+
+    @pytest.mark.asyncio
+    async def test_a_named_board_is_edited_in_place_never_taken_over(
+        self, service, whiteboard_service, conversation,
+    ):
+        """The board on screen stays the user's: no pointer, no flag sync, and the model is told."""
+        whiteboard_service.draw.return_value = {**DRAWN, "whiteboard_id": "board-9"}
+        ctx = context()
+
+        result = await service._handle_draw_on_whiteboard(
+            {"add": [{"name": "a"}], "whiteboard_id": NAMED_GID}, ctx,
+        )
+
+        assert conversation.whiteboard_id is None
+        ctx["session"].add.assert_not_called()
+        whiteboard_service.follow_conversation_archive.assert_not_awaited()
+        whiteboard_service.follow_conversation_pin.assert_not_awaited()
+        assert result["whiteboard_id"] == NAMED_GID
+        assert result["conversation_board"] is False
+
+    @pytest.mark.asyncio
+    async def test_a_copy_becomes_the_conversations_board(
+        self, service, whiteboard_service, conversation,
+    ):
+        """Copied from a model, the new board is born here: pointer and flags follow."""
+        whiteboard_service.draw.return_value = {**DRAWN, "whiteboard_id": "copy-1"}
+        ctx = context()
+
+        result = await service._handle_draw_on_whiteboard({"copy_from": NAMED_GID, "title": "CODIR 2027"}, ctx)
+
+        kwargs = whiteboard_service.draw.await_args.kwargs
+        assert kwargs["copy_from_whiteboard_id"] == "board-9"
+        assert kwargs["named_whiteboard_id"] is None
+        assert kwargs["title"] == "CODIR 2027"
+        assert conversation.whiteboard_id == "copy-1"
+        whiteboard_service.follow_conversation_archive.assert_awaited_once_with(conversation, ctx["session"])
+        assert result["conversation_board"] is True
+
+    @pytest.mark.asyncio
+    async def test_editing_a_board_and_copying_one_at_once_is_refused(self, service, whiteboard_service):
+        result = await service._handle_draw_on_whiteboard(
+            {"add": [{"name": "a"}], "whiteboard_id": BOARD_GID, "copy_from": NAMED_GID}, context(),
+        )
+
+        assert result["error"] == "CONFLICTING_WHITEBOARDS"
+        whiteboard_service.draw.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_copy_from_that_is_not_a_whiteboard_global_id_is_refused(self, service, whiteboard_service):
+        result = await service._handle_draw_on_whiteboard({"copy_from": "board-9"}, context())
+
+        assert result["error"] == "INVALID_WHITEBOARD_ID"
+        whiteboard_service.draw.assert_not_awaited()
+
+    @pytest.mark.asyncio
     async def test_a_focus_alone_is_a_call_worth_making(self, service, whiteboard_service):
         """'Show me the org chart': nothing to draw, something to bring into view."""
         result = await service._handle_draw_on_whiteboard({"focus": ["organigramme"]}, context())
@@ -167,7 +240,7 @@ class TestDrawHandler:
         kwargs = whiteboard_service.draw.await_args.kwargs
         assert kwargs["operations"] == {}
         assert kwargs["focus"] == ["organigramme"]
-        assert result == DRAWN
+        assert result == DRAWN_FOR_MODEL
 
     @pytest.mark.asyncio
     async def test_a_patch_without_focus_passes_none(self, service, whiteboard_service):
@@ -201,15 +274,30 @@ class TestDrawHandler:
             WHITEBOARD_NOT_FOUND, "no such board"
         )
 
-        result = await service._handle_draw_on_whiteboard({"add": [{"name": "a"}], "whiteboard_id": "x"}, context())
+        result = await service._handle_draw_on_whiteboard({"add": [{"name": "a"}], "whiteboard_id": NAMED_GID}, context())
 
         assert result["error"] == "WHITEBOARD_NOT_FOUND"
 
     @pytest.mark.asyncio
     async def test_the_named_board_is_forwarded(self, service, whiteboard_service):
-        await service._handle_draw_on_whiteboard({"add": [{"name": "a"}], "whiteboard_id": "wanted"}, context())
+        await service._handle_draw_on_whiteboard(
+            {"add": [{"name": "a"}], "whiteboard_id": build_global_id("WhiteboardNode", "wanted")}, context(),
+        )
         kwargs = whiteboard_service.draw.await_args.kwargs
         assert kwargs["named_whiteboard_id"] == "wanted"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("named", [
+        "board-9",
+        "9b7f6c1e-2f4a-4c1d-9a51-6c0f2a1e3b44",
+        build_global_id("CompanyNode", "board-9"),
+    ])
+    async def test_an_id_that_is_not_a_whiteboard_global_id_is_refused(self, service, whiteboard_service, named):
+        """A raw uuid or another type's id is not guessed at: the model is told what to pass."""
+        result = await service._handle_draw_on_whiteboard({"add": [{"name": "a"}], "whiteboard_id": named}, context())
+
+        assert result["error"] == "INVALID_WHITEBOARD_ID"
+        whiteboard_service.draw.assert_not_awaited()
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("ctx", [{}, {"session": MagicMock()}, {"conversation_id": "conv-1"}])
@@ -229,15 +317,32 @@ class TestReadHandler:
     async def test_reads_the_board_back(self, service):
         result = await service._handle_read_whiteboard({}, context())
         assert result == {
-            "whiteboard_id": "board-1", "title": "Board", "elements": [{"name": "a"}], "slides": [{"index": 1}],
+            "whiteboard_id": BOARD_GID, "conversation_board": False,
+            "title": "Board", "elements": [{"name": "a"}], "slides": [{"index": 1}],
             "theme": {"background": "#ffffff", "stroke": "clean"},
         }
 
     @pytest.mark.asyncio
     async def test_unreachable_board_goes_back_to_the_model(self, service, whiteboard_service):
         whiteboard_service.find_for_conversation.side_effect = LysError(WHITEBOARD_NOT_FOUND, "no such board")
-        result = await service._handle_read_whiteboard({"whiteboard_id": "x"}, context())
+        result = await service._handle_read_whiteboard({"whiteboard_id": NAMED_GID}, context())
         assert result["error"] == "WHITEBOARD_NOT_FOUND"
+
+    @pytest.mark.asyncio
+    async def test_the_board_on_screen_is_read_by_its_global_id(self, service, whiteboard_service, conversation):
+        """The page context names the board on screen as a GlobalID: the read reaches it."""
+        await service._handle_read_whiteboard({"whiteboard_id": NAMED_GID}, context())
+
+        assert whiteboard_service.find_for_conversation.await_args.args[2] == "board-9"
+
+    @pytest.mark.asyncio
+    async def test_a_raw_uuid_is_refused(self, service, whiteboard_service):
+        result = await service._handle_read_whiteboard(
+            {"whiteboard_id": "9b7f6c1e-2f4a-4c1d-9a51-6c0f2a1e3b44"}, context(),
+        )
+
+        assert result["error"] == "INVALID_WHITEBOARD_ID"
+        whiteboard_service.find_for_conversation.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_reading_never_opens_a_board(self, service, whiteboard_service):

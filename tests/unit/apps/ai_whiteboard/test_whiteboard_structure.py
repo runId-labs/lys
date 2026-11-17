@@ -67,7 +67,9 @@ class TestWhiteboardNode:
 
     def test_order_by_map(self):
         from lys.apps.ai_whiteboard.modules.whiteboard.nodes import WhiteboardNode
-        assert set(WhiteboardNode.order_by_attribute_map) == {"created_at", "updated_at", "title"}
+        # The pin orders the pinned listing (most recently pinned first); the archive
+        # is a filter, never an ordering.
+        assert set(WhiteboardNode.order_by_attribute_map) == {"created_at", "updated_at", "pinned_at", "title"}
 
 
 class TestConversationNode:
@@ -92,8 +94,14 @@ class TestWebservices:
         assert hasattr(WhiteboardQuery, "all_whiteboards")
         assert hasattr(WhiteboardMutation, "save_whiteboard_scene")
         assert hasattr(WhiteboardMutation, "delete_whiteboard")
+        assert hasattr(WhiteboardMutation, "archive_whiteboard")
+        assert hasattr(WhiteboardMutation, "unarchive_whiteboard")
+        assert hasattr(WhiteboardMutation, "pin_whiteboard")
+        assert hasattr(WhiteboardMutation, "unpin_whiteboard")
 
     def test_operations_are_async(self):
         from lys.apps.ai_whiteboard.modules.whiteboard.webservices import WhiteboardMutation, WhiteboardQuery
         assert inspect.iscoroutinefunction(WhiteboardQuery.all_whiteboards)
         assert inspect.iscoroutinefunction(WhiteboardMutation.save_whiteboard_scene)
+        assert inspect.iscoroutinefunction(WhiteboardMutation.archive_whiteboard)
+        assert inspect.iscoroutinefunction(WhiteboardMutation.pin_whiteboard)

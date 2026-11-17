@@ -1105,11 +1105,89 @@ class AIConversationService(EntityService[AIConversation]):
         message["content"] = f"<{tag}>{at.strftime(MESSAGE_TIMESTAMP_FORMAT)}</{tag}>\n{message['content']}"
         return message
 
+    # ==================== Visibility flags ====================
+
     @classmethod
-    async def archive(cls, conversation_id: str, session: AsyncSession) -> bool:
-        """Archive a conversation."""
-        result = await cls.update(conversation_id, session, archived_at=datetime.now(UTC))
-        return result is not None
+    async def archive(cls, conversation: AIConversation, session: AsyncSession) -> AIConversation:
+        """
+        Archive a conversation.
+
+        In the base app this is a fact about the conversation alone; the whiteboard app
+        extends this service (its registry entry wins) and overrides these methods to
+        keep the conversation's board in step. Kept in the service rather than the
+        mutation so every caller shares one rule - the invariants below are what the
+        override and the tests rely on.
+
+        Idempotent: archiving an already-archived conversation leaves the original date
+        untouched, because that date records when it was archived. Overwriting it on a
+        second call - a double click, a retry - would lose that fact silently, and raising
+        instead would turn a harmless repeat into an error the client must handle.
+
+        Args:
+            conversation: The conversation to archive
+            session: The session of the request
+
+        Returns:
+            AIConversation: the archived conversation
+        """
+        if conversation.archived_at is None:
+            conversation.archived_at = datetime.now(UTC)
+        return conversation
+
+    @classmethod
+    async def unarchive(cls, conversation: AIConversation, session: AsyncSession) -> AIConversation:
+        """
+        Restore an archived conversation to the default listing.
+
+        Args:
+            conversation: The conversation to restore
+            session: The session of the request
+
+        Returns:
+            AIConversation: the restored conversation
+        """
+        conversation.archived_at = None
+        return conversation
+
+    @classmethod
+    async def pin(cls, conversation: AIConversation, session: AsyncSession) -> AIConversation:
+        """
+        Pin a conversation.
+
+        Pinned and archived are orthogonal: pinning does not restore an archived
+        conversation, and unpinning does not archive a pinned one.
+
+        Idempotent: pinning an already-pinned conversation leaves the original date
+        untouched, for the same reason archiving does - overwriting it on a second call
+        (a double click, a retry) would lose when the conversation was pinned, and
+        raising instead would turn a harmless repeat into an error the client must
+        handle. The date kept is also what a pinned listing orders by.
+
+        Args:
+            conversation: The conversation to pin
+            session: The session of the request
+
+        Returns:
+            AIConversation: the pinned conversation
+        """
+        if conversation.pinned_at is None:
+            conversation.pinned_at = datetime.now(UTC)
+        return conversation
+
+    @classmethod
+    async def unpin(cls, conversation: AIConversation, session: AsyncSession) -> AIConversation:
+        """
+        Unpin a conversation.
+
+        Args:
+            conversation: The conversation to unpin
+            session: The session of the request
+
+        Returns:
+            AIConversation: the unpinned conversation
+        """
+        conversation.pinned_at = None
+        return conversation
 
     @classmethod
     async def _get_stable_context(

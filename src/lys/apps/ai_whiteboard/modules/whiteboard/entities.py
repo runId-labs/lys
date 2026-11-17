@@ -6,9 +6,10 @@ itself when it has something structured to show, and the user edits it by hand; 
 write to the same scene.
 """
 
-from typing import Any, Dict
+from datetime import datetime
+from typing import Any, Dict, Optional
 
-from sqlalchemy import Integer, JSON, String, Uuid
+from sqlalchemy import DateTime, Integer, JSON, String, Uuid
 from sqlalchemy.orm import Mapped, mapped_column
 
 from lys.core.entities import Entity
@@ -57,6 +58,25 @@ class Whiteboard(Entity):
     # drop one of them in silence. And it lets a client tell a missed update from an
     # applied one, since signals are never replayed.
     revision: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    # Timezone-aware like every other timestamp in the framework: the column records an
+    # instant, and a naive one cannot be compared across the deployments that read it.
+    # Same semantics as the conversation's own flags (see AIConversation): kept in step
+    # with them for as long as the conversation points at this board - the sync lives in
+    # the services, never here.
+    archived_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True,
+    )
+    # Highlights a board the user wants kept within reach - the mirror of archiving at
+    # the other end of the listing's spectrum: an archive files it away, a pin brings it
+    # forward. Deliberately orthogonal to archived_at, so the two cross without
+    # interacting: archiving a pinned board keeps the pin, and unarchiving brings it
+    # back highlighted.
+    # A timestamp for the same reasons archived_at is one: a repeat call keeps the
+    # original date (pinning is idempotent), and a pinned listing orders by it - most
+    # recently pinned first - something a boolean cannot give.
+    pinned_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True,
+    )
 
     def accessing_users(self) -> list[str]:
         return [self.user_id] if self.user_id else []

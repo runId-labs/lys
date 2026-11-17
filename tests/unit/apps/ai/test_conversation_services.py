@@ -159,41 +159,85 @@ class TestAIConversationServiceGetOrCreate:
 
 
 class TestAIConversationServiceArchive:
-    """Tests for archive method."""
+    """Tests for archive, unarchive, pin and unpin."""
+
+    @pytest.fixture
+    def mock_session(self):
+        """Create mock async session."""
+        return AsyncMock()
 
     @pytest.mark.asyncio
-    async def test_archive_conversation(self):
-        """Test archiving a conversation."""
+    async def test_archive_conversation(self, mock_session):
+        """Test archiving a conversation sets archived_at."""
         from lys.apps.ai.modules.conversation.services import AIConversationService
 
-        mock_session = AsyncMock()
-        updated_conv = MagicMock()
+        conversation = SimpleNamespace(archived_at=None, pinned_at=None)
 
-        with patch.object(AIConversationService, "update", new_callable=AsyncMock) as mock_update:
-            mock_update.return_value = updated_conv
+        result = await AIConversationService.archive(conversation, mock_session)
 
-            result = await AIConversationService.archive("conv-123", mock_session)
-
-        assert result is True
-        mock_update.assert_called_once()
-        call_args = mock_update.call_args
-        assert call_args[0][0] == "conv-123"
-        assert call_args[0][1] == mock_session
-        assert "archived_at" in call_args[1]
+        assert result is conversation
+        assert conversation.archived_at is not None
 
     @pytest.mark.asyncio
-    async def test_archive_nonexistent_conversation(self):
-        """Test archiving a nonexistent conversation returns False."""
+    async def test_archiving_twice_keeps_the_first_date(self, mock_session):
+        """Test the original date is what a repeat call must not lose."""
         from lys.apps.ai.modules.conversation.services import AIConversationService
 
-        mock_session = AsyncMock()
+        first_date = datetime(2024, 5, 4)
+        conversation = SimpleNamespace(archived_at=first_date, pinned_at=None)
 
-        with patch.object(AIConversationService, "update", new_callable=AsyncMock) as mock_update:
-            mock_update.return_value = None
+        await AIConversationService.archive(conversation, mock_session)
 
-            result = await AIConversationService.archive("nonexistent", mock_session)
+        assert conversation.archived_at == first_date
 
-        assert result is False
+    @pytest.mark.asyncio
+    async def test_unarchive_conversation(self, mock_session):
+        """Test unarchiving clears archived_at."""
+        from lys.apps.ai.modules.conversation.services import AIConversationService
+
+        conversation = SimpleNamespace(archived_at=datetime(2024, 5, 4), pinned_at=None)
+
+        result = await AIConversationService.unarchive(conversation, mock_session)
+
+        assert result is conversation
+        assert conversation.archived_at is None
+
+    @pytest.mark.asyncio
+    async def test_pin_conversation(self, mock_session):
+        """Test pinning sets pinned_at, without touching archived_at."""
+        from lys.apps.ai.modules.conversation.services import AIConversationService
+
+        conversation = SimpleNamespace(archived_at=None, pinned_at=None)
+
+        result = await AIConversationService.pin(conversation, mock_session)
+
+        assert result is conversation
+        assert conversation.pinned_at is not None
+        assert conversation.archived_at is None
+
+    @pytest.mark.asyncio
+    async def test_pinning_twice_keeps_the_first_date(self, mock_session):
+        """Test the original date is what a repeat call must not lose."""
+        from lys.apps.ai.modules.conversation.services import AIConversationService
+
+        first_date = datetime(2024, 5, 4)
+        conversation = SimpleNamespace(archived_at=None, pinned_at=first_date)
+
+        await AIConversationService.pin(conversation, mock_session)
+
+        assert conversation.pinned_at == first_date
+
+    @pytest.mark.asyncio
+    async def test_unpin_conversation(self, mock_session):
+        """Test unpinning clears pinned_at."""
+        from lys.apps.ai.modules.conversation.services import AIConversationService
+
+        conversation = SimpleNamespace(archived_at=None, pinned_at=datetime(2024, 5, 4))
+
+        result = await AIConversationService.unpin(conversation, mock_session)
+
+        assert result is conversation
+        assert conversation.pinned_at is None
 
 
 class TestAIMessageServiceAddToolResult:

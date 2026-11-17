@@ -27,6 +27,8 @@ class WhiteboardNode(EntityNode[WhiteboardService], relay.Node):
     title: str
     created_at: datetime
     updated_at: Optional[datetime]
+    archived_at: Optional[datetime]
+    pinned_at: Optional[datetime]
     _entity: strawberry.Private[Whiteboard]
 
     @strawberry.field(
@@ -54,5 +56,6 @@ class WhiteboardNode(EntityNode[WhiteboardService], relay.Node):
         return {
             "created_at": self.entity_class.created_at,
             "updated_at": self.entity_class.updated_at,
+            "pinned_at": self.entity_class.pinned_at,
             "title": self.entity_class.title,
         }

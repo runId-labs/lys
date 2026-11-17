@@ -467,3 +467,62 @@ class TestNotification:
             await self._begin(session)
             WhiteboardService._notify(make_board(), session)
             await session.commit()
+
+
+class TestTitleInput:
+    """A board renamed by hand: the title is validated before it reaches the row."""
+
+    def test_whitespace_is_collapsed_to_one_line(self):
+        from lys.apps.ai_whiteboard.modules.whiteboard.models import UpdateWhiteboardTitleInputModel
+
+        assert UpdateWhiteboardTitleInputModel(title="  CODIR\n  2027 ").title == "CODIR 2027"
+
+    @pytest.mark.parametrize("title", ["", "   ", "\n"])
+    def test_a_blank_title_is_refused(self, title):
+        from pydantic import ValidationError
+
+        from lys.apps.ai_whiteboard.modules.whiteboard.models import UpdateWhiteboardTitleInputModel
+
+        with pytest.raises(ValidationError):
+            UpdateWhiteboardTitleInputModel(title=title)
+
+    def test_a_title_over_the_column_length_is_refused(self):
+        from pydantic import ValidationError
+
+        from lys.apps.ai_whiteboard.modules.whiteboard.consts import TITLE_MAX_LENGTH
+        from lys.apps.ai_whiteboard.modules.whiteboard.models import UpdateWhiteboardTitleInputModel
+
+        with pytest.raises(ValidationError):
+            UpdateWhiteboardTitleInputModel(title="x" * (TITLE_MAX_LENGTH + 1))
+
+
+class TestDuplicateInput:
+    """A board copied by hand: a given title follows the rename rule, none is allowed."""
+
+    def test_no_title_keeps_the_sources(self):
+        from lys.apps.ai_whiteboard.modules.whiteboard.models import DuplicateWhiteboardInputModel
+
+        assert DuplicateWhiteboardInputModel().title is None
+
+    def test_whitespace_is_collapsed_to_one_line(self):
+        from lys.apps.ai_whiteboard.modules.whiteboard.models import DuplicateWhiteboardInputModel
+
+        assert DuplicateWhiteboardInputModel(title="  CODIR\n  2027 ").title == "CODIR 2027"
+
+    @pytest.mark.parametrize("title", ["", "   ", "\n"])
+    def test_a_blank_title_is_refused(self, title):
+        from pydantic import ValidationError
+
+        from lys.apps.ai_whiteboard.modules.whiteboard.models import DuplicateWhiteboardInputModel
+
+        with pytest.raises(ValidationError):
+            DuplicateWhiteboardInputModel(title=title)
+
+    def test_a_title_over_the_column_length_is_refused(self):
+        from pydantic import ValidationError
+
+        from lys.apps.ai_whiteboard.modules.whiteboard.consts import TITLE_MAX_LENGTH
+        from lys.apps.ai_whiteboard.modules.whiteboard.models import DuplicateWhiteboardInputModel
+
+        with pytest.raises(ValidationError):
+            DuplicateWhiteboardInputModel(title="x" * (TITLE_MAX_LENGTH + 1))

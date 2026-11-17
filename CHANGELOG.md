@@ -7,6 +7,51 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.64.0] - 2026-11-17
+
+### Added
+- `Whiteboard.archived_at` / `Whiteboard.pinned_at` (timezone-aware, nullable): new
+  columns on `whiteboard` — consuming projects must generate a migration. Exposed on
+  `WhiteboardNode`; `pinnedAt` sortable via `orderBy`. Existing rows start neither
+  archived nor pinned; to align boards with conversations already archived or pinned,
+  run once after the migration (PostgreSQL):
+  ```sql
+  UPDATE whiteboard w SET archived_at = c.first_at
+  FROM (SELECT whiteboard_id, user_id, MIN(archived_at) AS first_at FROM ai_conversation
+        WHERE archived_at IS NOT NULL GROUP BY whiteboard_id, user_id) c
+  WHERE c.whiteboard_id = w.id AND c.user_id = w.user_id AND w.archived_at IS NULL;
+
+  UPDATE whiteboard w SET pinned_at = c.first_at
+  FROM (SELECT whiteboard_id, user_id, MIN(pinned_at) AS first_at FROM ai_conversation
+        WHERE pinned_at IS NOT NULL GROUP BY whiteboard_id, user_id) c
+  WHERE c.whiteboard_id = w.id AND c.user_id = w.user_id AND w.pinned_at IS NULL;
+  ```
+- `archive_whiteboard` / `unarchive_whiteboard` / `pin_whiteboard` / `unpin_whiteboard`
+  (OWNER). A board and the conversations pointing at it stay in step: a flag set from
+  either side lands on both. Flags never move a board's `updated_at`.
+- `all_whiteboards` gains `user_id` (super user only), `archived` (default `false`,
+  active only) and `pinned` filters, same semantics as `all_ai_conversations`.
+- `update_whiteboard_title` (OWNER): renames a board.
+- `duplicate_whiteboard` (OWNER): copies a board into a new one attached to no
+  conversation; optional `inputs.title`, validated like a rename.
+- `WhiteboardService.copy_for_user`; `draw_on_whiteboard` gains `copy_from`: a new board
+  opens as a copy of the named one, becomes the conversation's board, and the call's
+  patch lands on the copy.
+
+### Changed
+- **Breaking**: `AIConversationService.archive(conversation_id, session) -> bool` becomes
+  `archive(conversation, session) -> AIConversation`; `unarchive`, `pin` and `unpin`
+  join it on the service. The mutations call the service, so the whiteboard app can keep
+  the conversation's board in step.
+- **Breaking**: `all_ai_conversations` and `all_ai_conversation_messages` no longer
+  accept `ROLE_ACCESS_LEVEL`: a conversation is personal content. Only the owner, and
+  the super user (audited), reach it. Roles granting these webservices lose access.
+- **Breaking**: the whiteboard tools take and return `WhiteboardNode` GlobalIDs; a raw
+  uuid or another node type's id is refused with `INVALID_WHITEBOARD_ID`. Results carry
+  `conversation_board`.
+- **Breaking**: a board named by `whiteboard_id` is edited in place and no longer becomes
+  the conversation's board.
+
 ## [0.63.0] - 2026-11-15
 
 ### Added

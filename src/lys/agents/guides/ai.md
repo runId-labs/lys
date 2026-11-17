@@ -423,6 +423,18 @@ inherit from the app's, or the tools are silently absent.
 - The scene size limit is the `ai_whiteboard.max_scene_bytes` plugin setting.
 - A named `whiteboard_id` that is not the user's is refused (`WHITEBOARD_NOT_FOUND`), never
   redirected to the conversation's own board.
+- The tools speak GlobalIDs (`WhiteboardNode`): `whiteboard_id` and `copy_from` take one —
+  a raw uuid or another type's id is refused (`INVALID_WHITEBOARD_ID`) — and results
+  return one, with `conversation_board` telling the conversation's own board from a board
+  reached by id. The service behind keeps raw ids.
+- A board named by `whiteboard_id` is edited in place and never attached to the
+  conversation (no pointer, no flag sync): it stays the user's. `copy_from` opens a new
+  board as an exact copy (`WhiteboardService.copy_for_user`, flags not copied), attached
+  to the conversation; the call's patch lands on the copy. `duplicateWhiteboard` (OWNER)
+  makes the same copy from the UI, attached to no conversation. `updateWhiteboardTitle`
+  (OWNER) renames a board from the UI; the model has no rename tool.
+- Pinning, archiving or restoring never moves a board's `updated_at` (its last edit):
+  flags are written through `_set_flag`.
 - The model names a board it opens (`title` on `draw_on_whiteboard`, read only when the
   call opens one). It falls back to the conversation title, which is written in the
   background and may not exist yet on the turn of the user's first message - so never

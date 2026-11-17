@@ -4,7 +4,6 @@ AI Conversation webservices.
 GraphQL queries and mutations for AI conversation interactions.
 """
 
-from datetime import datetime, UTC
 from typing import Optional
 
 import strawberry
@@ -25,7 +24,6 @@ from lys.apps.ai.modules.conversation.nodes import (
     AIConversationNode,
     AIMessageNode,
 )
-from lys.apps.user_role.consts import ROLE_ACCESS_LEVEL
 from lys.core.consts.webservices import CONNECTED_ACCESS_LEVEL, OWNER_ACCESS_LEVEL
 from lys.core.contexts import Info
 from lys.core.graphql.connection import lys_connection
@@ -43,14 +41,14 @@ class AIConversationQuery(Query):
     @lys_connection(
         AIConversationNode,
         is_public=False,
-        access_levels=[OWNER_ACCESS_LEVEL, ROLE_ACCESS_LEVEL],
+        access_levels=[OWNER_ACCESS_LEVEL],
         is_licenced=False,
         description="List AI conversations, newest first - active ones by default, the archive "
                     "alone with archived=true, both with archived=null. Pinned ones stay in "
                     "the default listing; callers that present pins separately narrow with "
                     "pinned=true (pinned ones, most recently pinned first via orderBy) or "
                     "pinned=false. Restricted to the connected user's own conversations "
-                    "unless a role grants full access.",
+                    "unless the caller is a super user.",
         options={"generate_tool": False},
     )
     async def all_ai_conversations(
@@ -64,15 +62,17 @@ class AIConversationQuery(Query):
         """
         List AI conversations.
 
-        Scoping is declarative and combines with OR: OWNER access applies
-        AIConversation.user_accessing_filters (own conversations only), while ROLE
-        access returns every conversation. The user_id argument narrows a
-        full-access listing to one user; it cannot widen an owner-scoped one.
+        OWNER access only, on purpose: a conversation is personal content, so no role
+        is granted a view of other users' conversations. OWNER access applies
+        AIConversation.user_accessing_filters (own conversations only); the super user
+        bypasses it with full, audited access - for support or terms-of-use
+        enforcement. The user_id argument narrows that full-access listing to one
+        user; it cannot widen an owner-scoped one.
 
         Args:
             info: GraphQL context
             user_id: If set, restrict to this user's conversations. Only meaningful
-                with full access - an owner-scoped caller is already limited to itself.
+                for the super user - an owner-scoped caller is already limited to itself.
             purpose: If set, restrict to conversations opened for this purpose
                 (e.g. "chatbot"). Null → every purpose.
             archived: False (default) lists the active conversations, True lists only the
@@ -121,7 +121,7 @@ class AIConversationMessageQuery(Query):
     @lys_connection(
         AIConversationMessageNode,
         is_public=False,
-        access_levels=[OWNER_ACCESS_LEVEL, ROLE_ACCESS_LEVEL],
+        access_levels=[OWNER_ACCESS_LEVEL],
         is_licenced=False,
         description="Replay the messages of a conversation, oldest first.",
         options={"generate_tool": False},
@@ -136,7 +136,9 @@ class AIConversationMessageQuery(Query):
 
         Ownership is enforced declaratively: OWNER access applies
         AIMessage.user_accessing_filters, which resolves ownership through the parent
-        conversation, so passing another user's conversation_id yields nothing.
+        conversation, so passing another user's conversation_id yields nothing. No role
+        reaches other users' messages; only the super user does, with full, audited
+        access (same rule as all_ai_conversations).
 
         Only the exchanged turns are returned. Tool rows and the tool-call-only
         assistant rows carry the machinery of an answer, not the answer itself: they
@@ -209,13 +211,10 @@ class AIConversationMutation(Mutation):
         """
         Archive a conversation.
 
-        Archiving is reversible and keeps the messages: the conversation drops out of
-        the default listing, and unarchive_ai_conversation brings it back.
-
-        Idempotent: archiving an already-archived conversation leaves the original date
-        untouched, because that date records when it was archived. Overwriting it on a
-        second call - a double click, a retry - would lose that fact silently, and
-        raising instead would turn a harmless repeat into an error the client must handle.
+        Ownership is enforced by lys_edition, which resolves the conversation and runs
+        the OWNER check before this body: a user archives only their own conversations.
+        The flag and its rule belong to the service, not here - the whiteboard app
+        extends it and keeps the conversation's board in step.
 
         Args:
             obj: AIConversation entity (fetched and validated by lys_edition)
@@ -224,10 +223,9 @@ class AIConversationMutation(Mutation):
         Returns:
             AIConversation: the archived conversation
         """
-        if obj.archived_at is None:
-            obj.archived_at = datetime.now(UTC)
+        conversation_service = info.context.app_manager.get_service("ai_conversation")
 
-        return obj
+        return await conversation_service.archive(obj, info.context.session)
 
     @lys_edition(
         ensure_type=AIConversationNode,
@@ -248,9 +246,9 @@ class AIConversationMutation(Mutation):
         Returns:
             AIConversation: the restored conversation
         """
-        obj.archived_at = None
+        conversation_service = info.context.app_manager.get_service("ai_conversation")
 
-        return obj
+        return await conversation_service.unarchive(obj, info.context.session)
 
     @lys_edition(
         ensure_type=AIConversationNode,
@@ -270,12 +268,6 @@ class AIConversationMutation(Mutation):
         Pinned and archived are orthogonal: pinning does not restore an archived
         conversation, and unpinning does not archive a pinned one.
 
-        Idempotent: pinning an already-pinned conversation leaves the original date
-        untouched, for the same reason archiving does - overwriting it on a second call
-        (a double click, a retry) would lose when the conversation was pinned, and
-        raising instead would turn a harmless repeat into an error the client must
-        handle. The date kept is also what a pinned listing orders by.
-
         Args:
             obj: AIConversation entity (fetched and validated by lys_edition)
             info: GraphQL context
@@ -283,10 +275,9 @@ class AIConversationMutation(Mutation):
         Returns:
             AIConversation: the pinned conversation
         """
-        if obj.pinned_at is None:
-            obj.pinned_at = datetime.now(UTC)
+        conversation_service = info.context.app_manager.get_service("ai_conversation")
 
-        return obj
+        return await conversation_service.pin(obj, info.context.session)
 
     @lys_edition(
         ensure_type=AIConversationNode,
@@ -307,9 +298,9 @@ class AIConversationMutation(Mutation):
         Returns:
             AIConversation: the unpinned conversation
         """
-        obj.pinned_at = None
+        conversation_service = info.context.app_manager.get_service("ai_conversation")
 
-        return obj
+        return await conversation_service.unpin(obj, info.context.session)
 
 
 @register_mutation()
