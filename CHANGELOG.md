@@ -7,6 +7,17 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.65.1] - 2026-11-21
+
+### Fixed
+- Mistral batch jobs: the requests are uploaded as a JSONL file (`/v1/files`, purpose
+  `batch`) and the job created on it, instead of inline — the API refused an inline job
+  of 500 structured requests (~10 MB) with a bare 400. The API's per-job limits are
+  checked before any upload: `MAX_BATCH_REQUESTS` (now 100,000) and the new
+  `MAX_BATCH_FILE_BYTES` (512 MB) raise `ValueError`. The input file of a job the API
+  refuses is deleted. Results are read from the output and error files first, inline
+  only when the job has none.
+
 ## [0.65.0] - 2026-11-21
 
 ### Added

@@ -476,7 +476,7 @@ class AIProvider(ABC):
         Raises:
             NotImplementedError: If the provider does not run batch jobs.
             ValueError: No request, a ``custom_id`` repeated, or more requests
-                than the provider takes in one job.
+                (or a larger input) than the provider takes in one job.
         """
         raise NotImplementedError(f"{self.name} provider does not support batch jobs")
 

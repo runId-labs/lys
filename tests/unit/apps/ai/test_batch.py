@@ -106,22 +106,29 @@ class TestOptionalCapability:
 
 class TestMistralBatchPayload:
 
-    def test_each_request_is_the_body_chat_json_sends_the_model_set_on_the_job(self, provider, config):
-        messages = [{"role": "system", "content": "Classify."}, {"role": "user", "content": "Text"}]
-        payload = provider._batch_job_payload([AIBatchRequest("r0", messages)], config, Answer,
-                                              {"origin": "test"}, 12)
+    @staticmethod
+    def _lines(content: bytes) -> list[dict]:
+        return [json.loads(line) for line in content.decode("utf-8").splitlines()]
 
-        assert payload["model"] == "mistral-medium-2604" and payload["endpoint"] == "/v1/chat/completions"
-        assert payload["metadata"] == {"origin": "test"} and payload["timeout_hours"] == 12
-        body = payload["requests"][0]["body"]
+    def test_each_request_is_one_line_with_the_body_chat_json_sends(self, provider, config):
+        messages = [{"role": "system", "content": "Classify."}, {"role": "user", "content": "Texte é"}]
+
+        [line] = self._lines(provider._batch_file([AIBatchRequest("r0", messages)], config, Answer))
+
         expected = provider._json_payload(messages, config, Answer)
         expected.pop("model")
-        assert payload["requests"][0]["custom_id"] == "r0" and body == expected
-        assert body["response_format"]["json_schema"]["strict"] is True
-        assert body["temperature"] == 0 and "unknown" not in body and "model" not in body
+        assert line == {"custom_id": "r0", "body": expected}
+        assert line["body"]["response_format"]["json_schema"]["strict"] is True
+        assert line["body"]["temperature"] == 0 and "unknown" not in line["body"]
+
+    def test_the_job_is_created_on_the_file_with_the_model_set_once(self, provider, config):
+        payload = provider._batch_job_payload("file-in", config, {"origin": "test"}, 12)
+
+        assert payload == {"model": "mistral-medium-2604", "endpoint": "/v1/chat/completions",
+                           "input_files": ["file-in"], "metadata": {"origin": "test"}, "timeout_hours": 12}
 
     def test_no_metadata_nor_timeout_leaves_the_provider_s_defaults(self, provider, config):
-        payload = provider._batch_job_payload(_requests(1), config, Answer, None, None)
+        payload = provider._batch_job_payload("file-in", config, None, None)
 
         assert "metadata" not in payload and "timeout_hours" not in payload
 
@@ -131,13 +138,26 @@ class TestMistralBatchPayload:
     ])
     def test_an_empty_job_or_a_repeated_id_is_refused(self, provider, config, requests):
         with pytest.raises(ValueError):
-            provider._batch_job_payload(requests, config, Answer, None, None)
+            provider._batch_file(requests, config, Answer)
 
     def test_more_requests_than_one_job_takes_are_refused(self, provider, config, monkeypatch):
         monkeypatch.setattr(MistralProvider, "MAX_BATCH_REQUESTS", 2)
 
         with pytest.raises(ValueError):
-            provider._batch_job_payload(_requests(3), config, Answer, None, None)
+            provider._batch_file(_requests(3), config, Answer)
+
+    def test_an_input_file_larger_than_one_job_takes_is_refused(self, provider, config, monkeypatch):
+        one_line = len(provider._batch_file(_requests(1), config, Answer))
+        monkeypatch.setattr(MistralProvider, "MAX_BATCH_FILE_BYTES", one_line + 1)
+
+        with pytest.raises(ValueError, match="request 2 of 3"):
+            provider._batch_file(_requests(3), config, Answer)
+
+    def test_an_input_file_at_the_bound_is_accepted(self, provider, config, monkeypatch):
+        content = provider._batch_file(_requests(2), config, Answer)
+        monkeypatch.setattr(MistralProvider, "MAX_BATCH_FILE_BYTES", len(content))
+
+        assert provider._batch_file(_requests(2), config, Answer) == content
 
     @pytest.mark.parametrize("job_id", ["../files", "abc/cancel", "a b", ""])
     def test_an_id_that_could_reach_another_endpoint_is_refused_before_any_call(self, provider, config, job_id):
@@ -149,14 +169,22 @@ class TestMistralBatchPayload:
 
 class TestMistralBatchJob:
 
-    def test_a_job_is_submitted_and_read_in_neutral_terms(self, provider, config):
-        patcher, client = _sync_client(_response(payload=_job("QUEUED")), method="post")
+    def test_a_job_is_submitted_on_its_uploaded_file_and_read_in_neutral_terms(self, provider, config):
+        patcher, client = _sync_client(_response(payload={"id": "file-in", "purpose": "batch"}),
+                                       _response(payload=_job("QUEUED")), method="post")
         try:
             job = provider.submit_json_batch_sync(_requests(), config, Answer)
         finally:
             patcher.stop()
 
-        assert client.post.call_args.args[0] == "https://api.mistral.ai/v1/batch/jobs"
+        upload, create = client.post.call_args_list
+        assert upload.args[0] == "https://api.mistral.ai/v1/files" and upload.kwargs["data"] == {"purpose": "batch"}
+        name, content, content_type = upload.kwargs["files"]["file"]
+        assert (name, content_type) == ("batch.jsonl", "application/jsonl")
+        assert content == provider._batch_file(_requests(), config, Answer)
+        assert "Content-Type" not in upload.kwargs["headers"]
+        assert create.args[0] == "https://api.mistral.ai/v1/batch/jobs"
+        assert create.kwargs["json"]["input_files"] == ["file-in"]
         assert job == AIBatchJob(id="9696e6ca-f4e2-46d5-883e-b80305bad24e", state=AIBatchState.PENDING,
                                  provider="mistral", model="mistral-medium-2604", total_requests=2,
                                  succeeded_requests=1, failed_requests=0)
@@ -184,13 +212,84 @@ class TestMistralBatchJob:
         finally:
             patcher.stop()
 
-    def test_a_refused_job_raises_the_error_of_its_status(self, provider, config):
-        patcher, _ = _sync_client(_response(status_code=429), method="post")
+    def test_a_refused_job_raises_its_error_and_deletes_its_input_file(self, provider, config):
+        patcher, client = _sync_client(_response(payload={"id": "file-in"}), _response(status_code=429),
+                                       method="post")
+        client.delete.return_value = _response(payload={"id": "file-in", "deleted": True})
         try:
             with pytest.raises(AIRateLimitError):
                 provider.submit_json_batch_sync(_requests(), config, Answer)
         finally:
             patcher.stop()
+
+        assert client.delete.call_args.args[0] == "https://api.mistral.ai/v1/files/file-in"
+
+    def test_a_failed_deletion_is_logged_and_the_job_s_error_raised(self, provider, config, caplog):
+        patcher, client = _sync_client(_response(payload={"id": "file-in"}), _response(status_code=500),
+                                       method="post")
+        client.delete.side_effect = httpx.ConnectError("down")
+        try:
+            with pytest.raises(AIProviderError, match="server error"):
+                provider.submit_json_batch_sync(_requests(), config, Answer)
+        finally:
+            patcher.stop()
+
+        assert "file-in not deleted: ConnectError" in caplog.text
+
+    def test_a_deletion_refused_is_logged(self, provider, config, caplog):
+        patcher, client = _sync_client(_response(payload={"id": "file-in"}), _response(status_code=429),
+                                       method="post")
+        client.delete.return_value = _response(status_code=404)
+        try:
+            with pytest.raises(AIRateLimitError):
+                provider.submit_json_batch_sync(_requests(), config, Answer)
+        finally:
+            patcher.stop()
+
+        assert "file-in not deleted: HTTP 404" in caplog.text
+
+    def test_after_a_timeout_the_input_file_is_kept(self, provider, config):
+        # The job may have been created on it: deleting the file could break that job.
+        patcher, client = _sync_client(_response(payload={"id": "file-in"}), httpx.TimeoutException("slow"),
+                                       method="post")
+        try:
+            with pytest.raises(AITimeoutError):
+                provider.submit_json_batch_sync(_requests(), config, Answer)
+        finally:
+            patcher.stop()
+
+        client.delete.assert_not_called()
+
+    def test_an_accepted_job_keeps_its_input_file(self, provider, config):
+        patcher, client = _sync_client(_response(payload={"id": "file-in"}), _response(payload=_job("QUEUED")),
+                                       method="post")
+        try:
+            provider.submit_json_batch_sync(_requests(), config, Answer)
+        finally:
+            patcher.stop()
+
+        client.delete.assert_not_called()
+
+    def test_a_refused_upload_creates_no_job(self, provider, config):
+        patcher, client = _sync_client(_response(status_code=400, text="too large"), method="post")
+        try:
+            with pytest.raises(AIProviderError):
+                provider.submit_json_batch_sync(_requests(), config, Answer)
+        finally:
+            patcher.stop()
+
+        assert client.post.call_count == 1
+
+    @pytest.mark.parametrize("upload", [{}, {"id": "../batch/jobs"}, {"id": 12}])
+    def test_an_upload_answer_without_a_valid_id_is_a_provider_error(self, provider, config, upload):
+        patcher, client = _sync_client(_response(payload=upload), method="post")
+        try:
+            with pytest.raises(AIProviderError):
+                provider.submit_json_batch_sync(_requests(), config, Answer)
+        finally:
+            patcher.stop()
+
+        assert client.post.call_count == 1
 
     def test_a_job_is_cancelled_on_its_own_url(self, provider, config):
         patcher, client = _sync_client(_response(payload=_job("CANCELLATION_REQUESTED")), method="post")
@@ -204,32 +303,68 @@ class TestMistralBatchJob:
 
     @pytest.mark.asyncio
     async def test_the_async_twin_submits_the_same_job(self, provider, config):
-        client = AsyncMock()
-        client.post.return_value = _response(payload=_job("QUEUED"))
-        with patch("httpx.AsyncClient") as mocked:
-            mocked.return_value.__aenter__.return_value = client
+        patcher, client = _async_client(_response(payload={"id": "file-in"}), _response(payload=_job("QUEUED")),
+                                        method="post")
+        try:
             job = await provider.submit_json_batch(_requests(), config, Answer)
+        finally:
+            patcher.stop()
 
-        assert client.post.call_args.kwargs["json"] == provider._batch_job_payload(_requests(), config, Answer,
-                                                                                  None, None)
+        upload, create = client.post.call_args_list
+        assert upload.kwargs["files"]["file"][1] == provider._batch_file(_requests(), config, Answer)
+        assert create.kwargs["json"] == provider._batch_job_payload("file-in", config, None, None)
         assert job.state is AIBatchState.PENDING
+
+    @pytest.mark.asyncio
+    async def test_the_async_twin_deletes_the_input_file_of_a_refused_job(self, provider, config):
+        patcher, client = _async_client(_response(payload={"id": "file-in"}), _response(status_code=429),
+                                        method="post")
+        client.delete.return_value = _response(payload={"id": "file-in", "deleted": True})
+        try:
+            with pytest.raises(AIRateLimitError):
+                await provider.submit_json_batch(_requests(), config, Answer)
+        finally:
+            patcher.stop()
+
+        client.delete.assert_awaited_once()
+        assert client.delete.call_args.args[0] == "https://api.mistral.ai/v1/files/file-in"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("delete, logged", [
+        ({"side_effect": httpx.ConnectError("down")}, "ConnectError"),
+        ({"return_value": _response(status_code=404)}, "HTTP 404"),
+    ])
+    async def test_the_async_twin_logs_a_failed_deletion(self, provider, config, caplog, delete, logged):
+        patcher, client = _async_client(_response(payload={"id": "file-in"}), _response(status_code=429),
+                                        method="post")
+        client.delete.configure_mock(**delete)
+        try:
+            with pytest.raises(AIRateLimitError):
+                await provider.submit_json_batch(_requests(), config, Answer)
+        finally:
+            patcher.stop()
+
+        assert f"file-in not deleted: {logged}" in caplog.text
 
 
 class TestMistralBatchResults:
 
     def _results(self, provider, config, job, *files, schema=Answer):
-        patcher, client = _sync_client(_response(payload=job), *[_response(text=content) for content in files])
+        # A job with no result file is read again inline.
+        reads = [_response(payload=job)] * (1 if job.get("output_file") or job.get("error_file") else 2)
+        patcher, client = _sync_client(*reads, *[_response(text=content) for content in files])
         try:
             return provider.get_json_batch_results_sync("job-1", config, schema), client
         finally:
             patcher.stop()
 
-    def test_inline_results_are_validated_like_a_direct_answer(self, provider, config):
+    def test_without_result_files_the_inline_results_are_validated_like_a_direct_answer(self, provider, config):
         job = _job("SUCCESS", outputs=[_record("r0", '{"label": "ok"}')])
 
         results, client = self._results(provider, config, job)
 
-        assert client.get.call_args.kwargs["params"] == {"inline": "true"}
+        assert "params" not in client.get.call_args_list[0].kwargs
+        assert client.get.call_args_list[1].kwargs["params"] == {"inline": "true"}
         assert results == [AIBatchResult(custom_id="r0", data=Answer(label="ok"),
                                          usage={"prompt_tokens": 21, "completion_tokens": 2, "total_tokens": 23})]
 
@@ -262,7 +397,7 @@ class TestMistralBatchResults:
 
         assert [result.custom_id for result in results] == ["r1"]
 
-    def test_without_inline_results_the_output_and_error_files_are_read(self, provider, config):
+    def test_the_output_and_error_files_are_read(self, provider, config):
         job = _job("TIMEOUT_EXCEEDED", output_file="file-out", error_file="file-err")
         output = json.dumps(_record("r0", '{"label": "ok"}')) + "\n"
         errors = json.dumps(_record("r1", "", status_code=500)) + "\n\n"
@@ -274,8 +409,9 @@ class TestMistralBatchResults:
         ]
         assert results[0].data == Answer(label="ok") and isinstance(results[1].error, AIProviderError)
 
-    def test_an_empty_inline_list_falls_back_on_the_files(self, provider, config):
-        job = _job("SUCCESS", outputs=[], output_file="file-out")
+    def test_the_files_win_over_inline_results(self, provider, config):
+        # The files hold every result whatever the job's size; an inline list may not.
+        job = _job("SUCCESS", outputs=[_record("r9", '{"label": "inline"}')], output_file="file-out")
         output = json.dumps(_record("r0", '{"label": "ok"}'))
 
         results, _ = self._results(provider, config, job, output)
@@ -341,7 +477,7 @@ class TestMistralBatchAsync:
         assert job.state is AIBatchState.PENDING
 
     @pytest.mark.asyncio
-    async def test_results_are_read_from_the_files_when_not_inline(self, provider, config):
+    async def test_results_are_read_from_the_files(self, provider, config):
         job = _job("CANCELLED", output_file="file-out", error_file="file-err")
         output = json.dumps(_record("r0", '{"label": "ok"}'))
         errors = json.dumps(_record("r1", "", status_code=429))
@@ -351,7 +487,7 @@ class TestMistralBatchAsync:
         finally:
             patcher.stop()
 
-        assert client.get.call_args_list[0].kwargs["params"] == {"inline": "true"}
+        assert "params" not in client.get.call_args_list[0].kwargs
         assert results[0].data == Answer(label="ok") and isinstance(results[1].error, AIRateLimitError)
 
     @pytest.mark.asyncio
@@ -364,6 +500,19 @@ class TestMistralBatchAsync:
             patcher.stop()
 
         assert client.get.call_count == 1
+
+    @pytest.mark.asyncio
+    async def test_without_result_files_the_job_is_read_again_inline(self, provider, config):
+        job = _job("SUCCESS", outputs=[_record("r0", '{"label": "ok"}')])
+        patcher, client = _async_client(_response(payload=job), _response(payload=job))
+        try:
+            [result] = await provider.get_json_batch_results("job-1", config, Answer)
+        finally:
+            patcher.stop()
+
+        assert "params" not in client.get.call_args_list[0].kwargs
+        assert client.get.call_args_list[1].kwargs["params"] == {"inline": "true"}
+        assert result.data == Answer(label="ok")
 
     @pytest.mark.asyncio
     async def test_a_timeout_is_an_ai_timeout(self, provider, config):

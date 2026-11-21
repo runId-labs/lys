@@ -70,9 +70,13 @@ class MistralProvider(AIProvider):
         "language", "diarize", "context_bias", "timestamp_granularities",
     }
 
-    # Batch jobs: the requests are sent inline, which the API takes up to this count
-    # (beyond, it wants an uploaded file). A caller splits a larger set into jobs.
-    MAX_BATCH_REQUESTS = 10_000
+    # Batch jobs: the requests are uploaded as a JSONL file, then the job created on it
+    # (inline requests were refused at ~10 MB, 500 requests of ~20 KB, measured
+    # 2026-11-21). The API's limits per job (docs "Known limitations"): this many
+    # requests, and an input file of this size — the decimal reading of its 512 MB, the
+    # lower one. Both are checked before any upload; a caller splits a larger set.
+    MAX_BATCH_REQUESTS = 100_000
+    MAX_BATCH_FILE_BYTES = 512 * 1000 * 1000
 
     # Batch job statuses, in provider-neutral terms. CANCELLATION_REQUESTED is still
     # moving: the job may finish requests before it stops.
@@ -452,16 +456,14 @@ class MistralProvider(AIProvider):
 
     # ========== Batch (structured JSON) ==========
 
-    def _batch_job_payload(
+    def _batch_file(
         self,
         requests: Sequence[AIBatchRequest],
         config: AIEndpointConfig,
         schema: Type[T],
-        metadata: Optional[Dict[str, str]],
-        timeout_hours: Optional[int],
-    ) -> Dict[str, Any]:
+    ) -> bytes:
         """
-        The job creation request: each request's body is the one :meth:`chat_json`
+        The job's input file, one JSON line per request: the body :meth:`chat_json`
         sends, the model set once on the job (a batch runs on one model).
         """
         if not requests:
@@ -474,21 +476,83 @@ class MistralProvider(AIProvider):
         if len(set(custom_ids)) != len(custom_ids):
             raise ValueError("Every request of a batch job needs its own custom_id")
 
-        bodies = []
+        lines = []
+        size = 0
         for request in requests:
             body = self._json_payload(request.messages, config, schema)
             body.pop("model")
-            bodies.append({"custom_id": request.custom_id, "body": body})
+            line = (json.dumps({"custom_id": request.custom_id, "body": body}, ensure_ascii=False) + "\n").encode()
+            size += len(line)
+            if size > self.MAX_BATCH_FILE_BYTES:
+                # Stops as soon as the bound is passed: the rest is never encoded.
+                raise ValueError(
+                    f"A batch job's input file takes {self.MAX_BATCH_FILE_BYTES} bytes at most, passed at "
+                    f"request {len(lines) + 1} of {len(requests)}: split the requests into smaller jobs"
+                )
+            lines.append(line)
+        return b"".join(lines)
+
+    @staticmethod
+    def _batch_job_payload(
+        file_id: str,
+        config: AIEndpointConfig,
+        metadata: Optional[Dict[str, str]],
+        timeout_hours: Optional[int],
+    ) -> Dict[str, Any]:
+        """The job creation request, on the input file uploaded."""
         payload: Dict[str, Any] = {
             "model": config.model,
             "endpoint": "/v1/chat/completions",
-            "requests": bodies,
+            "input_files": [file_id],
         }
         if metadata:
             payload["metadata"] = metadata
         if timeout_hours is not None:
             payload["timeout_hours"] = timeout_hours
         return payload
+
+    def _uploaded_file_id(self, response: httpx.Response) -> str:
+        """The id of a file uploaded, its HTTP status checked first."""
+        self._handle_error_status(response)
+        file_id = response.json().get("id")
+        if not isinstance(file_id, str) or not self._BATCH_ID.match(file_id):
+            raise AIProviderError(f"Mistral file upload response without a valid id: {file_id!r}")
+        return file_id
+
+    async def _discard_input_file(self, client: httpx.AsyncClient, config: AIEndpointConfig, file_id: str) -> None:
+        """
+        Best-effort removal of an input file no job was created on: it holds the prompts.
+        A failure is logged, never raised — the job's refusal is the error the caller gets.
+        """
+        try:
+            response = await client.delete(self._batch_url(config, "files", file_id),
+                                           headers=self._headers(config), timeout=config.timeout)
+        except httpx.HTTPError as e:
+            logger.warning("Mistral batch input file %s not deleted: %s", file_id, type(e).__name__)
+            return
+        if response.status_code != 200:
+            logger.warning("Mistral batch input file %s not deleted: HTTP %s", file_id, response.status_code)
+
+    def _discard_input_file_sync(self, client: httpx.Client, config: AIEndpointConfig, file_id: str) -> None:
+        """Synchronous version of :meth:`_discard_input_file`."""
+        try:
+            response = client.delete(self._batch_url(config, "files", file_id),
+                                     headers=self._headers(config), timeout=config.timeout)
+        except httpx.HTTPError as e:
+            logger.warning("Mistral batch input file %s not deleted: %s", file_id, type(e).__name__)
+            return
+        if response.status_code != 200:
+            logger.warning("Mistral batch input file %s not deleted: HTTP %s", file_id, response.status_code)
+
+    @staticmethod
+    def _upload_request(config: AIEndpointConfig, content: bytes) -> Dict[str, Any]:
+        """The multipart upload of a batch input file (no Content-Type: httpx sets the boundary)."""
+        return {
+            "headers": {"Authorization": f"Bearer {config.api_key}"},
+            "data": {"purpose": "batch"},
+            "files": {"file": ("batch.jsonl", content, "application/jsonl")},
+            "timeout": config.timeout,
+        }
 
     def _batch_url(self, config: AIEndpointConfig, kind: str, object_id: Optional[str] = None) -> str:
         """The URL of the batch jobs, of one job or of one file, its id checked first."""
@@ -532,12 +596,13 @@ class MistralProvider(AIProvider):
 
     def _batch_records(self, job: Dict[str, Any], files: Dict[str, str]) -> List[Dict[str, Any]]:
         """
-        The result records of a job: inline (``outputs``) when the API returns them,
-        else the lines of its output and error files (``files``: file id → content).
+        The result records of a job: the lines of its output and error files
+        (``files``: file id → content) — complete whatever the job's size —, else
+        the ones the API returns inline (``outputs``).
         """
-        outputs = job.get("outputs")
-        if isinstance(outputs, list) and outputs:
-            return [record for record in outputs if isinstance(record, dict)]
+        if not files:
+            outputs = job.get("outputs")
+            return [record for record in outputs if isinstance(record, dict)] if isinstance(outputs, list) else []
         records = []
         for file_id, content in files.items():
             for line in content.splitlines():
@@ -588,10 +653,7 @@ class MistralProvider(AIProvider):
 
     @staticmethod
     def _result_file_ids(job: Dict[str, Any]) -> List[str]:
-        """The output and error files to read when the job's results are not returned inline."""
-        outputs = job.get("outputs")
-        if isinstance(outputs, list) and outputs:
-            return []
+        """The output and error files holding the job's results."""
         return [file_id for file_id in (job.get("output_file"), job.get("error_file")) if file_id]
 
     @staticmethod
@@ -607,12 +669,22 @@ class MistralProvider(AIProvider):
         metadata: Optional[Dict[str, str]] = None,
         timeout_hours: Optional[int] = None,
     ) -> AIBatchJob:
-        """Create a batch job on Mistral's batch API, the requests sent inline."""
-        payload = self._batch_job_payload(requests, config, schema, metadata, timeout_hours)
+        """
+        Create a batch job on Mistral's batch API: the requests uploaded as a JSONL file, the job on it.
+
+        A job the API refuses leaves no input file behind: it is deleted. After a timeout
+        it is kept — the job may have been created on it.
+        """
+        content = self._batch_file(requests, config, schema)
         try:
             async with httpx.AsyncClient() as client:
+                upload = await client.post(self._batch_url(config, "files"), **self._upload_request(config, content))
+                file_id = self._uploaded_file_id(upload)
+                payload = self._batch_job_payload(file_id, config, metadata, timeout_hours)
                 response = await client.post(self._batch_url(config, "batch/jobs"), headers=self._headers(config),
                                              json=payload, timeout=config.timeout)
+                if response.status_code != 200:
+                    await self._discard_input_file(client, config, file_id)
         except httpx.TimeoutException:
             raise AITimeoutError(f"Request timed out after {config.timeout}s")
         return self._parse_batch_job(response)
@@ -626,11 +698,16 @@ class MistralProvider(AIProvider):
         timeout_hours: Optional[int] = None,
     ) -> AIBatchJob:
         """Synchronous version of :meth:`submit_json_batch` for Celery workers."""
-        payload = self._batch_job_payload(requests, config, schema, metadata, timeout_hours)
+        content = self._batch_file(requests, config, schema)
         try:
             with httpx.Client() as client:
+                upload = client.post(self._batch_url(config, "files"), **self._upload_request(config, content))
+                file_id = self._uploaded_file_id(upload)
+                payload = self._batch_job_payload(file_id, config, metadata, timeout_hours)
                 response = client.post(self._batch_url(config, "batch/jobs"), headers=self._headers(config),
                                        json=payload, timeout=config.timeout)
+                if response.status_code != 200:
+                    self._discard_input_file_sync(client, config, file_id)
         except httpx.TimeoutException:
             raise AITimeoutError(f"Request timed out after {config.timeout}s")
         return self._parse_batch_job(response)
@@ -662,7 +739,7 @@ class MistralProvider(AIProvider):
         schema: Type[T],
     ) -> List[AIBatchResult[T]]:
         """
-        Read and validate a batch job's results (inline, else from its output and error files).
+        Read and validate a batch job's results: from its output and error files, else inline.
 
         Raises:
             ValueError: The job is not in a final state yet.
@@ -671,8 +748,13 @@ class MistralProvider(AIProvider):
         headers = self._headers(config)
         try:
             async with httpx.AsyncClient() as client:
-                response = await client.get(url, headers=headers, params={"inline": "true"}, timeout=config.timeout)
+                response = await client.get(url, headers=headers, timeout=config.timeout)
                 job = self._finished_batch_job(response)
+                if not self._result_file_ids(job):
+                    # No result file: the job's results, if any, are only returned inline.
+                    response = await client.get(url, headers=headers, params={"inline": "true"},
+                                                timeout=config.timeout)
+                    job = self._finished_batch_job(response)
                 files = {}
                 for file_id in self._result_file_ids(job):
                     file_response = await client.get(f"{self._batch_url(config, 'files', file_id)}/content",
@@ -694,8 +776,12 @@ class MistralProvider(AIProvider):
         headers = self._headers(config)
         try:
             with httpx.Client() as client:
-                response = client.get(url, headers=headers, params={"inline": "true"}, timeout=config.timeout)
+                response = client.get(url, headers=headers, timeout=config.timeout)
                 job = self._finished_batch_job(response)
+                if not self._result_file_ids(job):
+                    # No result file: the job's results, if any, are only returned inline.
+                    response = client.get(url, headers=headers, params={"inline": "true"}, timeout=config.timeout)
+                    job = self._finished_batch_job(response)
                 files = {}
                 for file_id in self._result_file_ids(job):
                     file_response = client.get(f"{self._batch_url(config, 'files', file_id)}/content",

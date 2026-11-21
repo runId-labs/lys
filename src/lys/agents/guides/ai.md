@@ -290,8 +290,15 @@ jobs raises `NotImplementedError`.
   an error), or its `error`. A request absent from the results was not processed (the
   job expired, failed or was cancelled first). Send the failed and missing ones again
   through `chat_json_with_metadata`, which walks the fallback chain.
-- **Bounds**: `custom_id` unique within a job; Mistral takes the requests inline, up to
-  `MistralProvider.MAX_BATCH_REQUESTS` (10,000) per job — split a larger set.
+- **Bounds**: `custom_id` unique within a job. On Mistral the requests are uploaded as a
+  JSONL file and the job created on it — inline requests were refused past ~10 MB (500
+  structured requests, measured) —, up to `MistralProvider.MAX_BATCH_REQUESTS` (100,000)
+  and `MAX_BATCH_FILE_BYTES` (512 MB) per job, both checked before any upload
+  (`ValueError`: split the set). The results are read from the job's output and error files.
+- **Files kept by the provider**: the input file and the result files stay in the
+  Mistral workspace — lys deletes only the input file of a job the API refused. They
+  hold the prompts and answers: delete them from the workspace per the project's
+  retention rules.
   `timeout_hours` defaults to the provider's (24 h on Mistral, under 7 days); keep
   jobs to a size whose results are worth waiting for together.
 - `usage` on each result is the provider's token count, to compare the cost billed.

@@ -842,7 +842,7 @@ class AIService(Service):
         Raises:
             NotImplementedError: The endpoint's provider does not run batch jobs.
             ValueError: No request, a ``custom_id`` repeated, or more requests
-                than the provider takes in one job.
+                (or a larger input) than the provider takes in one job.
             AIError: The provider refused the job.
         """
         provider = cls.get_provider(config.provider)
