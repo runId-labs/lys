@@ -11,7 +11,8 @@ import hashlib
 import json
 import logging
 import time
-from typing import AsyncGenerator, List, Dict, Any, Optional, Type, TypeVar, TYPE_CHECKING
+from dataclasses import replace as dataclass_replace
+from typing import AsyncGenerator, List, Dict, Any, Optional, Sequence, Type, TypeVar, TYPE_CHECKING
 
 import httpx
 from pydantic import BaseModel
@@ -19,7 +20,15 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 
 from lys.apps.ai.modules.core.consts import AI_PLUGIN_NAME, ROUTES_MANIFEST_PURPOSE
-from lys.apps.ai.utils.providers.abstracts import AIJsonResponse, AIProvider, AIResponse, AIStreamChunk
+from lys.apps.ai.utils.providers.abstracts import (
+    AIBatchJob,
+    AIBatchRequest,
+    AIBatchResult,
+    AIJsonResponse,
+    AIProvider,
+    AIResponse,
+    AIStreamChunk,
+)
 from lys.apps.ai.utils.providers.config import AIEndpointConfig, parse_plugin_config, AIConfig
 from lys.apps.ai.utils.providers.exceptions import (
     AIError,
@@ -771,6 +780,133 @@ class AIService(Service):
             raise AIResponseTruncatedError(
                 f"{endpoint.provider}/{endpoint.model} reached maxLength on: {', '.join(capped)}"
             )
+
+    # ========== Batch (structured JSON) ==========
+    #
+    # A batch job runs the structured calls of chat_json later, usually at a lower price:
+    # submitted once, polled until final (no provider calls back), then read. It runs on
+    # the endpoint given, alone — a batch has one model, so there is no fallback chain: a
+    # request that failed or is missing from the results is the caller's to send again,
+    # through chat_json_with_metadata, which walks the chain. lys keeps no state: the
+    # caller stores the job id, and polls and reads it with the same endpoint.
+
+    @classmethod
+    def _batch_requests(
+        cls, requests: Sequence[AIBatchRequest], config: AIEndpointConfig,
+    ) -> List[AIBatchRequest]:
+        """Each request as chat_json would send it: the endpoint's system prompt first, sanitized."""
+        return [
+            AIBatchRequest(custom_id=request.custom_id,
+                           messages=cls._prepare_json_messages(request.messages, config))
+            for request in requests
+        ]
+
+    @classmethod
+    def _checked_batch_results(
+        cls, results: List[AIBatchResult[T]], config: AIEndpointConfig,
+    ) -> List[AIBatchResult[T]]:
+        """The same guarantee as chat_json: a text field cut at its maxLength is an error, not an answer."""
+        checked = []
+        for result in results:
+            if result.data is not None:
+                try:
+                    cls._raise_if_capped(result.data, config)
+                except AIResponseTruncatedError as e:
+                    result = dataclass_replace(result, data=None, error=e)
+            checked.append(result)
+        return checked
+
+    @classmethod
+    async def submit_json_batch(
+        cls,
+        requests: Sequence[AIBatchRequest],
+        config: AIEndpointConfig,
+        schema: Type[T],
+        metadata: Optional[Dict[str, str]] = None,
+        timeout_hours: Optional[int] = None,
+    ) -> AIBatchJob:
+        """
+        Submit structured JSON requests as one batch job on the endpoint given.
+
+        Args:
+            requests: The requests, each with a ``custom_id`` unique in the job.
+            config: Endpoint configuration; the job is polled and read with it.
+            schema: Pydantic model class every answer must validate against.
+            metadata: Optional labels the provider keeps with the job.
+            timeout_hours: Hours after which the job expires unfinished; the
+                provider's default when None.
+
+        Returns:
+            The job as created: store its ``id`` to poll it.
+
+        Raises:
+            NotImplementedError: The endpoint's provider does not run batch jobs.
+            ValueError: No request, a ``custom_id`` repeated, or more requests
+                than the provider takes in one job.
+            AIError: The provider refused the job.
+        """
+        provider = cls.get_provider(config.provider)
+        return await provider.submit_json_batch(
+            cls._batch_requests(requests, config), config, schema, metadata, timeout_hours,
+        )
+
+    @classmethod
+    def submit_json_batch_sync(
+        cls,
+        requests: Sequence[AIBatchRequest],
+        config: AIEndpointConfig,
+        schema: Type[T],
+        metadata: Optional[Dict[str, str]] = None,
+        timeout_hours: Optional[int] = None,
+    ) -> AIBatchJob:
+        """Synchronous version of ``submit_json_batch`` for Celery workers."""
+        provider = cls.get_provider(config.provider)
+        return provider.submit_json_batch_sync(
+            cls._batch_requests(requests, config), config, schema, metadata, timeout_hours,
+        )
+
+    @classmethod
+    async def get_batch(cls, job_id: str, config: AIEndpointConfig) -> AIBatchJob:
+        """Where a batch job stands (``state.is_final`` once its results can be read)."""
+        return await cls.get_provider(config.provider).get_batch(job_id, config)
+
+    @classmethod
+    def get_batch_sync(cls, job_id: str, config: AIEndpointConfig) -> AIBatchJob:
+        """Synchronous version of ``get_batch`` for Celery workers."""
+        return cls.get_provider(config.provider).get_batch_sync(job_id, config)
+
+    @classmethod
+    async def get_json_batch_results(
+        cls, job_id: str, config: AIEndpointConfig, schema: Type[T],
+    ) -> List[AIBatchResult[T]]:
+        """
+        The results of a batch job in a final state, validated as chat_json validates
+        an answer. A result carries its data or its error; a request absent from the
+        list was not processed (the job expired, failed or was cancelled first).
+
+        Raises:
+            ValueError: The job is not in a final state yet.
+        """
+        results = await cls.get_provider(config.provider).get_json_batch_results(job_id, config, schema)
+        return cls._checked_batch_results(results, config)
+
+    @classmethod
+    def get_json_batch_results_sync(
+        cls, job_id: str, config: AIEndpointConfig, schema: Type[T],
+    ) -> List[AIBatchResult[T]]:
+        """Synchronous version of ``get_json_batch_results`` for Celery workers."""
+        results = cls.get_provider(config.provider).get_json_batch_results_sync(job_id, config, schema)
+        return cls._checked_batch_results(results, config)
+
+    @classmethod
+    async def cancel_batch(cls, job_id: str, config: AIEndpointConfig) -> AIBatchJob:
+        """Ask the provider to stop a batch job; processed requests keep their results."""
+        return await cls.get_provider(config.provider).cancel_batch(job_id, config)
+
+    @classmethod
+    def cancel_batch_sync(cls, job_id: str, config: AIEndpointConfig) -> AIBatchJob:
+        """Synchronous version of ``cancel_batch`` for Celery workers."""
+        return cls.get_provider(config.provider).cancel_batch_sync(job_id, config)
 
     # ========== OCR ==========
 

@@ -7,6 +7,20 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.65.0] - 2026-11-21
+
+### Added
+- `AIService.submit_json_batch` / `get_batch` / `get_json_batch_results` / `cancel_batch`
+  (and `_sync` twins): structured JSON calls sent as one asynchronous batch job, polled
+  until final. Each request is the one `chat_json` sends (system prompt, options, strict
+  schema); results are validated like a `chat_json` answer, `maxLength` cut included.
+  Runs on the endpoint given, without fallback chain; lys stores no job state. Reading
+  the results of a job not yet final raises `ValueError`.
+- `AIBatchRequest`, `AIBatchJob`, `AIBatchResult`, `AIBatchState` in
+  `lys.apps.ai.utils.providers`. Optional provider capability: implemented on Mistral
+  (inline requests, up to `MistralProvider.MAX_BATCH_REQUESTS` = 10,000 per job);
+  other providers raise `NotImplementedError`.
+
 ## [0.64.0] - 2026-11-17
 
 ### Added

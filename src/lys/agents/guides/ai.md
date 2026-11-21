@@ -268,6 +268,34 @@ other conversation can be reached.
   must carry that sentence over, or the model is never told the tool exists beyond its own
   description.
 
+## Batch jobs (structured JSON, asynchronous)
+
+`AIService.submit_json_batch(requests, config, schema, metadata=None, timeout_hours=None)`
+(and `_sync`) sends many `chat_json` calls as one job, answered later — on Mistral at
+half the price. Each `AIBatchRequest(custom_id, messages)` becomes the exact request
+`chat_json` would send: the endpoint's system prompt first, its options, its strict
+response schema. An optional provider capability, like OCR: a provider without batch
+jobs raises `NotImplementedError`.
+
+- **Polled, never called back**: `get_batch(job_id, config)` returns an `AIBatchJob`
+  whose `state` is provider-neutral (`AIBatchState`: PENDING, COMPLETED, FAILED,
+  EXPIRED, CANCELLED); read the results once `state.is_final` — reading them before
+  raises `ValueError`, since an empty list would pass for requests never processed.
+  Mistral exposes them only when the whole job has finished.
+- **Stateless**: lys stores nothing. The caller keeps the job id and polls and reads
+  it with the same endpoint config (its key and base URL).
+- **One endpoint, no fallback chain**: a batch runs on one model.
+  `get_json_batch_results` returns one `AIBatchResult` per processed request — its
+  `data`, validated like a `chat_json` answer (a text field cut at its `maxLength` is
+  an error), or its `error`. A request absent from the results was not processed (the
+  job expired, failed or was cancelled first). Send the failed and missing ones again
+  through `chat_json_with_metadata`, which walks the fallback chain.
+- **Bounds**: `custom_id` unique within a job; Mistral takes the requests inline, up to
+  `MistralProvider.MAX_BATCH_REQUESTS` (10,000) per job — split a larger set.
+  `timeout_hours` defaults to the provider's (24 h on Mistral, under 7 days); keep
+  jobs to a size whose results are worth waiting for together.
+- `usage` on each result is the provider's token count, to compare the cost billed.
+
 ## Speech transcription
 
 `AIService.transcribe(content, filename, config, language=None)` (and

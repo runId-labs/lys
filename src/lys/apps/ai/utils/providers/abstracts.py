@@ -7,7 +7,8 @@ allowing consistent usage across different LLM providers.
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import AsyncGenerator, List, Dict, Any, Generic, Optional, TypeVar, Type
+from enum import Enum
+from typing import AsyncGenerator, List, Dict, Any, Generic, Optional, Sequence, TypeVar, Type
 
 from pydantic import BaseModel
 
@@ -62,6 +63,67 @@ class AIStreamChunk:
     # mistral-medium-3-5 with reasoning_effort=high), which makes it the only live signal
     # available during that gap.
     reasoning: Optional[str] = None
+
+
+class AIBatchState(str, Enum):
+    """
+    Where a batch job stands, in provider-neutral terms.
+
+    Only COMPLETED guarantees every request was processed. A job that EXPIRED (its
+    timeout passed first), FAILED or was CANCELLED may hold results for part of its
+    requests: the ones missing from its results were not processed.
+    """
+
+    PENDING = "PENDING"
+    COMPLETED = "COMPLETED"
+    FAILED = "FAILED"
+    EXPIRED = "EXPIRED"
+    CANCELLED = "CANCELLED"
+
+    @property
+    def is_final(self) -> bool:
+        """Whether the job will not move any more: its results can be read."""
+        return self is not AIBatchState.PENDING
+
+
+@dataclass(frozen=True)
+class AIBatchRequest:
+    """
+    One request of a batch job.
+
+    ``custom_id`` is the caller's key for the request, returned with its result: it
+    must be unique within the job. ``messages`` are sent as they are to a chat call.
+    """
+
+    custom_id: str
+    messages: List[Dict[str, Any]]
+
+
+@dataclass(frozen=True)
+class AIBatchJob:
+    """A batch job as the provider last reported it."""
+
+    id: str
+    state: AIBatchState
+    provider: str
+    model: str
+    total_requests: int = 0
+    succeeded_requests: int = 0
+    failed_requests: int = 0
+
+
+@dataclass(frozen=True)
+class AIBatchResult(Generic[T]):
+    """
+    The outcome of one request of a batch job: its validated ``data``, or the
+    ``error`` that prevented it — never both. ``usage`` is the provider's token
+    count for the request, when it reports one.
+    """
+
+    custom_id: str
+    data: Optional[T] = None
+    error: Optional[Exception] = None
+    usage: Optional[Dict[str, Any]] = None
 
 
 class AIProvider(ABC):
@@ -380,6 +442,108 @@ class AIProvider(ABC):
         """
         raise NotImplementedError(f"{self.name} provider does not support streaming speech synthesis")
         yield b""  # pragma: no cover — makes this an async generator
+
+    # ========== Batch (structured JSON) ==========
+
+    async def submit_json_batch(
+        self,
+        requests: Sequence[AIBatchRequest],
+        config: AIEndpointConfig,
+        schema: Type[T],
+        metadata: Optional[Dict[str, str]] = None,
+        timeout_hours: Optional[int] = None,
+    ) -> AIBatchJob:
+        """
+        Submit structured JSON requests to be processed asynchronously, as one job.
+
+        Optional capability, like OCR: a provider that does not run batch jobs
+        raises NotImplementedError. Each request is the one :meth:`chat_json`
+        would send for its messages — same model, options and response schema —,
+        answered later, usually at a lower price. The job runs on ``config``
+        alone: a batch has one model, there is no fallback chain.
+
+        Args:
+            requests: The requests, each with a ``custom_id`` unique in the job.
+            config: Endpoint configuration (model, api_key, options).
+            schema: Pydantic model class every answer must validate against.
+            metadata: Optional labels the provider keeps with the job.
+            timeout_hours: Hours after which the job expires unfinished; the
+                provider's default when None.
+
+        Returns:
+            The job as created.
+
+        Raises:
+            NotImplementedError: If the provider does not run batch jobs.
+            ValueError: No request, a ``custom_id`` repeated, or more requests
+                than the provider takes in one job.
+        """
+        raise NotImplementedError(f"{self.name} provider does not support batch jobs")
+
+    def submit_json_batch_sync(
+        self,
+        requests: Sequence[AIBatchRequest],
+        config: AIEndpointConfig,
+        schema: Type[T],
+        metadata: Optional[Dict[str, str]] = None,
+        timeout_hours: Optional[int] = None,
+    ) -> AIBatchJob:
+        """Synchronous version of :meth:`submit_json_batch` for Celery workers."""
+        raise NotImplementedError(f"{self.name} provider does not support batch jobs")
+
+    async def get_batch(self, job_id: str, config: AIEndpointConfig) -> AIBatchJob:
+        """
+        Where a batch job stands. The provider is polled: none calls back.
+
+        Raises:
+            NotImplementedError: If the provider does not run batch jobs.
+        """
+        raise NotImplementedError(f"{self.name} provider does not support batch jobs")
+
+    def get_batch_sync(self, job_id: str, config: AIEndpointConfig) -> AIBatchJob:
+        """Synchronous version of :meth:`get_batch` for Celery workers."""
+        raise NotImplementedError(f"{self.name} provider does not support batch jobs")
+
+    async def get_json_batch_results(
+        self,
+        job_id: str,
+        config: AIEndpointConfig,
+        schema: Type[T],
+    ) -> List[AIBatchResult[T]]:
+        """
+        The results of a batch job in a final state, each validated against
+        ``schema`` like a :meth:`chat_json` answer. A request whose answer failed
+        or does not validate carries its error; a request absent from the list was
+        not processed.
+
+        Raises:
+            NotImplementedError: If the provider does not run batch jobs.
+            ValueError: The job is not in a final state yet.
+        """
+        raise NotImplementedError(f"{self.name} provider does not support batch jobs")
+
+    def get_json_batch_results_sync(
+        self,
+        job_id: str,
+        config: AIEndpointConfig,
+        schema: Type[T],
+    ) -> List[AIBatchResult[T]]:
+        """Synchronous version of :meth:`get_json_batch_results` for Celery workers."""
+        raise NotImplementedError(f"{self.name} provider does not support batch jobs")
+
+    async def cancel_batch(self, job_id: str, config: AIEndpointConfig) -> AIBatchJob:
+        """
+        Ask the provider to stop a batch job; the requests already processed keep
+        their results.
+
+        Raises:
+            NotImplementedError: If the provider does not run batch jobs.
+        """
+        raise NotImplementedError(f"{self.name} provider does not support batch jobs")
+
+    def cancel_batch_sync(self, job_id: str, config: AIEndpointConfig) -> AIBatchJob:
+        """Synchronous version of :meth:`cancel_batch` for Celery workers."""
+        raise NotImplementedError(f"{self.name} provider does not support batch jobs")
 
     # ========== Helpers ==========
 

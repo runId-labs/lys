@@ -9,11 +9,16 @@ import base64
 import hashlib
 import json
 import logging
-from typing import AsyncGenerator, List, Dict, Any, Optional, Type
+import re
+from typing import AsyncGenerator, List, Dict, Any, Optional, Sequence, Type
 
 import httpx
 
 from lys.apps.ai.utils.providers.abstracts import (
+    AIBatchJob,
+    AIBatchRequest,
+    AIBatchResult,
+    AIBatchState,
     AIProvider,
     AIResponse,
     AIStreamChunk,
@@ -22,6 +27,7 @@ from lys.apps.ai.utils.providers.abstracts import (
 )
 from lys.apps.ai.utils.providers.config import AIEndpointConfig
 from lys.apps.ai.utils.providers.exceptions import (
+    AIError,
     AIAuthError,
     AIRateLimitError,
     AIModelNotFoundError,
@@ -63,6 +69,26 @@ class MistralProvider(AIProvider):
     VALID_TRANSCRIPTION_OPTIONS = {
         "language", "diarize", "context_bias", "timestamp_granularities",
     }
+
+    # Batch jobs: the requests are sent inline, which the API takes up to this count
+    # (beyond, it wants an uploaded file). A caller splits a larger set into jobs.
+    MAX_BATCH_REQUESTS = 10_000
+
+    # Batch job statuses, in provider-neutral terms. CANCELLATION_REQUESTED is still
+    # moving: the job may finish requests before it stops.
+    BATCH_STATES = {
+        "QUEUED": AIBatchState.PENDING,
+        "RUNNING": AIBatchState.PENDING,
+        "CANCELLATION_REQUESTED": AIBatchState.PENDING,
+        "SUCCESS": AIBatchState.COMPLETED,
+        "FAILED": AIBatchState.FAILED,
+        "TIMEOUT_EXCEEDED": AIBatchState.EXPIRED,
+        "CANCELLED": AIBatchState.CANCELLED,
+    }
+
+    # A batch job or file id goes into a URL path: anything but these characters could
+    # point the request at another endpoint.
+    _BATCH_ID = re.compile(r"^[A-Za-z0-9_-]+$")
 
     @staticmethod
     def _cache_key_field(messages: List[Dict[str, Any]],
@@ -172,10 +198,7 @@ class MistralProvider(AIProvider):
             payload["tools"] = cleaned_tools
             payload["tool_choice"] = "auto"
 
-        headers = {
-            "Authorization": f"Bearer {config.api_key}",
-            "Content-Type": "application/json",
-        }
+        headers = self._headers(config)
 
         try:
             async with httpx.AsyncClient() as client:
@@ -221,10 +244,7 @@ class MistralProvider(AIProvider):
             payload["tools"] = cleaned_tools
             payload["tool_choice"] = "auto"
 
-        headers = {
-            "Authorization": f"Bearer {config.api_key}",
-            "Content-Type": "application/json",
-        }
+        headers = self._headers(config)
 
         try:
             with httpx.Client() as client:
@@ -271,10 +291,7 @@ class MistralProvider(AIProvider):
             payload["tools"] = cleaned_tools
             payload["tool_choice"] = "auto"
 
-        headers = {
-            "Authorization": f"Bearer {config.api_key}",
-            "Content-Type": "application/json",
-        }
+        headers = self._headers(config)
 
         try:
             async with httpx.AsyncClient() as client:
@@ -352,25 +369,10 @@ class MistralProvider(AIProvider):
             AITimeoutError: Request exceeded ``config.timeout``.
             AIValidationError: Response could not be validated against ``schema``.
         """
-        cache_field = self._cache_key_field(messages, config)
-        messages = self._flatten_system(messages)
+        payload = self._json_payload(messages, config, schema)
         base_url = self.get_base_url(config)
 
-        # Filter options to only include valid Mistral API parameters
-        filtered_options = {k: v for k, v in config.options.items() if k in self.VALID_OPTIONS}
-
-        payload = {
-            "model": config.model,
-            "messages": messages,
-            "response_format": self._build_json_schema_response_format(schema),
-            **cache_field,
-            **filtered_options,
-        }
-
-        headers = {
-            "Authorization": f"Bearer {config.api_key}",
-            "Content-Type": "application/json",
-        }
+        headers = self._headers(config)
 
         try:
             async with httpx.AsyncClient() as client:
@@ -404,25 +406,10 @@ class MistralProvider(AIProvider):
         Uses Mistral's native ``response_format: {"type": "json_schema", ...}`` mode.
         See :meth:`chat_json` for details on parameters, return value, and exceptions.
         """
-        cache_field = self._cache_key_field(messages, config)
-        messages = self._flatten_system(messages)
+        payload = self._json_payload(messages, config, schema)
         base_url = self.get_base_url(config)
 
-        # Filter options to only include valid Mistral API parameters
-        filtered_options = {k: v for k, v in config.options.items() if k in self.VALID_OPTIONS}
-
-        payload = {
-            "model": config.model,
-            "messages": messages,
-            "response_format": self._build_json_schema_response_format(schema),
-            **cache_field,
-            **filtered_options,
-        }
-
-        headers = {
-            "Authorization": f"Bearer {config.api_key}",
-            "Content-Type": "application/json",
-        }
+        headers = self._headers(config)
 
         try:
             with httpx.Client() as client:
@@ -444,6 +431,300 @@ class MistralProvider(AIProvider):
 
         except httpx.TimeoutException:
             raise AITimeoutError(f"Request timed out after {config.timeout}s")
+
+    def _json_payload(
+        self,
+        messages: List[Dict[str, Any]],
+        config: AIEndpointConfig,
+        schema: Type[T],
+    ) -> Dict[str, Any]:
+        """The chat completions request of a structured JSON call: what a batch sends per request too."""
+        cache_field = self._cache_key_field(messages, config)
+        # Filter options to only include valid Mistral API parameters
+        filtered_options = {k: v for k, v in config.options.items() if k in self.VALID_OPTIONS}
+        return {
+            "model": config.model,
+            "messages": self._flatten_system(messages),
+            "response_format": self._build_json_schema_response_format(schema),
+            **cache_field,
+            **filtered_options,
+        }
+
+    # ========== Batch (structured JSON) ==========
+
+    def _batch_job_payload(
+        self,
+        requests: Sequence[AIBatchRequest],
+        config: AIEndpointConfig,
+        schema: Type[T],
+        metadata: Optional[Dict[str, str]],
+        timeout_hours: Optional[int],
+    ) -> Dict[str, Any]:
+        """
+        The job creation request: each request's body is the one :meth:`chat_json`
+        sends, the model set once on the job (a batch runs on one model).
+        """
+        if not requests:
+            raise ValueError("A batch job needs at least one request")
+        if len(requests) > self.MAX_BATCH_REQUESTS:
+            raise ValueError(
+                f"A batch job takes {self.MAX_BATCH_REQUESTS} requests at most, got {len(requests)}"
+            )
+        custom_ids = [request.custom_id for request in requests]
+        if len(set(custom_ids)) != len(custom_ids):
+            raise ValueError("Every request of a batch job needs its own custom_id")
+
+        bodies = []
+        for request in requests:
+            body = self._json_payload(request.messages, config, schema)
+            body.pop("model")
+            bodies.append({"custom_id": request.custom_id, "body": body})
+        payload: Dict[str, Any] = {
+            "model": config.model,
+            "endpoint": "/v1/chat/completions",
+            "requests": bodies,
+        }
+        if metadata:
+            payload["metadata"] = metadata
+        if timeout_hours is not None:
+            payload["timeout_hours"] = timeout_hours
+        return payload
+
+    def _batch_url(self, config: AIEndpointConfig, kind: str, object_id: Optional[str] = None) -> str:
+        """The URL of the batch jobs, of one job or of one file, its id checked first."""
+        if object_id is None:
+            return f"{self.get_base_url(config)}/{kind}"
+        if not self._BATCH_ID.match(object_id):
+            raise ValueError(f"Invalid Mistral {kind} id: {object_id!r}")
+        return f"{self.get_base_url(config)}/{kind}/{object_id}"
+
+    def _parse_batch_job(self, response: httpx.Response) -> AIBatchJob:
+        """Read a batch job response, its HTTP status checked first."""
+        self._handle_error_status(response)
+        return self._batch_job(response.json())
+
+    def _batch_job(self, data: Dict[str, Any]) -> AIBatchJob:
+        """Read a batch job; a status this provider does not know is an error, never a guess."""
+        if not data.get("id"):
+            raise AIProviderError("Mistral batch job response without an id")
+        state = self.BATCH_STATES.get(data.get("status"))
+        if state is None:
+            raise AIProviderError(f"Unknown Mistral batch job status: {data.get('status')!r}")
+        try:
+            # The API documents integers but its examples write them as strings.
+            counts = {key: int(data.get(key) or 0)
+                      for key in ("total_requests", "succeeded_requests", "failed_requests")}
+        except (TypeError, ValueError) as e:
+            raise AIProviderError(f"Mistral batch job {data['id']} reports a count that is not a number: {e}")
+        return AIBatchJob(id=data["id"], state=state, provider=self.name, model=data.get("model") or "", **counts)
+
+    def _finished_batch_job(self, response: httpx.Response) -> Dict[str, Any]:
+        """
+        The job of a results request, refused while it is still running: its results
+        would be empty, read as requests never processed and sent again.
+        """
+        self._handle_error_status(response)
+        data = response.json()
+        job = self._batch_job(data)
+        if not job.state.is_final:
+            raise ValueError(f"Mistral batch job {job.id} is not finished: poll get_batch until state.is_final")
+        return data
+
+    def _batch_records(self, job: Dict[str, Any], files: Dict[str, str]) -> List[Dict[str, Any]]:
+        """
+        The result records of a job: inline (``outputs``) when the API returns them,
+        else the lines of its output and error files (``files``: file id → content).
+        """
+        outputs = job.get("outputs")
+        if isinstance(outputs, list) and outputs:
+            return [record for record in outputs if isinstance(record, dict)]
+        records = []
+        for file_id, content in files.items():
+            for line in content.splitlines():
+                if not line.strip():
+                    continue
+                try:
+                    records.append(json.loads(line))
+                except json.JSONDecodeError as e:
+                    raise AIProviderError(f"Mistral batch file {file_id} holds a line that is not JSON: {e}")
+        return records
+
+    def _parse_batch_record(self, record: Dict[str, Any], schema: Type[T]) -> Optional[AIBatchResult[T]]:
+        """
+        One result record, validated like a :meth:`chat_json` answer. Shape measured
+        on the API (2026-11-21): ``{"custom_id", "response": {"status_code", "body"}}``,
+        the body a chat completion. None for a record naming no request.
+        """
+        custom_id = record.get("custom_id")
+        if not custom_id:
+            logger.warning("Mistral batch result without custom_id, ignored")
+            return None
+        response = record.get("response") or {}
+        status_code = response.get("status_code")
+        body = response.get("body")
+        if status_code != 200 or not isinstance(body, dict):
+            detail = record.get("error") or body
+            error = self._status_error(status_code) or AIProviderError(f"Mistral error: {status_code}")
+            return AIBatchResult(
+                custom_id=custom_id,
+                error=type(error)(f"{error} (batch request {custom_id}): {str(detail)[:500]}"),
+            )
+
+        ai_response = self._parse_completion(body)
+        self._warn_if_non_stop_finish(ai_response, schema)
+        try:
+            data = schema.model_validate_json(ai_response.content)
+        except Exception as e:
+            self._log_validation_failure(ai_response, schema, e)
+            return AIBatchResult(custom_id=custom_id, error=self._validation_error(ai_response, schema, e),
+                                 usage=ai_response.usage)
+        return AIBatchResult(custom_id=custom_id, data=data, usage=ai_response.usage)
+
+    def _parse_batch_results(
+        self, job: Dict[str, Any], files: Dict[str, str], schema: Type[T],
+    ) -> List[AIBatchResult[T]]:
+        results = (self._parse_batch_record(record, schema) for record in self._batch_records(job, files))
+        return [result for result in results if result is not None]
+
+    @staticmethod
+    def _result_file_ids(job: Dict[str, Any]) -> List[str]:
+        """The output and error files to read when the job's results are not returned inline."""
+        outputs = job.get("outputs")
+        if isinstance(outputs, list) and outputs:
+            return []
+        return [file_id for file_id in (job.get("output_file"), job.get("error_file")) if file_id]
+
+    @staticmethod
+    def _headers(config: AIEndpointConfig) -> Dict[str, str]:
+        """The headers of a JSON request to the Mistral API."""
+        return {"Authorization": f"Bearer {config.api_key}", "Content-Type": "application/json"}
+
+    async def submit_json_batch(
+        self,
+        requests: Sequence[AIBatchRequest],
+        config: AIEndpointConfig,
+        schema: Type[T],
+        metadata: Optional[Dict[str, str]] = None,
+        timeout_hours: Optional[int] = None,
+    ) -> AIBatchJob:
+        """Create a batch job on Mistral's batch API, the requests sent inline."""
+        payload = self._batch_job_payload(requests, config, schema, metadata, timeout_hours)
+        try:
+            async with httpx.AsyncClient() as client:
+                response = await client.post(self._batch_url(config, "batch/jobs"), headers=self._headers(config),
+                                             json=payload, timeout=config.timeout)
+        except httpx.TimeoutException:
+            raise AITimeoutError(f"Request timed out after {config.timeout}s")
+        return self._parse_batch_job(response)
+
+    def submit_json_batch_sync(
+        self,
+        requests: Sequence[AIBatchRequest],
+        config: AIEndpointConfig,
+        schema: Type[T],
+        metadata: Optional[Dict[str, str]] = None,
+        timeout_hours: Optional[int] = None,
+    ) -> AIBatchJob:
+        """Synchronous version of :meth:`submit_json_batch` for Celery workers."""
+        payload = self._batch_job_payload(requests, config, schema, metadata, timeout_hours)
+        try:
+            with httpx.Client() as client:
+                response = client.post(self._batch_url(config, "batch/jobs"), headers=self._headers(config),
+                                       json=payload, timeout=config.timeout)
+        except httpx.TimeoutException:
+            raise AITimeoutError(f"Request timed out after {config.timeout}s")
+        return self._parse_batch_job(response)
+
+    async def get_batch(self, job_id: str, config: AIEndpointConfig) -> AIBatchJob:
+        """Read a batch job's status and counts."""
+        url = self._batch_url(config, "batch/jobs", job_id)
+        try:
+            async with httpx.AsyncClient() as client:
+                response = await client.get(url, headers=self._headers(config), timeout=config.timeout)
+        except httpx.TimeoutException:
+            raise AITimeoutError(f"Request timed out after {config.timeout}s")
+        return self._parse_batch_job(response)
+
+    def get_batch_sync(self, job_id: str, config: AIEndpointConfig) -> AIBatchJob:
+        """Synchronous version of :meth:`get_batch` for Celery workers."""
+        url = self._batch_url(config, "batch/jobs", job_id)
+        try:
+            with httpx.Client() as client:
+                response = client.get(url, headers=self._headers(config), timeout=config.timeout)
+        except httpx.TimeoutException:
+            raise AITimeoutError(f"Request timed out after {config.timeout}s")
+        return self._parse_batch_job(response)
+
+    async def get_json_batch_results(
+        self,
+        job_id: str,
+        config: AIEndpointConfig,
+        schema: Type[T],
+    ) -> List[AIBatchResult[T]]:
+        """
+        Read and validate a batch job's results (inline, else from its output and error files).
+
+        Raises:
+            ValueError: The job is not in a final state yet.
+        """
+        url = self._batch_url(config, "batch/jobs", job_id)
+        headers = self._headers(config)
+        try:
+            async with httpx.AsyncClient() as client:
+                response = await client.get(url, headers=headers, params={"inline": "true"}, timeout=config.timeout)
+                job = self._finished_batch_job(response)
+                files = {}
+                for file_id in self._result_file_ids(job):
+                    file_response = await client.get(f"{self._batch_url(config, 'files', file_id)}/content",
+                                                     headers=headers, timeout=config.timeout)
+                    self._handle_error_status(file_response)
+                    files[file_id] = file_response.text
+        except httpx.TimeoutException:
+            raise AITimeoutError(f"Request timed out after {config.timeout}s")
+        return self._parse_batch_results(job, files, schema)
+
+    def get_json_batch_results_sync(
+        self,
+        job_id: str,
+        config: AIEndpointConfig,
+        schema: Type[T],
+    ) -> List[AIBatchResult[T]]:
+        """Synchronous version of :meth:`get_json_batch_results` for Celery workers."""
+        url = self._batch_url(config, "batch/jobs", job_id)
+        headers = self._headers(config)
+        try:
+            with httpx.Client() as client:
+                response = client.get(url, headers=headers, params={"inline": "true"}, timeout=config.timeout)
+                job = self._finished_batch_job(response)
+                files = {}
+                for file_id in self._result_file_ids(job):
+                    file_response = client.get(f"{self._batch_url(config, 'files', file_id)}/content",
+                                               headers=headers, timeout=config.timeout)
+                    self._handle_error_status(file_response)
+                    files[file_id] = file_response.text
+        except httpx.TimeoutException:
+            raise AITimeoutError(f"Request timed out after {config.timeout}s")
+        return self._parse_batch_results(job, files, schema)
+
+    async def cancel_batch(self, job_id: str, config: AIEndpointConfig) -> AIBatchJob:
+        """Ask Mistral to stop a batch job."""
+        url = f"{self._batch_url(config, 'batch/jobs', job_id)}/cancel"
+        try:
+            async with httpx.AsyncClient() as client:
+                response = await client.post(url, headers=self._headers(config), timeout=config.timeout)
+        except httpx.TimeoutException:
+            raise AITimeoutError(f"Request timed out after {config.timeout}s")
+        return self._parse_batch_job(response)
+
+    def cancel_batch_sync(self, job_id: str, config: AIEndpointConfig) -> AIBatchJob:
+        """Synchronous version of :meth:`cancel_batch` for Celery workers."""
+        url = f"{self._batch_url(config, 'batch/jobs', job_id)}/cancel"
+        try:
+            with httpx.Client() as client:
+                response = client.post(url, headers=self._headers(config), timeout=config.timeout)
+        except httpx.TimeoutException:
+            raise AITimeoutError(f"Request timed out after {config.timeout}s")
+        return self._parse_batch_job(response)
 
     # ========== Embeddings ==========
 
@@ -481,10 +762,7 @@ class MistralProvider(AIProvider):
             async with httpx.AsyncClient() as client:
                 response = await client.post(
                     f"{self.get_base_url(config)}/embeddings",
-                    headers={
-                        "Authorization": f"Bearer {config.api_key}",
-                        "Content-Type": "application/json",
-                    },
+                    headers=self._headers(config),
                     json=self._embeddings_payload(texts, config),
                     timeout=config.timeout,
                 )
@@ -506,10 +784,7 @@ class MistralProvider(AIProvider):
             with httpx.Client() as client:
                 response = client.post(
                     f"{self.get_base_url(config)}/embeddings",
-                    headers={
-                        "Authorization": f"Bearer {config.api_key}",
-                        "Content-Type": "application/json",
-                    },
+                    headers=self._headers(config),
                     json=self._embeddings_payload(texts, config),
                     timeout=config.timeout,
                 )
@@ -538,10 +813,7 @@ class MistralProvider(AIProvider):
             "document": self._ocr_document(content, mime_type),
             "include_image_base64": False,
         }
-        headers = {
-            "Authorization": f"Bearer {config.api_key}",
-            "Content-Type": "application/json",
-        }
+        headers = self._headers(config)
         try:
             with httpx.Client() as client:
                 response = client.post(
@@ -567,10 +839,7 @@ class MistralProvider(AIProvider):
             "document": self._ocr_document(content, mime_type),
             "include_image_base64": False,
         }
-        headers = {
-            "Authorization": f"Bearer {config.api_key}",
-            "Content-Type": "application/json",
-        }
+        headers = self._headers(config)
         try:
             async with httpx.AsyncClient() as client:
                 response = await client.post(
@@ -925,16 +1194,24 @@ class MistralProvider(AIProvider):
 
         return result
 
+    @staticmethod
+    def _status_error(status_code: Optional[int]) -> Optional[AIError]:
+        """The error an HTTP status stands for; None for a success or a status left to the caller."""
+        if status_code == 401:
+            return AIAuthError("Invalid Mistral API key")
+        if status_code == 429:
+            return AIRateLimitError("Mistral rate limit exceeded")
+        if status_code == 404:
+            return AIModelNotFoundError("Mistral model not found")
+        if status_code is not None and status_code >= 500:
+            return AIProviderError(f"Mistral server error: {status_code}")
+        return None
+
     def _handle_error_status(self, response: httpx.Response) -> None:
         """Check response status and raise appropriate errors."""
-        if response.status_code == 401:
-            raise AIAuthError("Invalid Mistral API key")
-        if response.status_code == 429:
-            raise AIRateLimitError("Mistral rate limit exceeded")
-        if response.status_code == 404:
-            raise AIModelNotFoundError("Mistral model not found")
-        if response.status_code >= 500:
-            raise AIProviderError(f"Mistral server error: {response.status_code}")
+        error = self._status_error(response.status_code)
+        if error is not None:
+            raise error
         if response.status_code != 200:
             logger.error(f"Mistral API error {response.status_code}: {response.text}")
             raise AIProviderError(f"Mistral error: {response.status_code}")
@@ -1010,8 +1287,10 @@ class MistralProvider(AIProvider):
     def _parse_response(self, response: httpx.Response) -> AIResponse:
         """Parse Mistral API response."""
         self._handle_error_status(response)
+        return self._parse_completion(response.json())
 
-        data = response.json()
+    def _parse_completion(self, data: Dict[str, Any]) -> AIResponse:
+        """Read a chat completion: of a direct call, or of one request of a batch job."""
         choice = data.get("choices", [{}])[0]
         message = choice.get("message", {})
 
