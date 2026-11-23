@@ -296,9 +296,12 @@ jobs raises `NotImplementedError`.
   and `MAX_BATCH_FILE_BYTES` (512 MB) per job, both checked before any upload
   (`ValueError`: split the set). The results are read from the job's output and error files.
 - **Files kept by the provider**: the input file and the result files stay in the
-  Mistral workspace — lys deletes only the input file of a job the API refused. They
-  hold the prompts and answers: delete them from the workspace per the project's
-  retention rules.
+  Mistral workspace — lys deletes on its own only the input file of a job the API
+  refused. They hold the prompts and answers: once the results are recorded (never
+  before — they cannot be read again), call `delete_batch_files(job_id, config)` (and
+  `_sync`) per the project's retention rules. It refuses a job not final (`ValueError`),
+  deletes best-effort (a failure is logged, not raised) and returns the number of the
+  job's files gone — a file already deleted counts, so a retry is safe.
   `timeout_hours` defaults to the provider's (24 h on Mistral, under 7 days); keep
   jobs to a size whose results are worth waiting for together.
 - `usage` on each result is the provider's token count, to compare the cost billed.

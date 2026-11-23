@@ -7,6 +7,16 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.66.0] - 2026-11-23
+
+### Added
+- `AIService.delete_batch_files` (and `_sync`): delete the input, output and error files a
+  batch job in a final state leaves in the provider workspace — they hold the prompts and
+  answers. Refuses a job not yet final (`ValueError`); best-effort per file (a failure is
+  logged, not raised); returns the number of the job's files gone. A file already deleted
+  (404) counts as gone, so a retried call neither warns nor miscounts. Call it only once
+  the results are recorded. Implemented on Mistral.
+
 ## [0.65.1] - 2026-11-21
 
 ### Fixed

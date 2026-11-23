@@ -239,14 +239,14 @@ class TestMistralBatchJob:
     def test_a_deletion_refused_is_logged(self, provider, config, caplog):
         patcher, client = _sync_client(_response(payload={"id": "file-in"}), _response(status_code=429),
                                        method="post")
-        client.delete.return_value = _response(status_code=404)
+        client.delete.return_value = _response(status_code=500)
         try:
             with pytest.raises(AIRateLimitError):
                 provider.submit_json_batch_sync(_requests(), config, Answer)
         finally:
             patcher.stop()
 
-        assert "file-in not deleted: HTTP 404" in caplog.text
+        assert "file-in not deleted: HTTP 500" in caplog.text
 
     def test_after_a_timeout_the_input_file_is_kept(self, provider, config):
         # The job may have been created on it: deleting the file could break that job.
@@ -332,7 +332,7 @@ class TestMistralBatchJob:
     @pytest.mark.asyncio
     @pytest.mark.parametrize("delete, logged", [
         ({"side_effect": httpx.ConnectError("down")}, "ConnectError"),
-        ({"return_value": _response(status_code=404)}, "HTTP 404"),
+        ({"return_value": _response(status_code=500)}, "HTTP 500"),
     ])
     async def test_the_async_twin_logs_a_failed_deletion(self, provider, config, caplog, delete, logged):
         patcher, client = _async_client(_response(payload={"id": "file-in"}), _response(status_code=429),
@@ -524,6 +524,78 @@ class TestMistralBatchAsync:
             patcher.stop()
 
 
+class TestMistralBatchFiles:
+
+    def test_a_finished_job_s_input_output_and_error_files_are_deleted(self, provider, config):
+        job = _job("SUCCESS", input_files=["file-in"], output_file="file-out", error_file="file-err")
+        deleted = _response(payload={"deleted": True})
+        patcher, client = _sync_client(_response(payload=job))
+        client.delete.side_effect = [deleted, deleted, deleted]
+        try:
+            count = provider.delete_batch_files_sync("job-1", config)
+        finally:
+            patcher.stop()
+
+        assert client.get.call_args.args[0] == "https://api.mistral.ai/v1/batch/jobs/job-1"
+        assert [call.args[0] for call in client.delete.call_args_list] == [
+            "https://api.mistral.ai/v1/files/file-in", "https://api.mistral.ai/v1/files/file-out",
+            "https://api.mistral.ai/v1/files/file-err"]
+        assert count == 3
+
+    @pytest.mark.parametrize("status", ["QUEUED", "RUNNING"])
+    def test_the_files_of_a_job_still_running_are_kept(self, provider, config, status):
+        patcher, client = _sync_client(_response(payload=_job(status, input_files=["file-in"])))
+        try:
+            with pytest.raises(ValueError):
+                provider.delete_batch_files_sync("job-1", config)
+        finally:
+            patcher.stop()
+
+        client.delete.assert_not_called()
+
+    def test_a_file_not_deleted_is_logged_and_not_counted(self, provider, config, caplog):
+        job = _job("SUCCESS", input_files=["file-in"], output_file="file-out")
+        patcher, client = _sync_client(_response(payload=job))
+        client.delete.side_effect = [_response(status_code=500), _response(payload={"deleted": True})]
+        try:
+            count = provider.delete_batch_files_sync("job-1", config)
+        finally:
+            patcher.stop()
+
+        assert count == 1
+        assert "file-in not deleted: HTTP 500" in caplog.text
+
+    def test_a_file_already_deleted_counts_as_gone_without_warning(self, provider, config, caplog):
+        job = _job("SUCCESS", input_files=["file-in"], output_file="file-out")
+        patcher, client = _sync_client(_response(payload=job))
+        client.delete.side_effect = [_response(status_code=404), _response(payload={"deleted": True})]
+        try:
+            count = provider.delete_batch_files_sync("job-1", config)
+        finally:
+            patcher.stop()
+
+        assert count == 2
+        assert "not deleted" not in caplog.text
+
+    def test_a_provider_without_batch_jobs_says_so(self, config):
+        with pytest.raises(NotImplementedError):
+            AnthropicProvider().delete_batch_files_sync("job", config)
+
+    @pytest.mark.asyncio
+    async def test_the_async_twin_deletes_the_same_files(self, provider, config):
+        job = _job("CANCELLED", input_files=["file-in"], error_file="file-err")
+        patcher, client = _async_client(_response(payload=job))
+        client.delete.side_effect = [_response(payload={"deleted": True}), httpx.ConnectError("down")]
+        try:
+            count = await provider.delete_batch_files("job-1", config)
+        finally:
+            patcher.stop()
+
+        assert [call.args[0] for call in client.delete.call_args_list] == [
+            "https://api.mistral.ai/v1/files/file-in", "https://api.mistral.ai/v1/files/file-err"]
+        assert count == 1
+
+
 class TestAIServiceBatch:
 
     @pytest.fixture(autouse=True)
@@ -538,6 +610,12 @@ class TestAIServiceBatch:
         sent, endpoint, schema, metadata, timeout_hours = submit.call_args.args
         assert sent[0].custom_id == "r0" and sent[0].messages[0] == {"role": "system", "content": "Classify."}
         assert (endpoint, schema, metadata, timeout_hours) == (config, Answer, {"origin": "test"}, None)
+
+    def test_the_files_are_deleted_by_the_provider(self, provider, config):
+        with patch.object(provider, "delete_batch_files_sync", return_value=3) as delete:
+            assert AIService.delete_batch_files_sync("job-1", config) == 3
+
+        delete.assert_called_once_with("job-1", config)
 
     def test_a_text_field_cut_at_its_max_length_is_an_error_not_an_answer(self, provider, config):
         results = [AIBatchResult(custom_id="r0", data=ShortAnswer(label="abcde")),
@@ -566,7 +644,7 @@ class TestAIServiceBatch:
         assert checked.data is None and isinstance(checked.error, AIResponseTruncatedError)
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize("method", ["get_batch", "cancel_batch"])
+    @pytest.mark.parametrize("method", ["get_batch", "cancel_batch", "delete_batch_files"])
     async def test_the_async_job_calls_reach_the_provider(self, provider, config, method):
         with patch.object(provider, method, AsyncMock(return_value="job")) as call:
             assert await getattr(AIService, method)("job-1", config) == "job"

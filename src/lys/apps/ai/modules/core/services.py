@@ -908,6 +908,24 @@ class AIService(Service):
         """Synchronous version of ``cancel_batch`` for Celery workers."""
         return cls.get_provider(config.provider).cancel_batch_sync(job_id, config)
 
+    @classmethod
+    async def delete_batch_files(cls, job_id: str, config: AIEndpointConfig) -> int:
+        """
+        Delete the files a batch job in a final state leaves with the provider (its
+        requests and its answers): call it once the results are recorded, never
+        before — they cannot be read again. Returns the number of the job's files
+        gone, deleted now or before, so a retried call is safe.
+
+        Raises:
+            ValueError: The job is not in a final state yet.
+        """
+        return await cls.get_provider(config.provider).delete_batch_files(job_id, config)
+
+    @classmethod
+    def delete_batch_files_sync(cls, job_id: str, config: AIEndpointConfig) -> int:
+        """Synchronous version of ``delete_batch_files`` for Celery workers."""
+        return cls.get_provider(config.provider).delete_batch_files_sync(job_id, config)
+
     # ========== OCR ==========
 
     @classmethod

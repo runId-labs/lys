@@ -545,6 +545,23 @@ class AIProvider(ABC):
         """Synchronous version of :meth:`cancel_batch` for Celery workers."""
         raise NotImplementedError(f"{self.name} provider does not support batch jobs")
 
+    async def delete_batch_files(self, job_id: str, config: AIEndpointConfig) -> int:
+        """
+        Delete the files a batch job in a final state leaves with the provider (its
+        requests and its answers), once its results are recorded. Best-effort: a
+        file not deleted is logged. Returns the number of the job's files gone,
+        deleted now or before, so a retried call is safe.
+
+        Raises:
+            NotImplementedError: If the provider does not run batch jobs.
+            ValueError: The job is not in a final state yet.
+        """
+        raise NotImplementedError(f"{self.name} provider does not support batch jobs")
+
+    def delete_batch_files_sync(self, job_id: str, config: AIEndpointConfig) -> int:
+        """Synchronous version of :meth:`delete_batch_files` for Celery workers."""
+        raise NotImplementedError(f"{self.name} provider does not support batch jobs")
+
     # ========== Helpers ==========
 
     def get_base_url(self, config: AIEndpointConfig) -> str:

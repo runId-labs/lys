@@ -519,30 +519,40 @@ class MistralProvider(AIProvider):
             raise AIProviderError(f"Mistral file upload response without a valid id: {file_id!r}")
         return file_id
 
-    async def _discard_input_file(self, client: httpx.AsyncClient, config: AIEndpointConfig, file_id: str) -> None:
+    async def _delete_file(self, client: httpx.AsyncClient, config: AIEndpointConfig, file_id: str) -> bool:
         """
-        Best-effort removal of an input file no job was created on: it holds the prompts.
-        A failure is logged, never raised — the job's refusal is the error the caller gets.
+        Best-effort removal of a batch file: it holds the prompts or the answers. A
+        failure is logged, never raised — what the caller does next is not undone by
+        a file left behind. True when the file is gone, deleted now or before.
         """
         try:
             response = await client.delete(self._batch_url(config, "files", file_id),
                                            headers=self._headers(config), timeout=config.timeout)
         except httpx.HTTPError as e:
-            logger.warning("Mistral batch input file %s not deleted: %s", file_id, type(e).__name__)
-            return
-        if response.status_code != 200:
-            logger.warning("Mistral batch input file %s not deleted: HTTP %s", file_id, response.status_code)
+            logger.warning("Mistral batch file %s not deleted: %s", file_id, type(e).__name__)
+            return False
+        return self._file_gone(file_id, response)
 
-    def _discard_input_file_sync(self, client: httpx.Client, config: AIEndpointConfig, file_id: str) -> None:
-        """Synchronous version of :meth:`_discard_input_file`."""
+    def _delete_file_sync(self, client: httpx.Client, config: AIEndpointConfig, file_id: str) -> bool:
+        """Synchronous version of :meth:`_delete_file`."""
         try:
             response = client.delete(self._batch_url(config, "files", file_id),
                                      headers=self._headers(config), timeout=config.timeout)
         except httpx.HTTPError as e:
-            logger.warning("Mistral batch input file %s not deleted: %s", file_id, type(e).__name__)
-            return
-        if response.status_code != 200:
-            logger.warning("Mistral batch input file %s not deleted: HTTP %s", file_id, response.status_code)
+            logger.warning("Mistral batch file %s not deleted: %s", file_id, type(e).__name__)
+            return False
+        return self._file_gone(file_id, response)
+
+    @staticmethod
+    def _file_gone(file_id: str, response: httpx.Response) -> bool:
+        """
+        Read a file deletion response: a file already deleted (404) is gone too, so a
+        retried deletion neither warns nor miscounts. Any other refusal is logged.
+        """
+        if response.status_code in (200, 404):
+            return True
+        logger.warning("Mistral batch file %s not deleted: HTTP %s", file_id, response.status_code)
+        return False
 
     @staticmethod
     def _upload_request(config: AIEndpointConfig, content: bytes) -> Dict[str, Any]:
@@ -584,8 +594,9 @@ class MistralProvider(AIProvider):
 
     def _finished_batch_job(self, response: httpx.Response) -> Dict[str, Any]:
         """
-        The job of a results request, refused while it is still running: its results
-        would be empty, read as requests never processed and sent again.
+        The job of a results or files request, refused while it is still running: its
+        results would be empty, read as requests never processed and sent again, and
+        its files are still in use.
         """
         self._handle_error_status(response)
         data = response.json()
@@ -656,6 +667,12 @@ class MistralProvider(AIProvider):
         """The output and error files holding the job's results."""
         return [file_id for file_id in (job.get("output_file"), job.get("error_file")) if file_id]
 
+    @classmethod
+    def _job_file_ids(cls, job: Dict[str, Any]) -> List[str]:
+        """Every file of a job: the input files it read, the output and error files it wrote."""
+        inputs = job.get("input_files") if isinstance(job.get("input_files"), list) else []
+        return [file_id for file_id in inputs if file_id] + cls._result_file_ids(job)
+
     @staticmethod
     def _headers(config: AIEndpointConfig) -> Dict[str, str]:
         """The headers of a JSON request to the Mistral API."""
@@ -684,7 +701,7 @@ class MistralProvider(AIProvider):
                 response = await client.post(self._batch_url(config, "batch/jobs"), headers=self._headers(config),
                                              json=payload, timeout=config.timeout)
                 if response.status_code != 200:
-                    await self._discard_input_file(client, config, file_id)
+                    await self._delete_file(client, config, file_id)
         except httpx.TimeoutException:
             raise AITimeoutError(f"Request timed out after {config.timeout}s")
         return self._parse_batch_job(response)
@@ -707,7 +724,7 @@ class MistralProvider(AIProvider):
                 response = client.post(self._batch_url(config, "batch/jobs"), headers=self._headers(config),
                                        json=payload, timeout=config.timeout)
                 if response.status_code != 200:
-                    self._discard_input_file_sync(client, config, file_id)
+                    self._delete_file_sync(client, config, file_id)
         except httpx.TimeoutException:
             raise AITimeoutError(f"Request timed out after {config.timeout}s")
         return self._parse_batch_job(response)
@@ -811,6 +828,34 @@ class MistralProvider(AIProvider):
         except httpx.TimeoutException:
             raise AITimeoutError(f"Request timed out after {config.timeout}s")
         return self._parse_batch_job(response)
+
+    async def delete_batch_files(self, job_id: str, config: AIEndpointConfig) -> int:
+        """
+        Delete the files of a job in a final state: its requests and its answers stay
+        on Mistral until deleted.
+
+        Raises:
+            ValueError: The job is not in a final state yet.
+        """
+        try:
+            async with httpx.AsyncClient() as client:
+                response = await client.get(self._batch_url(config, "batch/jobs", job_id),
+                                            headers=self._headers(config), timeout=config.timeout)
+                job = self._finished_batch_job(response)
+                return sum([await self._delete_file(client, config, file_id) for file_id in self._job_file_ids(job)])
+        except httpx.TimeoutException:
+            raise AITimeoutError(f"Request timed out after {config.timeout}s")
+
+    def delete_batch_files_sync(self, job_id: str, config: AIEndpointConfig) -> int:
+        """Synchronous version of :meth:`delete_batch_files` for Celery workers."""
+        try:
+            with httpx.Client() as client:
+                response = client.get(self._batch_url(config, "batch/jobs", job_id),
+                                      headers=self._headers(config), timeout=config.timeout)
+                job = self._finished_batch_job(response)
+                return sum(self._delete_file_sync(client, config, file_id) for file_id in self._job_file_ids(job))
+        except httpx.TimeoutException:
+            raise AITimeoutError(f"Request timed out after {config.timeout}s")
 
     # ========== Embeddings ==========
 
