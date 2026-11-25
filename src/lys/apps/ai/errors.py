@@ -10,3 +10,7 @@ INVALID_CHAT_INPUT = (400, "INVALID_CHAT_INPUT")
 # unknown or already answered ids, a call of a tool the user does not answer, or an
 # incomplete set — every open call of the turn is answered at once.
 INVALID_TOOL_ANSWERS = (400, "INVALID_TOOL_ANSWERS")
+
+# An agent run needs the user's own token: the agent reads with the user's rights, never
+# with a service identity that would read more than the user may.
+AGENT_REQUIRES_USER_TOKEN = (403, "AGENT_REQUIRES_USER_TOKEN")

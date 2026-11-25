@@ -15,7 +15,21 @@ project changes.
 - **Compaction** (`token_threshold`, `window_messages`) and
   `routes_manifest_path` (navigation tool — resolved from the front manifest)
   are already wired.
+- **`chatbot.max_tool_iterations`** (default 10): the model calls one chat turn
+  may make. The last one is made with tool calls refused (`tool_choice` none, the
+  tools still declared) and a turn-scoped instruction to answer from what the tools
+  returned and say what it could not read: a turn that reads a lot ends on an
+  answer, never on the `MAX_ITERATIONS` error that threw its reading away. That
+  error remains only when the last call writes nothing. Size it on what the app's
+  tools make a turn read (measure the rounds per turn in `ai_message`), not on a
+  guess: every round is a model call the user waits for.
 - Keys in `_keys` (mistral/anthropic); never hardcode a key.
+- **A chat stream refused before its first chunk is retried**
+  (`AIService.chat_stream_with_purpose`): a rate limit (429) with waits of 2 s
+  then 8 s, or the provider's `Retry-After` up to 30 s; a server error (5xx);
+  then the endpoint's `fallback`, as on a connection error or a timeout. Once a
+  chunk was yielded nothing is retried. Without a `fallback`, the chat has no
+  other model to answer: configure one on the chatbot endpoint.
 - **Prompt versioning**: at boot, each endpoint's `system_prompt` and the
   routes manifest are versioned into `ai_prompt_version`. Other prompt text
   kept in an endpoint's config (e.g. `summary_header`,
@@ -268,6 +282,91 @@ other conversation can be reached.
   must carry that sentence over, or the model is never told the tool exists beyond its own
   description.
 
+## Exact arithmetic (`calculate`)
+
+A model gets a single operation right and loses the thread of a chain: a projection carried
+over several steps, an intermediate result reused later. `calculate` evaluates the chain
+instead. It is offered on every turn, on every page (it reads nothing and changes nothing).
+
+- **Named steps, evaluated in order.** `steps: [{name, expression}]`; a step uses the names of
+  the steps before it. The first failing step stops the chain and is named in the error.
+- **Parsed, never executed.** `utils/calculator.py` walks the Python AST against a whitelist:
+  numbers, `+ - * / **`, parentheses, earlier step names, `round` (half up), `min`, `max`,
+  `abs`, `sum`. Everything else is refused with an error the model can act on (special
+  tools R2). Every input is bounded: 20 steps, 300 characters and 200 nodes per expression,
+  exponent ≤ 1000, magnitude 1e±30.
+- **Decimal arithmetic.** A literal is read from its text (0.1 stays 0.1), results come back
+  as plain decimal text with at most 10 decimals.
+- **The project prompt says when.** The tool's description asks for it on every derived
+  figure; a project whose tools already return computed values (changes, totals) says in its
+  prompt that those are quoted, not recomputed.
+
+## Agents (`AIAgentService`): an agent as a tool
+
+An agent works one task through tools on its own endpoint and returns a validated report.
+It is the specialist of the orchestrator / specialist pattern: the chatbot calls it from a
+special tool, the agent reads in its own context, and only its report comes back — the
+reading never fills the conversation.
+
+```python
+REVIEW = AgentDefinition(
+    purpose="plan_review",                 # an endpoint: its system_prompt, model, fallback
+    webservices=frozenset({"business_plan_rows", "all_regulatory_changes"}),
+    report_schema=PlanReviewReport,        # a Pydantic model
+    max_iterations=15,
+    report_purpose="plan_review_report",   # a fast endpoint for the formatting
+)
+result = await app_manager.get_service("ai_agent_run").run(
+    REVIEW, task, info, client_id=client_id, tool_defaults={"clientId": client_gid},
+)
+# result.report (validated) or result.error (a sentence for the model); result.run_id
+```
+
+The run: its tools are the declared webservices the user may call, plus `calculate`; a tool
+loop under the user's token, the last call with tool calls refused
+(`AGENT_FINAL_ROUND_INSTRUCTION`), ending on a written analysis; one structured call turning
+that analysis into the report (`AGENT_REPORT_INSTRUCTION`) on `report_purpose` — reason, then
+format, so the tool history never crosses a structured call; formatting decides nothing, a fast
+model without reasoning does it. Each run is traced in `ai_agent_run` (task, transcript, report
+or error, totals, and `calls`: one entry per model call — kind, latency, tokens, tools asked),
+apart from the conversations: a run is neither listed in the user's history nor indexed for the
+conversation search. The trace is written in transactions of its own, opened at the start and
+closed at the end whatever the end (shielded, bounded by `AGENT_TRACE_CLOSE_TIMEOUT`): it never
+depends on the caller's transaction, and a trace that cannot be written never fails the run.
+
+RULES:
+
+- **R1 — Read only.** Declared webservices are queries; a mutation, or a name that is not a
+  tool, raises at the run. What an agent reads (a legal text, a document) may carry
+  instructions: an agent that cannot write cannot act on them.
+- **R2 — The user's rights, never more.** A run needs the user's token
+  (`AGENT_REQUIRES_USER_TOKEN`): there is no service identity to fall back on. Its tools are
+  the intersection of the declared ones and the user's — an agent reads what the user may.
+- **R3 — A failure is a result.** A provider error or a report that does not validate ends
+  the run FAILED with the error kept on the trace; the caller gets a generic `error` to hand
+  to its model, never the provider's message. A tool that fails is the agent's to read, as
+  for the chatbot.
+- **R4 — The caller decides the scope.** What the caller already checked (the client, the
+  version read) is passed as `tool_defaults`, injected like page params and PINNED: its ids
+  override the model's (`GraphQLToolExecutor(pin_ids=True)`). Left free, a model invents a
+  client id from another entity's uuid. Name the scope in the task too, so the model reads it.
+- **R5 — The report is the contract.** The chatbot repeats the report's figures, never its
+  own: a figure the specialist did not return is not said.
+- **R6 — Check the analysis against its sources.** `run(..., analysis_check=...)` takes an async
+  callable reading the analysis text and returning `AnalysisIssue(location, message)`s — the caller
+  knows the sources (a plan's cells, a text's articles) and reads them back, never the model. It
+  checks the ANALYSIS, the source of truth, not the formatted report: a formatter dropping a field
+  must never look like an analysis error. Issues open ONE correction round (`revision_iterations`
+  model calls, the issues sent as a user message): the evaluator / optimizer pattern; the
+  corrected analysis is checked again, then formatted once. What is still wrong comes back in
+  `AgentRunResult.issues`; the caller decides what to show. A check that cannot run (its source
+  refused the request) flags the analysis unchecked: it never fails the run, opens no correction,
+  and must never read a refused request as data ("every cell empty"). Each check's findings are
+  traced on the call that wrote the analysis (`calls[].issues`).
+- **R7 — Mind the caller's timeouts.** A run takes minutes; a special tool awaits it within
+  the chat turn (bounded by `executor.turn_token_ttl`), a GraphQL webservice does not —
+  expose a run to a client as a job (start, then read the report), not as a blocking query.
+
 ## Batch jobs (structured JSON, asynchronous)
 
 `AIService.submit_json_batch(requests, config, schema, metadata=None, timeout_hours=None)`
@@ -409,6 +508,22 @@ RULES:
   null (no filter), on a mutation the argument is dropped (null never clears
   a field: an edit that clears goes through an explicit flag, like
   `clear_<field>`).
+- **R6 — A heavy field is read on request.** A tool selects every field of its
+  node (one level of scalar subfields), and every round of the turn sends the
+  result again. A field the model rarely needs and that weighs (a text's full
+  wording) is declared on request: `options={"generate_tool": True,
+  "tool_on_request": {"flag": "with_article_text", "fields": ["articles.content"],
+  "description": "..."}}`. The tool gets a boolean argument `flag` — never sent to
+  GraphQL —, its selection leaves the fields out unless the call sets it. The
+  description says when to ask (to quote a text word for word), and what the
+  light result already holds. A path the tool does not select refuses the tool.
+- **R7 — A connection tool pages.** The generator declares a connection's
+  `first` and `after` (added to the field by its extension, after the tool is
+  generated) and selects `page_info { has_next_page end_cursor }` beside the
+  rows. Left out, `first` is `DEFAULT_TOOL_PAGE_SIZE` (25), never the server's
+  `relay_max_results`: every row is sent again with each round of the turn. A
+  resolver must not name an argument `first` or `after`. There is no `limit`
+  argument: `first` is the page size, capped by `relay_max_results`.
 
 ## Special tools (handlers that do not go through GraphQL)
 

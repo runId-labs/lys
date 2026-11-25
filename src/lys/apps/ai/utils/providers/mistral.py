@@ -35,6 +35,7 @@ from lys.apps.ai.utils.providers.exceptions import (
     AITimeoutError,
     AIResponseTruncatedError,
     AIValidationError,
+    retry_after_seconds,
 )
 
 logger = logging.getLogger(__name__)
@@ -177,6 +178,7 @@ class MistralProvider(AIProvider):
         messages: List[Dict[str, Any]],
         config: AIEndpointConfig,
         tools: Optional[List[Dict[str, Any]]] = None,
+        tool_calls_allowed: bool = True,
     ) -> AIResponse:
         """Send a chat request to Mistral API."""
         cache_field = self._cache_key_field(messages, config)
@@ -200,7 +202,7 @@ class MistralProvider(AIProvider):
                 for tool in tools
             ]
             payload["tools"] = cleaned_tools
-            payload["tool_choice"] = "auto"
+            payload["tool_choice"] = "auto" if tool_calls_allowed else "none"
 
         headers = self._headers(config)
 
@@ -271,6 +273,7 @@ class MistralProvider(AIProvider):
         messages: List[Dict[str, Any]],
         config: AIEndpointConfig,
         tools: Optional[List[Dict[str, Any]]] = None,
+        tool_calls_allowed: bool = True,
     ) -> AsyncGenerator[AIStreamChunk, None]:
         """Stream a chat response from Mistral API, yielding chunks."""
         cache_field = self._cache_key_field(messages, config)
@@ -293,7 +296,7 @@ class MistralProvider(AIProvider):
                 for tool in tools
             ]
             payload["tools"] = cleaned_tools
-            payload["tool_choice"] = "auto"
+            payload["tool_choice"] = "auto" if tool_calls_allowed else "none"
 
         headers = self._headers(config)
 
@@ -1326,12 +1329,15 @@ class MistralProvider(AIProvider):
         return result
 
     @staticmethod
-    def _status_error(status_code: Optional[int]) -> Optional[AIError]:
-        """The error an HTTP status stands for; None for a success or a status left to the caller."""
+    def _status_error(status_code: Optional[int], retry_after: Optional[float] = None) -> Optional[AIError]:
+        """
+        The error an HTTP status stands for; None for a success or a status left to the caller.
+        ``retry_after``: the wait a rate limit asked for (its Retry-After header), when known.
+        """
         if status_code == 401:
             return AIAuthError("Invalid Mistral API key")
         if status_code == 429:
-            return AIRateLimitError("Mistral rate limit exceeded")
+            return AIRateLimitError("Mistral rate limit exceeded", retry_after=retry_after)
         if status_code == 404:
             return AIModelNotFoundError("Mistral model not found")
         if status_code is not None and status_code >= 500:
@@ -1340,7 +1346,7 @@ class MistralProvider(AIProvider):
 
     def _handle_error_status(self, response: httpx.Response) -> None:
         """Check response status and raise appropriate errors."""
-        error = self._status_error(response.status_code)
+        error = self._status_error(response.status_code, retry_after_seconds(response.headers.get("retry-after")))
         if error is not None:
             raise error
         if response.status_code != 200:
@@ -1401,19 +1407,28 @@ class MistralProvider(AIProvider):
 
     @staticmethod
     def _normalize_usage(usage: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
-        """Expose Mistral's cached-prompt counter under the provider-neutral key.
+        """Expose Mistral's cached-prompt counter under the provider-neutral keys.
 
         Mistral reports reused prefix tokens as ``usage.prompt_tokens_details.cached_tokens``
         (billed at ~10%). Without this mapping the caller stores nothing, and a session shows
         zero cache activity whether or not the cache actually worked — which is not the same
         thing.
+
+        Mistral's ``prompt_tokens`` counts them too, where the provider-neutral ``prompt_tokens``
+        is the input NOT read from the cache (Anthropic's ``input_tokens``): the prompt is
+        ``prompt_tokens + cache_read_tokens + cache_write_tokens``. Left as Mistral reports it,
+        the cached part was counted twice — the compaction trigger read a 186k prompt as 370k
+        (observed 2026-11-24) and compacted conversations at half their threshold.
         """
         if not usage:
             return usage
         cached = (usage.get("prompt_tokens_details") or {}).get("cached_tokens")
         if cached is None:
             return usage
-        return {**usage, "cache_read_tokens": cached}
+        normalized = {**usage, "cache_read_tokens": cached}
+        if usage.get("prompt_tokens") is not None:
+            normalized["prompt_tokens"] = max(usage["prompt_tokens"] - cached, 0)
+        return normalized
 
     def _parse_response(self, response: httpx.Response) -> AIResponse:
         """Parse Mistral API response."""

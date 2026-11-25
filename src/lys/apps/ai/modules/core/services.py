@@ -34,6 +34,7 @@ from lys.apps.ai.utils.providers.exceptions import (
     AIError,
     AIRateLimitError,
     AIProviderError,
+    AITimeoutError,
     AIResponseTruncatedError,
     AIValidationError,
 )
@@ -110,6 +111,12 @@ class AIService(Service):
     # Retry configuration
     MAX_RETRIES = 3
     RETRY_DELAY = 1.0  # seconds
+    # A rate limit is a window (requests or tokens per minute): waits grow faster than for a
+    # server error — 2 s, then 8 s —, and the provider's Retry-After is honoured up to a cap
+    # (a user is waiting for the answer).
+    RATE_LIMIT_RETRY_DELAY = 2.0  # seconds
+    RATE_LIMIT_RETRY_FACTOR = 4
+    RATE_LIMIT_MAX_WAIT = 30.0  # seconds
 
     # Cached config
     _config_cache: Optional[AIConfig] = None
@@ -542,6 +549,7 @@ class AIService(Service):
         purpose: str,
         tools: Optional[List[Dict[str, Any]]] = None,
         cache_key: Optional[str] = None,
+        tool_calls_allowed: bool = True,
     ) -> AIResponse:
         """
         Chat using a configured purpose.
@@ -550,6 +558,7 @@ class AIService(Service):
             messages: Conversation messages
             purpose: Purpose name (e.g., "chatbot", "analysis")
             tools: Optional tool definitions
+            tool_calls_allowed: False to require a text answer (tools stay declared)
 
         Returns:
             AIResponse
@@ -557,7 +566,7 @@ class AIService(Service):
         config = cls.get_endpoint(purpose)
         if cache_key:
             config = config.with_cache_key(cache_key)
-        return await cls.chat(messages, config, tools)
+        return await cls.chat(messages, config, tools, tool_calls_allowed=tool_calls_allowed)
 
     @classmethod
     def chat_with_purpose_sync(
@@ -577,16 +586,22 @@ class AIService(Service):
         purpose: str,
         tools: Optional[List[Dict[str, Any]]] = None,
         cache_key: Optional[str] = None,
+        tool_calls_allowed: bool = True,
     ) -> AsyncGenerator[AIStreamChunk, None]:
         """
         Stream a chat response using a configured purpose.
 
-        Tries the primary provider, falls back on connection error (no retry mid-stream).
+        Before the first chunk, a rate limit (429) and a server error (5xx) are retried —
+        a rate limit with growing waits, or the provider's Retry-After —, then the
+        endpoint's fallback is tried, as on a connection error or a timeout. Once a
+        chunk was yielded nothing is retried: the caller has shown it, and restarting
+        the answer elsewhere would splice two answers.
 
         Args:
             messages: Conversation messages
             purpose: Purpose name (e.g., "chatbot")
             tools: Optional tool definitions
+            tool_calls_allowed: False to require a text answer (tools stay declared)
 
         Yields:
             AIStreamChunk for each piece of the response
@@ -600,21 +615,50 @@ class AIService(Service):
         messages = sanitize_llm_messages(messages)
 
         current_endpoint = endpoint
+        last_error: Optional[Exception] = None
         while current_endpoint is not None:
             provider = cls.get_provider(current_endpoint.provider)
-            try:
-                async for chunk in provider.chat_stream(messages, current_endpoint, tools):
-                    yield chunk
-                return
-            except (httpx.ConnectError, httpx.ConnectTimeout) as e:
-                logger.warning(f"Connection error on {current_endpoint.provider}: {e}")
-                current_endpoint = current_endpoint.fallback
-                if current_endpoint:
-                    logger.info(f"Falling back to {current_endpoint.provider}/{current_endpoint.model}")
-            except AIError:
-                raise
+            for attempt in range(cls.MAX_RETRIES):
+                started = False
+                try:
+                    async for chunk in provider.chat_stream(
+                        messages, current_endpoint, tools, tool_calls_allowed=tool_calls_allowed
+                    ):
+                        started = True
+                        yield chunk
+                    return
+                except (httpx.ConnectError, httpx.ConnectTimeout, AITimeoutError) as e:
+                    if started:
+                        raise
+                    logger.warning(f"No answer from {current_endpoint.provider}: {e}")
+                    last_error = e
+                    break
+                except (AIRateLimitError, AIProviderError) as e:
+                    if started:
+                        raise
+                    last_error = e
+                    if attempt == cls.MAX_RETRIES - 1:
+                        break
+                    delay = cls._stream_retry_delay(e, attempt)
+                    logger.warning(
+                        f"{current_endpoint.provider} refused the stream ({e}), retry {attempt + 1} in {delay:.0f} s"
+                    )
+                    await asyncio.sleep(delay)
 
-        raise AIError("All providers failed for streaming")
+            current_endpoint = current_endpoint.fallback
+            if current_endpoint:
+                logger.info(f"Falling back to {current_endpoint.provider}/{current_endpoint.model}")
+
+        raise AIError(f"All providers failed for streaming: {last_error}") from last_error
+
+    @classmethod
+    def _stream_retry_delay(cls, error: AIError, attempt: int) -> float:
+        """The wait before retrying a stream refused before its first chunk."""
+        if isinstance(error, AIRateLimitError):
+            if error.retry_after is not None:
+                return min(error.retry_after, cls.RATE_LIMIT_MAX_WAIT)
+            return min(cls.RATE_LIMIT_RETRY_DELAY * cls.RATE_LIMIT_RETRY_FACTOR ** attempt, cls.RATE_LIMIT_MAX_WAIT)
+        return cls.RETRY_DELAY * (attempt + 1)
 
     # ========== Standard Chat ==========
 
@@ -624,6 +668,7 @@ class AIService(Service):
         messages: List[Dict[str, Any]],
         config: AIEndpointConfig,
         tools: Optional[List[Dict[str, Any]]] = None,
+        tool_calls_allowed: bool = True,
     ) -> AIResponse:
         """
         Send a chat request using the specified endpoint configuration.
@@ -632,6 +677,7 @@ class AIService(Service):
             messages: Conversation messages
             config: Endpoint configuration (from settings.ai.get_endpoint)
             tools: Optional tool definitions for function calling
+            tool_calls_allowed: False to require a text answer (tools stay declared)
 
         Returns:
             AIResponse with content, tool_calls, usage, etc.
@@ -645,7 +691,7 @@ class AIService(Service):
             messages = [{"role": "system", "content": config.system_prompt}] + messages
         messages = sanitize_llm_messages(messages)
 
-        return await cls._chat_with_fallback(messages, config, tools)
+        return await cls._chat_with_fallback(messages, config, tools, tool_calls_allowed=tool_calls_allowed)
 
     @classmethod
     def chat_sync(
@@ -1185,6 +1231,7 @@ class AIService(Service):
         messages: List[Dict[str, Any]],
         endpoint: AIEndpointConfig,
         tools: Optional[List[Dict[str, Any]]] = None,
+        tool_calls_allowed: bool = True,
     ) -> AIResponse:
         """Execute chat with retry and fallback logic."""
         current_endpoint = endpoint
@@ -1195,7 +1242,9 @@ class AIService(Service):
 
             for retry in range(cls.MAX_RETRIES):
                 try:
-                    return await provider.chat(messages, current_endpoint, tools)
+                    return await provider.chat(
+                        messages, current_endpoint, tools, tool_calls_allowed=tool_calls_allowed
+                    )
 
                 except AIRateLimitError as e:
                     # Rate limit → try fallback immediately

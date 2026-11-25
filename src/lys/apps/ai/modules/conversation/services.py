@@ -33,6 +33,8 @@ from lys.apps.ai.modules.conversation.consts import (
     DEFAULT_DYNAMIC_CONTEXT_HEADER,
     TURN_SEGMENT_BREAK,
     DEFAULT_SEARCH_RESULTS,
+    DEFAULT_MAX_TOOL_ITERATIONS,
+    FINAL_ROUND_INSTRUCTION,
     DEFAULT_SUMMARY_HEADER,
     DISPLAY_TITLE_MAX_LENGTH,
     EMBEDDING_MAX_BATCH,
@@ -59,6 +61,7 @@ from lys.apps.ai.modules.conversation.spoken_block import (
 from lys.apps.ai.modules.core.executors import GraphQLToolExecutor
 from lys.apps.ai.modules.core.services import AIToolService
 from lys.apps.ai.tasks import generate_conversation_title, summarize_conversation
+from lys.apps.ai.utils.calculator import CALCULATE_TOOL, handle_calculate
 from lys.apps.ai.utils.guardrails import CONFIRM_ACTION_TOOL
 from lys.apps.ai.utils.page_params import (
     PAGE_PARAMS_HEADER,
@@ -1784,6 +1787,9 @@ class AIConversationService(EntityService[AIConversation]):
         # Add confirm_action special tool
         tools.append(CONFIRM_ACTION_TOOL)
 
+        # Exact arithmetic, offered on every page: its handler is registered with the executor below
+        tools.append(CALCULATE_TOOL)
+
         # Load navigation routes from cache and filter by user permissions
         ai_plugin_config = app_manager.settings.get_plugin_config("ai") or {}
         chatbot_config = ai_plugin_config.get("chatbot", {})
@@ -1892,6 +1898,8 @@ class AIConversationService(EntityService[AIConversation]):
                 "search_conversation",
                 cls._build_search_handler(conversation.id, session),
             )
+        # Exposed above on every turn, so registered on every turn: the same condition (guide R1).
+        executor.register_special_tool("calculate", handle_calculate)
 
         message_service = app_manager.get_service("ai_message")
         ai_service = app_manager.get_service("ai")
@@ -2172,6 +2180,34 @@ class AIConversationService(EntityService[AIConversation]):
                 yield voice_event
 
     @classmethod
+    def _max_tool_iterations(cls, requested: Optional[int]) -> int:
+        """
+        The model calls a turn may make: the caller's, else the chatbot config's
+        ``max_tool_iterations``, else DEFAULT_MAX_TOOL_ITERATIONS.
+
+        Raises:
+            ValueError: The value is not a positive integer
+        """
+        if requested is None:
+            chatbot = (cls.app_manager.settings.get_plugin_config("ai") or {}).get("chatbot", {})
+            requested = chatbot.get("max_tool_iterations", DEFAULT_MAX_TOOL_ITERATIONS)
+        if isinstance(requested, bool) or not isinstance(requested, int) or requested < 1:
+            raise ValueError(f"max_tool_iterations must be a positive integer, got {requested!r}")
+        return requested
+
+    @staticmethod
+    def _call_messages(messages: List[Dict[str, Any]], last_call: bool) -> List[Dict[str, Any]]:
+        """
+        The messages a model call is sent. The turn's last call is made with tool calls
+        refused and FINAL_ROUND_INSTRUCTION after the history: the turn ends on an answer
+        from what the tools returned, not on an error that throws their work away. The
+        instruction is the call's own, never added to the turn's history nor stored.
+        """
+        if not last_call:
+            return messages
+        return messages + [{"role": "system", "content": FINAL_ROUND_INSTRUCTION}]
+
+    @classmethod
     async def chat_with_tools(
         cls,
         user_id: str,
@@ -2180,7 +2216,7 @@ class AIConversationService(EntityService[AIConversation]):
         info: Any,
         conversation_id: Optional[str] = None,
         page_context: Optional[PageContextModel] = None,
-        max_tool_iterations: int = 10,
+        max_tool_iterations: Optional[int] = None,
         tool_answers: Optional[List[AIToolAnswerModel]] = None,
         client_generated: bool = False,
     ) -> Dict[str, Any]:
@@ -2196,7 +2232,8 @@ class AIConversationService(EntityService[AIConversation]):
             info: GraphQL info context
             conversation_id: Optional conversation ID to continue
             page_context: Optional page context for tool filtering and param injection
-            max_tool_iterations: Maximum number of tool call iterations
+            max_tool_iterations: Model calls the turn may make, the last with tool calls
+                refused; the chatbot config's max_tool_iterations when None
             tool_answers: The user's answers to the calls the last turn left open
                 (see ``user_answered_tools``); the turn resumes on them
             client_generated: The client application wrote ``content`` on its own,
@@ -2224,7 +2261,7 @@ class AIConversationService(EntityService[AIConversation]):
         info: Any,
         conversation_id: Optional[str],
         page_context: Optional[PageContextModel],
-        max_tool_iterations: int,
+        max_tool_iterations: Optional[int],
         tool_answers: Optional[List[AIToolAnswerModel]],
         client_generated: bool,
     ) -> Dict[str, Any]:
@@ -2248,22 +2285,27 @@ class AIConversationService(EntityService[AIConversation]):
 
         tool_results = []
         tool_calls_count = 0
+        max_tool_iterations = cls._max_tool_iterations(max_tool_iterations)
 
         # Agent loop: call LLM, execute tools, repeat until no more tool calls
         for iteration in range(max_tool_iterations):
+            last_call = iteration == max_tool_iterations - 1
             start_time = time.perf_counter()
             response = await ai_service.chat_with_purpose(
-                messages,
+                cls._call_messages(messages, last_call),
                 AI_PURPOSE_CHATBOT,
                 llm_tools if llm_tools else None,
                 # The exchange names its own cache bucket: what the provider reuses is this
                 # conversation's growing prefix, and nothing else shares it.
                 cache_key=conversation.id,
+                tool_calls_allowed=not last_call,
             )
             latency_ms = int((time.perf_counter() - start_time) * 1000)
 
-            # Check if LLM wants to call tools
-            tool_calls = response.tool_calls or []
+            # Check if LLM wants to call tools; on the last call none is run (see _call_messages)
+            tool_calls = [] if last_call else (response.tool_calls or [])
+            if last_call and not (response.content or "").strip():
+                break
 
             if not tool_calls:
                 # No tool calls, save and return the response: the answer
@@ -2418,7 +2460,7 @@ class AIConversationService(EntityService[AIConversation]):
         access_token: str,
         conversation_id: Optional[str] = None,
         page_context: Optional[PageContextModel] = None,
-        max_tool_iterations: int = 10,
+        max_tool_iterations: Optional[int] = None,
         voice: bool = False,
         tool_answers: Optional[List[AIToolAnswerModel]] = None,
         client_generated: bool = False,
@@ -2438,7 +2480,8 @@ class AIConversationService(EntityService[AIConversation]):
             access_token: User's access token for tool execution
             conversation_id: Optional conversation ID to continue
             page_context: Optional page context
-            max_tool_iterations: Maximum tool call iterations
+            max_tool_iterations: Model calls the turn may make, the last with tool calls
+                refused; the chatbot config's max_tool_iterations when None
             voice: Speak the answer's spoken rendition — per turn, stateless:
                 the server keeps no voice session, a message without the flag
                 is text-only. Only does anything when the app enables the
@@ -2506,7 +2549,7 @@ class AIConversationService(EntityService[AIConversation]):
         info: "_StreamingInfo",
         conversation_id: Optional[str],
         page_context: Optional[PageContextModel],
-        max_tool_iterations: int,
+        max_tool_iterations: Optional[int],
         voice: bool,
         tool_answers: Optional[List[AIToolAnswerModel]],
         client_generated: bool,
@@ -2567,8 +2610,11 @@ class AIConversationService(EntityService[AIConversation]):
             # TURN_SEGMENT_BREAK).
             streamed_tail = ""
 
+            max_tool_iterations = cls._max_tool_iterations(max_tool_iterations)
+
             # Agent loop
             for iteration in range(max_tool_iterations):
+                last_call = iteration == max_tool_iterations - 1
                 accumulated_content = ""
                 reasoning_characters = 0
                 tool_calls_accumulator: Dict[int, Dict[str, Any]] = {}
@@ -2580,8 +2626,9 @@ class AIConversationService(EntityService[AIConversation]):
 
                 try:
                     async for chunk in ai_service.chat_stream_with_purpose(
-                        messages, AI_PURPOSE_CHATBOT, llm_tools if llm_tools else None,
-                        cache_key=conversation.id,
+                        cls._call_messages(messages, last_call), AI_PURPOSE_CHATBOT,
+                        llm_tools if llm_tools else None,
+                        cache_key=conversation.id, tool_calls_allowed=not last_call,
                     ):
                         # A reasoning model can spend tens of seconds before its first answer
                         # token, and the reasoning stream is the only thing moving meanwhile.
@@ -2667,8 +2714,11 @@ class AIConversationService(EntityService[AIConversation]):
                 # matching what the non-streaming path times.
                 latency_ms = int((time.perf_counter() - start_time) * 1000)
 
-                # Build finalized tool_calls list from accumulator
-                finalized_tool_calls = _finalize_tool_calls(tool_calls_accumulator)
+                # Build finalized tool_calls list from accumulator; on the last call none is
+                # run (see _call_messages), and a call that wrote nothing ends on the error below
+                finalized_tool_calls = [] if last_call else _finalize_tool_calls(tool_calls_accumulator)
+                if last_call and not accumulated_content.strip():
+                    break
 
                 if not finalized_tool_calls:
                     # No tool calls — final response: the answer exactly as

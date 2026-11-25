@@ -1621,8 +1621,59 @@ class TestChatWithTools:
                 info=mock_info, max_tool_iterations=2,
             )
 
+        # The last call refused tool calls and wrote nothing: the turn ends on the limit.
         assert "Maximum tool iterations" in result["content"]
-        assert result["tool_calls_count"] == 2
+        assert result["tool_calls_count"] == 1
+        last_call = mock_ai_service.chat_with_purpose.call_args_list[-1]
+        assert last_call.kwargs["tool_calls_allowed"] is False
+
+    @pytest.mark.asyncio
+    async def test_last_call_answers_from_what_the_tools_returned(self, mock_session, mock_info):
+        """The last call is made with tool calls refused and an instruction: its text is the answer."""
+        from lys.apps.ai.modules.conversation.consts import FINAL_ROUND_INSTRUCTION
+        from lys.apps.ai.modules.conversation.services import AIConversationService
+
+        mock_conversation = MagicMock()
+        mock_conversation.id = "conv-1"
+        mock_ai_service = AsyncMock()
+        mock_executor = AsyncMock()
+        mock_executor.execute = AsyncMock(return_value={"data": "result"})
+        tool_response = self._make_ai_response(
+            content="",
+            tool_calls=[{"id": "call-1", "function": {"name": "loop_tool", "arguments": "{}"}}],
+        )
+        # A provider ignoring the refusal still returns a call: it is not run.
+        final_response = self._make_ai_response(
+            content="Here is what I read.",
+            tool_calls=[{"id": "call-2", "function": {"name": "loop_tool", "arguments": "{}"}}],
+        )
+        mock_ai_service.chat_with_purpose = AsyncMock(side_effect=[tool_response, final_response])
+        messages = [{"role": "system", "content": "sys"}, {"role": "user", "content": "Go"}]
+        ctx = {
+            "executor": mock_executor,
+            "conversation": mock_conversation,
+            "message_service": AsyncMock(),
+            "ai_service": mock_ai_service,
+            "llm_tools": [{"type": "function", "function": {"name": "loop_tool"}}],
+            "messages": messages,
+            "info": mock_info,
+        }
+
+        with patch.object(AIConversationService, "_prepare_chat_context", new_callable=AsyncMock, return_value=ctx), \
+                patch.object(AIConversationService, "_close_turn", new_callable=AsyncMock,
+                             side_effect=lambda conversation, session, info, content, *args: {"content": content}):
+            result = await AIConversationService.chat_with_tools(
+                user_id="user-123", content="Go", session=mock_session,
+                info=mock_info, max_tool_iterations=2,
+            )
+
+        assert result["content"] == "Here is what I read."
+        assert mock_executor.execute.await_count == 1
+        last_call = mock_ai_service.chat_with_purpose.call_args_list[-1]
+        assert last_call.kwargs["tool_calls_allowed"] is False
+        assert last_call.args[0][-1] == {"role": "system", "content": FINAL_ROUND_INSTRUCTION}
+        # The instruction is the call's own: the turn's history never holds it.
+        assert all(message.get("content") != FINAL_ROUND_INSTRUCTION for message in messages)
 
     @pytest.mark.asyncio
     async def test_tool_error_db_save_failure_does_not_cascade(self, mock_session, mock_info):
@@ -3826,7 +3877,7 @@ class TestTurnEndsOnContinuedNavigation:
 
         stream_calls = []
 
-        async def chat_stream_with_purpose(messages, purpose, tools, cache_key=None):
+        async def chat_stream_with_purpose(messages, purpose, tools, cache_key=None, tool_calls_allowed=True):
             stream_calls.append(list(messages))
             if len(stream_calls) > 1:
                 raise AssertionError("the provider was called again after the navigation")
@@ -3901,7 +3952,7 @@ class TestTurnEndsOnContinuedNavigation:
 
         calls = []
 
-        async def chat_with_purpose(messages, purpose, tools, cache_key=None):
+        async def chat_with_purpose(messages, purpose, tools, cache_key=None, tool_calls_allowed=True):
             calls.append(list(messages))
             if len(calls) > 1:
                 raise AssertionError("the provider was called again after the navigation")
@@ -3964,7 +4015,7 @@ class TestTurnEndsOnUserAnsweredCall:
 
         stream_calls = []
 
-        async def chat_stream_with_purpose(messages, purpose, tools, cache_key=None):
+        async def chat_stream_with_purpose(messages, purpose, tools, cache_key=None, tool_calls_allowed=True):
             stream_calls.append(list(messages))
             if len(stream_calls) > 1:
                 raise AssertionError("the provider was called again before the user answered")
@@ -4009,7 +4060,7 @@ class TestTurnEndsOnUserAnsweredCall:
 
         calls = []
 
-        async def chat_with_purpose(messages, purpose, tools, cache_key=None):
+        async def chat_with_purpose(messages, purpose, tools, cache_key=None, tool_calls_allowed=True):
             calls.append(list(messages))
             if len(calls) > 1:
                 raise AssertionError("the provider was called again before the user answered")
@@ -4044,7 +4095,7 @@ class TestTurnEndsOnUserAnsweredCall:
 
         calls = []
 
-        async def chat_with_purpose(messages, purpose, tools, cache_key=None):
+        async def chat_with_purpose(messages, purpose, tools, cache_key=None, tool_calls_allowed=True):
             calls.append(list(messages))
             if len(calls) == 1:
                 return SimpleNamespace(content="", tool_calls=[self.PROPOSE_CALL],
@@ -4400,3 +4451,38 @@ class TestTurnAccessToken:
 
         auth_service.issue_delegated_access_token.assert_not_awaited()
         assert info.context.access_token is None
+
+
+class TestMaxToolIterations:
+    """How many model calls a turn may make."""
+
+    @staticmethod
+    def _service(chatbot_config):
+        from lys.apps.ai.modules.conversation.services import AIConversationService
+
+        app_manager = MagicMock()
+        app_manager.settings.get_plugin_config.return_value = {"chatbot": chatbot_config}
+        return AIConversationService, patch.object(AIConversationService, "app_manager", app_manager)
+
+    def test_the_caller_value_wins(self):
+        service, patched = self._service({"max_tool_iterations": 15})
+        with patched:
+            assert service._max_tool_iterations(3) == 3
+
+    def test_the_chatbot_config_sets_it(self):
+        service, patched = self._service({"max_tool_iterations": 15})
+        with patched:
+            assert service._max_tool_iterations(None) == 15
+
+    def test_the_default_applies_without_config(self):
+        from lys.apps.ai.modules.conversation.consts import DEFAULT_MAX_TOOL_ITERATIONS
+
+        service, patched = self._service({})
+        with patched:
+            assert service._max_tool_iterations(None) == DEFAULT_MAX_TOOL_ITERATIONS
+
+    @pytest.mark.parametrize("value", [0, -1, "15", True, 2.5])
+    def test_a_value_that_is_not_a_positive_integer_is_refused(self, value):
+        service, patched = self._service({"max_tool_iterations": value})
+        with patched, pytest.raises(ValueError):
+            service._max_tool_iterations(None)

@@ -4,6 +4,7 @@ AI provider exceptions.
 This module defines the exception hierarchy for AI operations,
 allowing precise error handling and retry/fallback logic.
 """
+from typing import Optional
 
 
 class AIError(Exception):
@@ -17,8 +18,16 @@ class AIAuthError(AIError):
 
 
 class AIRateLimitError(AIError):
-    """Rate limit exceeded (429). May trigger fallback."""
-    pass
+    """
+    Rate limit exceeded (429). May trigger a retry, then a fallback.
+
+    ``retry_after``: the seconds the provider asked to wait (its Retry-After
+    header), None when it said nothing.
+    """
+
+    def __init__(self, message: str = "", retry_after: Optional[float] = None):
+        super().__init__(message)
+        self.retry_after = retry_after
 
 
 class AIModelNotFoundError(AIError):
@@ -54,3 +63,17 @@ class AIResponseTruncatedError(AIValidationError):
     Callers must fall back instead of retrying.
     """
     pass
+
+
+def retry_after_seconds(value: Optional[str]) -> Optional[float]:
+    """
+    The seconds a Retry-After header asks to wait; None when absent or not a number
+    of seconds (its HTTP-date form is not read: the caller's own backoff applies).
+    """
+    if not value:
+        return None
+    try:
+        seconds = float(value)
+    except ValueError:
+        return None
+    return seconds if seconds >= 0 else None

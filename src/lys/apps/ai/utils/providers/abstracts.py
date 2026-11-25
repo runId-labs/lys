@@ -151,6 +151,7 @@ class AIProvider(ABC):
         messages: List[Dict[str, Any]],
         config: AIEndpointConfig,
         tools: Optional[List[Dict[str, Any]]] = None,
+        tool_calls_allowed: bool = True,
     ) -> AIResponse:
         """
         Send a chat request to the provider.
@@ -159,6 +160,9 @@ class AIProvider(ABC):
             messages: Conversation history
             config: Endpoint configuration
             tools: Optional tool definitions for function calling
+            tool_calls_allowed: False to require a text answer: the tools stay declared (a
+                history holding tool calls needs them on some providers) but the model
+                may not call one
 
         Returns:
             Standardized AIResponse
@@ -230,6 +234,7 @@ class AIProvider(ABC):
         messages: List[Dict[str, Any]],
         config: AIEndpointConfig,
         tools: Optional[List[Dict[str, Any]]] = None,
+        tool_calls_allowed: bool = True,
     ) -> AsyncGenerator[AIStreamChunk, None]:
         """
         Stream a chat response from the provider, yielding chunks as they arrive.
@@ -238,6 +243,9 @@ class AIProvider(ABC):
             messages: Conversation history
             config: Endpoint configuration
             tools: Optional tool definitions for function calling
+            tool_calls_allowed: False to require a text answer: the tools stay declared (a
+                history holding tool calls needs them on some providers) but the model
+                may not call one
 
         Yields:
             AIStreamChunk for each SSE data line from the provider

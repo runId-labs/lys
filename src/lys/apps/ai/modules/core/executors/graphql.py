@@ -74,6 +74,7 @@ class GraphQLToolExecutor(ToolExecutor):
         bearer_token: str = None,
         timeout: int = 30,
         verify_ssl: bool = True,
+        pin_ids: Optional[bool] = None,
     ):
         """
         Initialize the GraphQL tool executor.
@@ -88,6 +89,10 @@ class GraphQLToolExecutor(ToolExecutor):
             bearer_token: User JWT token (Bearer auth)
             timeout: HTTP request timeout in seconds
             verify_ssl: Whether to verify SSL certificates (set False for self-signed certs)
+            pin_ids: Pin the ``*_id`` page params over the model's arguments. None: only on
+                service auth (with a user bearer the model may roam, the gateway filtering
+                access). True: always — for a caller whose page params ARE the scope, like an
+                agent run on the client and the version its caller checked
         """
         self.gateway_url = gateway_url
         self.timeout = timeout
@@ -95,6 +100,7 @@ class GraphQLToolExecutor(ToolExecutor):
         # bearer means the gateway applies per-user access filtering, so the LLM may roam ids;
         # without it (service auth) ids stay pinned to the focus.
         self._user_authed = bearer_token is not None
+        self._pin_ids = pin_ids
         self._tools: Dict[str, Dict[str, Any]] = {}
         self._special_tools: Dict[str, Any] = {
             "navigate": self._handle_navigate,
@@ -110,6 +116,11 @@ class GraphQLToolExecutor(ToolExecutor):
             timeout=timeout,
             verify_ssl=verify_ssl,
         )
+
+    @property
+    def _pins_ids(self) -> bool:
+        """Whether the ``*_id`` page params override the model's: as asked, else on service auth only."""
+        return self._pin_ids if self._pin_ids is not None else not self._user_authed
 
     async def initialize(self, tools: Optional[List[Dict[str, Any]]] = None, **kwargs):
         """
@@ -228,6 +239,13 @@ class GraphQLToolExecutor(ToolExecutor):
 
         operation_name = gql_meta.get("operation_name", to_camel_case(tool_name))
         raw_return_fields = gql_meta.get("return_fields", "id")
+        # Heavy fields read on request (webservice option tool_on_request): the flag is the
+        # tool's own, never a GraphQL argument; set, the call selects them too.
+        on_request = gql_meta.get("on_request")
+        if on_request:
+            arguments = dict(arguments)
+            if arguments.pop(on_request["flag"], None) is True:
+                raw_return_fields = on_request["return_fields"]
         # Convert return fields to camelCase
         return_fields = " ".join(to_camel_case(f) for f in raw_return_fields.split())
 
@@ -242,11 +260,18 @@ class GraphQLToolExecutor(ToolExecutor):
         # injected in its place.
         arguments, nulled = self._explicit_nulls(arguments, properties)
 
-        # Inject page-context params. Pin ids to the focus ONLY when this executor has no user
-        # bearer (service auth) — there the gateway applies no per-user filtering, so an
-        # LLM-chosen id must not be trusted. With a user bearer, ids default to the focus but
-        # the LLM may override them to roam (gateway enforces access; writes go through review).
-        arguments = self._inject_page_params(arguments, force_ids=not self._user_authed)
+        # A connection read without a page size: the tool's default, never the server's maximum —
+        # every row of the result is sent again with each round of the turn.
+        default_first = gql_meta.get("default_first")
+        if default_first and arguments.get("first") is None:
+            arguments = {**arguments, "first": default_first}
+
+        # Inject page-context params. Ids are pinned to the focus on service auth — there the
+        # gateway applies no per-user filtering, so an LLM-chosen id must not be trusted — and
+        # wherever the caller pinned them (pin_ids). Otherwise, with a user bearer, ids default
+        # to the focus but the LLM may override them to roam (gateway enforces access; writes go
+        # through review).
+        arguments = self._inject_page_params(arguments, force_ids=self._pins_ids)
 
         if operation_type == "mutation":
             # A mutation writes a None (an edit clears the column), while the model's
@@ -387,9 +412,9 @@ class GraphQLToolExecutor(ToolExecutor):
             prop_schema = properties.get(key, {})
             graphql_type = prop_schema.get("_graphql_type", "")
 
-            # Validate entity ids (ID!-typed args must be GlobalIDs)
-            if "ID" in graphql_type and isinstance(value, str):
-                value = self._to_global_id(key, value, node_type)
+            # Validate entity ids (ID-typed args, and the items of an ID list, must be GlobalIDs)
+            if "ID" in graphql_type:
+                value = self._checked_ids(key, value)
 
             if key not in wrapped_fields:
                 # Non-wrapped argument - add directly to variables
@@ -414,8 +439,8 @@ class GraphQLToolExecutor(ToolExecutor):
                         # Check for ID conversion on nested fields
                         prop_schema = properties.get(field_name, {})
                         graphql_type = prop_schema.get("_graphql_type", "")
-                        if "ID" in graphql_type and isinstance(value, str):
-                            value = self._to_global_id(field_name, value, node_type)
+                        if "ID" in graphql_type:
+                            value = self._checked_ids(field_name, value)
                         input_obj[camel_field] = value
 
                 if input_obj:
@@ -550,6 +575,22 @@ class GraphQLToolExecutor(ToolExecutor):
             handler: Handler function(arguments, context) -> dict. Can be sync or async.
         """
         self._special_tools[name] = handler
+
+    def _checked_ids(self, param_name: str, value: Any) -> Any:
+        """
+        Validate the entity ids of an ID-typed argument: one id, or each id of a list.
+
+        A list of ids crosses the tool boundary like a single one: a raw uuid among
+        them is refused, never passed on. Other values (null) are left as they are.
+
+        Raises:
+            GlobalIDFormatError: an id is not a well-formed GlobalID
+        """
+        if isinstance(value, str):
+            return self._to_global_id(param_name, value)
+        if isinstance(value, list):
+            return [self._to_global_id(param_name, item) if isinstance(item, str) else item for item in value]
+        return value
 
     def _to_global_id(self, param_name: str, value: str, node_type: str = None) -> str:
         """

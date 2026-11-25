@@ -64,11 +64,13 @@ class TestMistralProvider:
                 "model": "mistral-large-latest",
             }
             response = MagicMock(spec=httpx.Response)
+            response.headers = httpx.Headers()
             response.status_code = status_code
             response.json.return_value = data
             return response
         else:
             response = MagicMock(spec=httpx.Response)
+            response.headers = httpx.Headers()
             response.status_code = status_code
             response.text = f"Error {status_code}"
             return response
@@ -271,6 +273,7 @@ class TestMistralProvider:
             "model": "mistral-large-latest",
         }
         response = MagicMock(spec=httpx.Response)
+        response.headers = httpx.Headers()
         response.status_code = 200
         response.json.return_value = data
 
@@ -641,6 +644,24 @@ class TestMistralProviderChatStream:
             assert payload["tools"] == tools
             assert payload["tool_choice"] == "auto"
 
+    @pytest.mark.asyncio
+    async def test_chat_stream_refuses_tool_calls_when_asked(self, provider, config, messages):
+        """A required text answer keeps the tools declared and sets tool_choice to none."""
+        tools = [{"type": "function", "function": {"name": "test_tool"}}]
+        lines = [
+            'data: {"choices":[{"delta":{"content":"ok"},"finish_reason":"stop"}],"model":"m1"}',
+            "data: [DONE]",
+        ]
+
+        client_cm, mock_http_client = self._make_stream_mock(lines)
+        with patch("httpx.AsyncClient", return_value=client_cm):
+            async for _ in provider.chat_stream(messages, config, tools=tools, tool_calls_allowed=False):
+                pass
+
+            payload = mock_http_client.stream.call_args[1]["json"]
+            assert payload["tools"] == tools
+            assert payload["tool_choice"] == "none"
+
 
 # ========== MistralProvider.chat_json / chat_json_sync ==========
 
@@ -762,6 +783,7 @@ class TestMistralProviderParseResponseFinishReason:
             "model": "mistral-large-latest",
         }
         response = MagicMock(spec=httpx.Response)
+        response.headers = httpx.Headers()
         response.status_code = 200
         response.json.return_value = data
         return response
@@ -781,6 +803,7 @@ class TestMistralProviderParseResponseFinishReason:
             "model": "mistral-large-latest",
         }
         response = MagicMock(spec=httpx.Response)
+        response.headers = httpx.Headers()
         response.status_code = 200
         response.json.return_value = data
 
@@ -825,6 +848,7 @@ class TestMistralProviderReasoningContent:
             "model": "magistral-medium-latest",
         }
         response = MagicMock(spec=httpx.Response)
+        response.headers = httpx.Headers()
         response.status_code = 200
         response.json.return_value = data
         return response
@@ -900,10 +924,18 @@ class TestMistralProviderReasoningContent:
     def test_normalize_usage_keeps_original_fields(self, provider):
         usage = {"prompt_tokens": 100, "prompt_tokens_details": {"cached_tokens": 90}}
         normalized = provider._normalize_usage(usage)
-        assert normalized["prompt_tokens"] == 100
         assert normalized["prompt_tokens_details"] == {"cached_tokens": 90}
         # The input dict is not mutated.
-        assert "cache_read_tokens" not in usage
+        assert "cache_read_tokens" not in usage and usage["prompt_tokens"] == 100
+
+    def test_normalize_usage_counts_the_cached_part_once(self, provider):
+        # Mistral's prompt_tokens includes its cache reads; the neutral one does not
+        # (Anthropic's input_tokens): the prompt is prompt + cache read, never twice.
+        normalized = provider._normalize_usage(
+            {"prompt_tokens": 186004, "prompt_tokens_details": {"cached_tokens": 184128}}
+        )
+        assert normalized["prompt_tokens"] == 1876
+        assert normalized["prompt_tokens"] + normalized["cache_read_tokens"] == 186004
 
     def test_normalize_usage_zero_cached_tokens_is_reported(self, provider):
         # 0 is a measurement (cache miss), not an absence: it must not be dropped.
@@ -1124,6 +1156,7 @@ class TestMistralProviderLogValidationFailure:
             "model": "mistral-large-latest",
         }
         response = MagicMock(spec=httpx.Response)
+        response.headers = httpx.Headers()
         response.status_code = 200
         response.json.return_value = data
 
@@ -1157,6 +1190,7 @@ class TestMistralProviderLogValidationFailure:
             "model": "mistral-large-latest",
         }
         response = MagicMock(spec=httpx.Response)
+        response.headers = httpx.Headers()
         response.status_code = 200
         response.json.return_value = data
 
@@ -1200,6 +1234,7 @@ class TestMistralProviderChatJson:
     def _mock_json_response(status_code: int, content: str = ""):
         """Create a mock httpx.Response for the /chat/completions endpoint."""
         response = MagicMock(spec=httpx.Response)
+        response.headers = httpx.Headers()
         response.status_code = status_code
         if status_code == 200:
             response.json.return_value = {
@@ -1368,6 +1403,7 @@ class TestMistralProviderHandleErrorStatus:
     def test_handle_error_status_401(self, provider):
         """Test 401 raises AIAuthError."""
         response = MagicMock(spec=httpx.Response)
+        response.headers = httpx.Headers()
         response.status_code = 401
         with pytest.raises(AIAuthError):
             provider._handle_error_status(response)
@@ -1375,6 +1411,7 @@ class TestMistralProviderHandleErrorStatus:
     def test_handle_error_status_429(self, provider):
         """Test 429 raises AIRateLimitError."""
         response = MagicMock(spec=httpx.Response)
+        response.headers = httpx.Headers()
         response.status_code = 429
         with pytest.raises(AIRateLimitError):
             provider._handle_error_status(response)
@@ -1382,6 +1419,7 @@ class TestMistralProviderHandleErrorStatus:
     def test_handle_error_status_404(self, provider):
         """Test 404 raises AIModelNotFoundError."""
         response = MagicMock(spec=httpx.Response)
+        response.headers = httpx.Headers()
         response.status_code = 404
         with pytest.raises(AIModelNotFoundError):
             provider._handle_error_status(response)
@@ -1389,6 +1427,7 @@ class TestMistralProviderHandleErrorStatus:
     def test_handle_error_status_500(self, provider):
         """Test 500 raises AIProviderError."""
         response = MagicMock(spec=httpx.Response)
+        response.headers = httpx.Headers()
         response.status_code = 500
         response.text = "Internal Server Error"
         with pytest.raises(AIProviderError):
@@ -1397,6 +1436,7 @@ class TestMistralProviderHandleErrorStatus:
     def test_handle_error_status_200_no_raise(self, provider):
         """Test 200 does not raise."""
         response = MagicMock(spec=httpx.Response)
+        response.headers = httpx.Headers()
         response.status_code = 200
         # Should not raise
         provider._handle_error_status(response)
@@ -1505,6 +1545,7 @@ class TestMistralCacheKeyField:
         messages = [{"role": "system", "content": "You are helpful."},
                     {"role": "user", "content": "hi"}]
         response = MagicMock(spec=httpx.Response)
+        response.headers = httpx.Headers()
         response.status_code = 200
         response.json.return_value = {
             "choices": [{"message": {"content": "ok", "tool_calls": []}}],
@@ -1766,6 +1807,16 @@ class TestAnthropicProviderTranslation:
         assert payload["tools"][0]["name"] == "f"
         assert payload["tool_choice"] == {"type": "auto"}
 
+    def test_tool_choice_none_when_tool_calls_are_refused(self, provider):
+        assert provider._tool_choice(True) is None
+        assert provider._tool_choice(False) == {"type": "none"}
+        config = self._config("claude-sonnet-4-6")
+        tools = [{"type": "function", "function": {"name": "f", "parameters": {"type": "object"}}}]
+        payload, _, _ = provider._prepare(
+            [{"role": "user", "content": "hi"}], config, tools=tools, tool_choice=provider._tool_choice(False),
+        )
+        assert payload["tool_choice"] == {"type": "none"}
+
     def test_prepare_stream_flag(self, provider):
         config = self._config("claude-sonnet-4-6")
         payload, _, _ = provider._prepare(
@@ -1980,6 +2031,7 @@ class TestAnthropicProviderChat:
     @staticmethod
     def _mock_response(status_code, content_blocks=None, stop_reason="end_turn"):
         response = MagicMock(spec=httpx.Response)
+        response.headers = httpx.Headers()
         response.status_code = status_code
         if status_code == 200:
             response.json.return_value = {
@@ -2238,6 +2290,7 @@ class TestAnthropicProviderChatJson:
     @staticmethod
     def _mock_json_response(status_code, tool_input=None):
         response = MagicMock(spec=httpx.Response)
+        response.headers = httpx.Headers()
         response.status_code = status_code
         if status_code == 200:
             content = []
@@ -2413,6 +2466,7 @@ class TestAnthropicProviderChatJsonRecovery:
     @staticmethod
     def _mock_json_response(tool_input=None, stop_reason="tool_use"):
         response = MagicMock(spec=httpx.Response)
+        response.headers = httpx.Headers()
         response.status_code = 200
         content = []
         if tool_input is not None:
@@ -2513,6 +2567,7 @@ class TestMistralChatJsonTruncation:
     @staticmethod
     def _mock_response(content, finish_reason):
         response = MagicMock(spec=httpx.Response)
+        response.headers = httpx.Headers()
         response.status_code = 200
         response.json.return_value = {
             "choices": [{"message": {"content": content}, "finish_reason": finish_reason}],
@@ -2570,6 +2625,7 @@ class TestMistralProviderOCR:
     @staticmethod
     def _mock_ocr_response(status_code, pages=None):
         response = MagicMock(spec=httpx.Response)
+        response.headers = httpx.Headers()
         response.status_code = status_code
         if status_code == 200:
             response.json.return_value = {"pages": pages if pages is not None else [
@@ -2638,6 +2694,7 @@ class TestMistralProviderOCR:
 
     def test_parse_ocr_response_empty_pages(self, provider):
         response = MagicMock(spec=httpx.Response)
+        response.headers = httpx.Headers()
         response.status_code = 200
         response.json.return_value = {"pages": []}
         assert provider._parse_ocr_response(response) == ""
@@ -2659,6 +2716,7 @@ class TestMistralProviderEmbeddings:
     @staticmethod
     def _mock_embeddings_response(status_code, data=None):
         response = MagicMock(spec=httpx.Response)
+        response.headers = httpx.Headers()
         response.status_code = status_code
         if status_code == 200:
             response.json.return_value = {"data": data if data is not None else []}
@@ -3028,6 +3086,7 @@ class TestMistralProviderTranscription:
     @staticmethod
     def _mock_transcription_response(status_code, text="Hello world"):
         response = MagicMock(spec=httpx.Response)
+        response.headers = httpx.Headers()
         response.status_code = status_code
         if status_code == 200:
             response.json.return_value = {"text": text}
@@ -3138,6 +3197,7 @@ class TestMistralProviderTranscription:
     def test_parse_transcription_response_without_text_key_degrades_to_empty(self, provider):
         """A 200 without a text key is indistinguishable from silence: return "", not a guess."""
         response = MagicMock(spec=httpx.Response)
+        response.headers = httpx.Headers()
         response.status_code = 200
         response.json.return_value = {}
         assert provider._parse_transcription_response(response) == ""

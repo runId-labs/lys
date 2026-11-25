@@ -35,6 +35,7 @@ from lys.apps.ai.utils.providers.exceptions import (
     AIResponseTruncatedError,
     AITimeoutError,
     AIValidationError,
+    retry_after_seconds,
 )
 
 logger = logging.getLogger(__name__)
@@ -89,9 +90,12 @@ class AnthropicProvider(AIProvider):
         messages: List[Dict[str, Any]],
         config: AIEndpointConfig,
         tools: Optional[List[Dict[str, Any]]] = None,
+        tool_calls_allowed: bool = True,
     ) -> AIResponse:
         """Send a chat request to the Anthropic Messages API."""
-        payload, headers, base_url = self._prepare(messages, config, tools=tools)
+        payload, headers, base_url = self._prepare(
+            messages, config, tools=tools, tool_choice=self._tool_choice(tool_calls_allowed)
+        )
         try:
             async with httpx.AsyncClient() as client:
                 response = await client.post(
@@ -131,6 +135,7 @@ class AnthropicProvider(AIProvider):
         messages: List[Dict[str, Any]],
         config: AIEndpointConfig,
         tools: Optional[List[Dict[str, Any]]] = None,
+        tool_calls_allowed: bool = True,
     ) -> AsyncGenerator[AIStreamChunk, None]:
         """Stream a chat response, translating Anthropic SSE events into AIStreamChunk.
 
@@ -142,7 +147,9 @@ class AnthropicProvider(AIProvider):
         ``arguments`` is the partial JSON string, concatenated downstream by content-block
         index.
         """
-        payload, headers, base_url = self._prepare(messages, config, tools=tools, stream=True)
+        payload, headers, base_url = self._prepare(
+            messages, config, tools=tools, tool_choice=self._tool_choice(tool_calls_allowed), stream=True
+        )
         try:
             async with httpx.AsyncClient() as client:
                 async with client.stream(
@@ -347,6 +354,11 @@ class AnthropicProvider(AIProvider):
             raise AITimeoutError(f"Request timed out after {config.timeout}s")
 
     # ========== Payload building ==========
+
+    @staticmethod
+    def _tool_choice(tool_calls_allowed: bool) -> Optional[Dict[str, Any]]:
+        """The Messages API tool_choice: the default (auto), or none when a text answer is required."""
+        return None if tool_calls_allowed else {"type": "none"}
 
     def _prepare(
         self,
@@ -706,7 +718,9 @@ class AnthropicProvider(AIProvider):
         if response.status_code == 401:
             raise AIAuthError("Invalid Anthropic API key")
         if response.status_code == 429:
-            raise AIRateLimitError("Anthropic rate limit exceeded")
+            raise AIRateLimitError(
+                "Anthropic rate limit exceeded", retry_after=retry_after_seconds(response.headers.get("retry-after"))
+            )
         if response.status_code == 404:
             raise AIModelNotFoundError("Anthropic model not found")
         if response.status_code >= 500:

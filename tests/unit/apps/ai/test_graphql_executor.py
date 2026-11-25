@@ -332,6 +332,54 @@ class TestGraphQLToolExecutorGlobalID:
         assert variables["inputs"]["userId"] == user_gid
         assert variables["inputs"]["roleId"] == role_gid
 
+    def test_build_operation_declares_a_list_with_its_schema_type(self, executor):
+        """A list argument is declared with the type the tool schema carries, not [String]."""
+        query, variables = executor._build_operation(
+            operation_type="query",
+            operation_name="allItems",
+            arguments={"status_ids": ["OPEN", "CLOSED"]},
+            return_fields="id",
+            properties={"status_ids": {"type": ["array", "null"], "_graphql_type": "[String!]"}},
+            node_type=None,
+            input_wrappers=None,
+        )
+
+        assert "$statusIds: [String!]" in query
+        assert variables == {"statusIds": ["OPEN", "CLOSED"]}
+
+    def test_build_operation_keeps_a_list_of_global_ids(self, executor):
+        """Each id of an ID list passes through unchanged when it is a GlobalID."""
+        gids = [self._global_id("ItemNode", "a"), self._global_id("ItemNode", "b")]
+
+        _, variables = executor._build_operation(
+            operation_type="query",
+            operation_name="allItems",
+            arguments={"ids": gids},
+            return_fields="id",
+            properties={"ids": {"type": ["array", "null"], "_graphql_type": "[ID!]"}},
+            node_type=None,
+            input_wrappers=None,
+        )
+
+        assert variables == {"ids": gids}
+
+    def test_build_operation_rejects_a_raw_uuid_in_an_id_list(self, executor):
+        """A raw uuid among the ids of a list is refused, like a single one."""
+        from lys.apps.ai.modules.core.executors.graphql import GlobalIDFormatError
+
+        with pytest.raises(GlobalIDFormatError) as exc_info:
+            executor._build_operation(
+                operation_type="query",
+                operation_name="allItems",
+                arguments={"ids": [self._global_id("ItemNode", "a"), "3cc6ec4d-0b2e-4c5f-9820-434c0745b800"]},
+                return_fields="id",
+                properties={"ids": {"type": ["array", "null"], "_graphql_type": "[ID!]"}},
+                node_type=None,
+                input_wrappers=None,
+            )
+
+        assert "ids" in str(exc_info.value)
+
     def test_build_operation_rejects_raw_uuid_in_wrapped_fields(self, executor):
         """A raw uuid inside an input wrapper raises, instead of being silently wrapped."""
         from lys.apps.ai.modules.core.executors.graphql import GlobalIDFormatError
@@ -1092,3 +1140,109 @@ class TestGraphQLToolExecutorExplicitNullsExecute:
         )
         variables = executor._client.execute.call_args[0][1]
         assert variables["companyId"] == "Q29tcGFueU5vZGU6MQ=="
+
+
+
+class TestGraphQLToolExecutorOnRequest:
+    """A tool's on-request fields are selected only when the call sets its flag."""
+
+    @pytest.fixture
+    def executor(self):
+        with patch("lys.apps.ai.modules.core.executors.graphql.GraphQLClient"):
+            executor = GraphQLToolExecutor(
+                gateway_url="http://test-gateway:4000/graphql",
+                secret_key="test-secret-key",
+                service_name="test-service",
+                timeout=30,
+            )
+        executor.add_tool("all_changes", {
+            "type": "function",
+            "function": {"name": "all_changes", "parameters": {"type": "object", "properties": {
+                "limit": {"type": ["integer", "null"], "_graphql_type": "Int"},
+                "with_article_text": {"type": ["boolean", "null"]},
+            }}},
+            "_graphql": {
+                "operation_name": "allChanges",
+                "return_fields": "summary articles { number }",
+                "on_request": {"flag": "with_article_text", "return_fields": "summary articles { number content }"},
+            },
+        }, operation_type="query")
+        executor._initialized = True
+        return executor
+
+    async def _query(self, executor, arguments):
+        captured = {}
+
+        def build(**kwargs):
+            captured.update(kwargs)
+            raise RuntimeError("stop")
+
+        with patch.object(executor, "_build_operation", side_effect=build):
+            with pytest.raises(RuntimeError, match="stop"):
+                await executor.execute("all_changes", arguments, context={})
+        return captured
+
+    @pytest.mark.asyncio
+    async def test_the_light_selection_by_default(self, executor):
+        captured = await self._query(executor, {"limit": 5})
+
+        assert captured["return_fields"] == "summary articles { number }"
+        assert captured["arguments"] == {"limit": 5}
+
+    @pytest.mark.asyncio
+    async def test_the_flag_selects_the_heavy_fields_and_is_never_sent(self, executor):
+        captured = await self._query(executor, {"limit": 5, "with_article_text": True})
+
+        assert captured["return_fields"] == "summary articles { number content }"
+        assert "with_article_text" not in captured["arguments"]
+
+
+
+class TestGraphQLToolExecutorDefaultPage:
+    """A connection tool called without a page size reads the tool's default, never the server's maximum."""
+
+    @pytest.fixture
+    def executor(self):
+        with patch("lys.apps.ai.modules.core.executors.graphql.GraphQLClient"):
+            executor = GraphQLToolExecutor(
+                gateway_url="http://test-gateway:4000/graphql",
+                secret_key="test-secret-key",
+                service_name="test-service",
+                timeout=30,
+            )
+        executor.add_tool("all_items", {
+            "type": "function",
+            "function": {"name": "all_items", "parameters": {"type": "object", "properties": {
+                "first": {"type": ["integer", "null"], "_graphql_type": "Int"},
+                "after": {"type": ["string", "null"], "_graphql_type": "String"},
+            }}},
+            "_graphql": {"operation_name": "allItems", "return_fields": "edges { node { id } }", "default_first": 25},
+        }, operation_type="query")
+        executor._initialized = True
+        return executor
+
+    async def _arguments(self, executor, arguments):
+        captured = {}
+
+        def build(**kwargs):
+            captured.update(kwargs)
+            raise RuntimeError("stop")
+
+        with patch.object(executor, "_build_operation", side_effect=build):
+            with pytest.raises(RuntimeError, match="stop"):
+                await executor.execute("all_items", arguments, context={})
+        return captured["arguments"]
+
+    @pytest.mark.asyncio
+    async def test_left_out_the_default_page_is_asked(self, executor):
+        assert await self._arguments(executor, {}) == {"first": 25}
+
+    @pytest.mark.asyncio
+    async def test_the_model_s_page_size_is_kept(self, executor):
+        assert await self._arguments(executor, {"first": 60, "after": "YXJyYXk6NTk="}) == {
+            "first": 60, "after": "YXJyYXk6NTk=",
+        }
+
+    @pytest.mark.asyncio
+    async def test_a_null_page_size_is_the_default(self, executor):
+        assert await self._arguments(executor, {"first": None}) == {"first": 25}

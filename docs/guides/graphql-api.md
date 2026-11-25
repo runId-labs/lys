@@ -309,7 +309,8 @@ Your function must return a `sqlalchemy.Select` statement. The decorator applies
 | `after` | `String` | Cursor for forward pagination |
 | `before` | `String` | Cursor for backward pagination |
 | `order_by` | Dynamic | Sorting field and direction |
-| `limit` | `Int` | Additional result limit |
+
+There is no `limit` argument: page with `first` / `after`.
 
 ### @lys_creation — Create Entity
 

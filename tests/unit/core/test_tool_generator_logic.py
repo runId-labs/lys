@@ -156,7 +156,33 @@ class TestPythonTypeToJsonSchema:
         assert result == {
             "type": "array",
             "items": {"type": "integer", "_graphql_type": "Int!"},
+            "_graphql_type": "[Int!]!",
         }
+
+    def test_optional_list_has_the_schema_graphql_type(self):
+        """Optional[list[str]] is [String!] in the schema: declared [String], the server refuses it."""
+        from lys.core.utils.tool_generator import python_type_to_json_schema
+
+        result = python_type_to_json_schema(Optional[list[str]])
+        assert result == {
+            "type": ["array", "null"],
+            "items": {"type": "string", "_graphql_type": "String!"},
+            "_graphql_type": "[String!]",
+        }
+
+    def test_list_of_optional_items_keeps_nullable_items(self):
+        """list[Optional[int]] is [Int]!: the items are nullable, the list is not."""
+        from lys.core.utils.tool_generator import python_type_to_json_schema
+
+        result = python_type_to_json_schema(list[Optional[int]])
+        assert result["_graphql_type"] == "[Int]!"
+
+    def test_list_of_union_items_stays_undeclared(self):
+        """An item with no GraphQL type (a real union) leaves the list's type undeclared."""
+        from lys.core.utils.tool_generator import python_type_to_json_schema
+
+        result = python_type_to_json_schema(list[Union[str, int]])
+        assert "_graphql_type" not in result
 
     def test_real_union_produces_any_of(self):
         """Test Union[str, int] (not Optional) produces anyOf schema."""
@@ -193,7 +219,15 @@ class TestPythonTypeToJsonSchema:
         assert result == {
             "type": "array",
             "items": {"type": "integer", "_graphql_type": "Int!"},
+            "_graphql_type": "[Int!]!",
         }
+
+    def test_strawberry_optional_list_has_the_schema_graphql_type(self):
+        """StrawberryOptional(StrawberryList(str)) is [String!], like its typing form."""
+        from lys.core.utils.tool_generator import python_type_to_json_schema
+
+        result = python_type_to_json_schema(StrawberryOptional(of_type=StrawberryList(of_type=str)))
+        assert result["_graphql_type"] == "[String!]"
 
     def test_strawberry_list_without_of_type(self):
         """Test StrawberryList without of_type defaults to bare array."""
@@ -741,14 +775,14 @@ class TestExtractReturnFieldsFromType:
     """Test extract_return_fields_from_type."""
 
     def test_connection_type_fallback(self):
-        """Test Connection type without resolvable node falls back to 'edges { node { id } }'."""
+        """Test Connection type without resolvable node falls back to its ids, with its page info."""
         from lys.core.utils.tool_generator import extract_return_fields_from_type
 
         class SomeConnection:
             __name__ = "SomeConnection"
 
         result = extract_return_fields_from_type(SomeConnection)
-        assert result == "edges { node { id } }"
+        assert result == "edges { node { id } } page_info { has_next_page end_cursor }"
 
     def test_simple_node_type(self):
         """Test simple node type returns space-joined field names."""
@@ -962,6 +996,86 @@ class TestExtractToolFromField:
 # extract_tool_from_resolver
 # ===========================================================================
 
+class TestToolOnRequest:
+    """Heavy fields a tool reads only when the model asks (webservice option tool_on_request)."""
+
+    @staticmethod
+    def _field():
+        import strawberry
+
+        @strawberry.type
+        class Article:
+            number: str
+            content: str
+
+        @strawberry.type
+        class Change:
+            summary: str
+            articles: list[Article]
+
+        def all_changes(info, limit: int = 10) -> None:
+            """List the changes."""
+
+        field = MagicMock()
+        field.base_resolver.wrapped_func = all_changes
+        field.description = "List the changes"
+        field.type = Change
+        return field
+
+    ON_REQUEST = {
+        "flag": "with_article_text",
+        "fields": ["articles.content"],
+        "description": "True to read each article's full text",
+    }
+
+    def test_the_heavy_field_is_left_out_unless_asked(self):
+        from lys.core.utils.tool_generator import extract_tool_from_field
+
+        tool = extract_tool_from_field(self._field(), on_request=self.ON_REQUEST)
+
+        assert tool["_graphql"]["return_fields"] == "summary articles { number }"
+        assert tool["_graphql"]["on_request"] == {
+            "flag": "with_article_text", "return_fields": "summary articles { number content }",
+        }
+        flag = tool["function"]["parameters"]["properties"]["with_article_text"]
+        assert flag["type"] == ["boolean", "null"]
+        assert "with_article_text" not in tool["function"]["parameters"].get("required", [])
+
+    def test_without_the_option_every_field_is_selected(self):
+        from lys.core.utils.tool_generator import extract_tool_from_field
+
+        tool = extract_tool_from_field(self._field())
+
+        assert tool["_graphql"]["return_fields"] == "summary articles { number content }"
+        assert tool["_graphql"]["on_request"] is None
+
+    def test_a_field_the_tool_does_not_select_is_refused(self):
+        from lys.core.utils.tool_generator import extract_tool_from_field
+
+        with pytest.raises(ValueError, match="'articles.missing', a field the tool does not select"):
+            extract_tool_from_field(self._field(), on_request={**self.ON_REQUEST, "fields": ["articles.missing"]})
+
+    def test_a_misspelled_field_beside_a_right_one_is_refused(self):
+        from lys.core.utils.tool_generator import extract_tool_from_field
+
+        with pytest.raises(ValueError, match="'articles.contnet'"):
+            extract_tool_from_field(
+                self._field(), on_request={**self.ON_REQUEST, "fields": ["articles.content", "articles.contnet"]}
+            )
+
+    def test_an_option_naming_no_field_is_refused(self):
+        from lys.core.utils.tool_generator import extract_tool_from_field
+
+        with pytest.raises(ValueError, match="names no field"):
+            extract_tool_from_field(self._field(), on_request={**self.ON_REQUEST, "fields": []})
+
+    def test_a_flag_named_like_an_argument_is_refused(self):
+        from lys.core.utils.tool_generator import extract_tool_from_field
+
+        with pytest.raises(ValueError, match="already an argument"):
+            extract_tool_from_field(self._field(), on_request={**self.ON_REQUEST, "flag": "limit"})
+
+
 class TestExtractToolFromResolver:
     """Test extract_tool_from_resolver."""
 
@@ -1122,3 +1236,46 @@ class TestGetNodeTypeFromConnection:
 
         result = _get_node_type_from_connection(EmptyConnection)
         assert result is None
+
+
+
+class TestToolPagination:
+    """A connection tool declares its pagination (first, after), added to the field by its extension."""
+
+    @staticmethod
+    def _field(connection: bool, extra_param: str = ""):
+        from strawberry.relay.fields import ConnectionExtension
+
+        namespace = {}
+        exec(f"def all_items(info, status: str = None{extra_param}) -> None:\n    pass", namespace)
+        field = MagicMock()
+        field.base_resolver.wrapped_func = namespace["all_items"]
+        field.description = "List the items"
+        field.type = None
+        field.extensions = [ConnectionExtension()] if connection else []
+        return field
+
+    def test_a_connection_tool_declares_first_and_after(self):
+        from lys.core.utils.tool_generator import DEFAULT_TOOL_PAGE_SIZE, extract_tool_from_field
+
+        tool = extract_tool_from_field(self._field(connection=True))
+
+        properties = tool["function"]["parameters"]["properties"]
+        assert properties["first"]["_graphql_type"] == "Int"
+        assert properties["after"]["_graphql_type"] == "String"
+        assert tool["_graphql"]["default_first"] == DEFAULT_TOOL_PAGE_SIZE
+        assert "first" not in tool["function"]["parameters"].get("required", [])
+
+    def test_another_field_declares_none(self):
+        from lys.core.utils.tool_generator import extract_tool_from_field
+
+        tool = extract_tool_from_field(self._field(connection=False))
+
+        assert "first" not in tool["function"]["parameters"]["properties"]
+        assert tool["_graphql"]["default_first"] is None
+
+    def test_a_resolver_argument_named_like_the_pagination_is_refused(self):
+        from lys.core.utils.tool_generator import extract_tool_from_field
+
+        with pytest.raises(ValueError, match="pagination argument"):
+            extract_tool_from_field(self._field(connection=True, extra_param=", first: int = None"))

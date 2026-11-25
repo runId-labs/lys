@@ -49,6 +49,7 @@ def _requests(count=2):
 
 def _response(status_code=200, payload=None, text=""):
     response = MagicMock(spec=httpx.Response)
+    response.headers = httpx.Headers()
     response.status_code = status_code
     response.json.return_value = payload or {}
     response.text = text

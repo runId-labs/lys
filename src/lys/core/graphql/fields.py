@@ -317,15 +317,6 @@ def lys_connection_field(
                 )
             )
 
-        parameter_value_list.append(
-            inspect.Parameter(
-                "limit",
-                inspect.Parameter.POSITIONAL_OR_KEYWORD,
-                annotation=Annotated[int | None, strawberry.argument(description="Maximum number of results to return")],
-                default=None
-            )
-        )
-
         # overwrite webservice to compute order by if needed
         async def inner_resolver(*args, info: Info, **kwargs):
             info.context.app_manager = effective_ensure_type.app_manager
@@ -334,12 +325,6 @@ def lys_connection_field(
             if "order_by" in kwargs.keys():
                 order_by = kwargs["order_by"]
                 del kwargs["order_by"]
-
-            limit = None
-
-            if "limit" in kwargs.keys():
-                limit = kwargs["limit"]
-                del kwargs["limit"]
 
             stmt = await resolver(*args, info, **kwargs)
 
@@ -355,9 +340,6 @@ def lys_connection_field(
                         stmt = stmt.order_by(None)
                         stmt = stmt.order_by(order_by_condition)
                         break
-
-            if limit is not None:
-                stmt = stmt.limit(limit)
 
             return stmt
 

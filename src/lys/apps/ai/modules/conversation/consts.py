@@ -132,6 +132,20 @@ UNANSWERED_TOOL_RESULT = {
     "message": "The user did not answer this proposal and sent a new message instead.",
 }
 
+# How many model calls one chat turn may make. The last one is made with tool calls refused
+# and FINAL_ROUND_INSTRUCTION after the history: the turn ends on an answer written from what
+# the tools returned, never on an error that throws their work away. Set per application in
+# the AI plugin's chatbot config (max_tool_iterations): what a turn needs depends on the
+# tools it reads with.
+DEFAULT_MAX_TOOL_ITERATIONS = 10
+
+# Said to the model on that last call: why it cannot call a tool any more, and what its
+# answer owes the user.
+FINAL_ROUND_INSTRUCTION = (
+    "This turn allows no more tool calls: answer now, from what the tools returned. Say what you "
+    "could not read or check, so the user can ask for it next."
+)
+
 # Upper bound of the shielded revocation of a turn's access token (see
 # AIConversationService._turn_access_token): the shield makes the cleanup uncancellable,
 # so a store that stops answering would hold the task forever. Past it the revocation is

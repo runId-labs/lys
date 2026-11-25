@@ -8,14 +8,20 @@ fields, compatible with LLM function calling APIs (MistralAI, OpenAI, etc.).
 import inspect
 import types
 from datetime import date, datetime
-from typing import Annotated, Any, Dict, List, Optional, Union, get_args, get_origin
+from typing import Annotated, Any, Dict, FrozenSet, List, Optional, Union, get_args, get_origin
 
 import strawberry
 
 from lys.core.utils.strings import to_camel_case
+from strawberry.relay.fields import ConnectionExtension
 from strawberry.types.field import StrawberryField
 from sqlalchemy.inspection import inspect as sa_inspect
 
+
+#: Rows a tool reads from a connection when the model does not say how many: the rows of a tool
+#: result are sent again with every round of the turn, so a tool asks for few and pages on
+#: (first / after). Asked for more, the connection's own maximum (relay_max_results) still applies.
+DEFAULT_TOOL_PAGE_SIZE = 25
 
 # Fields to exclude from serialization for security reasons
 EXCLUDED_FIELDS = {
@@ -136,6 +142,24 @@ def _nullable(schema: Dict[str, Any]) -> Dict[str, Any]:
     return schema
 
 
+def _list_schema(items: Dict[str, Any], is_optional: bool) -> Dict[str, Any]:
+    """
+    The schema of a list argument, with its exact GraphQL type.
+
+    The GraphQL type is built from the item's: a ``list[str]`` argument is
+    ``[String!]`` in the schema. Left undeclared, the executor fell back on
+    ``[String]``, which the server refuses for a ``[String!]`` argument
+    ("Variable of type '[String]' used in position expecting type '[String!]'"):
+    the tool failed on every call that passed the list. An item whose GraphQL type
+    is unknown (a real union) leaves the list undeclared, as before.
+    """
+    schema: Dict[str, Any] = {"type": "array", "items": items}
+    item_type = items.get("_graphql_type")
+    if item_type:
+        schema["_graphql_type"] = f"[{item_type}]" if is_optional else f"[{item_type}]!"
+    return schema
+
+
 def python_type_to_json_schema(
     python_type: Any, is_optional: bool = False, nullable: bool = True
 ) -> Dict[str, Any]:
@@ -172,10 +196,7 @@ def python_type_to_json_schema(
     # StrawberryList (Strawberry's wrapper for List types)
     if type_class_name == "StrawberryList":
         if hasattr(python_type, "of_type"):
-            return {
-                "type": "array",
-                "items": python_type_to_json_schema(python_type.of_type, nullable=nullable)
-            }
+            return _list_schema(python_type_to_json_schema(python_type.of_type, nullable=nullable), is_optional)
         return {"type": "array"}
 
     # Handle Optional (Union with None) - both typing.Union and types.UnionType (X | Y syntax)
@@ -194,10 +215,7 @@ def python_type_to_json_schema(
     # Handle List
     if origin is list:
         if args:
-            return {
-                "type": "array",
-                "items": python_type_to_json_schema(args[0], nullable=nullable)
-            }
+            return _list_schema(python_type_to_json_schema(args[0], nullable=nullable), is_optional)
         return {"type": "array"}
 
     # Handle basic types
@@ -333,8 +351,8 @@ def _is_scalar_type(field_type) -> bool:
     )
 
 
-def _get_subfields(field_type) -> List[str]:
-    """Get all scalar subfields for a complex type (one level deep)."""
+def _get_subfields(field_type, excluded: FrozenSet[str] = frozenset()) -> List[str]:
+    """Get all scalar subfields for a complex type (one level deep), but the names in ``excluded``."""
     # Unwrap StrawberryOptional/StrawberryList
     while hasattr(field_type, "of_type"):
         field_type = field_type.of_type
@@ -348,7 +366,7 @@ def _get_subfields(field_type) -> List[str]:
     for field in strawberry_def.fields:
         if field.name.startswith("_"):
             continue
-        if field.name in EXCLUDED_FIELDS:
+        if field.name in EXCLUDED_FIELDS or field.name in excluded:
             continue
         if _is_scalar_type(field.type):
             subfields.append(field.name)
@@ -398,7 +416,19 @@ def _get_node_type_from_connection(connection_type) -> type:
     return None
 
 
-def extract_return_fields_from_type(return_type) -> str:
+#: What a connection tool returns beside its rows: whether more remain, and the cursor to read them.
+_PAGE_INFO = "page_info { has_next_page end_cursor }"
+
+
+def _is_connection(field) -> bool:
+    """Whether a field is a Relay connection: its pagination arguments come from its extension."""
+    extensions = getattr(field, "extensions", None)
+    return isinstance(extensions, (list, tuple)) and any(
+        isinstance(extension, ConnectionExtension) for extension in extensions
+    )
+
+
+def extract_return_fields_from_type(return_type, excluded: FrozenSet[str] = frozenset()) -> str:
     """
     Extract GraphQL return fields from a Strawberry return type.
 
@@ -406,6 +436,8 @@ def extract_return_fields_from_type(return_type) -> str:
 
     Args:
         return_type: The Strawberry type (can be Connection, Node, or wrapped type)
+        excluded: Field paths left out of the selection, relative to the node:
+            "summary", or "articles.content" for a subfield
 
     Returns:
         String of GraphQL fields suitable for the query
@@ -421,17 +453,17 @@ def extract_return_fields_from_type(return_type) -> str:
         # Extract node type and get its fields
         node_type = _get_node_type_from_connection(return_type)
         if node_type:
-            node_fields = extract_node_fields(node_type)
+            node_fields = extract_node_fields(node_type, excluded)
             if node_fields:
-                return f"edges {{ node {{ {' '.join(node_fields)} }} }}"
-        return "edges { node { id } }"
+                return f"edges {{ node {{ {' '.join(node_fields)} }} }} {_PAGE_INFO}"
+        return f"edges {{ node {{ id }} }} {_PAGE_INFO}"
 
     # Simple Node type - extract fields directly
-    fields = extract_node_fields(return_type)
+    fields = extract_node_fields(return_type, excluded)
     return " ".join(fields) if fields else "id"
 
 
-def extract_node_fields(node_type: type) -> List[str]:
+def extract_node_fields(node_type: type, excluded: FrozenSet[str] = frozenset()) -> List[str]:
     """
     Extract field names from a Strawberry node type for GraphQL queries.
 
@@ -439,6 +471,7 @@ def extract_node_fields(node_type: type) -> List[str]:
 
     Args:
         node_type: Strawberry node class
+        excluded: Field paths left out: "name", or "status.code" for a subfield
 
     Returns:
         List of field selections (e.g., ["id", "name", "status { id code }"])
@@ -456,14 +489,17 @@ def extract_node_fields(node_type: type) -> List[str]:
         if field.name.startswith("_"):
             continue
         # Skip sensitive fields
-        if field.name in EXCLUDED_FIELDS:
+        if field.name in EXCLUDED_FIELDS or field.name in excluded:
             continue
 
         if _is_scalar_type(field.type):
             fields.append(field.name)
         else:
             # Complex type - add with subfields
-            subfields = _get_subfields(field.type)
+            prefix = f"{field.name}."
+            subfields = _get_subfields(
+                field.type, frozenset(path[len(prefix):] for path in excluded if path.startswith(prefix))
+            )
             fields.append(f"{field.name} {{ {' '.join(subfields)} }}")
 
     return fields
@@ -474,6 +510,7 @@ def extract_tool_from_field(
     description: Optional[str] = None,
     node_type: type = None,
     operation_type: Optional[str] = None,
+    on_request: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """
     Extract an LLM tool definition from a Strawberry field.
@@ -487,6 +524,13 @@ def extract_tool_from_field(
         node_type: The node the operation returns, for GlobalID conversion
         operation_type: "query", "mutation"... On a mutation the optional arguments
             are not declared nullable: left out, a field stays as it is.
+        on_request: Heavy fields the tool reads only when the model asks for them —
+            the webservice option ``tool_on_request``: ``{"flag": "with_article_text",
+            "fields": ["articles.content"], "description": "..."}``. The tool declares a
+            boolean argument ``flag`` (never sent to GraphQL); its selection leaves the
+            fields out unless the call sets it. Read whole, a field like an article's
+            text makes most of a result the model rarely needs, and every round of the
+            turn sends it again.
 
     Returns:
         Tool definition dict in the format:
@@ -596,13 +640,58 @@ def extract_tool_from_field(
 
     # Extract return fields from the actual return type of the field
     # This handles both simple Nodes and Relay Connections correctly
-    return_fields_str = "id"
-    if hasattr(field, "type") and field.type:
-        return_fields_str = extract_return_fields_from_type(field.type)
-    elif node_type:
-        # Fallback to node_type if field.type not available
-        fields = extract_node_fields(node_type)
-        return_fields_str = " ".join(fields) if fields else "id"
+    def selection(excluded: FrozenSet[str]) -> str:
+        if hasattr(field, "type") and field.type:
+            return extract_return_fields_from_type(field.type, excluded)
+        if node_type:
+            # Fallback to node_type if field.type not available
+            node_fields = extract_node_fields(node_type, excluded)
+            return " ".join(node_fields) if node_fields else "id"
+        return "id"
+
+    # A connection's pagination arguments (first, after) are added by its extension when the
+    # schema is built, after this runs: the resolver's signature does not hold them. Declared here,
+    # the model asks for the rows it needs and pages on; left out, the executor asks for
+    # DEFAULT_TOOL_PAGE_SIZE.
+    default_first = None
+    if _is_connection(field):
+        for name in ("first", "after"):
+            if name in properties:
+                raise ValueError(f"'{func_name}' declares '{name}', a connection's own pagination argument")
+        properties["first"] = {
+            "type": ["integer", "null"],
+            "_graphql_type": "Int",
+            "description": (
+                f"How many rows to read, {DEFAULT_TOOL_PAGE_SIZE} when left out: ask for what the answer needs — "
+                "every row is sent again with each step of the conversation. When page_info.has_next_page is "
+                "true, more rows remain: read them with after, or narrow the filters."
+            ),
+        }
+        properties["after"] = {
+            "type": ["string", "null"],
+            "_graphql_type": "String",
+            "description": "page_info.end_cursor of the previous reading, to read the rows after it",
+        }
+        default_first = DEFAULT_TOOL_PAGE_SIZE
+
+    on_request_fields = frozenset((on_request or {}).get("fields") or ())
+    return_fields_str = selection(on_request_fields)
+    on_request_meta = None
+    if on_request:
+        flag = on_request["flag"]
+        full_return_fields = selection(frozenset())
+        if not on_request_fields:
+            raise ValueError(f"tool_on_request of '{func_name}' names no field")
+        for path in sorted(on_request_fields):
+            if selection(frozenset({path})) == full_return_fields:
+                raise ValueError(f"tool_on_request of '{func_name}' names '{path}', a field the tool does not select")
+        if flag in properties:
+            raise ValueError(f"tool_on_request flag '{flag}' of '{func_name}' is already an argument")
+        properties[flag] = {
+            "type": ["boolean", "null"],
+            "description": on_request["description"],
+        }
+        on_request_meta = {"flag": flag, "return_fields": full_return_fields}
 
     # Build tool definition
     tool = {
@@ -620,6 +709,8 @@ def extract_tool_from_field(
             "return_fields": return_fields_str,
             "node_type": node_type.__name__ if node_type else None,
             "input_wrappers": input_wrappers if input_wrappers else None,
+            "on_request": on_request_meta,
+            "default_first": default_first,
         }
     }
 

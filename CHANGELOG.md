@@ -7,6 +7,47 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.67.0] - 2026-11-25
+
+### Added
+- `AIAgentService` (`ai_agent_run`): an agent works one task through tools on its own
+  endpoint and returns a report validated against a Pydantic schema (`AgentDefinition`,
+  `AgentRunResult`). Read only (a declared mutation raises), under the user's token
+  (`AGENT_REQUIRES_USER_TOKEN`), tools limited to the declared webservices the user may
+  call, caller's scope pinned over the model's ids (`tool_defaults`). Optional
+  `analysis_check` opens one correction round. Each run is traced in the new
+  `ai_agent_run` table, written in transactions of its own and closed whatever the end.
+- `calculate` special tool (`utils/calculator.py`): exact decimal arithmetic over named
+  steps, parsed against an AST whitelist and bounded; offered on every chatbot turn and
+  to every agent.
+- `chatbot.max_tool_iterations` plugin setting (default 10). The last model call of a turn
+  is made with tool calls refused (`tool_calls_allowed=False` on `chat`, `chat_stream` and
+  the providers) and an instruction to answer from what the tools returned.
+- Webservice option `tool_on_request`: heavy fields left out of a tool's selection unless
+  the model sets the tool's boolean flag.
+- Connection tools declare `first` / `after`, select `page_info`, and read
+  `DEFAULT_TOOL_PAGE_SIZE` (25) rows when `first` is left out.
+- `GraphQLToolExecutor(pin_ids=True)`: pin the `*_id` page params with a user bearer too.
+- `AIRateLimitError.retry_after`, read from the `Retry-After` header (Anthropic, Mistral).
+
+### Changed
+- A chat stream refused before its first chunk is retried: a rate limit with waits of 2 s
+  then 8 s (or `Retry-After`, capped at 30 s), a server error, then the endpoint's
+  fallback, as on a connection error or a timeout.
+
+### Fixed
+- List arguments of generated tools declare their exact GraphQL type (`[String!]`); the
+  executor sent `[String]`, refused by the server.
+- ID list arguments are validated as GlobalIDs, item by item.
+- Mistral usage: `prompt_tokens` no longer counts the cached tokens, which were counted
+  twice (compaction triggered at half its threshold). `tokens_in` of earlier Mistral
+  messages keeps the former meaning.
+
+### Removed
+- **BREAKING**: the `limit` argument of every `lys_connection` field. It was applied on top
+  of the Relay pagination and duplicated `first`; a client passing `limit` is now refused
+  by the schema. Page with `first` / `after`.
+
 ## [0.66.0] - 2026-11-23
 
 ### Added

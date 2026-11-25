@@ -158,10 +158,13 @@ class AIMessage(Entity):
     # Metrics (role=assistant only)
     provider: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
     model: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
+    # The input NOT read from the prompt cache: the whole prompt is tokens_in +
+    # cache_read_tokens + cache_write_tokens, whatever the provider (Mistral counts its cache
+    # reads in its prompt_tokens; the provider subtracts them).
     tokens_in: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     tokens_out: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     # Prompt-cache usage (provider-agnostic; Anthropic cache_read/cache_creation input
-    # tokens, currently dropped by the providers). Lets us measure cache effectiveness.
+    # tokens, Mistral's cached_tokens). Lets us measure cache effectiveness.
     cache_read_tokens: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     cache_write_tokens: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     # Deliberately measures two different things, one per call path, because neither has a
