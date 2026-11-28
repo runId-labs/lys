@@ -16,7 +16,8 @@ so a hand edit made meanwhile elsewhere on the board is kept.
 
 Once it stops, what it drew is checked in code (``review``), the way a reader of the board would see
 it: an element on top of another, an element sticking out of its slide (cut when presented), a label
-its box does not hold, a link asked for that no arrow draws, a figure the request does not give - and
+its box does not hold, a link asked for that no arrow draws, an arrow running through a box over its text,
+a figure the request does not give - and
 what it left out: a figure the request gives that the drawing does not show, a slide left blank. What
 is found goes back to the drafter for one correction pass, on a budget of calls of its own; what is left
 reaches the chatbot as ``issues``, never hidden.
@@ -154,6 +155,7 @@ def review(
     issues += [{"check": "outside_frame", **entry} for entry in scene_tools.outside_frames(scene, drawn)]
     issues += [{"check": "label_does_not_fit", **entry} for entry in scene_tools.unfit_labels(scene, drawn)]
     issues += [{"check": "missing_link", **entry} for entry in scene_tools.missing_links(scene, links or [])]
+    issues += [{"check": "link_crosses", **entry} for entry in scene_tools.crossing_links(scene, drawn)]
     said_before = {entry["name"]: _said(entry) for entry in scene_tools.describe(before or scene_tools.empty_scene())}
     described = scene_tools.describe(scene)
     # What this drafting wrote: the elements it drew whose words are new, not those it only moved
@@ -290,8 +292,9 @@ def _correction(issues: List[Dict[str, Any]]) -> str:
         "one of the two; outside_frame -> "
         "bring the element inside its frame (coordinates count from the frame's corner); label_does_not_fit "
         "-> give the box at least the size it needs, or shorten the text; missing_link -> draw the arrow "
-        "between the two elements; figure_not_in_request -> write the figure as the request gives it, or "
-        "remove it."
+        "between the two elements; link_crosses -> move the boxes so the arrow runs clear of the ones it "
+        "crosses (a column further apart, a row out of its way); figure_not_in_request -> write the figure as "
+        "the request gives it, or remove it."
     )
 
 

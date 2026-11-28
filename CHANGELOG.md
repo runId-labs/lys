@@ -7,6 +7,20 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.69.0] - 2026-11-29
+
+### Added
+- Whiteboard: a drafted link running through a box other than its two ends is a
+  `link_crosses` issue (`scene.crossing_links`), sent back to the drafter with the other
+  checks; a table and a chart count as boxes.
+
+### Changed
+- An elbow link bends where its run crosses no box (`scene._elbow`, `consts.ELBOW_BENDS`):
+  its middle first, then nearer an end, then along the other axis.
+- A kpi's value is written on one line: smaller in a card of a set width, never below the
+  label's size. A card too narrow for its value at that size is refused
+  (`WHITEBOARD_INVALID_GEOMETRY`) with the width to give.
+
 ## [0.68.0] - 2026-11-28
 
 ### Added

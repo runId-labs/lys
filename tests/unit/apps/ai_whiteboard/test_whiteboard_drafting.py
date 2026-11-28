@@ -232,6 +232,15 @@ class TestReview:
         issues = drafting.review(scene, ["t", "n"], "Sales 2025: 4,9 M€", None)
         assert [(issue["check"], issue["figure"]) for issue in issues] == [("figure_not_in_request", "12,4 %")]
 
+    def test_a_link_drawn_through_a_box_is_found_and_sent_back(self):
+        scene = _scene({"name": "a", "text": "A", "x": 0, "y": 0, "width": 100, "height": 60},
+                       {"name": "b", "text": "B", "x": 600, "y": 0, "width": 100, "height": 60},
+                       {"name": "between", "text": "C", "x": 300, "y": 0, "width": 100, "height": 60},
+                       {"name": "link", "kind": "line", "x": 100, "y": 30, "width": 500})
+        issues = drafting.review(scene, ["a", "b", "between", "link"], "", None)
+        assert {"check": "link_crosses", "element": "link", "crosses": ["between"]} in issues
+        assert "link_crosses" in drafting._correction(issues)
+
     def test_only_what_the_drafting_drew_is_checked(self):
         scene = _scene({"name": "mine", "text": "A", "x": 0, "y": 0},
                        {"name": "theirs", "text": "B 999 €", "x": 10, "y": 10})
@@ -356,7 +365,7 @@ class TestHandlerChecks:
 
 
 class TestChartFigures:
-    """A line chart's points and reference lines are figures of the drawing like any text (2026-11-28)."""
+    """A line chart's points and reference lines are figures of the drawing like any text."""
 
     REQUEST = "Trésorerie S1 71 446 €, S2 87 635 € ; seuil d'alerte 186 200 €"
 
@@ -406,7 +415,7 @@ class TestDraftTrace:
 
 
 class TestCorrectionBudget:
-    """The checks go back to the drafter on calls of their own, however long it patched (2026-11-28)."""
+    """The checks go back to the drafter on calls of their own, however long it patched."""
 
     @pytest.mark.asyncio
     async def test_a_drafter_that_patches_to_its_last_call_still_gets_its_checks_back(self):

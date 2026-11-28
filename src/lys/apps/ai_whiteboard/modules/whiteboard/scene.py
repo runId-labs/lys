@@ -69,6 +69,7 @@ from lys.apps.ai_whiteboard.modules.whiteboard.consts import (
     COMPOSITE_KINDS,
     CORNERS,
     CURVE_BEND,
+    ELBOW_BENDS,
     DEFAULT_BACKGROUND,
     DEFAULT_CORNERS,
     DEFAULT_PATH,
@@ -1241,10 +1242,41 @@ def _as_link_geometry(path: Sequence[Point]) -> Dict[str, Any]:
     }
 
 
+def _named_apart(elements: Sequence[Dict[str, Any]], apart: Collection[Optional[str]]) -> List[Dict[str, Any]]:
+    """
+    What is named on the board and stands in a link's way, the elements ``apart`` aside (the link's
+    ends, the link itself): every named element but the frames and the free links - a slide holds
+    its links, and a link may cross another.
+    """
+    return [
+        element for element in elements
+        if element["id"] not in apart and _is_anchor(element) and element.get("type") != "frame"
+        and not (element.get("type") in ("arrow", "line") and _owner(element) is None)
+    ]
+
+
+def _blocks(named: Sequence[Dict[str, Any]], elements: Sequence[Dict[str, Any]]) -> List[Tuple[str, Box]]:
+    """The boxes a link must not run through, by name: what is named but the texts (a link runs beside a caption)."""
+    return [(element["id"], _box(element, elements)) for element in named if element.get("type") != "text"]
+
+
+def _obstacles(
+    source: Dict[str, Any], target: Dict[str, Any], elements: Sequence[Dict[str, Any]],
+) -> Tuple[List[Box], List[Box]]:
+    """
+    What a link between two elements must not run through - the boxes named on the board but its
+    ends, frames and free links aside -, and what a lane must stay clear of: the same, texts included.
+    """
+    named = _named_apart(elements, {source["id"], target["id"]})
+    return [box for _, box in _blocks(named, elements)], [_box(element, elements) for element in named]
+
+
 def _route_between(
     source: Dict[str, Any],
     target: Dict[str, Any],
     elements: Sequence[Dict[str, Any]],
+    blocks: Sequence[Box],
+    everything: Sequence[Box],
 ) -> Dict[str, Any]:
     """
     The path of a link: straight when nothing stands in the way, round it otherwise.
@@ -1263,18 +1295,12 @@ def _route_between(
     inside it: a slide is presented cut at its frame, and a detour round its edge left the
     arrow cut in half. With no free lane within reach the link stays
     straight, which is what it was.
+
+    ``blocks`` and ``everything`` are what the link must not run through and what a lane must stay
+    clear of (``_obstacles``).
     """
     straight = _segment_between(source, target)
     source_box, target_box = _box(source, elements), _box(target, elements)
-    ends = {source["id"], target["id"]}
-    named = [
-        element for element in elements
-        if element["id"] not in ends and _is_anchor(element) and element.get("type") != "frame"
-        and not (element.get("type") in ("arrow", "line") and _owner(element) is None)
-    ]
-    # What a link must not run through, and what a lane must stay clear of.
-    blocks = [_box(element, elements) for element in named if element.get("type") != "text"]
-    everything = [_box(element, elements) for element in named]
 
     start = (straight["x"], straight["y"])
     end = (start[0] + straight["points"][-1][0], start[1] + straight["points"][-1][1])
@@ -1403,17 +1429,14 @@ def _routed(
     element (``fixedPoint``, the share of the element's width and height). A curve bends the
     run at its middle, or rounds the detour.
     """
-    geometry = _route_between(source, target, elements)
+    blocks, everything = _obstacles(source, target, elements)
+    geometry = _route_between(source, target, elements, blocks, everything)
     start = (geometry["x"], geometry["y"])
     points = [(start[0] + dx, start[1] + dy) for dx, dy in geometry["points"]]
     fields: Dict[str, Any] = {"elbowed": False}
     if path == "elbow":
         if len(points) == 2:
-            (x0, y0), (x1, y1) = points
-            if abs(x1 - x0) >= abs(y1 - y0):
-                points = [(x0, y0), ((x0 + x1) / 2, y0), ((x0 + x1) / 2, y1), (x1, y1)]
-            else:
-                points = [(x0, y0), (x0, (y0 + y1) / 2), (x1, (y0 + y1) / 2), (x1, y1)]
+            points = _elbow(points[0], points[1], blocks)
         fields.update({"elbowed": True, "roundness": None, "fixedSegments": None,
                        "startIsSpecial": None, "endIsSpecial": None})
     elif path == "curved":
@@ -1426,6 +1449,27 @@ def _routed(
     fields["startBinding"] = _binding(source, points[0], elements, path == "elbow")
     fields["endBinding"] = _binding(target, points[-1], elements, path == "elbow")
     return fields
+
+
+def _elbow(start: Point, end: Point, blocks: Sequence[Box]) -> List[Point]:
+    """
+    A straight run bent at right angles, bent where it crosses no box. Bent in its middle as a rule - along
+    the axis it mostly runs on -, else nearer one end, else along the other axis: bent in the middle
+    whatever stood there, the run to the second column of a diagram crossed every box of the first, over
+    their text. With no clear bend, the middle one: a crossing the checks report (``crossing_links``).
+    """
+    (x0, y0), (x1, y1) = start, end
+    sideways = abs(x1 - x0) >= abs(y1 - y0)
+    candidates = []
+    for along_x in (sideways, not sideways):
+        for share in ELBOW_BENDS:
+            if along_x:
+                bend = x0 + (x1 - x0) * share
+                candidates.append([(x0, y0), (bend, y0), (bend, y1), (x1, y1)])
+            else:
+                bend = y0 + (y1 - y0) * share
+                candidates.append([(x0, y0), (x0, bend), (x1, bend), (x1, y1)])
+    return next((path for path in candidates if not _path_hits(path, blocks)), candidates[0])
 
 
 def _binding(
@@ -1987,18 +2031,44 @@ def _component_room(
 
 def _component_text(
     element_id: str, part: str, text: str, x: float, y: float, width: float, font_size: float, color: str,
-    tag: Dict[str, Any], align: str = "left",
+    tag: Dict[str, Any], align: str = "left", wraps: bool = True,
 ) -> Dict[str, Any]:
-    """A text part of a component, wrapped to its width."""
-    _, height = _text_size(text, font_size, max_width=width)
+    """A text part of a component, wrapped to its width - or written as it is (``wraps`` off), for a
+    text sized to hold in it: a figure is never broken."""
+    _, height = _text_size(text, font_size, max_width=width if wraps else None)
     return _base_element(
         f"{element_id}-{part}", "text",
         x=x, y=y, width=max(width, 1), height=max(height, 1),
-        text=_wrapped(text, width, font_size), originalText=text,
+        text=_wrapped(text, width, font_size) if wraps else text, originalText=text,
         fontSize=font_size, fontFamily=FONT_FAMILY, lineHeight=LINE_HEIGHT,
         textAlign=align, verticalAlign="top", autoResize=False,
         groupIds=[element_id], customData=dict(tag), strokeColor=color,
     )
+
+
+def _kpi_value_size(
+    element_id: str, value: str, largest: float, smallest: float, room: float, margins: float,
+) -> float:
+    """
+    The size a kpi's value is written at to hold on one line in its card: ``largest`` when the card
+    holds it, smaller in a card of a set width (a slot of a row of cards), never below ``smallest``,
+    the label's size. A figure cannot be broken: wrapped, it reads wrong; at full size in a card too
+    narrow, it runs out of it.
+
+    Raises:
+        LysError: WHITEBOARD_INVALID_GEOMETRY when the card does not hold the value at the label's size.
+    """
+    width = _text_size(value, largest)[0]
+    if width <= room:
+        return largest
+    # A text's width is its size times its characters' advances: the size that fits is a share of the largest
+    if width * smallest / largest > room:
+        needed = math.ceil(width * smallest / largest + margins)
+        raise LysError(
+            WHITEBOARD_INVALID_GEOMETRY,
+            f"'{element_id}': 'width' is too narrow for its value on one line, give it at least {needed}",
+        )
+    return max(smallest, largest * room / width)
 
 
 def _make_kpi(element_id: str, operation: Dict[str, Any], elements: Sequence[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -2013,13 +2083,14 @@ def _make_kpi(element_id: str, operation: Dict[str, Any], elements: Sequence[Dic
     delta = _text_value(operation.get("delta"), "delta") if operation.get("delta") is not None else ""
     font_size = _font_size(operation)
     scale = font_size / FONT_SIZE
-    value_size = font_size * KPI_VALUE_SCALE
+    largest = font_size * KPI_VALUE_SCALE
     padding = COMPONENT_PADDING * scale
-    natural = max(_text_size(value, value_size)[0], _text_size(label, font_size)[0], _text_size(delta, font_size)[0])
+    natural = max(_text_size(value, largest)[0], _text_size(label, font_size)[0], _text_size(delta, font_size)[0])
     width = (_size(operation["width"], "width") if operation.get("width") is not None
              else max(KPI_MIN_WIDTH * scale, natural + 2 * padding))
     inner = _component_room(element_id, width, 2 * padding, font_size)
-    heights = [_text_size(value, value_size, max_width=inner)[1], _text_size(label, font_size, max_width=inner)[1]]
+    value_size = _kpi_value_size(element_id, value, largest, font_size, inner, 2 * padding)
+    heights = [_text_size(value, value_size)[1], _text_size(label, font_size, max_width=inner)[1]]
     if delta:
         heights.append(_text_size(delta, font_size, max_width=inner)[1])
     height = 2 * padding + sum(heights) + padding / 2 * (len(heights) - 1)
@@ -2031,7 +2102,8 @@ def _make_kpi(element_id: str, operation: Dict[str, Any], elements: Sequence[Dic
     parts = [_base_element(element_id, "rectangle", x=x, y=y, width=width, height=height,
                            groupIds=[element_id], customData=tag, **style, roundness={"type": 3})]
     top = y + padding
-    parts.append(_component_text(element_id, "value", value, x + padding, top, inner, value_size, STROKE_COLOR, tag))
+    parts.append(_component_text(element_id, "value", value, x + padding, top, inner, value_size, STROKE_COLOR, tag,
+                                 wraps=False))
     top += heights[0] + padding / 2
     parts.append(_component_text(element_id, "label", label, x + padding, top, inner, font_size, MUTED_TEXT_COLOR, tag))
     if delta:
@@ -3098,6 +3170,30 @@ def unfit_labels(scene: Dict[str, Any], names: Sequence[str]) -> List[Dict[str, 
                 "needs_height": math.ceil(needed_height),
                 "needs_width": math.ceil((widest + 2 * LABEL_MARGIN) * factor),
             })
+    return found
+
+
+def crossing_links(scene: Dict[str, Any], names: Sequence[str]) -> List[Dict[str, Any]]:
+    """
+    The links named that run through a box other than the two they join - over its text, hiding it -,
+    with the boxes crossed: what the routing itself keeps a link clear of (``_blocks``), a table and a
+    chart included. A text or a frame is no box here: a link runs inside its slide and beside a caption.
+    """
+    elements = scene.get("elements", [])
+    by_id = _index(elements)
+    found: List[Dict[str, Any]] = []
+    for name in names:
+        link = by_id.get(name)
+        if link is None or link.get("type") not in ("arrow", "line") or not link.get("points"):
+            continue
+        ends = {(link.get(end) or {}).get("elementId") for end in ("startBinding", "endBinding")}
+        path = [(link["x"] + dx, link["y"] + dy) for dx, dy in link["points"]]
+        crossed = [
+            crossed_name for crossed_name, box in _blocks(_named_apart(elements, ends | {name}), elements)
+            if _path_hits(path, [box])
+        ]
+        if crossed:
+            found.append({"element": name, "crosses": crossed})
     return found
 
 

@@ -157,6 +157,9 @@ PATHS = ("straight", "elbow", "curved")
 HEADS = {"arrow": "arrow", "triangle": "triangle", "dot": "dot", "bar": "bar", "none": None}
 # A curved link bends off its straight run by this share of its length, at its middle.
 CURVE_BEND = 0.12
+# Where along its run an elbow may bend, as shares of the run, tried in this order: its middle
+# first, then nearer each end.
+ELBOW_BENDS = (0.5, 0.25, 0.75, 0.1, 0.9)
 # Where a link's path is remembered (customData): what it is routed by when an end moves.
 PATH_KEY = "whiteboardPath"
 # Ruled lines by default: what is drawn here is a diagram, a table, a deck for a board

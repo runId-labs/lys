@@ -1791,7 +1791,7 @@ class TestToneClasses:
 
 
 class TestDeckReadability:
-    """What a deck read in presentation mode showed wrong (2026-11-28)."""
+    """What a deck read in presentation mode showed wrong."""
 
     def test_a_text_given_a_width_narrower_than_its_line_wraps_inside_it(self):
         line = "Trois aléas pris séparément suffisent chacun à faire rater le retour au seuil de février."
@@ -1815,7 +1815,7 @@ class TestDeckReadability:
 
 
 class TestLabelMargin:
-    """A label keeps a margin from its shape's edge, wider than the editor's own padding (2026-11-28)."""
+    """A label keeps a margin from its shape's edge, wider than the editor's own padding."""
 
     SENTENCE = "Encaissements optimistes : délais calibrés sur les factures payées alors que les ouvertes traînent."
 
@@ -1897,3 +1897,91 @@ class TestLinksStayInTheirSlide:
         link = scene_tools.find(scene, "loop")
         assert scene_tools.outside_frames(scene, ["loop"]) == []
         assert len(link["points"]) == 4 and all(link["y"] + dy < 600 for _, dy in link["points"][1:3])
+
+
+class TestElbowsAndCrossings:
+    """An elbow bends where it crosses no box, and a link over a box is reported."""
+
+    @staticmethod
+    def _diagram(path):
+        # A hub on the left, a column of boxes, and a second column behind it
+        boxes = [{"name": "hub", "text": "HUB", "x": 0, "y": 200, "width": 200, "height": 100}]
+        boxes += [{"name": f"a{row}", "text": f"A{row}", "x": 400, "y": 120 * row, "width": 200, "height": 80}
+                  for row in range(4)]
+        boxes += [{"name": "far", "text": "FAR", "x": 800, "y": 0, "width": 200, "height": 80}]
+        return scene_tools.apply_operations(scene_tools.empty_scene(), {"add": [
+            *boxes, {"name": "link", "kind": "arrow", "from": "hub", "to": "far", "path": path}]})
+
+    def test_an_elbow_to_a_second_column_bends_clear_of_the_first(self):
+        scene = self._diagram("elbow")
+        assert scene_tools.crossing_links(scene, ["link"]) == []
+
+    def test_a_link_through_a_box_is_reported_with_the_box(self):
+        scene = scene_tools.apply_operations(scene_tools.empty_scene(), {"add": [
+            {"name": "a", "text": "A", "x": 0, "y": 0, "width": 100, "height": 60},
+            {"name": "b", "text": "B", "x": 600, "y": 0, "width": 100, "height": 60},
+            {"name": "between", "text": "IN THE WAY", "x": 300, "y": 0, "width": 100, "height": 60},
+            {"name": "link", "kind": "line", "x": 100, "y": 30, "width": 500}]})
+        assert scene_tools.crossing_links(scene, ["link"]) == [{"element": "link", "crosses": ["between"]}]
+
+    def test_a_link_through_a_table_or_a_chart_is_reported_too(self):
+        scene = scene_tools.apply_operations(scene_tools.empty_scene(), {"add": [
+            {"name": "bars", "kind": "chart", "x": 300, "y": 0,
+             "chart": {"type": "bar", "data": [{"label": "x", "value": 1}, {"label": "y", "value": 2}]}},
+            {"name": "grid", "kind": "table", "x": 900, "y": 80, "headers": ["A", "B"], "rows": [["1", "2"]]},
+            {"name": "caption", "kind": "text", "text": "A caption", "x": 1400, "y": 120},
+            {"name": "link", "kind": "line", "x": 0, "y": 130, "width": 1800}]})
+        assert scene_tools.crossing_links(scene, ["link"]) == [{"element": "link", "crosses": ["bars", "grid"]}]
+
+    def test_an_elbow_bends_in_its_middle_when_nothing_stands_there(self):
+        assert scene_tools._elbow((0, 0), (400, 100), []) == [(0, 0), (200.0, 0), (200.0, 100), (400, 100)]
+        assert scene_tools._elbow((0, 0), (100, 400), []) == [(0, 0), (0, 200.0), (100, 200.0), (100, 400)]
+
+    def test_an_elbow_bends_nearer_an_end_then_along_the_other_axis(self):
+        # A box on the middle bend: the run bends at a quarter of its way instead
+        middle = [(180, 20, 40, 60)]
+        assert scene_tools._elbow((0, 0), (400, 100), middle)[1] == (100.0, 0)
+        # A wall across every bend of the run: it leaves along the other axis
+        wall = [(20, -50, 360, 80)]
+        assert scene_tools._elbow((0, 0), (400, 100), wall)[1] == (0, 50.0)
+
+    def test_an_elbow_with_no_clear_bend_keeps_the_middle_one(self):
+        everywhere = [(-50, -50, 500, 200)]
+        assert scene_tools._elbow((0, 0), (400, 100), everywhere) == [(0, 0), (200.0, 0), (200.0, 100), (400, 100)]
+
+
+class TestKpiValueFitsItsCard:
+    """A value too wide for a card of a set width is drawn smaller, never past the card."""
+
+    def test_a_large_figure_in_a_narrow_card_shrinks_to_fit(self):
+        scene = scene_tools.apply_operations(scene_tools.empty_scene(), {"add": [
+            {"name": "ca", "kind": "kpi", "value": "1 469 971 €", "text": "CA 2025", "size": "large", "width": 220}]})
+        card, value = scene_tools.find(scene, "ca"), scene_tools.find(scene, "ca-value")
+        assert "\n" not in value["text"]
+        assert scene_tools._text_width(value["text"], value["fontSize"]) <= card["width"]  # noqa: SLF001
+        assert value["fontSize"] < scene_tools.find(scene, "ca-label")["fontSize"] * 2.25
+
+    @pytest.mark.parametrize("value", ["12 mois glissants", "+ 12,5 % vs budget", "Chiffre d'affaires net 2025"])
+    @pytest.mark.parametrize("width", [371, 420, 470])
+    def test_a_value_of_several_words_stays_on_one_line(self, value, width):
+        scene = scene_tools.apply_operations(scene_tools.empty_scene(), {"add": [
+            {"name": "k", "kind": "kpi", "value": value, "text": "Label", "size": "large", "width": width}]})
+        shown, label = scene_tools.find(scene, "k-value"), scene_tools.find(scene, "k-label")
+        assert shown["text"] == value and shown["fontSize"] >= label["fontSize"]
+        assert scene_tools._text_width(value, shown["fontSize"]) <= shown["width"] + 1e-6
+        assert shown["height"] == pytest.approx(shown["fontSize"] * shown["lineHeight"])
+
+    def test_a_card_too_narrow_for_its_value_at_the_labels_size_is_refused(self):
+        with pytest.raises(LysError) as refused:
+            scene_tools.apply_operations(scene_tools.empty_scene(), {"add": [
+                {"name": "ca", "kind": "kpi", "value": "1 469 971 €", "text": "CA", "size": "large", "width": 120}]})
+        needed = int(refused.value.debug_message.rsplit(" ", 1)[-1])
+        scene = scene_tools.apply_operations(scene_tools.empty_scene(), {"add": [
+            {"name": "ca", "kind": "kpi", "value": "1 469 971 €", "text": "CA", "size": "large", "width": needed}]})
+        assert scene_tools.find(scene, "ca-value")["text"] == "1 469 971 €"
+
+    def test_a_figure_that_fits_keeps_its_large_type(self):
+        scene = scene_tools.apply_operations(scene_tools.empty_scene(), {"add": [
+            {"name": "n", "kind": "kpi", "value": "43", "text": "Devis", "size": "large", "width": 220}]})
+        value, label = scene_tools.find(scene, "n-value"), scene_tools.find(scene, "n-label")
+        assert value["fontSize"] == label["fontSize"] * 2.25

@@ -781,7 +781,12 @@ inherit from the app's, or the tools are silently absent.
   and on a resize; `unfit_labels` then only finds a box sized in the editor.
 - A link is measured from its points (`scene._footprint`): the editor stores its origin where it
   starts, so a link running left or up spreads the other way. A detour between two elements of a
-  slide takes a lane inside it.
+  slide takes a lane inside it; an elbow bends where its run crosses no box (`scene._elbow`, the
+  middle first), and a drafted link still running through a box is a `link_crosses` issue
+  (`scene.crossing_links`: the boxes the routing keeps a link clear of, a table and a chart
+  included). A kpi's value stays on one line in its card: in a card of a set width it is drawn
+  smaller, never below the label's size - a card that cannot hold it at that size is refused
+  with the width to give.
 - `read_whiteboard` never opens a board: one opened in the turn's session would be
   invisible to that separate transaction, which would then open a second one. With no
   board yet it returns `NO_WHITEBOARD`, and drawing is what opens one.
