@@ -7,6 +7,7 @@ Services for managing conversations and feedback.
 import json
 import logging
 import time
+from functools import partial
 from contextlib import aclosing, asynccontextmanager
 from datetime import datetime, timedelta, UTC
 from typing import AsyncGenerator, AsyncIterator, Callable, FrozenSet, Optional, List, Dict, Any
@@ -61,8 +62,14 @@ from lys.apps.ai.modules.conversation.spoken_block import (
 from lys.apps.ai.modules.core.executors import GraphQLToolExecutor
 from lys.apps.ai.modules.core.services import AIToolService
 from lys.apps.ai.tasks import generate_conversation_title, summarize_conversation
-from lys.apps.ai.utils.calculator import CALCULATE_TOOL, handle_calculate
+from lys.apps.ai.utils.calculator import CALCULATE_TOOL, build_calculate_handler
+from lys.apps.ai.utils.provenance import Provenance, model_result
 from lys.apps.ai.utils.guardrails import CONFIRM_ACTION_TOOL
+from lys.apps.ai.utils.navigation_advice import (
+    ADVISE_NAVIGATION_TOOL,
+    NAVIGATION_ADVICE_PURPOSE,
+    build_navigation_advice_handler,
+)
 from lys.apps.ai.utils.page_params import (
     PAGE_PARAMS_HEADER,
     SET_PAGE_PARAMS_TOOL,
@@ -1011,9 +1018,13 @@ class AIConversationService(EntityService[AIConversation]):
         conversation: "AIConversation",
         session: AsyncSession,
         current_summary: Optional[Any] = None,
+        provenance: Optional[Provenance] = None,
     ) -> List[Dict[str, Any]]:
         """
         Build messages list from conversation history.
+
+        A tool result reaches the model without the provenance of its figures
+        (``lys.apps.ai.utils.provenance``); given ``provenance``, the figures are kept there.
 
         When a compaction summary exists, only the messages after its boundary
         (``through_message_id``) are returned verbatim — the older messages are
@@ -1041,9 +1052,11 @@ class AIConversationService(EntityService[AIConversation]):
         messages = []
         for msg in db_messages:
             if msg.role == AIMessageRole.TOOL.value:
+                if provenance is not None:
+                    provenance.add(msg.tool_result)
                 built = {
                     "role": msg.role,
-                    "content": str(msg.tool_result) if msg.tool_result else "",
+                    "content": str(model_result(msg.tool_result)) if msg.tool_result else "",
                     "tool_call_id": msg.tool_call_id,
                 }
             elif msg.role == AIMessageRole.ASSISTANT.value and msg.tool_calls:
@@ -1473,6 +1486,68 @@ class AIConversationService(EntityService[AIConversation]):
 
         return segments
 
+    @classmethod
+    async def _read_together(
+        cls, executor: Any, tool_calls: List[Dict[str, Any]], start: int, context: Dict[str, Any],
+    ) -> Dict[int, Any]:
+        """
+        Run together the reads asked in a row from ``start``: the run of consecutive calls that may run
+        alongside one another (``executor.runs_alongside``), up to the first one that may not. The round's
+        calls are then handled one by one in the order asked, as before — results saved, streamed and
+        handed to the model in that order —, the reads only waiting for one another as long as the
+        slowest, as many at once as the executor allows (``ToolExecutor.run_together``). A write or a
+        special tool keeps its place: no read asked after it runs before it.
+
+        Returns:
+            The outcome of each read run, by its position in ``tool_calls``: its result, or the exception
+            it raised (raised again where the call is handled, as if it had run there). Empty when fewer
+            than two reads are in a row: one runs where it is handled.
+        """
+        positions = cls._read_run(executor, tool_calls, start)
+        if not positions:
+            return {}
+        outcomes: Dict[int, Any] = {}
+
+        async def read(position: int) -> None:
+            function = tool_calls[position].get("function", {})
+            try:
+                raw = function.get("arguments", "{}")
+                arguments = json.loads(raw) if isinstance(raw, str) else raw
+                outcomes[position] = await executor.execute(
+                    tool_name=function.get("name", ""), arguments=arguments, context=context,
+                )
+            except Exception as error:  # noqa: BLE001 - handled where the call is, as any tool failure
+                outcomes[position] = error
+
+        await executor.run_together([partial(read, position) for position in positions])
+        return outcomes
+
+    @staticmethod
+    def _read_run(executor: Any, tool_calls: List[Dict[str, Any]], start: int) -> List[int]:
+        """
+        The positions of the reads asked in a row from ``start`` (see ``_read_together``), when there are
+        at least two of them; else none, and the call at ``start`` runs alone.
+        """
+        positions = []
+        for position in range(start, len(tool_calls)):
+            if not executor.runs_alongside(tool_calls[position].get("function", {}).get("name", "")):
+                break
+            positions.append(position)
+        return positions if len(positions) >= 2 else []
+
+    @staticmethod
+    async def _outcome(
+        outcomes: Dict[int, Any], position: int, executor: Any, tool_name: str, tool_args: Any,
+        context: Dict[str, Any],
+    ) -> Any:
+        """The result of a round's call: the one its read run got, else the call run now."""
+        if position in outcomes:
+            outcome = outcomes.pop(position)
+            if isinstance(outcome, Exception):
+                raise outcome
+            return outcome
+        return await executor.execute(tool_name=tool_name, arguments=tool_args, context=context)
+
     @staticmethod
     def _tool_context(session: AsyncSession, info: Any, conversation: Any) -> Dict[str, Any]:
         """
@@ -1585,6 +1660,7 @@ class AIConversationService(EntityService[AIConversation]):
                 bearer_token=bearer_token,
                 timeout=ai_config.executor.timeout,
                 verify_ssl=ai_config.executor.verify_ssl,
+                max_parallel_calls=ai_config.executor.max_parallel_calls,
             )
         else:
             executor = GraphQLToolExecutor(
@@ -1593,6 +1669,7 @@ class AIConversationService(EntityService[AIConversation]):
                 service_name=ai_config.executor.service_name or app_manager.settings.service_name,
                 timeout=ai_config.executor.timeout,
                 verify_ssl=ai_config.executor.verify_ssl,
+                max_parallel_calls=ai_config.executor.max_parallel_calls,
             )
 
         await executor.initialize(
@@ -1753,10 +1830,11 @@ class AIConversationService(EntityService[AIConversation]):
 
         app_manager = cls.app_manager
 
-        # Get tools via AIToolService filtered by JWT claims
+        # Get tools via AIToolService filtered by JWT claims and by audience: a tool reserved to
+        # other purposes (an agent's) is never the chatbot's
         # Note: Tools are lazy-loaded once and cached at class level, only filtering is done here
         # For super_users, all tools are returned (see AIToolService.get_accessible_tools)
-        tools = await AIToolService.get_accessible_tools(connected_user)
+        tools = await AIToolService.get_accessible_tools(connected_user, consumer=AI_PURPOSE_CHATBOT)
         initial_tools_count = len(tools)
 
         # Filter tools by page context if provided
@@ -1825,6 +1903,14 @@ class AIConversationService(EntityService[AIConversation]):
             if accessible_routes:
                 navigate_tool = build_navigate_tool(accessible_routes)
                 tools.append(navigate_tool)
+
+        # Where something is in the application: offered with navigate, on the same filtered routes, once the
+        # consumer configured its endpoint. Registered with the executor below, on the same condition (guide R1).
+        advise_navigation = bool(accessible_routes) and (
+            NAVIGATION_ADVICE_PURPOSE in cls.app_manager.get_service("ai").get_config().endpoints
+        )
+        if advise_navigation:
+            tools.append(ADVISE_NAVIGATION_TOOL)
 
         # Get page-specific chatbot behaviour if available
         page_behaviour = None
@@ -1898,8 +1984,27 @@ class AIConversationService(EntityService[AIConversation]):
                 "search_conversation",
                 cls._build_search_handler(conversation.id, session),
             )
-        # Exposed above on every turn, so registered on every turn: the same condition (guide R1).
-        executor.register_special_tool("calculate", handle_calculate)
+        # Exposed above on every turn, so registered on every turn: the same condition (guide R1). It
+        # reads where the figures of the conversation's tools come from (filled by the history below and
+        # by each result of this turn), to warn of a formula setting figures of different bases against
+        # each other.
+        provenance = Provenance()
+        executor.register_special_tool("calculate", build_calculate_handler(provenance))
+        if advise_navigation:
+            executor.register_special_tool(
+                "advise_navigation",
+                build_navigation_advice_handler(
+                    cls.app_manager.get_service("ai"),
+                    accessible_routes,
+                    page_context.page_name if page_context else None,
+                    (chatbot_config.get("navigation_advice") or {}).get("sections"),
+                    cls.app_manager.get_service("ai").get_global_chatbot_prompt(),
+                    trace=partial(
+                        cls.app_manager.get_service("ai_agent_run").record,
+                        NAVIGATION_ADVICE_PURPOSE, user_id, conversation.client_id,
+                    ),
+                ),
+            )
 
         message_service = app_manager.get_service("ai_message")
         ai_service = app_manager.get_service("ai")
@@ -1919,7 +2024,9 @@ class AIConversationService(EntityService[AIConversation]):
         # executor) refuses the resume before any answer is recorded.
         if conversation_id:
             await cls._settle_open_tool_calls(conversation, session, tool_answers)
-        history = await cls._build_messages(conversation, session, current_summary=current_summary)
+        history = await cls._build_messages(
+            conversation, session, current_summary=current_summary, provenance=provenance,
+        )
         # One system message per segment, carrying its cache flag. The base prompt is
         # prepended (uncached) by the AIService entry point and sits before these.
         messages = [
@@ -1982,6 +2089,7 @@ class AIConversationService(EntityService[AIConversation]):
             "messages": messages,
             "info": info,
             "user_message_id": user_message.id if user_message is not None else None,
+            "provenance": provenance,
         }
 
     @classmethod
@@ -2356,19 +2464,23 @@ class AIConversationService(EntityService[AIConversation]):
             # Execute each tool and collect results
             actions_before_tools = len(getattr(info.context, "frontend_actions", []))
             awaits_user = False
-            for tool_call in tool_calls:
+            tool_context = cls._tool_context(session, info, conversation)
+            read_ahead: Dict[int, Any] = {}
+            for position, tool_call in enumerate(tool_calls):
                 tool_name = tool_call.get("function", {}).get("name", "")
                 tool_args_str = tool_call.get("function", {}).get("arguments", "{}")
                 tool_call_id = tool_call.get("id", "")
+                if position not in read_ahead:
+                    read_ahead.update(await cls._read_together(executor, tool_calls, position, tool_context))
 
                 try:
                     tool_args = json.loads(tool_args_str) if isinstance(tool_args_str, str) else tool_args_str
                     actions_before_call = len(getattr(info.context, "frontend_actions", []))
-                    result = await executor.execute(
-                        tool_name=tool_name,
-                        arguments=tool_args,
-                        context=cls._tool_context(session, info, conversation),
-                    )
+                    stored = await cls._outcome(read_ahead, position, executor, tool_name, tool_args, tool_context)
+                    # Where its figures come from is kept for calculate, never shown: stored, not sent
+                    if ctx.get("provenance") is not None:
+                        ctx["provenance"].add(stored)
+                    result = model_result(stored)
                     tool_results.append({
                         "tool_name": tool_name,
                         "result": str(result),
@@ -2393,7 +2505,7 @@ class AIConversationService(EntityService[AIConversation]):
                     await message_service.add_tool_result(
                         conversation.id,
                         tool_call_id,
-                        result if isinstance(result, dict) else {"result": result},
+                        stored if isinstance(stored, dict) else {"result": stored},
                         session,
                     )
 
@@ -2772,21 +2884,38 @@ class AIConversationService(EntityService[AIConversation]):
                 # Execute each tool
                 actions_before_tools = len(getattr(info.context, "frontend_actions", []))
                 awaits_user = False
-                for tool_call in finalized_tool_calls:
+                tool_context = cls._tool_context(session, info, conversation)
+                read_ahead: Dict[int, Any] = {}
+                started: set[int] = set()
+                for position, tool_call in enumerate(finalized_tool_calls):
                     tool_name = tool_call.get("function", {}).get("name", "")
                     tool_args_str = tool_call.get("function", {}).get("arguments", "{}")
                     tool_call_id = tool_call.get("id", "")
 
-                    yield format_sse("tool_start", {"name": tool_name, "arguments": tool_args_str})
+                    if position not in read_ahead and position not in started:
+                        run = cls._read_run(executor, finalized_tool_calls, position)
+                        # The client is told of every read of the run before they run together
+                        for member in run:
+                            function = finalized_tool_calls[member].get("function", {})
+                            yield format_sse("tool_start", {
+                                "name": function.get("name", ""), "arguments": function.get("arguments", "{}"),
+                            })
+                            started.add(member)
+                        read_ahead.update(
+                            await cls._read_together(executor, finalized_tool_calls, position, tool_context))
+                    if position not in started:
+                        yield format_sse("tool_start", {"name": tool_name, "arguments": tool_args_str})
+                        started.add(position)
 
                     try:
                         tool_args = json.loads(tool_args_str) if isinstance(tool_args_str, str) else tool_args_str
                         actions_before_call = len(getattr(info.context, "frontend_actions", []))
-                        result = await executor.execute(
-                            tool_name=tool_name,
-                            arguments=tool_args,
-                            context=cls._tool_context(session, info, conversation),
-                        )
+                        stored = await cls._outcome(
+                            read_ahead, position, executor, tool_name, tool_args, tool_context)
+                        # Where its figures come from is kept for calculate, never shown: stored, not sent
+                        if ctx.get("provenance") is not None:
+                            ctx["provenance"].add(stored)
+                        result = model_result(stored)
                         tool_results.append({
                             "tool_name": tool_name,
                             "result": str(result),
@@ -2831,7 +2960,7 @@ class AIConversationService(EntityService[AIConversation]):
 
                         await message_service.add_tool_result(
                             conversation.id, tool_call_id,
-                            result if isinstance(result, dict) else {"result": result},
+                            stored if isinstance(stored, dict) else {"result": stored},
                             session,
                         )
 

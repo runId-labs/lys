@@ -101,6 +101,7 @@ class WebserviceService(EntityService[Webservice]):
                     app_name=app_name,
                     operation_type=ws_config.attributes.operation_type,
                     ai_tool=ws_config.attributes.ai_tool,
+                    ai_tool_consumers=ws_config.attributes.ai_tool_consumers,
                 )
                 session.add(webservice)
             else:
@@ -112,6 +113,7 @@ class WebserviceService(EntityService[Webservice]):
                 webservice.app_name = app_name
                 webservice.operation_type = ws_config.attributes.operation_type
                 webservice.ai_tool = ws_config.attributes.ai_tool
+                webservice.ai_tool_consumers = ws_config.attributes.ai_tool_consumers
 
         await session.flush()
         return len(webservices)

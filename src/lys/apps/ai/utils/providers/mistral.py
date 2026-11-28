@@ -10,7 +10,7 @@ import hashlib
 import json
 import logging
 import re
-from typing import AsyncGenerator, List, Dict, Any, Optional, Sequence, Type
+from typing import AsyncGenerator, List, Dict, Any, Optional, Sequence, Tuple, Type
 
 import httpx
 
@@ -376,6 +376,15 @@ class MistralProvider(AIProvider):
             AITimeoutError: Request exceeded ``config.timeout``.
             AIValidationError: Response could not be validated against ``schema``.
         """
+        return (await self.chat_json_with_usage(messages, config, schema))[0]
+
+    async def chat_json_with_usage(
+        self,
+        messages: List[Dict[str, Any]],
+        config: AIEndpointConfig,
+        schema: Type[T],
+    ) -> Tuple[T, Optional[Dict[str, int]]]:
+        """:meth:`chat_json`, with the call's token usage."""
         payload = self._json_payload(messages, config, schema)
         base_url = self.get_base_url(config)
 
@@ -394,7 +403,7 @@ class MistralProvider(AIProvider):
             self._warn_if_non_stop_finish(ai_response, schema)
 
             try:
-                return schema.model_validate_json(ai_response.content)
+                return schema.model_validate_json(ai_response.content), ai_response.usage
             except Exception as e:
                 self._log_validation_failure(ai_response, schema, e)
                 raise self._validation_error(ai_response, schema, e)
@@ -413,6 +422,15 @@ class MistralProvider(AIProvider):
         Uses Mistral's native ``response_format: {"type": "json_schema", ...}`` mode.
         See :meth:`chat_json` for details on parameters, return value, and exceptions.
         """
+        return self.chat_json_with_usage_sync(messages, config, schema)[0]
+
+    def chat_json_with_usage_sync(
+        self,
+        messages: List[Dict[str, Any]],
+        config: AIEndpointConfig,
+        schema: Type[T],
+    ) -> Tuple[T, Optional[Dict[str, int]]]:
+        """Synchronous version of :meth:`chat_json_with_usage`."""
         payload = self._json_payload(messages, config, schema)
         base_url = self.get_base_url(config)
 
@@ -431,7 +449,7 @@ class MistralProvider(AIProvider):
             self._warn_if_non_stop_finish(ai_response, schema)
 
             try:
-                return schema.model_validate_json(ai_response.content)
+                return schema.model_validate_json(ai_response.content), ai_response.usage
             except Exception as e:
                 self._log_validation_failure(ai_response, schema, e)
                 raise self._validation_error(ai_response, schema, e)

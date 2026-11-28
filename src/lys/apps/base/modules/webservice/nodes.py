@@ -33,6 +33,7 @@ class WebserviceNode(EntityNode[WebserviceService], relay.Node):
     app_name: Optional[str]
     operation_type: Optional[str]
     ai_tool: Optional[JSON]
+    ai_tool_consumers: Optional[List[str]]
     _entity: strawberry.Private[Webservice]
 
     @strawberry.field(description="Access levels associated with this webservice")

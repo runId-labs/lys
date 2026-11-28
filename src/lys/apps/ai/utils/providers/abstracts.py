@@ -8,7 +8,7 @@ allowing consistent usage across different LLM providers.
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import AsyncGenerator, List, Dict, Any, Generic, Optional, Sequence, TypeVar, Type
+from typing import AsyncGenerator, List, Dict, Any, Generic, Optional, Sequence, Tuple, TypeVar, Type
 
 from pydantic import BaseModel
 
@@ -45,6 +45,8 @@ class AIJsonResponse(Generic[T]):
     data: T
     model: str
     provider: str
+    # The tokens of the call that answered, when its provider reports them (``chat_json_with_usage``)
+    usage: Optional[Dict[str, int]] = None
 
 
 @dataclass
@@ -226,6 +228,28 @@ class AIProvider(ABC):
     ) -> T:
         """Synchronous version for Celery workers."""
         pass
+
+    async def chat_json_with_usage(
+        self,
+        messages: List[Dict[str, Any]],
+        config: AIEndpointConfig,
+        schema: Type[T],
+    ) -> Tuple[T, Optional[Dict[str, int]]]:
+        """
+        ``chat_json``, with the call's token usage (normalized like ``AIResponse.usage``) for a
+        caller that traces what a structured call cost. A provider that does not report it
+        answers None.
+        """
+        return await self.chat_json(messages, config, schema), None
+
+    def chat_json_with_usage_sync(
+        self,
+        messages: List[Dict[str, Any]],
+        config: AIEndpointConfig,
+        schema: Type[T],
+    ) -> Tuple[T, Optional[Dict[str, int]]]:
+        """Synchronous version of ``chat_json_with_usage`` for Celery workers."""
+        return self.chat_json_sync(messages, config, schema), None
 
     # ========== Streaming ==========
 

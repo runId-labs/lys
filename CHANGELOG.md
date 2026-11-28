@@ -7,6 +7,53 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.68.0] - 2026-11-28
+
+### Added
+- Agents: `report_schema` is optional (`AgentRunResult.analysis`, `succeeded`); a report may be
+  written from the readings (`report_source=AGENT_REPORT_FROM_READINGS`) and checked field by
+  field (`run(report_check=...)`); `figures_check` looks every figure of the analysis up in
+  the run (`utils/sourced_figures.py`); a run may be followed up by its own caller
+  (`AIAgentService.continuation`, `AgentDefinition.continuation_ttl`, errors
+  `AGENT_RUN_NOT_FOUND` / `AGENT_RUN_NOT_CONTINUABLE`). New `ai_agent_run` columns
+  `tool_defaults` and `continued_from_id` (migration required).
+- `AIAgentService.record`: a specialist that runs no agent loop is traced in `ai_agent_run`
+  (`utils/tracing.py`: `traced_call`). Structured calls report their tokens
+  (`AIJsonResponse.usage`, `AIProvider.chat_json_with_usage`), an agent's report call included.
+- The tool calls of a round run together: every call of an agent, the GraphQL queries asked in
+  a row by the chatbot (`ToolExecutor.runs_alongside`), at most `executor.max_parallel_calls`
+  at once (default 8, `ToolExecutor.run_together`).
+- A tool may name its audience: `generate_tool` takes a list of AI endpoint purposes, stored in
+  the new `webservice.ai_tool_consumers` column (migration required) and applied by
+  `AIToolService.get_accessible_tools(connected_user, consumer=...)`.
+- Webservice option `tool_timeout`: seconds a call of the tool waits for the API, in place of
+  `executor.timeout` (`GraphQLClient.execute(timeout=...)`).
+- `advise_navigation` special tool (`utils/navigation_advice.py`), offered once the
+  `navigation_advice` endpoint is configured: the page that answers a question, its filters
+  and how to do it there, checked against the user's routes.
+- Provenance of figures (`utils/provenance.py`): a tool states where its figures come from,
+  and `calculate` warns of a step setting figures of different bases against each other.
+- `lys.core.utils.spreadsheet`: detection of the tables of an .xlsx / .xlsm workbook
+  (`detect_tables`, `detect_workbook_tables`, `detect_sheet_tables`), with its agent guide
+  `spreadsheet.md`.
+- Whiteboard: drafted drawings (`conversation/drafting.py`, `whiteboard_drafting` endpoint)
+  checked in code and corrected once; components `kpi`, `callout` and `steps`; `tone` colours
+  from a configurable palette (`BoardStyle`: `palette`, `corners`, `note_background`); slide
+  `zone` and `slot`; link `path`, `head` and `pattern`; `references` on a line chart.
+
+### Changed
+- A free text given a width narrower than its line is a block of that width
+  (`autoResize` off), its lines broken to it; rewritten or resized, it is broken again and its
+  height follows.
+- A labelled shape keeps `LABEL_MARGIN` around its label and grows to hold its widest word.
+- A chart's figures are bounded by `MAX_CHART_VALUE` instead of `MAX_COORDINATE`.
+
+### Fixed
+- An input object passed as a tool argument declares its fields under their GraphQL names
+  (camelCase), and a `@oneOf` input declares that it takes exactly one key.
+- The `order_by` description of a connection lists the sort fields under their GraphQL names.
+- A link running left or up is measured from its points, not from its origin and width.
+
 ## [0.67.0] - 2026-11-25
 
 ### Added

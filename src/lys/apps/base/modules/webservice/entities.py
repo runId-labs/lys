@@ -39,6 +39,11 @@ class Webservice(AbstractWebservice):
         nullable=True,
         comment="AI tool definition for LLM function calling"
     )
+    ai_tool_consumers: Mapped[Optional[list]] = mapped_column(
+        JSON,
+        nullable=True,
+        comment="AI endpoint purposes that may call the tool; NULL: every consumer"
+    )
 
     @property
     def is_public(self):

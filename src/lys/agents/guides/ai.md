@@ -257,6 +257,28 @@ before.
 - Writing params never widens rights: filters change what the user LOOKS at;
   every query still runs under the connected user's own permissions.
 
+### Where something is: `advise_navigation`
+
+`navigate` lists each page by one line, and the chatbot knows the screen of the
+page it is on only. `advise_navigation(question)` answers « where is… / how do
+I… » for the other pages: one structured call on its own endpoint
+(`navigation_advice` purpose) that reads the pages the user may open — the
+routes already filtered for `navigate`, each with its description, writable
+filters and the sections of its prompt titled with the consumer's headings
+(`chatbot.navigation_advice.sections`; the whole prompt when unset) — and the
+manifest's global prompt. It returns `page`, `params`, `message`, `current`.
+
+- **The model designates, the code checks** (`checked_advice`): a page outside
+  the user's routes and filters that `writable_page_params` refuses are dropped
+  and listed in `dropped`, never forwarded. It navigates nothing: the chatbot
+  calls `navigate` with the advice.
+- **Offered on the same condition as it is registered**: routes to open AND the
+  endpoint configured. A consumer that configures no endpoint sees no tool.
+- A failed call is an `error` for the chatbot, never a raise through the turn.
+- One cache key per set of routes: the same rights send the same prefix.
+- Fine rights (a button the role hides) are read from the screen sections as
+  written; the adviser does not check them.
+
 ## Conversation search (`search_conversation`)
 
 Past the compaction threshold the older turns leave the prompt and survive only as the
@@ -300,39 +322,75 @@ instead. It is offered on every turn, on every page (it reads nothing and change
 - **The project prompt says when.** The tool's description asks for it on every derived
   figure; a project whose tools already return computed values (changes, totals) says in its
   prompt that those are quoted, not recomputed.
+- **Provenance of the figures (chat turns).** Two right figures can give a wrong result: an
+  amount of one source minus a different amount of another means nothing, and the formula
+  does not say so. A tool that shows figures states where each comes from under
+  `PROVENANCE_KEY` in its result (`utils/provenance.py`: `figure(value, measure, label,
+  source, unit)` per figure, the value as its text shows it). The key is stored with the
+  result and never sent to the model nor the client (`model_result`); the history and each
+  result of the turn fill the turn's `Provenance`, which the chat's `calculate` reads. A step
+  setting two figures against each other by `+`, `-` or `/` — same unit, different `measure`,
+  different `source` — is computed and comes back with a `warnings` entry naming both. The
+  same measure in two sources (a gap: actual against budget), one source's own arithmetic, a
+  rate or a count applied to an amount raise none, nor does a number no tool stated or too
+  short to tell (fewer than 3 digits written). It costs no model call: the model reads the
+  warning in the same round. An agent's `calculate` reads the provenance of what its run's tools
+  returned (`_RunState.provenance`); a follow-up starts from none: the readings of the run it
+  continues are in its transcript without their provenance. A webservice tool
+  states it through its node: a `figures_provenance` JSON field (`PROVENANCE_FIELD`), which the
+  GraphQL executor moves under `PROVENANCE_KEY` (`from_webservice`).
 
 ## Agents (`AIAgentService`): an agent as a tool
 
-An agent works one task through tools on its own endpoint and returns a validated report.
+An agent works one task through tools on its own endpoint and returns its analysis — and, when
+its definition asks for one, a validated report formatted from it.
 It is the specialist of the orchestrator / specialist pattern: the chatbot calls it from a
-special tool, the agent reads in its own context, and only its report comes back — the
+special tool, the agent reads in its own context, and only its result comes back — the
 reading never fills the conversation.
 
 ```python
 REVIEW = AgentDefinition(
     purpose="plan_review",                 # an endpoint: its system_prompt, model, fallback
     webservices=frozenset({"business_plan_rows", "all_regulatory_changes"}),
-    report_schema=PlanReviewReport,        # a Pydantic model
+    report_schema=PlanReviewReport,        # optional: a Pydantic model the analysis is formatted into
     max_iterations=15,
     report_purpose="plan_review_report",   # a fast endpoint for the formatting
 )
 result = await app_manager.get_service("ai_agent_run").run(
     REVIEW, task, info, client_id=client_id, tool_defaults={"clientId": client_gid},
 )
-# result.report (validated) or result.error (a sentence for the model); result.run_id
+# result.succeeded: result.analysis (as written) and result.report (validated, when a schema is
+# given) — else result.error (a sentence for the model); result.run_id
 ```
+
+**Figures checked against the run (`figures_check=True`).** Every number the analysis writes is
+looked for in what the run read — the task, the tools' results, its `calculate` steps
+(`utils/sourced_figures.py`): within the rounding its digits allow, at the scale it is written in
+(`750 k€` is 750 000), a percentage also as the ratio a calculation returned. A figure found
+nowhere opens the correction round like any issue of the caller's check. Years, dates and numbers
+of fewer than three significant digits are not checked. It catches a figure invented, rounded from
+memory or computed in the head; not a figure read but attached to the wrong thing (a balance of
+the wrong month called the low): that is the reading's to state, or the caller's check.
 
 The run: its tools are the declared webservices the user may call, plus `calculate`; a tool
 loop under the user's token, the last call with tool calls refused
-(`AGENT_FINAL_ROUND_INSTRUCTION`), ending on a written analysis; one structured call turning
-that analysis into the report (`AGENT_REPORT_INSTRUCTION`) on `report_purpose` — reason, then
-format, so the tool history never crosses a structured call; formatting decides nothing, a fast
-model without reasoning does it. Each run is traced in `ai_agent_run` (task, transcript, report
+(`AGENT_FINAL_ROUND_INSTRUCTION`), ending on a written analysis; then, when the definition has
+a `report_schema`, one structured call turning that analysis into the report
+(`AGENT_REPORT_INSTRUCTION`) on `report_purpose` — reason, then format, so the tool history
+never crosses a structured call; formatting decides nothing, a fast model without reasoning
+does it. Each run is traced in `ai_agent_run` (task, transcript, report
 or error, totals, and `calls`: one entry per model call — kind, latency, tokens, tools asked),
 apart from the conversations: a run is neither listed in the user's history nor indexed for the
 conversation search. The trace is written in transactions of its own, opened at the start and
 closed at the end whatever the end (shielded, bounded by `AGENT_TRACE_CLOSE_TIMEOUT`): it never
 depends on the caller's transaction, and a trace that cannot be written never fails the run.
+
+A specialist that runs no agent loop - one structured call (`advise_navigation`), a loop of its
+own (the whiteboard drafter) - is traced in the same table with `AIAgentService.record`: one row
+written closed, its calls built with `traced_call` (`lys.apps.ai.utils.tracing`, the same entries
+as an agent's), so what a turn cost reads in one place. A structured call gets its tokens from
+`chat_json_with_metadata` (`AIJsonResponse.usage`, filled by the providers' `chat_json_with_usage`;
+a provider that does not implement it answers None) - an agent's report call included.
 
 RULES:
 
@@ -342,6 +400,8 @@ RULES:
 - **R2 — The user's rights, never more.** A run needs the user's token
   (`AGENT_REQUIRES_USER_TOKEN`): there is no service identity to fall back on. Its tools are
   the intersection of the declared ones and the user's — an agent reads what the user may.
+  A declared tool whose audience leaves the agent out (TOOL R8) raises at the run: the
+  definition lists what the agent reads, the audience who may be offered it, and the two agree.
 - **R3 — A failure is a result.** A provider error or a report that does not validate ends
   the run FAILED with the error kept on the trace; the caller gets a generic `error` to hand
   to its model, never the provider's message. A tool that fails is the agent's to read, as
@@ -350,8 +410,30 @@ RULES:
   version read) is passed as `tool_defaults`, injected like page params and PINNED: its ids
   override the model's (`GraphQLToolExecutor(pin_ids=True)`). Left free, a model invents a
   client id from another entity's uuid. Name the scope in the task too, so the model reads it.
-- **R5 — The report is the contract.** The chatbot repeats the report's figures, never its
-  own: a figure the specialist did not return is not said.
+- **R5 — What the agent returns is the contract.** The chatbot repeats the figures of the
+  agent's result, never its own: a figure the specialist did not return is not said. A report is
+  the definition's choice, not the library's: with a `report_schema` the analysis is formatted
+  into it — fields a program reads, at the cost of one more model call that copies the whole
+  analysis (measured as long as writing it, or longer) —; without one (`report_schema=None`),
+  the run returns `result.analysis` as written, which is enough when the caller is a model
+  reading prose. `result.report` is then None on success too: test `result.succeeded`, never
+  `result.report is None`, to tell a failure. The analysis check (R6) bears on the analysis in
+  both cases.
+- **R5b — A report may be written from the readings, and checked field by field.**
+  `report_source=AGENT_REPORT_FROM_READINGS` writes the report from the run's transcript — what
+  the tools returned — on the agent's own endpoint and instructions, instead of copying the
+  analysis: its fields come straight from the sources, and nothing is written twice (the agent's
+  last message may then be one line saying it has read what it needs). The provider must accept
+  tool messages beside a response schema — check it on the endpoint's models, fallback included;
+  it needs a `report_schema` and no `report_purpose`. `run(..., report_check=...)` then takes an
+  async callable reading the REPORT and returning `AnalysisIssue`s: each value is read back where
+  its field says it was read. Prefer it to citations searched in prose whenever the figures
+  matter — a field is either checked or absent from the report, while a citation worded another
+  way is never seen by the check. Issues open ONE correction round (the issues as a user message,
+  `revision_iterations` model calls to read again), the report is written again and checked
+  again; what is still wrong comes back in `result.issues`, after the analysis check's. Give the
+  schema no free-text field that could hold the figures: a model fills it and leaves the checked
+  fields empty.
 - **R6 — Check the analysis against its sources.** `run(..., analysis_check=...)` takes an async
   callable reading the analysis text and returning `AnalysisIssue(location, message)`s — the caller
   knows the sources (a plan's cells, a text's articles) and reads them back, never the model. It
@@ -366,6 +448,32 @@ RULES:
 - **R7 — Mind the caller's timeouts.** A run takes minutes; a special tool awaits it within
   the chat turn (bounded by `executor.turn_token_ttl`), a GraphQL webservice does not —
   expose a run to a client as a job (start, then read the report), not as a blocking query.
+- **R7b — The tool calls of a round run together.** The model may ask several tools in one round:
+  they run concurrently and their results come back in the order asked, so a round lasts as long as
+  its slowest call. Safe because an agent's tools only read and each call is its own request; a
+  failing call fails alone. Tell the agent, in its prompt, to send independent readings in the SAME
+  round rather than one reading that asks for everything (slower) or one per round (their sum).
+  The chatbot does the same for the GraphQL queries it asks in a row (`runs_alongside`): a special
+  tool (the turn's session, the client's actions) and a mutation run alone, in their place, and no
+  read asked after them runs before them. Results are still saved and streamed in the order asked.
+  At most `executor.max_parallel_calls` calls (default 8) run at once (`ToolExecutor.run_together`):
+  a model may ask for dozens of reads in a round, each a request to the API. A custom
+  `ToolExecutor` runs every call alone unless it overrides `runs_alongside`.
+- **R8 — A run may be followed up, by its own caller only.** The caller asks again on a run
+  instead of starting over: `continuation = await service.continuation(DEFINITION, run_id, info,
+  client_id)`, then `run(DEFINITION, follow_up, info, continuation=continuation, analysis_check=...)`.
+  `continuation` refuses what is not the caller's to continue with ONE answer
+  (`AGENT_RUN_NOT_FOUND`: unknown, malformed, another user's, agent's or client's — nothing told of
+  a run that is not theirs), and the caller's run that did not succeed or ended past
+  `AgentDefinition.continuation_ttl` (`AGENT_RUN_NOT_CONTINUABLE`, 24 h by default: what the run
+  read was read under the rights of the time, on data that moves). The follow-up runs on the
+  continued run's scope (its `client_id` and `tool_defaults`, stored on the trace) — passing a
+  scope of the caller's with a continuation raises: a follow-up never changes client or version
+  midway. It reads the run's transcript with each tool result cleared
+  (`AGENT_CLEARED_TOOL_RESULT`, call ids kept: the tool-result clearing of context editing — a run
+  reads up to a million characters), then the follow-up; the agent calls again what it needs. It is
+  a run of its own (`continued_from_id`): a run is never rewritten once it ended. Its report answers
+  the follow-up. At the API boundary its `run_id` is the caller's to type (a GlobalID).
 
 ## Batch jobs (structured JSON, asynchronous)
 
@@ -524,6 +632,23 @@ RULES:
   `relay_max_results`: every row is sent again with each round of the turn. A
   resolver must not name an argument `first` or `after`. There is no `limit`
   argument: `first` is the page size, capped by `relay_max_results`.
+- **R8 — A tool may name its audience.** `options={"generate_tool": ["review_agent"]}`
+  instead of `True` offers the tool to the AI endpoint purposes listed only — the chatbot's
+  (`AI_PURPOSE_CHATBOT`), an agent's (its `AgentDefinition.purpose`) —, the others never see it.
+  Use it to keep a specialist's reading out of the chatbot: the chatbot calls the specialist,
+  not its tools. `True` stays "every consumer". The audience is stored on the webservice
+  (`ai_tool_consumers`, NULL for every consumer) and applied by
+  `AIToolService.get_accessible_tools(connected_user, consumer=...)`: a caller naming no
+  consumer gets the unrestricted tools only. It decides which model sees a tool, never what the
+  user may do: the token still filters first, super users included. An empty list or anything
+  but a bool or a list of strings raises at registration.
+- **R9 — A slow tool names its wait.** `options={"generate_tool": True, "tool_timeout": 180}`:
+  a call of that tool waits 180 s for the API, in place of `executor.timeout` (30 s by default) —
+  the chatbot's and the agents' alike. It bounds the caller's wait, never the webservice: the
+  webservice runs unbounded for every caller, and one cut short by the caller still runs to its
+  end. Raise it for a reading measured slow, not as a margin; a run of minutes is a job (agents
+  R7). Stored with the definition (`_graphql.timeout`): a change applies once the webservices
+  are registered again (a restart). Anything but a positive integer raises at registration.
 
 ## Special tools (handlers that do not go through GraphQL)
 
@@ -641,9 +766,78 @@ inherit from the app's, or the tools are silently absent.
   redraw keeps its frame, colours, look and layout (`customData.whiteboardLayout`:
   resolved size, align, given width/height), kept apart from its data
   (`whiteboardSpec`, read back as `data`).
+- A chart's figures are bounded by `consts.MAX_CHART_VALUE`, never by `MAX_COORDINATE`: a
+  figure is no place on the board, and a revenue in euros runs past a hundred thousand. A
+  line chart may carry `references` (up to `MAX_CHART_REFERENCES`, `{label, value}`): a
+  threshold or a target, kept in the spec and drawn dashed by the consumer's renderer; refused
+  on another chart type.
+- A labelled shape keeps `consts.LABEL_MARGIN` between its edge and its label. The editor
+  cannot be told a padding wider than its own (`BOUND_TEXT_PADDING`), so the label's `text`
+  is broken that much narrower - the editor keeps lines that fit - and the shape sized with
+  the margin all around; `originalText` keeps what it says, which the editor re-wraps from
+  when the user resizes or edits, and which `read_whiteboard` reports. A figure is never
+  broken at its digit groups or before its unit (`scene._words`). A width or height given to a
+  labelled shape grows to hold its label - never narrower than its widest word -, at creation
+  and on a resize; `unfit_labels` then only finds a box sized in the editor.
+- A link is measured from its points (`scene._footprint`): the editor stores its origin where it
+  starts, so a link running left or up spreads the other way. A detour between two elements of a
+  slide takes a lane inside it.
 - `read_whiteboard` never opens a board: one opened in the turn's session would be
   invisible to that separate transaction, which would then open a second one. With no
   board yet it returns `NO_WHITEBOARD`, and drawing is what opens one.
+- **Drafted drawings** (`conversation/drafting.py`): once the consumer configures the
+  `whiteboard_drafting` endpoint, `draw_on_whiteboard` takes a `request` instead of a patch
+  (`DRAFT_ON_WHITEBOARD_TOOL`, same name, handler and definition chosen together): the
+  chatbot says what to show, with its figures and arrows, and a drafter on that endpoint
+  lays it out with `apply_patch` (`DRAFT_PATCH_TOOL`: the layout rules and the patch
+  vocabulary, the same text as the direct tool's). Its patches are applied to the scene in
+  memory (`scene.apply_operations`, the same rules), each read back with places, sizes and
+  `overlaps`, for at most `MAX_DRAFT_ROUNDS` calls. What the checks (`review`) find goes back
+  once, for a pass on a budget of its own (`MAX_CORRECTION_ROUNDS`): shared, a drafter patching
+  to its last call never had its checks sent back. A pixel measure the request quotes is
+  layout, not a figure the drawing must show. Each drafting is traced
+  (`AIAgentService.record`). The patches are then written in one revision, in order
+  (`WhiteboardService.draw(patches=...)` → `apply_patches`), on the board as it stands
+  then. The chatbot reads back `drawn` (what this call drew) and the drafter's `note`,
+  never the whole board. A drafter that fails on its first pass or draws nothing writes
+  nothing (`DRAFT_FAILED`); one that stops answering during the correction pass keeps what it
+  drew, returned with the `issues` left. `focus` alone, `copy_from` and `whiteboard_id` behave as for a direct
+  drawing; a copy is drafted on its source's scene. Without the endpoint the chatbot draws
+  itself, as before.
+- **Meaning over values.** Colours are named by what they mean (`tone`: accent, positive,
+  risk, watch, neutral), resolved to a line and a fill from the board's palette before
+  anything is drawn - a `color`/`background` given too wins. What a drawing leaves unsaid
+  follows the consumer's style (`scene.BoardStyle`, read by `WhiteboardService.style` from the
+  plugin settings `palette` - the tones recoloured, the set of tones fixed -, `corners` - the
+  default corners of a shape, never of a link or a table - and `note_background`); without
+  them lys draws plain (`consts.TONES`, square, yellow post-it). A tone given without a
+  colour of the element's own is kept on it like a class (`whiteboardTone`): the editor is
+  handed the scene with the palette applied (`WhiteboardService.scene_for_editor` →
+  `scene.restyled`, nothing written), so a palette changed later recolours what was drawn
+  in a tone. A colour of its own - given by a caller, or set by hand in the editor - wins:
+  the class is dropped (`scene.unclassed`, on every editor save). A
+  line is `pattern`ed solid, dashed or dotted (a look, on any drawn part). A link runs along
+  a `path` (straight; elbow - the editor's own elbow arrow, `elbowed` with its ends pinned by
+  `fixedPoint`, kept orthogonal by the editor when an end moves; curved - `roundness` type 2)
+  remembered in its customData and routed again when an end moves, and ends with a `head`.
+- **Components** (`kpi`, `callout`, `steps`) are drawn from what they say, like a table: one
+  name over several parts, the data in `whiteboardSpec`, the layout and colours in
+  `whiteboardLayout`, redrawn whole on an update of their data, size or colours. A kpi
+  writes its `value` and `delta` as given - nothing is computed.
+- **Slide zones.** In a frame, `zone` (title, full, left/right, top/bottom, quarters) and
+  `slot` ("k/n" equal columns) give an element its place and - a table aside - its width,
+  as shares of the frame (`scene._zone_box`): a slide is laid out without coordinates.
+- **A drafted drawing is checked** (`drafting.review`), on the elements the drafting drew
+  only: overlaps (`scene.overlaps`), an element sticking out of its frame - cut off the
+  slide when presented (`scene.outside_frames`) -, a label its box does not hold, measured
+  with the font's advance widths (`scene.unfit_labels`), a link the chatbot asked for in
+  `links` (by the texts of its two ends, accents and case aside) that no bound arrow draws
+  (`scene.missing_links`), a figure the request does not give (`unsourced_figures`, as
+  for an agent's `figures_check`) - and what was asked and left out: a figure of the request
+  the drawing never shows (the same check the other way round), a slide holding its title
+  alone (`scene.empty_frames`). What they find goes back to the drafter once; what is
+  left reaches the chatbot as `issues`. A figure the chatbot computed in its head and wrote
+  in the request is not caught here: the request is the source.
 
 ## Frontend proposals (chatbot-initiated actions)
 

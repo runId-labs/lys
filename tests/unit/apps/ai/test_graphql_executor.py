@@ -9,6 +9,7 @@ import inspect
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 
+from lys.apps.ai.modules.core.executors.abstracts import ToolExecutor
 from lys.apps.ai.modules.core.executors.graphql import GraphQLToolExecutor
 
 
@@ -555,6 +556,30 @@ class TestGraphQLToolExecutorExecute:
             }
 
             return executor
+
+    @pytest.mark.parametrize("timeout", [None, 180])
+    @pytest.mark.asyncio
+    async def test_execute_waits_the_tools_timeout(self, executor, timeout):
+        """A tool's tool_timeout bounds its call; left out (None), the client keeps the executor's."""
+        executor._tools["update_user"]["definition"]["_graphql"]["timeout"] = timeout
+        executor._client.execute.return_value = {"data": {"updateUser": {"id": "user-123"}}}
+
+        await executor.execute(tool_name="update_user", arguments={"bio": "b"}, context={})
+
+        assert executor._client.execute.call_args.kwargs["timeout"] == timeout
+
+    @pytest.mark.asyncio
+    async def test_the_provenance_a_node_states_moves_under_the_reserved_key(self, executor):
+        """A node's figuresProvenance is kept for calculate, out of what the model reads."""
+        from lys.apps.ai.utils.provenance import PROVENANCE_KEY, model_result
+
+        entry = {"value": "1500", "measure": "m", "label": "l", "source": "s", "unit": "EUR"}
+        executor._client.execute.return_value = {"data": {"updateUser": {"id": "u", "figuresProvenance": [entry]}}}
+
+        result = await executor.execute(tool_name="update_user", arguments={"bio": "b"}, context={})
+
+        assert result == {"id": "u", PROVENANCE_KEY: [entry]}
+        assert model_result(result) == {"id": "u"}
 
     @pytest.mark.asyncio
     async def test_execute_with_input_wrappers(self, executor):
@@ -1246,3 +1271,40 @@ class TestGraphQLToolExecutorDefaultPage:
     @pytest.mark.asyncio
     async def test_a_null_page_size_is_the_default(self, executor):
         assert await self._arguments(executor, {"first": None}) == {"first": 25}
+
+
+
+class TestRunsAlongside:
+    """A GraphQL query may run with the other calls of its round; a special tool or a mutation runs alone."""
+
+    def _executor(self):
+        with patch("lys.apps.ai.modules.core.executors.graphql.GraphQLClient"):
+            executor = GraphQLToolExecutor(gateway_url="http://gw:4000/graphql", bearer_token="t", timeout=30)
+        executor._tools = {"all_items": {"operation_type": "query"}, "delete_item": {"operation_type": "mutation"},
+                           "navigate": {"operation_type": "query"}}
+        return executor
+
+    def test_a_query_runs_alongside(self):
+        assert self._executor().runs_alongside("all_items") is True
+
+    @pytest.mark.parametrize("name", ["delete_item", "navigate", "unknown_tool"])
+    def test_a_mutation_a_special_tool_or_an_unknown_one_runs_alone(self, name):
+        assert self._executor().runs_alongside(name) is False
+
+    def test_an_executor_that_does_not_say_runs_every_call_alone(self):
+        class Plain(ToolExecutor):
+            async def execute(self, tool_name, arguments, context):
+                return {}
+
+            async def get_tools(self):
+                return []
+
+        assert Plain().runs_alongside("all_items") is False
+
+    def test_the_calls_run_at_once_are_bounded_by_the_configuration(self):
+        with patch("lys.apps.ai.modules.core.executors.graphql.GraphQLClient"):
+            assert GraphQLToolExecutor(gateway_url="http://gw", bearer_token="t").max_parallel_calls == 8
+            bounded = GraphQLToolExecutor(gateway_url="http://gw", bearer_token="t", max_parallel_calls=2)
+            assert bounded.max_parallel_calls == 2
+            with pytest.raises(ValueError):
+                GraphQLToolExecutor(gateway_url="http://gw", bearer_token="t", max_parallel_calls=0)

@@ -36,7 +36,7 @@ class WhiteboardNode(EntityNode[WhiteboardService], relay.Node):
                     "refer to by id. Handed to the editor as is."
     )
     def scene(self) -> JSON:
-        return self._entity.scene_json or {}
+        return WhiteboardService.scene_for_editor(self._entity)
 
     @strawberry.field(
         description="Revision of the scene. Send it back when saving: the server refuses a "

@@ -26,7 +26,9 @@ from decimal import (
     Overflow,
     localcontext,
 )
-from typing import Any, Callable, Dict, List, Tuple
+from typing import Any, Callable, Dict, FrozenSet, List, Optional, Tuple
+
+from lys.apps.ai.utils.provenance import Figure, Provenance, mixed_bases
 
 #: Steps one call may chain: enough for a projection, short enough to stay readable in the history
 MAX_STEPS = 20
@@ -251,16 +253,99 @@ def handle_calculate(arguments: Dict[str, Any], context: Dict[str, Any]) -> Dict
     A refused or failing formula is returned as an error the model can act on (lys AI guide, special
     tools R2), never raised through the turn.
     """
-    try:
-        results = evaluate_steps(arguments.get("steps"))
-    except CalculationError as error:
-        return {"error": str(error)}
-    return {
-        "results": [
-            {"name": name, "expression": expression, "value": format_result(value)}
-            for name, expression, value in results
-        ]
-    }
+    return build_calculate_handler(None)(arguments, context)
+
+
+def build_calculate_handler(
+    provenance: Optional[Provenance],
+) -> Callable[[Dict[str, Any], Dict[str, Any]], Dict[str, Any]]:
+    """
+    The ``calculate`` handler of a conversation whose tools state where their figures come from
+    (``lys.apps.ai.utils.provenance``): the results come with a warning for each step that sets two
+    figures on different bases against each other (``mixed_base_warnings``). The result is computed
+    all the same: the model decides, the warning says what it combined.
+    """
+    def handler(arguments: Dict[str, Any], context: Dict[str, Any]) -> Dict[str, Any]:
+        try:
+            results = evaluate_steps(arguments.get("steps"))
+        except CalculationError as error:
+            return {"error": str(error)}
+        answer: Dict[str, Any] = {
+            "results": [
+                {"name": name, "expression": expression, "value": format_result(value)}
+                for name, expression, value in results
+            ]
+        }
+        warnings = mixed_base_warnings(results, provenance) if provenance is not None else []
+        if warnings:
+            answer["warnings"] = warnings
+        return answer
+    return handler
+
+
+def mixed_base_warnings(results: List[Tuple[str, str, Decimal]], provenance: Provenance) -> List[str]:
+    """
+    What the steps of a chain set against each other although it is not on the same basis: an
+    addition, a subtraction or a division between two figures the tools showed in the same unit, of
+    different measures, read in different sources (``provenance.mixed_bases``). A number of a formula
+    is a tool's figure when the provenance tells which one it is; a step carries the figures it was
+    computed from to the steps that use its name. One warning per step at most.
+    """
+    origins: Dict[str, FrozenSet[Figure]] = {}
+    warnings = []
+    for name, expression, _ in results:
+        found: List[Tuple[str, Figure, Figure]] = []
+        origins[name] = _origins(_parse(expression).body, expression, origins, provenance, found)
+        if found:
+            operator, one, other = found[0]
+            warnings.append(
+                f"step '{name}': {_described(one)} and {_described(other)} are two different measures read "
+                f"in two different sources, set against each other by '{operator}'. They are not on the same "
+                f"basis: read the definitions the tools gave before using this result. When a tool gives the "
+                f"figure you are computing, quote it instead; if you keep this result, say how it was computed."
+            )
+    return warnings
+
+
+#: The operations that set two figures against each other: a multiplication applies a rate or a
+#: count to an amount, it compares nothing
+_COMPARING_OPERATORS = {ast.Add: "+", ast.Sub: "-", ast.Div: "/"}
+
+
+def _origins(
+    node: ast.AST, source: str, origins: Dict[str, FrozenSet[Figure]], provenance: Provenance,
+    found: List[Tuple[str, Figure, Figure]],
+) -> FrozenSet[Figure]:
+    """The figures a node of a formula is computed from, recording each mixed comparison it holds."""
+    if isinstance(node, ast.Constant):
+        try:
+            literal = Decimal(ast.get_source_segment(source, node) or "")
+        except InvalidOperation:
+            return frozenset()
+        known = provenance.figure_of(literal, max(0, -literal.as_tuple().exponent))
+        return frozenset([known]) if known is not None else frozenset()
+    if isinstance(node, ast.Name):
+        return origins.get(node.id, frozenset())
+    if isinstance(node, ast.UnaryOp):
+        return _origins(node.operand, source, origins, provenance, found)
+    if isinstance(node, ast.BinOp):
+        left = _origins(node.left, source, origins, provenance, found)
+        right = _origins(node.right, source, origins, provenance, found)
+        operator = _COMPARING_OPERATORS.get(type(node.op))
+        mixed = mixed_bases(left, right) if operator else None
+        if mixed is not None:
+            found.append((operator, *mixed))
+        return left | right
+    if isinstance(node, ast.Call):
+        figures: FrozenSet[Figure] = frozenset()
+        for argument in node.args:
+            figures |= _origins(argument, source, origins, provenance, found)
+        return figures
+    return frozenset()
+
+
+def _described(item: Figure) -> str:
+    return f"{format_result(item.value)} ({item.label}, source {item.source})"
 
 
 # Tool definition for calculate. Offered on every turn: it reads nothing and changes nothing, so

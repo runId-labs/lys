@@ -12,7 +12,7 @@ import math
 import pytest
 
 from lys.apps.ai_whiteboard.modules.whiteboard import scene as scene_tools
-from lys.apps.ai_whiteboard.modules.whiteboard.consts import MAX_ELEMENTS
+from lys.apps.ai_whiteboard.modules.whiteboard.consts import MAX_ELEMENTS, TONES
 from lys.core.errors import LysError
 
 
@@ -503,6 +503,27 @@ class TestChart:
         entry = described(board)["c"]
         assert (entry["x"], entry["y"]) == (500, 300)
         assert self.top_of(board) == pytest.approx(300)
+
+    def test_a_line_chart_carries_its_reference_lines_in_its_spec(self):
+        chart = {"type": "line", "data": [{"label": "W1", "value": 10}, {"label": "W2", "value": 30}],
+                 "references": [{"label": "Threshold", "value": 20}]}
+        scene = scene_tools.apply_operations(
+            scene_tools.empty_scene(), {"add": [{"name": "cash", "kind": "chart", "chart": chart}]},
+        )
+        spec = scene_tools.find(scene, "cash")["customData"]["whiteboardSpec"]
+        assert spec["references"] == [{"label": "Threshold", "value": 20}]
+
+    @pytest.mark.parametrize("chart", [
+        {"type": "bar", "data": [{"label": "A", "value": 1}], "references": [{"label": "T", "value": 1}]},
+        {"type": "line", "data": [{"label": "A", "value": 1}], "references": [{"label": "T"}]},
+        {"type": "line", "data": [{"label": "A", "value": 1}], "references": [{"label": "T", "value": 1}] * 4},
+    ])
+    def test_reference_lines_off_a_line_chart_without_a_value_or_too_many_are_refused(self, chart):
+        with pytest.raises(LysError):
+            scene_tools.apply_operations(
+                scene_tools.empty_scene(), {"add": [{"name": "c", "kind": "chart", "chart": chart}]},
+            )
+
 
 
 class TestFrame:
@@ -1392,13 +1413,54 @@ class TestTextRefit:
         label = scene_tools.find(board, "flux-text")
         assert label["fontSize"] == 24 and label["width"] > 100
 
-    def test_a_fixed_width_text_set_in_the_editor_keeps_its_box(self):
+    def test_a_fixed_width_text_set_in_the_editor_keeps_its_width(self):
         board = draw({"add": [{"name": "t", "kind": "text", "text": "Court"}]})
         fixed = {**scene_tools.find(board, "t"), "autoResize": False, "width": 80, "height": 20}
         board = {**board, "elements": [fixed]}
         board = scene_tools.apply_operations(board, {"update": [{"name": "t", "text": "Un texte bien plus long"}]})
         t = scene_tools.find(board, "t")
-        assert (t["width"], t["height"]) == (80, 20)
+        # The box keeps its width; the lines are broken to it and the height follows them
+        assert t["width"] == 80 and t["autoResize"] is False
+        assert t["originalText"] == "Un texte bien plus long" and "\n" in t["text"]
+        assert t["height"] == len(t["text"].split("\n")) * t["fontSize"] * t["lineHeight"]
+
+    def test_a_text_wrapped_to_its_width_stays_wrapped_when_rewritten(self):
+        long = "Un paragraphe assez long pour tenir sur plusieurs lignes dans une colonne étroite"
+        board = draw(
+            {"add": [{"name": "t", "kind": "text", "text": long, "width": 200}]},
+            {"update": [{"name": "t", "text": long + " et encore un peu plus de texte ensuite"}]},
+        )
+        t = scene_tools.find(board, "t")
+        assert t["width"] == 200 and t["autoResize"] is False
+        assert all(scene_tools._text_width(line, t["fontSize"]) <= 200 for line in t["text"].split("\n"))
+        assert t["height"] == len(t["text"].split("\n")) * t["fontSize"] * t["lineHeight"]
+
+    def test_a_wrapped_text_resized_is_wrapped_again(self):
+        long = "Un paragraphe assez long pour tenir sur plusieurs lignes dans une colonne étroite"
+        board = draw({"add": [{"name": "t", "kind": "text", "text": long, "width": 200}]})
+        lines_before = len(scene_tools.find(board, "t")["text"].split("\n"))
+        board = scene_tools.apply_operations(board, {"update": [{"name": "t", "size": "large"}]})
+        t = scene_tools.find(board, "t")
+        assert t["width"] == 200 and len(t["text"].split("\n")) > lines_before
+
+    @pytest.mark.parametrize("kind, extra", [
+        ("steps", {"items": ["Un", "Deux", "Trois", "Quatre", "Cinq", "Six"]}),
+        ("kpi", {"value": "12", "text": "Marge"}),
+        ("callout", {"text": "Message"}),
+    ])
+    def test_a_component_too_narrow_for_its_text_is_refused(self, kind, extra):
+        with pytest.raises(LysError) as refused:
+            draw({"add": [{"name": "c", "kind": kind, "width": 20, **extra}]})
+        assert "at least" in refused.value.debug_message
+
+    def test_a_toned_table_and_a_toned_chart_are_in_their_palette(self):
+        style = scene_tools.style_of(None)
+        board = scene_tools.apply_operations(scene_tools.empty_scene(), {"add": [
+            {"name": "tab", "kind": "table", "headers": ["A", "B"], "rows": [["1", "2"]], "tone": "positive"},
+            {"name": "bars", "kind": "chart", "tone": "positive",
+             "chart": {"type": "bar", "data": [{"label": "a", "value": 1}, {"label": "b", "value": 2}]}},
+        ]}, style)
+        assert scene_tools.restyled(board, style) is board
 
     @pytest.mark.parametrize("field, value", [("align", "center"), ("size", "large")])
     def test_a_frame_carries_no_text_to_change(self, field, value):
@@ -1431,3 +1493,407 @@ class TestFullFrame:
         ]})
         a, b = scene_tools.find(board, "a"), scene_tools.find(board, "b")
         assert b["x"] == 0 and b["y"] >= a["y"] + a["height"]
+
+
+class TestTones:
+    """A colour named by what it means, resolved from the board's palette."""
+
+    def _drawn(self, *items, palette=None):
+        style = scene_tools.BoardStyle(palette=palette) if palette else None
+        scene = scene_tools.apply_operations(scene_tools.empty_scene(), {"add": list(items)}, style)
+        return {element["id"]: element for element in scene["elements"]}
+
+    def test_a_tone_gives_a_shape_its_line_and_fill(self):
+        box = self._drawn({"name": "a", "text": "At risk", "tone": "risk"})["a"]
+        assert (box["strokeColor"], box["backgroundColor"]) == (TONES["risk"]["stroke"], TONES["risk"]["background"])
+
+    def test_a_colour_given_too_wins_and_a_text_or_a_link_takes_the_line_only(self):
+        drawn = self._drawn(
+            {"name": "a", "text": "A", "tone": "accent", "background": "#ffffff"},
+            {"name": "t", "kind": "text", "text": "Title", "tone": "accent", "x": 0, "y": 300},
+        )
+        assert drawn["a"]["backgroundColor"] == "#ffffff" and drawn["a"]["strokeColor"] == TONES["accent"]["stroke"]
+        assert drawn["t"]["strokeColor"] == TONES["accent"]["stroke"]
+        assert drawn["t"]["backgroundColor"] == "transparent"
+
+    def test_an_update_tones_an_element_by_its_kind_on_the_board(self):
+        scene = scene_tools.apply_operations(
+            scene_tools.empty_scene(), {"add": [{"name": "t", "kind": "text", "text": "x"}]},
+        )
+        scene = scene_tools.apply_operations(scene, {"update": [{"name": "t", "tone": "positive"}]})
+        text = next(e for e in scene["elements"] if e["id"] == "t")
+        assert text["strokeColor"] == TONES["positive"]["stroke"] and text["backgroundColor"] == "transparent"
+
+    def test_an_unknown_tone_refuses_the_patch(self):
+        with pytest.raises(LysError):
+            self._drawn({"name": "a", "tone": "pink"})
+
+    def test_a_consumer_recolours_a_tone_and_nothing_else(self):
+        palette = scene_tools.palette_of({"accent": {"stroke": "#123456"}})
+        assert palette["accent"] == {"stroke": "#123456", "background": TONES["accent"]["background"]}
+        assert self._drawn({"name": "a", "tone": "accent"}, palette=palette)["a"]["strokeColor"] == "#123456"
+        for wrong in ({"pink": {"stroke": "#123456"}}, {"accent": {"stroke": "red"}}, {"accent": {"text": "#123456"}}):
+            with pytest.raises(LysError):
+                scene_tools.palette_of(wrong)
+
+
+class TestLinkPaths:
+    """How a link runs and ends, and the dashed line of what is not established."""
+
+    def _board(self, *links):
+        items = [{"name": "a", "text": "A", "x": 0, "y": 0}, {"name": "b", "text": "B", "x": 500, "y": 300}, *links]
+        scene = scene_tools.apply_operations(scene_tools.empty_scene(), {"add": items})
+        return scene, {element["id"]: element for element in scene["elements"]}
+
+    def test_an_elbow_runs_at_right_angles_pinned_where_it_leaves_each_end(self):
+        _, by_id = self._board({"name": "l", "kind": "arrow", "from": "a", "to": "b", "path": "elbow"})
+        link = by_id["l"]
+        assert link["elbowed"] is True
+        segments = list(zip(link["points"], link["points"][1:]))
+        assert all(start[0] == end[0] or start[1] == end[1] for start, end in segments)
+        assert link["startBinding"]["fixedPoint"] == [1.0, 0.5] and link["endBinding"]["fixedPoint"] == [0.0, 0.5]
+
+    def test_a_curve_bends_at_its_middle(self):
+        _, by_id = self._board({"name": "l", "kind": "arrow", "from": "a", "to": "b", "path": "curved"})
+        assert by_id["l"]["roundness"] == {"type": 2} and len(by_id["l"]["points"]) == 3
+
+    def test_a_head_and_a_pattern_are_drawn_and_read_back(self):
+        scene, by_id = self._board(
+            {"name": "l", "kind": "arrow", "from": "a", "to": "b", "head": "none", "pattern": "dashed",
+             "path": "elbow"},
+            {"name": "h", "text": "Hypothesis", "pattern": "dotted", "x": 0, "y": 600},
+        )
+        assert by_id["l"]["endArrowhead"] is None and by_id["l"]["strokeStyle"] == "dashed"
+        assert by_id["h"]["strokeStyle"] == "dotted"
+        described = {entry["name"]: entry for entry in scene_tools.describe(scene)}
+        link = described["l"]
+        assert (link["path"], link["head"], link["pattern"]) == ("elbow", "none", "dashed")
+        assert "path" not in described["a"] and "pattern" not in described["a"]
+
+    def test_moving_an_end_keeps_the_path(self):
+        scene, _ = self._board({"name": "l", "kind": "arrow", "from": "a", "to": "b", "path": "elbow"})
+        scene = scene_tools.apply_operations(scene, {"update": [{"name": "b", "x": 600, "y": 500}]})
+        link = next(e for e in scene["elements"] if e["id"] == "l")
+        assert link["elbowed"] is True and link["endBinding"]["fixedPoint"] == [0.0, 0.5]
+
+    def test_an_update_changes_the_path_and_the_head_of_a_link(self):
+        scene, _ = self._board({"name": "l", "kind": "arrow", "from": "a", "to": "b"})
+        scene = scene_tools.apply_operations(scene, {"update": [{"name": "l", "path": "curved", "head": "dot"}]})
+        link = next(e for e in scene["elements"] if e["id"] == "l")
+        assert link["roundness"] == {"type": 2} and link["endArrowhead"] == "dot"
+
+    @pytest.mark.parametrize("operations", [
+        {"add": [{"name": "free", "kind": "arrow", "path": "elbow", "width": 100}]},
+        {"update": [{"name": "a", "path": "curved"}]},
+        {"add": [{"name": "l", "kind": "arrow", "from": "a", "to": "b", "path": "zigzag"}]},
+    ])
+    def test_a_path_needs_two_ends_on_a_link(self, operations):
+        scene, _ = self._board()
+        with pytest.raises(LysError):
+            scene_tools.apply_operations(scene, operations)
+
+
+class TestComponents:
+    """kpi, callout and steps: laid out by the board from what they say."""
+
+    def _draw(self, scene=None, **operations):
+        return scene_tools.apply_operations(scene or scene_tools.empty_scene(), operations)
+
+    def _parts(self, scene, name):
+        return {e["id"]: e for e in scene["elements"] if (e.get("customData") or {}).get("whiteboardOwner") == name}
+
+    def test_a_kpi_shows_its_value_label_and_delta_in_its_tone(self):
+        scene = self._draw(add=[{"name": "ca", "kind": "kpi", "text": "Chiffre d'affaires 2025", "value": "4,9 M€",
+                                 "delta": "+17 %", "tone": "positive"}])
+        parts = self._parts(scene, "ca")
+        assert parts["ca-value"]["text"] == "4,9 M€" and parts["ca-value"]["fontSize"] > parts["ca-label"]["fontSize"]
+        assert parts["ca-delta"]["strokeColor"] == TONES["positive"]["stroke"]
+        assert parts["ca-value"]["y"] < parts["ca-label"]["y"] < parts["ca-delta"]["y"]
+        described = scene_tools.describe(scene)[0]
+        assert described["kind"] == "kpi" and described["data"]["value"] == "4,9 M€"
+
+    def test_a_kpi_without_a_value_is_refused(self):
+        with pytest.raises(LysError):
+            self._draw(add=[{"name": "ca", "kind": "kpi", "text": "CA"}])
+
+    def test_an_update_redraws_a_kpi_and_keeps_what_it_does_not_change(self):
+        scene = self._draw(add=[{"name": "ca", "kind": "kpi", "text": "CA", "value": "4,9 M€", "delta": "+17 %",
+                                 "tone": "positive", "x": 100, "y": 50}])
+        scene = self._draw(scene, update=[{"name": "ca", "value": "5,1 M€"}])
+        parts = self._parts(scene, "ca")
+        assert parts["ca-value"]["text"] == "5,1 M€" and parts["ca-delta"]["text"] == "+17 %"
+        assert parts["ca-delta"]["strokeColor"] == TONES["positive"]["stroke"]
+        assert (parts["ca"]["x"], parts["ca"]["y"]) == (100, 50)
+        scene = self._draw(scene, update=[{"name": "ca", "tone": "risk"}])
+        assert self._parts(scene, "ca")["ca-delta"]["strokeColor"] == TONES["risk"]["stroke"]
+
+    def test_a_callout_carries_a_bar_in_its_tone(self):
+        scene = self._draw(add=[{"name": "msg", "kind": "callout", "text": "Sécuriser la trésorerie",
+                                 "tone": "accent"}])
+        parts = self._parts(scene, "msg")
+        assert parts["msg-bar"]["backgroundColor"] == TONES["accent"]["stroke"]
+        assert parts["msg"]["backgroundColor"] == TONES["accent"]["background"]
+
+    def test_steps_are_numbered_and_joined_by_arrows(self):
+        scene = self._draw(add=[{"name": "plan", "kind": "steps", "items": ["Lire", "Décider", "Agir"]}])
+        parts = self._parts(scene, "plan")
+        assert [parts[f"plan-number-{i}"]["text"] for i in range(3)] == ["1", "2", "3"]
+        assert sum(1 for e in parts.values() if e["type"] == "arrow") == 2
+        assert scene_tools.describe(scene)[0]["data"] == {"items": ["Lire", "Décider", "Agir"]}
+        # Every part lies within the box the board measures: what checks and frames read
+        x, y, width, height = scene_tools._box(parts["plan"])
+        for part in parts.values():
+            assert x - 1 <= part["x"] and part["x"] + part["width"] <= x + width + 1
+
+    @pytest.mark.parametrize("items", [["Only one"], ["a", ""], "a, b", [f"s{i}" for i in range(9)]])
+    def test_steps_need_two_to_eight_texts(self, items):
+        with pytest.raises(LysError):
+            self._draw(add=[{"name": "plan", "kind": "steps", "items": items}])
+
+    def test_a_component_in_a_slide_is_checked_like_any_element(self):
+        scene = self._draw(add=[
+            {"name": "s1", "kind": "frame", "text": "1. Facts", "x": 0, "y": 0, "width": 1280, "height": 720},
+            {"name": "plan", "kind": "steps", "frame": "s1", "x": 40, "y": 600, "items": ["Lire", "Décider", "Agir"]},
+        ])
+        assert scene_tools.outside_frames(scene, ["plan"])[0]["beyond"]["bottom"] > 0
+
+
+class TestSlideZones:
+    """An element placed by the zone of its slide, not by coordinates."""
+
+    FRAME = {"name": "s1", "kind": "frame", "text": "1. Facts", "x": 0, "y": 900, "width": 1280, "height": 720}
+
+    def _draw(self, *items):
+        scene = scene_tools.apply_operations(scene_tools.empty_scene(), {"add": [self.FRAME, *items]})
+        return scene, {e["id"]: e for e in scene["elements"]}
+
+    def test_three_kpis_share_the_top_of_a_slide_and_a_callout_its_bottom_right(self):
+        kpis = [{"name": f"k{i}", "kind": "kpi", "value": f"{i} M€", "frame": "s1", "zone": "top", "slot": f"{i}/3"}
+                for i in (1, 2, 3)]
+        scene, by_id = self._draw(*kpis, {"name": "msg", "kind": "callout", "text": "Key message", "frame": "s1",
+                                          "zone": "bottom-right"})
+        lefts = [by_id[f"k{i}"]["x"] for i in (1, 2, 3)]
+        assert lefts == sorted(lefts) and len({round(by_id[f"k{i}"]["width"]) for i in (1, 2, 3)}) == 1
+        assert by_id["msg"]["x"] > 640 and by_id["msg"]["y"] > by_id["k1"]["y"]
+        assert scene_tools.outside_frames(scene, ["k1", "k2", "k3", "msg"]) == []
+        assert scene_tools.overlaps(scene, ["k1", "k2", "k3", "msg"]) == []
+
+    def test_a_title_zone_sits_at_the_top_of_its_slide(self):
+        _, by_id = self._draw({"name": "t", "kind": "text", "text": "Le constat", "frame": "s1", "zone": "title"})
+        assert by_id["t"]["y"] - 900 < 100 and by_id["t"]["x"] > 0
+
+    def test_an_update_moves_an_element_to_another_zone(self):
+        scene, _ = self._draw({"name": "n", "text": "Note", "frame": "s1", "zone": "left"})
+        scene = scene_tools.apply_operations(scene, {"update": [{"name": "n", "zone": "right"}]})
+        assert next(e for e in scene["elements"] if e["id"] == "n")["x"] > 640
+
+    @pytest.mark.parametrize("item", [
+        {"name": "n", "text": "x", "zone": "left"},
+        {"name": "n", "text": "x", "frame": "s1", "zone": "middle"},
+        {"name": "n", "text": "x", "frame": "s1", "zone": "top", "slot": "4/3"},
+        {"name": "n", "text": "x", "frame": "s1", "zone": "top", "x": 10, "y": 10},
+    ])
+    def test_a_zone_needs_a_frame_a_known_name_a_valid_slot_and_no_coordinates(self, item):
+        with pytest.raises(LysError):
+            self._draw(item)
+
+
+
+class TestBoardStyle:
+    """What a board draws when the caller says nothing: a consumer's own corners and post-it."""
+
+    STYLE = scene_tools.style_of({"corners": "round", "note_background": "#e7f3f5"})
+
+    def _drawn(self, *items, style=STYLE):
+        scene = scene_tools.apply_operations(scene_tools.empty_scene(), {"add": list(items)}, style)
+        return {element["id"]: element for element in scene["elements"]}
+
+    def test_a_note_takes_the_styles_corners_and_fill(self):
+        note = self._drawn({"name": "n", "text": "Idea"})["n"]
+        assert note["roundness"] == {"type": 3} and note["backgroundColor"] == "#e7f3f5"
+
+    def test_a_caller_still_chooses_and_links_tables_keep_their_shape(self):
+        drawn = self._drawn(
+            {"name": "sq", "text": "Square", "corners": "square"},
+            {"name": "a", "text": "A", "x": 0, "y": 300}, {"name": "b", "text": "B", "x": 400, "y": 600},
+            {"name": "l", "kind": "arrow", "from": "a", "to": "b"},
+            {"name": "t", "kind": "table", "headers": ["A"], "rows": [["1"]], "x": 900, "y": 0},
+        )
+        assert all(drawn[name].get("roundness") is None for name in ("sq", "l", "t"))
+
+    def test_without_a_style_the_board_draws_plain(self):
+        note = self._drawn({"name": "n", "text": "Idea"}, style=None)["n"]
+        assert note["roundness"] is None and note["backgroundColor"] == scene_tools.NOTE_BACKGROUND
+
+    @pytest.mark.parametrize("config", [{"corners": "soft"}, {"note_background": "teal"}, {"palette": {"pink": {}}}])
+    def test_a_style_the_editor_could_not_draw_is_refused(self, config):
+        with pytest.raises(LysError):
+            scene_tools.style_of(config)
+
+
+class TestToneClasses:
+    """A tone kept on the element like a class: the palette applies to it when the board is read."""
+
+    OLD = scene_tools.BoardStyle()
+    NEW = scene_tools.style_of({"palette": {"risk": {"stroke": "#aa0000", "background": "#ffeeee"}}})
+
+    def _board(self, *items, style=OLD):
+        return scene_tools.apply_operations(scene_tools.empty_scene(), {"add": list(items)}, style)
+
+    @staticmethod
+    def _element(scene, name):
+        return next(e for e in scene["elements"] if e["id"] == name)
+
+    def test_a_tone_given_alone_is_kept_and_a_colour_of_ones_own_drops_it(self):
+        scene = self._board({"name": "a", "text": "A", "tone": "risk"},
+                            {"name": "b", "text": "B", "tone": "risk", "background": "#ffffff", "x": 400, "y": 0})
+        assert scene_tools._tone_of(self._element(scene, "a")) == "risk"
+        assert scene_tools._tone_of(self._element(scene, "b")) is None
+        scene = scene_tools.apply_operations(scene, {"update": [{"name": "a", "color": "#123456"}]})
+        assert scene_tools._tone_of(self._element(scene, "a")) is None
+
+    def test_a_component_redrawn_from_new_data_keeps_its_class(self):
+        scene = self._board({"name": "k", "kind": "kpi", "value": "1 M€", "tone": "risk"})
+        scene = scene_tools.apply_operations(scene, {"update": [{"name": "k", "value": "2 M€"}]})
+        assert scene_tools._tone_of(self._element(scene, "k")) == "risk"
+        assert scene_tools.describe(scene)[0]["tone"] == "risk"
+
+    def test_a_palette_changed_later_recolours_the_classed_elements_only(self):
+        scene = self._board({"name": "a", "text": "A", "tone": "risk"},
+                            {"name": "k", "kind": "kpi", "value": "1 M€", "delta": "-5 %", "tone": "risk",
+                             "x": 400, "y": 0},
+                            {"name": "own", "text": "Own", "color": "#123456", "x": 0, "y": 400})
+        served = scene_tools.restyled(scene, self.NEW)
+        assert self._element(served, "a")["strokeColor"] == "#aa0000"
+        assert self._element(served, "a")["backgroundColor"] == "#ffeeee"
+        assert self._element(served, "k-delta")["strokeColor"] == "#aa0000"
+        assert self._element(served, "own")["strokeColor"] == "#123456"
+        assert self._element(scene, "a")["strokeColor"] == TONES["risk"]["stroke"]
+        assert scene_tools.restyled(served, self.NEW) is served
+
+    def test_an_element_recoloured_by_hand_leaves_its_class(self):
+        scene = self._board({"name": "a", "text": "A", "tone": "risk"},
+                            {"name": "b", "text": "B", "tone": "risk", "x": 400, "y": 0},
+                            {"name": "k", "kind": "kpi", "value": "1 M€", "delta": "-5 %", "tone": "risk",
+                             "x": 0, "y": 400})
+        recolour = {"a": {"backgroundColor": "#00ff00"}, "k-delta": {"strokeColor": "#00ff00"}}
+        edited = {**scene, "elements": [{**e, **recolour.get(e["id"], {})} for e in scene["elements"]]}
+        kept = scene_tools.unclassed(scene, edited)
+        assert scene_tools._tone_of(self._element(kept, "a")) is None
+        assert scene_tools._tone_of(self._element(kept, "k")) is None
+        assert scene_tools._tone_of(self._element(kept, "b")) == "risk"
+        assert scene_tools._tone_of(self._element(edited, "a")) == "risk"
+        assert scene_tools.unclassed(scene, scene) is scene
+
+    def test_a_scene_saved_as_it_was_handed_keeps_its_classes_whatever_the_palette(self):
+        handed = scene_tools.restyled(self._board({"name": "a", "text": "A", "tone": "risk"}), self.NEW)
+        assert scene_tools._tone_of(self._element(scene_tools.unclassed(handed, handed), "a")) == "risk"
+
+
+class TestDeckReadability:
+    """What a deck read in presentation mode showed wrong (2026-11-28)."""
+
+    def test_a_text_given_a_width_narrower_than_its_line_wraps_inside_it(self):
+        line = "Trois aléas pris séparément suffisent chacun à faire rater le retour au seuil de février."
+        scene = scene_tools.apply_operations(scene_tools.empty_scene(), {"add": [
+            {"name": "s1", "kind": "frame", "text": "1. Facts", "x": 0, "y": 0, "width": 1280, "height": 720},
+            {"name": "foot", "kind": "text", "text": line * 2, "frame": "s1", "zone": "bottom"},
+            {"name": "short", "kind": "text", "text": "Court", "frame": "s1", "zone": "top"},
+        ]})
+        foot, short = scene_tools.find(scene, "foot"), scene_tools.find(scene, "short")
+        assert foot["autoResize"] is False and "\n" in foot["text"] and foot["originalText"] == line * 2
+        assert scene_tools.outside_frames(scene, ["foot"]) == []
+        assert short["autoResize"] is True
+
+    def test_a_callout_message_stays_clear_of_its_bar_when_moved(self):
+        scene = scene_tools.apply_operations(scene_tools.empty_scene(), {"add": [
+            {"name": "msg", "kind": "callout", "text": "Key message", "tone": "accent"}]})
+        scene = scene_tools.apply_operations(scene, {"update": [{"name": "msg", "x": 300, "y": 200}]})
+        parts = {e["id"]: e for e in scene["elements"]}
+        assert parts["msg-message"]["x"] >= parts["msg-bar"]["x"] + parts["msg-bar"]["width"]
+        assert "msg-text" not in parts
+
+
+class TestLabelMargin:
+    """A label keeps a margin from its shape's edge, wider than the editor's own padding (2026-11-28)."""
+
+    SENTENCE = "Encaissements optimistes : délais calibrés sur les factures payées alors que les ouvertes traînent."
+
+    @staticmethod
+    def _shape_and_label(scene, name):
+        return scene_tools.find(scene, name), scene_tools.find(scene, f"{name}-text")
+
+    def test_the_lines_of_a_label_leave_the_margin_on_both_sides(self):
+        scene = scene_tools.apply_operations(scene_tools.empty_scene(), {"add": [
+            {"name": "risk", "kind": "note", "text": self.SENTENCE, "width": 300}]})
+        shape, label = self._shape_and_label(scene, "risk")
+        room = shape["width"] - 2 * scene_tools.LABEL_MARGIN
+        assert "\n" in label["text"] and label["originalText"] == self.SENTENCE
+        lines = label["text"].split("\n")
+        widths = [scene_tools._text_width(line, label["fontSize"]) for line in lines]  # noqa: SLF001
+        assert max(widths) <= room
+
+    def test_a_shape_sized_from_its_text_holds_it_with_the_margin_all_around(self):
+        scene = scene_tools.apply_operations(scene_tools.empty_scene(), {"add": [
+            {"name": "risk", "kind": "note", "text": self.SENTENCE}]})
+        shape, label = self._shape_and_label(scene, "risk")
+        _, needed = scene_tools._text_size(label["text"], label["fontSize"])  # noqa: SLF001
+        assert shape["height"] >= needed + 2 * scene_tools.LABEL_MARGIN
+        assert scene_tools.unfit_labels(scene, ["risk"]) == []
+
+    def test_a_size_given_too_small_grows_to_hold_the_label(self):
+        scene = scene_tools.apply_operations(scene_tools.empty_scene(), {"add": [
+            {"name": "risk", "kind": "note", "text": "ENCAISSEMENTS : 555 725 €", "size": "large",
+             "width": 120, "height": 40}]})
+        shape = scene_tools.find(scene, "risk")
+        assert shape["width"] > 120 and shape["height"] > 40
+        assert scene_tools.unfit_labels(scene, ["risk"]) == []
+
+    def test_a_shape_resized_smaller_than_its_label_grows_back(self):
+        scene = scene_tools.apply_operations(scene_tools.empty_scene(), {"add": [
+            {"name": "risk", "kind": "note", "text": self.SENTENCE}]})
+        scene = scene_tools.apply_operations(scene, {"update": [{"name": "risk", "width": 60, "height": 20}]})
+        assert scene_tools.unfit_labels(scene, ["risk"]) == []
+
+    def test_a_resized_or_rewritten_shape_breaks_its_label_again(self):
+        scene = scene_tools.apply_operations(scene_tools.empty_scene(), {"add": [
+            {"name": "risk", "kind": "note", "text": self.SENTENCE, "width": 300}]})
+        scene = scene_tools.apply_operations(scene, {"update": [{"name": "risk", "width": 900}]})
+        assert "\n" not in scene_tools.find(scene, "risk-text")["text"]
+        scene = scene_tools.apply_operations(scene, {"update": [{"name": "risk", "text": "Short"}]})
+        assert scene_tools.find(scene, "risk-text")["text"] == "Short"
+
+    def test_a_figure_is_never_broken_across_two_lines(self):
+        text = "Le plan exclut 1 510 074 € d'échus et 33 539 € de dépenses, soit +18,8 % sur l'horizon"
+        for width in range(120, 400, 7):
+            lines = scene_tools._wrap(text, width)  # noqa: SLF001
+            assert any("1 510 074 €" in line for line in lines)
+            assert any("33 539 €" in line for line in lines)
+
+    def test_the_board_reads_a_label_as_written_not_as_broken(self):
+        scene = scene_tools.apply_operations(scene_tools.empty_scene(), {"add": [
+            {"name": "risk", "kind": "note", "text": self.SENTENCE, "width": 300}]})
+        assert next(e for e in scene_tools.describe(scene) if e["name"] == "risk")["text"] == self.SENTENCE
+
+
+class TestLinksStayInTheirSlide:
+    """A link is measured from its points, and a detour between two elements of a slide stays inside it."""
+
+    FRAME = {"name": "s1", "kind": "frame", "text": "1. Flows", "x": 0, "y": 0, "width": 1280, "height": 720}
+
+    def _row(self, y):
+        return [{"name": name, "text": name.upper(), "frame": "s1", "x": x, "y": y, "width": 200, "height": 100}
+                for name, x in (("a", 40), ("b", 540), ("c", 1040))]
+
+    def test_an_arrow_running_back_to_the_left_is_not_out_of_its_slide(self):
+        scene = scene_tools.apply_operations(scene_tools.empty_scene(), {"add": [
+            self.FRAME, *self._row(300), {"name": "back", "kind": "arrow", "from": "b", "to": "a", "frame": "s1"}]})
+        assert scene_tools.outside_frames(scene, ["back"]) == []
+
+    def test_a_detour_takes_the_lane_inside_the_slide(self):
+        # A row at the foot of the slide: the lane below would leave it, the one above does not
+        scene = scene_tools.apply_operations(scene_tools.empty_scene(), {"add": [
+            self.FRAME, *self._row(600), {"name": "loop", "kind": "arrow", "from": "c", "to": "a", "frame": "s1"}]})
+        link = scene_tools.find(scene, "loop")
+        assert scene_tools.outside_frames(scene, ["loop"]) == []
+        assert len(link["points"]) == 4 and all(link["y"] + dy < 600 for _, dy in link["points"][1:3])

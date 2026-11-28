@@ -8,6 +8,8 @@ import pytest
 from lys.core.utils.webservice import (
     check_webservice_config,
     generate_webservice_fixture,
+    resolve_tool_consumers,
+    resolve_tool_timeout,
     PUBLIC_WEBSERVICE_CONFIG_ERROR_MESSAGE_1,
     PUBLIC_WEBSERVICE_CONFIG_ERROR_MESSAGE_2,
     CONNECTED_ACCESS_LEVEL_WEBSERVICE_CONFIG_ERROR_MESSAGE,
@@ -153,3 +155,58 @@ class TestGenerateWebserviceFixture:
         assert result.id == "my_webservice"
         assert result.attributes.is_licenced is True
         assert result.attributes.enabled is True
+
+    def test_tool_consumers_default_to_none(self):
+        """Without an audience, the fixture restricts no consumer."""
+        result = generate_webservice_fixture(
+            webservice_name="ws", enabled=True, is_public=False, access_levels=["OWNER"], is_licenced=True,
+        )
+        assert result.attributes.ai_tool_consumers is None
+
+    def test_tool_consumers_are_kept(self):
+        """The audience travels with the fixture."""
+        result = generate_webservice_fixture(
+            webservice_name="ws", enabled=True, is_public=False, access_levels=["OWNER"], is_licenced=True,
+            ai_tool={"type": "function"}, ai_tool_consumers=["chatbot", "review_agent"],
+        )
+        assert result.attributes.ai_tool_consumers == ["chatbot", "review_agent"]
+
+
+class TestResolveToolConsumers:
+    """Tests for resolve_tool_consumers function."""
+
+    def test_true_is_a_tool_for_every_consumer(self):
+        assert resolve_tool_consumers("ws", True) == (True, None)
+
+    def test_false_is_no_tool(self):
+        assert resolve_tool_consumers("ws", False) == (False, None)
+
+    def test_list_names_the_consumers(self):
+        assert resolve_tool_consumers("ws", ["chatbot", "review_agent"]) == (True, ["chatbot", "review_agent"])
+
+    def test_duplicates_are_dropped_in_order(self):
+        assert resolve_tool_consumers("ws", ("review_agent", "chatbot", "review_agent")) == (
+            True, ["review_agent", "chatbot"]
+        )
+
+    @pytest.mark.parametrize("value", [[], ["chatbot", ""], ["  "], [None], "chatbot", 1, None])
+    def test_anything_else_is_refused(self, value):
+        """An empty list or a misspelt option must not silently widen or drop the audience."""
+        with pytest.raises(ValueError, match="generate_tool"):
+            resolve_tool_consumers("ws", value)
+
+
+class TestResolveToolTimeout:
+    """Tests for resolve_tool_timeout function."""
+
+    def test_left_out_is_the_executors_timeout(self):
+        assert resolve_tool_timeout("ws", None) is None
+
+    def test_a_positive_number_of_seconds_is_kept(self):
+        assert resolve_tool_timeout("ws", 180) == 180
+
+    @pytest.mark.parametrize("value", [0, -5, True, 1.5, "180", [180]])
+    def test_anything_else_is_refused(self, value):
+        """A misspelt value must not silently fall back on the default it was meant to replace."""
+        with pytest.raises(ValueError, match="tool_timeout"):
+            resolve_tool_timeout("ws", value)

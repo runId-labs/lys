@@ -242,7 +242,7 @@ def python_type_to_json_schema(
 
     # Handle Strawberry input types
     if hasattr(python_type, "__strawberry_definition__"):
-        schema = extract_strawberry_input_schema(python_type, nullable=nullable)
+        schema = _as_graphql_object(python_type, extract_strawberry_input_schema(python_type, nullable=nullable))
         # Add the GraphQL type name for proper query building
         type_name = getattr(python_type, "__name__", "")
         if type_name:
@@ -251,6 +251,25 @@ def python_type_to_json_schema(
 
     # Default to string for unknown types
     return {"type": "string", "_graphql_type": "String" if is_optional else "String!"}
+
+
+def _as_graphql_object(input_class: type, schema: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    An input object passed as an argument's VALUE, as the server reads it. The executor sends that value as
+    it is, so its keys are the fields' GraphQL names (camelCase), not their Python names: ``opened_at``
+    reached the server as an unknown field. A @oneOf input takes exactly one key, which the schema
+    states: a model offered every key fills them all, and the server refuses the request.
+    """
+    schema = dict(schema)
+    schema["properties"] = {to_camel_case(name): field for name, field in schema.get("properties", {}).items()}
+    if "required" in schema:
+        schema["required"] = [to_camel_case(name) for name in schema["required"]]
+    definition = getattr(input_class, "__strawberry_definition__", None)
+    if getattr(definition, "is_one_of", False):
+        schema["minProperties"] = schema["maxProperties"] = 1
+        schema["description"] = "Exactly ONE of these keys" + (
+            f" — {schema['description']}" if schema.get("description") else "")
+    return schema
 
 
 def extract_strawberry_input_schema(input_class: type, nullable: bool = True) -> Dict[str, Any]:
@@ -511,6 +530,7 @@ def extract_tool_from_field(
     node_type: type = None,
     operation_type: Optional[str] = None,
     on_request: Optional[Dict[str, Any]] = None,
+    timeout: Optional[int] = None,
 ) -> Dict[str, Any]:
     """
     Extract an LLM tool definition from a Strawberry field.
@@ -531,6 +551,8 @@ def extract_tool_from_field(
             fields out unless the call sets it. Read whole, a field like an article's
             text makes most of a result the model rarely needs, and every round of the
             turn sends it again.
+        timeout: Seconds a call of the tool waits for the API — the webservice option
+            ``tool_timeout``; None: the executor's timeout.
 
     Returns:
         Tool definition dict in the format:
@@ -711,6 +733,7 @@ def extract_tool_from_field(
             "input_wrappers": input_wrappers if input_wrappers else None,
             "on_request": on_request_meta,
             "default_first": default_first,
+            "timeout": timeout,
         }
     }
 

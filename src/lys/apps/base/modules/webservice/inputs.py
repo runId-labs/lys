@@ -18,6 +18,7 @@ class WebserviceAttributesInput:
     access_levels: strawberry.auto
     operation_type: strawberry.auto
     ai_tool: Optional[JSON] = None
+    ai_tool_consumers: strawberry.auto
 
 
 @strawberry.experimental.pydantic.input(model=WebserviceFixturesModel)

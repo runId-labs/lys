@@ -895,6 +895,59 @@ class TestPrepareChatContext:
             }
 
     @pytest.mark.asyncio
+    async def test_the_chatbot_asks_for_its_own_audience(
+        self, connected_user, mock_session, mock_info, _setup_mocks
+    ):
+        """The chatbot's tools are read as the chatbot's: a tool reserved to an agent never reaches it."""
+        from lys.apps.ai.modules.conversation.consts import AI_PURPOSE_CHATBOT
+        from lys.apps.ai.modules.conversation.services import AIConversationService
+
+        await AIConversationService._prepare_chat_context(
+            user_id="user-123",
+            content="Hello",
+            session=mock_session,
+            connected_user=connected_user,
+            info=mock_info,
+        )
+
+        assert _setup_mocks["mock_tools"].await_args.kwargs["consumer"] == AI_PURPOSE_CHATBOT
+
+    @pytest.mark.parametrize("configured", [True, False])
+    @pytest.mark.asyncio
+    async def test_the_navigation_adviser_comes_with_navigate_once_its_endpoint_is_configured(
+        self, connected_user, mock_session, mock_info, _setup_mocks, configured
+    ):
+        """Offered and registered on the same condition: pages to open, and the consumer's endpoint."""
+        from types import SimpleNamespace
+
+        from lys.apps.ai.modules.conversation.services import AIConversationService
+        from lys.apps.ai.utils.navigation_advice import NAVIGATION_ADVICE_PURPOSE
+
+        ai_service = _setup_mocks["mock_ai_service"]
+        ai_service.get_routes_manifest.return_value = {"routes": [
+            {"name": "OpenPage", "path": "/open", "description": "Open", "main_webservices": ["wsA"]},
+            {"name": "ClosedPage", "path": "/closed", "description": "Closed", "main_webservices": ["wsB"]},
+        ]}
+        ai_service.get_config = MagicMock(return_value=SimpleNamespace(
+            endpoints={NAVIGATION_ADVICE_PURPOSE: object()} if configured else {},
+        ))
+        executor = _setup_mocks["mock_executor"].return_value
+
+        ctx = await AIConversationService._prepare_chat_context(
+            user_id="user-123",
+            content="Where are my orders?",
+            session=mock_session,
+            connected_user=connected_user,
+            info=mock_info,
+        )
+
+        offered = [tool["function"]["name"] for tool in ctx["llm_tools"]]
+        registered = [call.args[0] for call in executor.register_special_tool.call_args_list]
+        assert ("advise_navigation" in offered) is configured
+        assert ("advise_navigation" in registered) is configured
+        assert "navigate" in offered
+
+    @pytest.mark.asyncio
     async def test_global_prompt_reaches_the_system_block(
         self, connected_user, mock_session, mock_info, _setup_mocks
     ):
@@ -929,7 +982,7 @@ class TestPrepareChatContext:
 
         expected_keys = {
             "tools", "llm_tools", "executor", "conversation", "message_service", "ai_service", "messages", "info",
-            "user_message_id",
+            "user_message_id", "provenance",
         }
         assert set(ctx.keys()) == expected_keys
 
@@ -1538,7 +1591,7 @@ class TestChatWithTools:
         mock_conversation.id = "conv-1"
         mock_msg_service = AsyncMock()
         mock_ai_service = AsyncMock()
-        mock_executor = AsyncMock()
+        mock_executor = AsyncMock(runs_alongside=MagicMock(return_value=False))
 
         # First call: LLM requests a tool call
         tool_call_response = self._make_ai_response(
@@ -1595,7 +1648,7 @@ class TestChatWithTools:
         mock_conversation.id = "conv-1"
         mock_msg_service = AsyncMock()
         mock_ai_service = AsyncMock()
-        mock_executor = AsyncMock()
+        mock_executor = AsyncMock(runs_alongside=MagicMock(return_value=False))
         mock_executor.execute = AsyncMock(return_value={"data": "result"})
 
         # Always return tool calls to force max iterations
@@ -1636,7 +1689,7 @@ class TestChatWithTools:
         mock_conversation = MagicMock()
         mock_conversation.id = "conv-1"
         mock_ai_service = AsyncMock()
-        mock_executor = AsyncMock()
+        mock_executor = AsyncMock(runs_alongside=MagicMock(return_value=False))
         mock_executor.execute = AsyncMock(return_value={"data": "result"})
         tool_response = self._make_ai_response(
             content="",
@@ -1686,7 +1739,7 @@ class TestChatWithTools:
         # add_tool_result raises to simulate DB failure
         mock_msg_service.add_tool_result = AsyncMock(side_effect=Exception("DB connection lost"))
         mock_ai_service = AsyncMock()
-        mock_executor = AsyncMock()
+        mock_executor = AsyncMock(runs_alongside=MagicMock(return_value=False))
 
         tool_call_response = self._make_ai_response(
             content="",
@@ -2028,7 +2081,7 @@ class TestChatWithToolsStreaming:
         mock_conversation = MagicMock()
         mock_conversation.id = "conv-1"
         mock_msg_service = AsyncMock()
-        mock_executor = AsyncMock()
+        mock_executor = AsyncMock(runs_alongside=MagicMock(return_value=False))
         mock_executor.execute = AsyncMock(
             side_effect=Exception("DB error: host=prod-db.internal password=p@ss")
         )
@@ -2107,7 +2160,7 @@ class TestChatWithToolsStreaming:
 
         mock_ai_service = MagicMock()
         mock_ai_service.chat_stream_with_purpose = fake_stream
-        mock_executor = AsyncMock()
+        mock_executor = AsyncMock(runs_alongside=MagicMock(return_value=False))
         mock_executor.execute = AsyncMock(return_value={"ok": True})
         mock_msg_service = AsyncMock()
         ctx = {
@@ -2168,7 +2221,7 @@ class TestChatWithToolsStreaming:
         mock_msg_service = AsyncMock()
         # add_tool_result raises to simulate DB failure
         mock_msg_service.add_tool_result = AsyncMock(side_effect=Exception("DB connection lost"))
-        mock_executor = AsyncMock()
+        mock_executor = AsyncMock(runs_alongside=MagicMock(return_value=False))
         mock_executor.execute = AsyncMock(
             side_effect=Exception("Tool execution failed")
         )
@@ -2267,7 +2320,7 @@ class TestChatWithToolsStreaming:
         mock_conversation = MagicMock()
         mock_conversation.id = "conv-1"
         mock_msg_service = AsyncMock()
-        mock_executor = AsyncMock()
+        mock_executor = AsyncMock(runs_alongside=MagicMock(return_value=False))
         mock_executor.execute = AsyncMock(return_value={"data": "ok"})
 
         async def tool_stream(*args, **kwargs):
@@ -4486,3 +4539,107 @@ class TestMaxToolIterations:
         service, patched = self._service({"max_tool_iterations": value})
         with patched, pytest.raises(ValueError):
             service._max_tool_iterations(None)
+
+
+
+class TestReadTogether:
+    """The reads asked in a row run together; the round is still handled one call at a time, in order."""
+
+    @staticmethod
+    def _call(name, n=0):
+        return {"id": f"call-{n}", "function": {"name": name, "arguments": json.dumps({"n": n})}}
+
+    @staticmethod
+    def _executor(execute, max_parallel_calls=None):
+        from lys.apps.ai.modules.core.executors.abstracts import ToolExecutor
+
+        class Reads(ToolExecutor):
+            """An executor whose read_* tools may run alongside one another."""
+
+            def runs_alongside(self, tool_name):
+                return tool_name in {"read_a", "read_b", "read_c"}
+
+            async def get_tools(self):
+                return []
+
+            async def execute(self, tool_name, arguments, context):
+                return await run(tool_name=tool_name, arguments=arguments, context=context)
+
+        run = AsyncMock(side_effect=execute)
+        executor = Reads()
+        if max_parallel_calls is not None:
+            executor.max_parallel_calls = max_parallel_calls
+        return executor
+
+    def test_a_run_stops_at_the_first_call_that_runs_alone(self):
+        from lys.apps.ai.modules.conversation.services import AIConversationService
+
+        executor = self._executor(None)
+        calls = [self._call("read_a"), self._call("read_b"), self._call("draw"), self._call("read_c")]
+
+        assert AIConversationService._read_run(executor, calls, 0) == [0, 1]
+        # A write keeps its place: the read asked after it is not run before it
+        assert AIConversationService._read_run(executor, calls, 2) == []
+        # One read alone runs where it is handled
+        assert AIConversationService._read_run(executor, calls, 3) == []
+
+    @pytest.mark.asyncio
+    async def test_the_reads_run_together_and_each_keeps_its_outcome(self):
+        import anyio
+        from lys.apps.ai.modules.conversation.services import AIConversationService
+
+        running, overlap = 0, []
+
+        async def execute(tool_name, arguments, context):
+            nonlocal running
+            running += 1
+            overlap.append(running)
+            await anyio.sleep(0.02)
+            running -= 1
+            if arguments["n"] == 2:
+                raise RuntimeError("down")
+            return {"tool": tool_name, "n": arguments["n"]}
+
+        executor = self._executor(execute)
+        calls = [self._call("read_a", 1), self._call("read_b", 2), self._call("read_c", 3), self._call("draw", 4)]
+
+        outcomes = await AIConversationService._read_together(executor, calls, 0, {"session": None})
+
+        assert max(overlap) == 3 and set(outcomes) == {0, 1, 2}
+        assert outcomes[0] == {"tool": "read_a", "n": 1} and isinstance(outcomes[1], RuntimeError)
+
+    @pytest.mark.asyncio
+    async def test_no_more_reads_run_at_once_than_the_executor_allows(self):
+        import anyio
+        from lys.apps.ai.modules.conversation.services import AIConversationService
+
+        running, overlap = 0, []
+
+        async def execute(tool_name, arguments, context):
+            nonlocal running
+            running += 1
+            overlap.append(running)
+            await anyio.sleep(0.01)
+            running -= 1
+            return {"n": arguments["n"]}
+
+        executor = self._executor(execute, max_parallel_calls=2)
+        calls = [self._call(name, n) for n, name in enumerate(["read_a", "read_b", "read_c", "read_a", "read_b"])]
+
+        outcomes = await AIConversationService._read_together(executor, calls, 0, {"session": None})
+
+        assert max(overlap) == 2 and [outcomes[n] for n in range(5)] == [{"n": n} for n in range(5)]
+
+    @pytest.mark.asyncio
+    async def test_an_outcome_is_handed_back_once_and_a_failure_raised_where_the_call_is(self):
+        from lys.apps.ai.modules.conversation.services import AIConversationService
+
+        executor = self._executor(AsyncMock(return_value={"ran": "now"}))
+        outcomes = {0: {"read": "ahead"}, 1: RuntimeError("down")}
+
+        assert await AIConversationService._outcome(outcomes, 0, executor, "read_a", {}, {}) == {"read": "ahead"}
+        with pytest.raises(RuntimeError):
+            await AIConversationService._outcome(outcomes, 1, executor, "read_b", {}, {})
+        # A call no run read is run where it is handled
+        assert await AIConversationService._outcome(outcomes, 2, executor, "draw", {}, {}) == {"ran": "now"}
+        assert outcomes == {}

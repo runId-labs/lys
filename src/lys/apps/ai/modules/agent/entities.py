@@ -4,7 +4,8 @@ Agent run entity: the trace of one agent run.
 Kept apart from the conversations on purpose: a run is not something the user talks in.
 Stored as a conversation, it would be listed in the user's history and indexed for the
 conversation search. One row per run, with what the run read and wrote (the transcript),
-what it returned, and what it cost.
+what it returned, and what it cost. A follow-up is a run of its own, pointing at the run it
+continues: a run is never rewritten once it ended.
 """
 from datetime import datetime
 from typing import Any, Optional
@@ -42,6 +43,14 @@ class AIAgentRun(Entity):
     )
     status: Mapped[str] = mapped_column(String(20), nullable=False, comment="RUNNING, SUCCEEDED or FAILED")
     task: Mapped[str] = mapped_column(Text, nullable=False, comment="What the agent was asked to do")
+    tool_defaults: Mapped[Optional[dict[str, Any]]] = mapped_column(
+        JSON, nullable=True,
+        comment="The run's scope, pinned in its tools; a follow-up runs on it, never on the caller's",
+    )
+    continued_from_id: Mapped[Optional[str]] = mapped_column(
+        Uuid(as_uuid=False), nullable=True, index=True,
+        comment="The run this one follows up, whose transcript it continued (soft FK)",
+    )
     transcript: Mapped[list[dict[str, Any]]] = mapped_column(
         JSON, nullable=False, default=list,
         comment="Every message of the run: the model's calls and the tools' results",

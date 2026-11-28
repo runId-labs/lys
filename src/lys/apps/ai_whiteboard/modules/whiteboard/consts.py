@@ -23,6 +23,9 @@ class ElementKind(str, Enum):
     FRAME = "frame"      # a named zone grouping what sits inside it
     TABLE = "table"      # a grid of cells, drawn from headers and rows
     CHART = "chart"      # a chart, drawn from its data
+    KPI = "kpi"          # a key figure: a large value, its label, and how it moved
+    CALLOUT = "callout"  # the message to remember, set apart by a coloured bar
+    STEPS = "steps"      # numbered steps in a row, joined by arrows
 
 
 # Kinds that are a shape carrying a text label inside them. They share a factory: the
@@ -36,6 +39,16 @@ LABELLED_SHAPES = {
 
 # Kinds drawn as a segment between two points, bound to elements when named.
 LINEAR_KINDS = (ElementKind.ARROW, ElementKind.LINE)
+
+# Kinds drawn from their data as several parts under one name: redrawn whole when their data,
+# size or colours change, never patched part by part.
+COMPOSITE_KINDS = (ElementKind.TABLE, ElementKind.CHART, ElementKind.KPI, ElementKind.CALLOUT, ElementKind.STEPS)
+# The components: composites laid out from what they say, whose parts carry their colours.
+COMPONENT_KINDS = (ElementKind.KPI, ElementKind.CALLOUT, ElementKind.STEPS)
+# The fields of an update that redraw a component (kpi, callout, steps) - what it is drawn from.
+COMPONENT_REDRAW_FIELDS = (
+    "text", "value", "delta", "items", "size", "width", "color", "background", "tone", "align",
+)
 
 
 class ChartType(str, Enum):
@@ -112,6 +125,13 @@ LINE_HEIGHT = 1.15
 CHAR_WIDTH_RATIO = 0.58
 # Excalidraw's padding between a container's edge and the text bound inside it.
 BOUND_TEXT_PADDING = 5
+# What a shape keeps between its edge and its label, the editor's padding included. At the
+# editor's five pixels alone a label reads as touching the border. The editor cannot be told a
+# wider padding, so the label's lines are broken this much narrower than the editor would break
+# them (it keeps a line that fits) and the shape is sized with this margin all around: it holds
+# on a centred label, the default - one aligned left or right keeps the editor's padding on its
+# own side.
+LABEL_MARGIN = 15
 # Size floor for a labelled shape, so a one-word note is still a box and not a sliver.
 MIN_SHAPE_WIDTH = 120
 MIN_SHAPE_HEIGHT = 60
@@ -128,12 +148,25 @@ FRAME_TEXT_SIZE = "large"
 STROKES = {"clean": 0, "sketch": 1}
 CORNERS = {"square": None, "round": {"type": 3}}
 THICKNESSES = {"thin": 1, "bold": 2}
+# A dashed or dotted line says "not established": a hypothesis, a projection, an indirect link.
+PATTERNS = {"solid": "solid", "dashed": "dashed", "dotted": "dotted"}
+# How a link runs between the two elements it joins: straight, at right angles (the editor's
+# elbow arrow, which it keeps orthogonal when an end moves), or curved - a loop, a return.
+PATHS = ("straight", "elbow", "curved")
+# The end of a link, by the editor's own names; "none" draws no head.
+HEADS = {"arrow": "arrow", "triangle": "triangle", "dot": "dot", "bar": "bar", "none": None}
+# A curved link bends off its straight run by this share of its length, at its middle.
+CURVE_BEND = 0.12
+# Where a link's path is remembered (customData): what it is routed by when an end moves.
+PATH_KEY = "whiteboardPath"
 # Ruled lines by default: what is drawn here is a diagram, a table, a deck for a board
 # meeting - finished work, not a sketch. The hand-drawn stroke stays a theme away.
 DEFAULT_STROKE = "clean"
 # What an element is drawn with when it names no corners and no thickness.
 DEFAULT_CORNERS = "square"
 DEFAULT_THICKNESS = "thin"
+DEFAULT_PATTERN = "solid"
+DEFAULT_PATH = "straight"
 # How a text sits in its box, by the editor's own names.
 ALIGNMENTS = ("left", "center", "right")
 
@@ -141,7 +174,44 @@ ALIGNMENTS = ("left", "center", "right")
 # ==================== Palette ====================
 
 STROKE_COLOR = "#1e1e1e"
+# The colours a drawing takes by what they mean, not by their value: a caller names a tone and
+# the board's palette gives its line and fill. Named, for the same reason as the sizes: a deck
+# keeps one red for what is at risk, and the brand changes in one place. A consumer recolours
+# the tones (plugin setting ``palette``: {tone: {"stroke", "background"}}); the set of tones is
+# fixed, since the tool describes them.
+TONES = {
+    "accent": {"stroke": "#1971c2", "background": "#d0ebff"},
+    "positive": {"stroke": "#2f9e44", "background": "#d3f9d8"},
+    "risk": {"stroke": "#e03131", "background": "#ffe3e3"},
+    "watch": {"stroke": "#e8590c", "background": "#fff4e6"},
+    "neutral": {"stroke": "#343a40", "background": "#f1f3f5"},
+}
+
 NOTE_BACKGROUND = "#fff3bf"
+# Components (kpi, callout, steps): a card on a white ground, its secondary text muted. Their
+# sizes scale with the text size asked for, like a table's.
+CARD_BACKGROUND = "#ffffff"
+MUTED_TEXT_COLOR = "#495057"
+KPI_MIN_WIDTH = 240
+KPI_VALUE_SCALE = 2.25
+COMPONENT_PADDING = 16
+CALLOUT_WIDTH = 520
+CALLOUT_BAR_WIDTH = 8
+STEP_WIDTH = 200
+STEP_GAP = 60
+STEP_BADGE = 32
+MAX_STEPS = 8
+# The zones of a slide, as shares of its frame: an element placed by zone (and slot) gets its
+# place and width from its slide, never from coordinates a caller guesses. A slide is a title
+# band over a body; the body halves (left/right, top/bottom) and quarters. Several elements
+# side by side in a zone take its slots ("2/3": the second of three equal columns).
+SLIDE_MARGIN_SHARE = 0.0375
+SLIDE_TITLE_SHARE = 0.14
+ZONE_GUTTER = 32
+SLIDE_ZONES = (
+    "title", "full", "left", "right", "top", "bottom", "top-left", "top-right", "bottom-left", "bottom-right",
+)
+MAX_SLOTS = 6
 TRANSPARENT = "transparent"
 # Excalidraw's own element colours, used to give chart series distinct fills without
 # inventing a palette the rest of the board does not use.
@@ -170,6 +240,12 @@ MAX_TEXT_LENGTH = 2_000
 MAX_TABLE_COLUMNS = 10
 MAX_TABLE_ROWS = 25
 MAX_CHART_POINTS = 24
+# How large a chart's figure may be. Not MAX_COORDINATE: a figure is no place on the board, and a
+# revenue chart in euros runs past a hundred thousand - refused, its figures came back converted
+# to another unit the request never gave. Bounded only to keep the numbers finite and readable.
+MAX_CHART_VALUE = 1e15
+# Reference lines a line chart may carry: a threshold, a target, a budget - read against the curve.
+MAX_CHART_REFERENCES = 3
 
 # Two elements sharing less than this, in either direction, are neighbours: sizes are
 # computed here from font metrics and settle a pixel or two away in the editor.
@@ -219,16 +295,20 @@ DEFAULT_BACKGROUND = "#ffffff"
 # link sent as ``{"arrow": {"from": ..., "to": ...}}`` read as a link with no ends,
 # six free strokes landed on the origin, and the writer was told it had succeeded.
 ITEM_GEOMETRY_FIELDS = (
-    "x", "y", "width", "height", "color", "background", "size", "align", "stroke", "corners", "thickness",
+    "x", "y", "width", "height", "zone", "slot", "color", "background", "tone", "size", "align", "stroke", "corners",
+    "thickness", "pattern",
 )
 ADD_ITEM_FIELDS = (
-    "name", "kind", "text", "label", "from", "to", "frame", "headers", "rows", "chart",
-    *ITEM_GEOMETRY_FIELDS,
+    "name", "kind", "text", "label", "from", "to", "path", "head", "frame", "headers", "rows", "chart",
+    "value", "delta", "items", *ITEM_GEOMETRY_FIELDS,
 )
 # ``kind`` is tolerated on an update though nothing reads it there: a writer redrawing a
 # table from new data repeats the kind it gave, and refusing that would refuse a
 # well-formed redraw.
-UPDATE_ITEM_FIELDS = ("name", "kind", "text", "label", "frame", "headers", "rows", "chart", *ITEM_GEOMETRY_FIELDS)
+UPDATE_ITEM_FIELDS = (
+    "name", "kind", "text", "label", "path", "head", "frame", "headers", "rows", "chart", "value", "delta", "items",
+    *ITEM_GEOMETRY_FIELDS,
+)
 
 # The sheet a slide is drawn on, and the gap between two slides stacked in a column.
 # Only the tool description uses them: a frame takes whatever size its caller gives.

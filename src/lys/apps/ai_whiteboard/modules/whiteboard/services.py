@@ -303,6 +303,7 @@ class WhiteboardService(EntityService[Whiteboard]):
         caller_session,
         focus: Optional[List[str]] = None,
         copy_from_whiteboard_id: Optional[str] = None,
+        patches: Optional[List[Dict[str, Any]]] = None,
     ) -> Dict[str, Any]:
         """
         Apply a patch to a board, committed as soon as the backend allows.
@@ -344,6 +345,8 @@ class WhiteboardService(EntityService[Whiteboard]):
             copy_from_whiteboard_id: A board of the owner's to copy: the patch then
                 lands on a NEW board opened as its copy (see :meth:`copy_for_user`),
                 never on the source. ``title`` names the copy.
+            patches: Several patches to apply in order, in place of ``operations`` - a
+                drafted drawing (see ``drafting.py``): written as one revision.
 
         Returns:
             The board id, its title and its elements, as plain values - and ``overlaps``
@@ -356,13 +359,13 @@ class WhiteboardService(EntityService[Whiteboard]):
         if not cls._can_commit_apart():
             return await cls._draw(
                 user_id, title, current_whiteboard_id, named_whiteboard_id, operations, caller_session,
-                focus=focus, copy_from_whiteboard_id=copy_from_whiteboard_id,
+                focus=focus, copy_from_whiteboard_id=copy_from_whiteboard_id, patches=patches,
             )
 
         async with cls.app_manager.database.get_session() as session:
             return await cls._draw(
                 user_id, title, current_whiteboard_id, named_whiteboard_id, operations, session,
-                focus=focus, copy_from_whiteboard_id=copy_from_whiteboard_id,
+                focus=focus, copy_from_whiteboard_id=copy_from_whiteboard_id, patches=patches,
             )
 
     @classmethod
@@ -376,6 +379,7 @@ class WhiteboardService(EntityService[Whiteboard]):
         session,
         focus: Optional[List[str]] = None,
         copy_from_whiteboard_id: Optional[str] = None,
+        patches: Optional[List[Dict[str, Any]]] = None,
     ) -> Dict[str, Any]:
         """
         Resolve the target through one session, opening a board if there is none.
@@ -384,6 +388,7 @@ class WhiteboardService(EntityService[Whiteboard]):
         not exist is refused, not answered with an empty one thrown open in front of the
         user. A copy alone is a call worth making: the board it opens is shown as it is.
         """
+        patches = [patch for patch in (patches if patches is not None else [operations]) if patch]
         if copy_from_whiteboard_id:
             source = await cls.get_for_user(copy_from_whiteboard_id, user_id, session)
             if source is None:
@@ -395,12 +400,12 @@ class WhiteboardService(EntityService[Whiteboard]):
                 user_id, current_whiteboard_id, named_whiteboard_id, session,
             )
             if whiteboard is None:
-                if not operations:
+                if not patches:
                     raise LysError(WHITEBOARD_NOT_FOUND, "There is no whiteboard to show yet: drawing on one opens it")
                 whiteboard = await cls.create_for_user(user_id, title, session)
 
-        if operations:
-            await cls.apply_operations(whiteboard, operations, session, focus=focus)
+        if patches:
+            await cls.apply_patches(whiteboard, patches, session, focus=focus)
         elif focus:
             cls.show(whiteboard, focus, session)
 
@@ -415,8 +420,8 @@ class WhiteboardService(EntityService[Whiteboard]):
         # chose its coordinates before any size existed and cannot see the board, so the
         # drawing stands and the caller is told what to move. The key is absent when
         # there is nothing to say.
-        if operations:
-            found = scene_tools.overlaps(whiteboard.scene_json, scene_tools.drawn_names(operations))
+        if patches:
+            found = scene_tools.overlaps(whiteboard.scene_json, _drawn_names(patches))
             if found:
                 result["overlaps"] = found
         return result
@@ -441,6 +446,26 @@ class WhiteboardService(EntityService[Whiteboard]):
             .execution_options(populate_existing=True)
         )
         return result.scalar_one()
+
+    @classmethod
+    def scene_for_editor(cls, whiteboard: Whiteboard) -> Dict[str, Any]:
+        """
+        A board's scene as the editor is handed it: the palette applied to the elements that keep
+        a tone as their class (``scene.restyled``). Nothing is written - the editor saves what it
+        shows. A scene the palette cannot be applied to is handed as it is, never refused.
+        """
+        scene = whiteboard.scene_json or {}
+        try:
+            return scene_tools.restyled(scene, cls.style()) if scene.get("elements") else scene
+        except LysError as error:
+            logger.warning(f"Whiteboard '{whiteboard.id}': palette not applied ({error.debug_message})")
+            return scene
+
+    @classmethod
+    def style(cls) -> scene_tools.BoardStyle:
+        """How boards draw what a caller leaves unsaid: the plugin's ``palette``, ``corners`` and
+        ``note_background`` (``scene.style_of``)."""
+        return scene_tools.style_of(cls.app_manager.settings.get_plugin_config(PLUGIN_NAME))
 
     @classmethod
     def _max_scene_bytes(cls) -> int:
@@ -474,10 +499,27 @@ class WhiteboardService(EntityService[Whiteboard]):
         nothing having happened. ``focus`` is checked against the scene the patch
         produces, before anything is written - so it may name what the same patch adds.
         """
+        return await cls.apply_patches(whiteboard, [operations], session, focus=focus)
+
+    @classmethod
+    async def apply_patches(
+        cls,
+        whiteboard: Whiteboard,
+        patches: List[Dict[str, Any]],
+        session,
+        focus: Optional[List[str]] = None,
+    ) -> Whiteboard:
+        """
+        Apply patches to a board's scene in order, as one revision - what a drafter applied
+        one after the other in memory (``drafting.py``), written as one drawing. Same rules as
+        :meth:`apply_operations`: on the latest scene, under the row lock, all or nothing.
+        """
         whiteboard = await cls._lock(whiteboard, session)
-        current = whiteboard.scene_json or scene_tools.empty_scene()
-        scene = scene_tools.apply_operations(current, operations)
-        shown = scene_tools.resolve_focus(scene, focus) if focus else scene_tools.drawn_names(operations)
+        scene = whiteboard.scene_json or scene_tools.empty_scene()
+        style = cls.style()
+        for patch in patches:
+            scene = scene_tools.apply_operations(scene, patch, style)
+        shown = scene_tools.resolve_focus(scene, focus) if focus else _drawn_names(patches)
 
         whiteboard.scene_json = scene
         whiteboard.revision = (whiteboard.revision or 0) + 1
@@ -531,6 +573,9 @@ class WhiteboardService(EntityService[Whiteboard]):
                 WHITEBOARD_REVISION_CONFLICT,
                 f"Whiteboard is at revision {whiteboard.revision}, caller wrote from {expected_revision}",
             )
+        # An element the user recoloured by hand - against the scene the editor was handed -
+        # leaves its tone's class: their colour wins
+        new_scene = scene_tools.unclassed(cls.scene_for_editor(whiteboard), new_scene)
 
         whiteboard.scene_json = new_scene
         whiteboard.revision = (whiteboard.revision or 0) + 1
@@ -890,3 +935,12 @@ class WhiteboardService(EntityService[Whiteboard]):
 
         event.listen(sync_session, "after_commit", on_commit, once=True)
         event.listen(sync_session, "after_rollback", on_rollback, once=True)
+
+
+def _drawn_names(patches: List[Dict[str, Any]]) -> List[str]:
+    """What a series of patches draws, by name, each once, in the order they name it."""
+    names: List[str] = []
+    for patch in patches:
+        names += [name for name in scene_tools.drawn_names(patch) if name not in names]
+    return names
+

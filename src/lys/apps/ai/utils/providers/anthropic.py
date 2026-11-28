@@ -312,6 +312,15 @@ class AnthropicProvider(AIProvider):
         is exposed as a single tool and ``tool_choice`` forces the model to call it; the
         tool-call ``input`` is the structured object, validated against ``schema``.
         """
+        return (await self.chat_json_with_usage(messages, config, schema))[0]
+
+    async def chat_json_with_usage(
+        self,
+        messages: List[Dict[str, Any]],
+        config: AIEndpointConfig,
+        schema: Type[T],
+    ) -> Tuple[T, Optional[Dict[str, int]]]:
+        """:meth:`chat_json`, with the call's token usage."""
         tool = self._schema_to_tool(schema)
         payload, headers, base_url = self._prepare(
             messages, config, tools=[tool], tool_choice={"type": "tool", "name": tool["name"]}
@@ -325,7 +334,7 @@ class AnthropicProvider(AIProvider):
                     timeout=config.timeout,
                 )
             ai_response = self._parse_response(response)
-            return self._validate_tool_output(ai_response, schema)
+            return self._validate_tool_output(ai_response, schema), ai_response.usage
         except httpx.TimeoutException:
             raise AITimeoutError(f"Request timed out after {config.timeout}s")
 
@@ -336,6 +345,15 @@ class AnthropicProvider(AIProvider):
         schema: Type[T],
     ) -> T:
         """Synchronous version of :meth:`chat_json` for Celery workers."""
+        return self.chat_json_with_usage_sync(messages, config, schema)[0]
+
+    def chat_json_with_usage_sync(
+        self,
+        messages: List[Dict[str, Any]],
+        config: AIEndpointConfig,
+        schema: Type[T],
+    ) -> Tuple[T, Optional[Dict[str, int]]]:
+        """Synchronous version of :meth:`chat_json_with_usage`."""
         tool = self._schema_to_tool(schema)
         payload, headers, base_url = self._prepare(
             messages, config, tools=[tool], tool_choice={"type": "tool", "name": tool["name"]}
@@ -349,7 +367,7 @@ class AnthropicProvider(AIProvider):
                     timeout=config.timeout,
                 )
             ai_response = self._parse_response(response)
-            return self._validate_tool_output(ai_response, schema)
+            return self._validate_tool_output(ai_response, schema), ai_response.usage
         except httpx.TimeoutException:
             raise AITimeoutError(f"Request timed out after {config.timeout}s")
 

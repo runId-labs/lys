@@ -203,6 +203,7 @@ class GraphQLClient:
         self,
         query: str,
         variables: Optional[Dict[str, Any]] = None,
+        timeout: Optional[float] = None,
     ) -> Dict[str, Any]:
         """
         Execute a GraphQL query/mutation.
@@ -210,6 +211,7 @@ class GraphQLClient:
         Args:
             query: GraphQL query or mutation string
             variables: Optional variables for the query
+            timeout: Seconds to wait for this request; None: the client's timeout
 
         Returns:
             Dict with 'data' and optionally 'errors' keys
@@ -223,7 +225,8 @@ class GraphQLClient:
 
         headers = self._get_headers()
 
-        async with httpx.AsyncClient(timeout=self.timeout, verify=self.verify_ssl) as client:
+        wait = self.timeout if timeout is None else timeout
+        async with httpx.AsyncClient(timeout=wait, verify=self.verify_ssl) as client:
             response = await client.post(
                 self.url,
                 json=payload,

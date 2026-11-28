@@ -779,10 +779,12 @@ class AIService(Service):
         schema: Type[T],
     ) -> AIJsonResponse[T]:
         """
-        Same as ``chat_json``, but also returns the endpoint that produced the response.
+        Same as ``chat_json``, but also returns the endpoint that produced the response, and
+        the tokens of the call that answered.
 
         Use it when the caller stores which model authored a result: after a fallback,
-        ``config.model`` names the primary endpoint, not the one that answered.
+        ``config.model`` names the primary endpoint, not the one that answered - or what the
+        call cost.
 
         Raises:
             AIError: No endpoint in the fallback chain produced a valid response.
@@ -1341,12 +1343,13 @@ class AIService(Service):
 
             for retry in range(cls.MAX_RETRIES):
                 try:
-                    data = await provider.chat_json(messages, current_endpoint, schema)
+                    data, usage = await provider.chat_json_with_usage(messages, current_endpoint, schema)
                     cls._raise_if_capped(data, current_endpoint)
                     return AIJsonResponse(
                         data=data,
                         model=current_endpoint.model,
                         provider=current_endpoint.provider,
+                        usage=usage,
                     )
 
                 except AIRateLimitError as e:
@@ -1411,12 +1414,13 @@ class AIService(Service):
 
             for retry in range(cls.MAX_RETRIES):
                 try:
-                    data = provider.chat_json_sync(messages, current_endpoint, schema)
+                    data, usage = provider.chat_json_with_usage_sync(messages, current_endpoint, schema)
                     cls._raise_if_capped(data, current_endpoint)
                     return AIJsonResponse(
                         data=data,
                         model=current_endpoint.model,
                         provider=current_endpoint.provider,
+                        usage=usage,
                     )
 
                 except AIRateLimitError as e:
@@ -1471,7 +1475,7 @@ class AIToolService(Service):
 
     Usage:
         ai_tool_service = app_manager.get_service("ai_tool")
-        tools = await ai_tool_service.get_accessible_tools(connected_user)
+        tools = await ai_tool_service.get_accessible_tools(connected_user, consumer="chatbot")
     """
 
     service_name = "ai_tool"
@@ -1480,10 +1484,23 @@ class AIToolService(Service):
     _tools: Dict[str, Dict[str, Any]] = {}
     _initialized: bool = False
 
-    @classmethod
-    async def get_accessible_tools(cls, connected_user: Dict[str, Any]) -> List[Dict]:
+    @staticmethod
+    def admits(tool_data: Dict[str, Any], consumer: Optional[str]) -> bool:
         """
-        Get tool definitions filtered by JWT claims.
+        Whether a consumer may be offered a tool: a tool without an audience (``consumers``
+        None) is every consumer's; a tool with one is offered to the purposes it names only.
+        A caller that does not say who it is (None) gets the unrestricted tools only — a
+        restricted tool is never offered by omission.
+        """
+        consumers = tool_data.get("consumers")
+        return consumers is None or (consumer is not None and consumer in consumers)
+
+    @classmethod
+    async def get_accessible_tools(
+        cls, connected_user: Dict[str, Any], consumer: Optional[str] = None,
+    ) -> List[Dict]:
+        """
+        Get tool definitions filtered by JWT claims and by the consumer's audience.
 
         For super_users, all tools are returned without filtering because:
         - The permission layer grants super_users access to everything
@@ -1494,17 +1511,25 @@ class AIToolService(Service):
         - "webservices" claim: global webservices (PUBLIC, CONNECTED, OWNER, ROLE)
         - "organizations" claim: per-organization webservices (ORGANIZATION_ROLE)
 
+        For everyone, super users included, a tool declaring an audience (``generate_tool``
+        given a list of purposes) is offered to those purposes only: the audience decides which
+        model sees a tool, never what the user may do — the token still does.
+
         Args:
             connected_user: Connected user dict from context, containing:
                             - "webservices": dict of accessible webservice names
                             - "organizations": dict of per-org webservices (client owners, client_user roles)
                             - "is_super_user": boolean
+            consumer: The AI endpoint purpose the tools are for (the chatbot's, an agent's).
+                None: only the tools without an audience.
 
         Returns:
             List of tool definitions for LLM function calling
         """
         if not cls._initialized:
             await cls._load_tools()
+
+        offered = {name: tool_data for name, tool_data in cls._tools.items() if cls.admits(tool_data, consumer)}
 
         # Super users get all tools - permission layer handles actual access control
         is_super_user = connected_user.get("is_super_user", False) if connected_user else False
@@ -1515,7 +1540,7 @@ class AIToolService(Service):
                     "definition": tool_data["definition"],
                     "operation_type": tool_data.get("operation_type"),
                 }
-                for name, tool_data in cls._tools.items()
+                for name, tool_data in offered.items()
             ]
 
         # Regular users: collect all accessible webservices from JWT claims
@@ -1538,7 +1563,7 @@ class AIToolService(Service):
                 "definition": tool_data["definition"],
                 "operation_type": tool_data.get("operation_type"),
             }
-            for name, tool_data in cls._tools.items()
+            for name, tool_data in offered.items()
             if name in accessible_ids
         ]
 
@@ -1604,6 +1629,7 @@ class AIToolService(Service):
                         code
                         operationType
                         aiTool
+                        aiToolConsumers
                     }
                 }
             }
@@ -1630,6 +1656,8 @@ class AIToolService(Service):
                         "operation_type": node.get("operationType") or "mutation",
                         "risk_level": ToolRiskLevel.READ,  # Default, could be fetched
                         "confirmation_fields": [],
+                        # The purposes it is offered to (see admits); None: every consumer
+                        "consumers": node.get("aiToolConsumers"),
                     }
 
         except httpx.HTTPError as e:

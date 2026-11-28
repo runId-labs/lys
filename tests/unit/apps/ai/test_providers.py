@@ -1266,6 +1266,20 @@ class TestMistralProviderChatJson:
             assert result.age == 30
 
     @pytest.mark.asyncio
+    async def test_chat_json_with_usage_returns_the_call_tokens(self, provider, config, messages):
+        mock_response = self._mock_json_response(200, content='{"name": "Alice", "age": 30}')
+
+        with patch("httpx.AsyncClient") as mock_client:
+            mock_instance = AsyncMock()
+            mock_instance.post.return_value = mock_response
+            mock_client.return_value.__aenter__.return_value = mock_instance
+
+            result, usage = await provider.chat_json_with_usage(messages, config, _SampleSchema)
+
+            assert result.name == "Alice"
+            assert (usage["prompt_tokens"], usage["completion_tokens"]) == (10, 20)
+
+    @pytest.mark.asyncio
     async def test_chat_json_payload_uses_native_json_schema(self, provider, config, messages):
         """The request must use response_format json_schema and forward messages as-is."""
         mock_response = self._mock_json_response(200, content='{"name": "Bob", "age": 5}')

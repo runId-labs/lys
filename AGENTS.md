@@ -277,6 +277,7 @@ python -c "import lys, pathlib; print(pathlib.Path(lys.__file__).parent / 'agent
 | Celery tasks | `tasks.md` |
 | Real-time signals | `signals.md` |
 | AI / chatbot integration | `ai.md` |
+| Spreadsheet table detection (`lys.core.utils.spreadsheet`) | `spreadsheet.md` |
 | Allowed / forbidden (consolidated rules) | `rules.md` |
 
 Project structure, migrations workflow and verification commands belong to

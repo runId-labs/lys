@@ -178,7 +178,7 @@ class TestDraw:
         session = make_session(board)
         with patch.object(WhiteboardService, "find_for_conversation", AsyncMock(return_value=board)), \
                 patch.object(WhiteboardService, "create_for_user", AsyncMock()) as create, \
-                patch.object(WhiteboardService, "apply_operations", AsyncMock(return_value=board)):
+                patch.object(WhiteboardService, "apply_patches", AsyncMock(return_value=board)):
             result = await WhiteboardService._draw(USER, "Title", BOARD_ID, None, self.OPERATIONS, session)
 
         create.assert_not_awaited()
@@ -190,7 +190,7 @@ class TestDraw:
         session = make_session(opened)
         with patch.object(WhiteboardService, "find_for_conversation", AsyncMock(return_value=None)), \
                 patch.object(WhiteboardService, "create_for_user", AsyncMock(return_value=opened)) as create, \
-                patch.object(WhiteboardService, "apply_operations", AsyncMock(return_value=opened)):
+                patch.object(WhiteboardService, "apply_patches", AsyncMock(return_value=opened)):
             await WhiteboardService._draw(USER, "Title", None, None, self.OPERATIONS, session)
 
         create.assert_awaited_once_with(USER, "Title", session)
@@ -200,7 +200,7 @@ class TestDraw:
         board = make_board(revision=4)
         session = make_session(board)
         with patch.object(WhiteboardService, "find_for_conversation", AsyncMock(return_value=board)), \
-                patch.object(WhiteboardService, "apply_operations", AsyncMock()) as apply, \
+                patch.object(WhiteboardService, "apply_patches", AsyncMock()) as apply, \
                 patch.object(WhiteboardService, "show", MagicMock(return_value=board)) as show:
             await WhiteboardService._draw(USER, "Title", BOARD_ID, None, {}, session, focus=["a"])
 
@@ -218,6 +218,39 @@ class TestDraw:
                 await WhiteboardService._draw(USER, "Title", None, None, {}, session, focus=["a"])
 
         assert error.value.detail == "WHITEBOARD_NOT_FOUND"
+        create.assert_not_awaited()
+
+
+class TestPatches:
+    """A drafted drawing: several patches, written as one."""
+
+    @pytest.fixture(autouse=True)
+    def locked(self):
+        """The row lock is a database matter; what is under test is what follows it."""
+        with patch.object(WhiteboardService, "_lock", AsyncMock(side_effect=lambda board, _session: board)):
+            yield
+
+    @pytest.mark.asyncio
+    async def test_patches_are_applied_in_order_as_one_revision(self, manager):
+        board = make_board(revision=2)
+        session = make_session(board)
+        patches = [{"add": [{"name": "a", "text": "first"}]}, {"update": [{"name": "a", "text": "second"}]}]
+        with patch.object(WhiteboardService, "find_for_conversation", AsyncMock(return_value=board)), \
+                patch.object(WhiteboardService, "_notify") as notify:
+            result = await WhiteboardService._draw(USER, "Title", BOARD_ID, None, {}, session, patches=patches)
+
+        assert board.revision == 3
+        assert scene_tools.find(board.scene_json, "a-text")["text"] == "second"
+        notify.assert_called_once_with(board, session, focus=["a"])
+        assert [element["name"] for element in result["elements"]] == ["a"]
+
+    @pytest.mark.asyncio
+    async def test_no_patch_and_no_focus_opens_nothing(self, manager):
+        session = make_session(make_board())
+        with patch.object(WhiteboardService, "find_for_conversation", AsyncMock(return_value=None)), \
+                patch.object(WhiteboardService, "create_for_user", AsyncMock()) as create:
+            with pytest.raises(LysError):
+                await WhiteboardService._draw(USER, "Title", None, None, {}, session, patches=[{}], focus=["a"])
         create.assert_not_awaited()
 
 
@@ -526,3 +559,35 @@ class TestDuplicateInput:
 
         with pytest.raises(ValidationError):
             DuplicateWhiteboardInputModel(title="x" * (TITLE_MAX_LENGTH + 1))
+
+
+class TestToneClasses:
+    """The palette applied when a board is read, and a hand recolouring that leaves its class."""
+
+    CLASSED = staticmethod(lambda: scene_tools.apply_operations(
+        scene_tools.empty_scene(), {"add": [{"name": "a", "text": "A", "tone": "risk"}]}))
+
+    def test_the_editor_is_handed_the_scene_in_the_consumers_palette(self, manager):
+        manager.settings.get_plugin_config.return_value = {"palette": {"risk": {"stroke": "#aa0000"}}}
+        board = make_board(scene=self.CLASSED())
+        served = WhiteboardService.scene_for_editor(board)
+        assert next(e for e in served["elements"] if e["id"] == "a")["strokeColor"] == "#aa0000"
+        assert board.scene_json is not served
+
+    def test_a_palette_that_cannot_be_applied_hands_the_scene_as_it_is(self, manager):
+        manager.settings.get_plugin_config.return_value = {"palette": {"pink": {"stroke": "#aa0000"}}}
+        board = make_board(scene=self.CLASSED())
+        assert WhiteboardService.scene_for_editor(board) is board.scene_json
+
+    @pytest.mark.asyncio
+    async def test_a_save_drops_the_class_of_an_element_recoloured_by_hand(self, manager):
+        scene = self.CLASSED()
+        edited = {**scene, "elements": [
+            {**e, "strokeColor": "#00ff00"} if e["id"] == "a" else e for e in scene["elements"]
+        ]}
+        board = make_board(revision=3, scene=scene)
+        with patch.object(WhiteboardService, "_lock", AsyncMock(side_effect=lambda b, _s: b)), \
+                patch.object(WhiteboardService, "_notify"):
+            await WhiteboardService.save_scene(board, edited, 3, make_session(board))
+        saved = next(e for e in board.scene_json["elements"] if e["id"] == "a")
+        assert saved["strokeColor"] == "#00ff00" and not (saved.get("customData") or {}).get("whiteboardTone")

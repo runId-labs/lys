@@ -13,6 +13,7 @@ from lys.core.graphql.interfaces import NodeInterface
 from lys.core.graphql.nodes import EntityNode, ServiceNode, ServiceNodeMixin
 from lys.core.permissions import generate_webservice_permission
 from lys.core.registries import AppRegistry, register_webservice
+from lys.core.utils.strings import to_camel_case
 from lys.core.utils.webservice import WebserviceIsPublicType, format_filed_description
 
 logger = logging.getLogger(__name__)
@@ -302,8 +303,11 @@ def lys_connection_field(
         # add it to the webservice parameters
         if order_by_type is not None:
             # Build dynamic description with available sort fields
-            sort_fields = list(effective_ensure_type.order_by_attribute_map.keys())
-            order_by_description = f"Sort results by field. Available: {', '.join(sort_fields)}. Use true for ASC, false for DESC"
+            # The fields as GraphQL names them, ONE per request (the input is @oneOf)
+            sort_fields = [to_camel_case(name) for name in effective_ensure_type.order_by_attribute_map.keys()]
+            order_by_description = (
+                f"Sort results by ONE field: {', '.join(sort_fields)}. true for ascending, false for descending"
+            )
 
             parameter_value_list.append(
                 inspect.Parameter(

@@ -228,3 +228,89 @@ class TestHandler:
         assert function["name"] == "calculate"
         assert function["parameters"]["required"] == ["steps"]
         assert function["parameters"]["properties"]["steps"]["items"]["required"] == ["name", "expression"]
+
+
+class TestMixedBases:
+    """A formula setting two figures of different bases against each other is computed, and said."""
+
+    @staticmethod
+    def _provenance():
+        from lys.apps.ai.utils.provenance import PROVENANCE_KEY, Provenance, figure
+
+        provenance = Provenance()
+        provenance.add({"content": "table", PROVENANCE_KEY: [
+            figure(1250000, "loaded_cost", "loaded cost 2030", "ledger", "EUR"),
+            figure(1000000, "gross_payroll", "gross payroll 2030", "payroll", "EUR"),
+            figure(40, "headcount", "headcount 2030", "payroll", "persons"),
+            figure(1040000, "salaries", "salaries 2030", "ledger", "EUR"),
+            figure(210000, "employer_contributions", "employer contributions 2030", "ledger", "EUR"),
+        ]})
+        return provenance
+
+    def _run(self, *expressions):
+        from lys.apps.ai.utils.calculator import build_calculate_handler
+
+        steps = [{"name": f"s{index}", "expression": text} for index, text in enumerate(expressions)]
+        return build_calculate_handler(self._provenance())({"steps": steps}, {})
+
+    def test_two_measures_of_two_sources_subtracted_are_warned_and_still_computed(self):
+        result = self._run("(1250000 - 1000000) / 1000000")
+        assert result["results"][0]["value"] == "0.25"
+        assert len(result["warnings"]) == 1
+        assert "loaded cost 2030, source ledger" in result["warnings"][0]
+        assert "gross payroll 2030, source payroll" in result["warnings"][0]
+
+    def test_figures_written_in_thousands_are_recognised(self):
+        assert "warnings" in self._run("1250 - 1000")
+
+    def test_a_step_carries_its_figures_to_the_steps_using_it(self):
+        result = self._run("1250000 * 1", "s0 - 1000000")
+        assert [warning.split(":")[0] for warning in result["warnings"]] == ["step 's1'"]
+
+    def test_one_source_own_arithmetic_is_not_warned(self):
+        assert "warnings" not in self._run("210000 / 1040000")
+
+    def test_an_amount_per_head_is_not_warned(self):
+        assert "warnings" not in self._run("1250000 / 40")
+
+    def test_a_rate_applied_to_an_amount_is_not_warned(self):
+        assert "warnings" not in self._run("1000000 * 0.21")
+
+    def test_a_number_no_tool_showed_is_not_warned(self):
+        assert "warnings" not in self._run("1250000 - 1234567")
+
+    def test_without_provenance_the_handler_answers_as_before(self):
+        result = handle_calculate({"steps": [{"name": "s", "expression": "1250000 - 1000000"}]}, {})
+        assert "warnings" not in result
+
+
+class TestProvenance:
+
+    def test_the_model_never_gets_the_provenance(self):
+        from lys.apps.ai.utils.provenance import PROVENANCE_KEY, model_result
+
+        stored = {"content": "table", PROVENANCE_KEY: []}
+        assert model_result(stored) == {"content": "table"} and PROVENANCE_KEY in stored
+        assert model_result("text") == "text"
+
+    def test_a_value_shown_for_two_kinds_of_figure_says_nothing(self):
+        from lys.apps.ai.utils.provenance import PROVENANCE_KEY, Provenance, figure
+
+        provenance = Provenance()
+        provenance.add({PROVENANCE_KEY: [figure(1500, "a", "a", "x", "EUR"), figure(1500, "b", "b", "y", "EUR")]})
+        assert provenance.figure_of(Decimal("1500"), 0) is None
+
+    def test_a_short_number_says_nothing(self):
+        from lys.apps.ai.utils.provenance import PROVENANCE_KEY, Provenance, figure
+
+        provenance = Provenance()
+        provenance.add({PROVENANCE_KEY: [figure(12, "months", "months", "x", "months")]})
+        assert provenance.figure_of(Decimal("12"), 0) is None
+
+    def test_malformed_entries_are_left_out(self):
+        from lys.apps.ai.utils.provenance import PROVENANCE_KEY, Provenance
+
+        provenance = Provenance()
+        provenance.add({PROVENANCE_KEY: [None, {"value": "x"}, {"value": "100", "measure": "m"}]})
+        provenance.add({PROVENANCE_KEY: "not a list"})
+        assert provenance.figure_of(Decimal("100"), 0) is None

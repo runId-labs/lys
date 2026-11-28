@@ -1049,6 +1049,13 @@ class TestToolOnRequest:
         assert tool["_graphql"]["return_fields"] == "summary articles { number content }"
         assert tool["_graphql"]["on_request"] is None
 
+    def test_the_tool_carries_its_timeout(self):
+        """The webservice option tool_timeout travels with the definition; left out, None (the executor's)."""
+        from lys.core.utils.tool_generator import extract_tool_from_field
+
+        assert extract_tool_from_field(self._field(), timeout=180)["_graphql"]["timeout"] == 180
+        assert extract_tool_from_field(self._field())["_graphql"]["timeout"] is None
+
     def test_a_field_the_tool_does_not_select_is_refused(self):
         from lys.core.utils.tool_generator import extract_tool_from_field
 
@@ -1279,3 +1286,37 @@ class TestToolPagination:
 
         with pytest.raises(ValueError, match="pagination argument"):
             extract_tool_from_field(self._field(connection=True, extra_param=", first: int = None"))
+
+
+
+class TestInputObjectAsValue:
+    """An input object passed as an argument's value: the keys the server reads, and a @oneOf's one key."""
+
+    def test_its_keys_are_the_graphql_names_and_a_one_of_takes_one(self):
+        import strawberry
+        from lys.core.utils.tool_generator import python_type_to_json_schema
+
+        @strawberry.input(one_of=True)
+        class EpisodeOrder:
+            opened_at: bool | None = strawberry.UNSET
+            peak_deviation: bool | None = strawberry.UNSET
+
+        schema = python_type_to_json_schema(EpisodeOrder, is_optional=True)
+
+        assert set(schema["properties"]) == {"openedAt", "peakDeviation"}
+        assert (schema["minProperties"], schema["maxProperties"]) == (1, 1)
+        assert schema["description"].startswith("Exactly ONE")
+
+    def test_a_plain_input_value_keeps_every_key_camel_cased(self):
+        import strawberry
+        from lys.core.utils.tool_generator import python_type_to_json_schema
+
+        @strawberry.input
+        class Period:
+            first_period: str
+            last_period: str | None = None
+
+        schema = python_type_to_json_schema(Period)
+
+        assert set(schema["properties"]) == {"firstPeriod", "lastPeriod"}
+        assert "maxProperties" not in schema

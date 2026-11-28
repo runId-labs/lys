@@ -164,6 +164,22 @@ class TestGraphQLClient:
         payload = call_args.kwargs.get("json") or call_args[1].get("json")
         assert payload["variables"] == {"id": "123"}
 
+    @pytest.mark.parametrize("timeout, waited", [(None, "client"), (180, 180)])
+    @pytest.mark.asyncio
+    async def test_execute_waits_the_requests_timeout_else_the_clients(self, client, timeout, waited):
+        mock_response = MagicMock(spec=httpx.Response)
+        mock_response.json.return_value = {"data": {}}
+
+        with patch("lys.core.graphql.client.httpx.AsyncClient") as MockClient:
+            mock_http_client = AsyncMock()
+            mock_http_client.post.return_value = mock_response
+            MockClient.return_value.__aenter__.return_value = mock_http_client
+
+            await client.execute("query { users { id } }", timeout=timeout)
+
+        expected = client.timeout if waited == "client" else waited
+        assert MockClient.call_args.kwargs["timeout"] == expected
+
     @pytest.mark.asyncio
     async def test_query_returns_data_directly(self, client):
         """Test that query returns data directly."""

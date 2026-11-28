@@ -229,9 +229,9 @@ class TestChatJsonFallbackRetryPolicy:
         sentinel = object()
 
         mock_primary = AsyncMock()
-        mock_primary.chat_json = AsyncMock(side_effect=AIValidationError("bad schema"))
+        mock_primary.chat_json_with_usage = AsyncMock(side_effect=AIValidationError("bad schema"))
         mock_fallback = AsyncMock()
-        mock_fallback.chat_json = AsyncMock(return_value=sentinel)
+        mock_fallback.chat_json_with_usage = AsyncMock(return_value=(sentinel, None))
 
         def get_provider(name):
             return mock_primary if name == "mistral" else mock_fallback
@@ -243,7 +243,7 @@ class TestChatJsonFallbackRetryPolicy:
                 )
 
         assert result.data is sentinel
-        assert mock_primary.chat_json.call_count == AIService.MAX_RETRIES
+        assert mock_primary.chat_json_with_usage.call_count == AIService.MAX_RETRIES
 
     @pytest.mark.asyncio
     async def test_truncation_falls_back_without_retrying(self):
@@ -254,9 +254,9 @@ class TestChatJsonFallbackRetryPolicy:
         sentinel = object()
 
         mock_primary = AsyncMock()
-        mock_primary.chat_json = AsyncMock(side_effect=AIResponseTruncatedError("cut off"))
+        mock_primary.chat_json_with_usage = AsyncMock(side_effect=AIResponseTruncatedError("cut off"))
         mock_fallback = AsyncMock()
-        mock_fallback.chat_json = AsyncMock(return_value=sentinel)
+        mock_fallback.chat_json_with_usage = AsyncMock(return_value=(sentinel, None))
 
         def get_provider(name):
             return mock_primary if name == "mistral" else mock_fallback
@@ -268,7 +268,7 @@ class TestChatJsonFallbackRetryPolicy:
                 )
 
         assert result.data is sentinel
-        assert mock_primary.chat_json.call_count == 1
+        assert mock_primary.chat_json_with_usage.call_count == 1
 
     def test_sync_validation_error_is_retried_then_falls_back(self):
         from lys.apps.ai.modules.core.services import AIService
@@ -278,9 +278,9 @@ class TestChatJsonFallbackRetryPolicy:
         sentinel = object()
 
         mock_primary = Mock()
-        mock_primary.chat_json_sync = Mock(side_effect=AIValidationError("bad schema"))
+        mock_primary.chat_json_with_usage_sync = Mock(side_effect=AIValidationError("bad schema"))
         mock_fallback = Mock()
-        mock_fallback.chat_json_sync = Mock(return_value=sentinel)
+        mock_fallback.chat_json_with_usage_sync = Mock(return_value=(sentinel, None))
 
         def get_provider(name):
             return mock_primary if name == "mistral" else mock_fallback
@@ -292,7 +292,7 @@ class TestChatJsonFallbackRetryPolicy:
                 )
 
         assert result.data is sentinel
-        assert mock_primary.chat_json_sync.call_count == AIService.MAX_RETRIES
+        assert mock_primary.chat_json_with_usage_sync.call_count == AIService.MAX_RETRIES
 
     def test_sync_truncation_falls_back_without_retrying(self):
         from lys.apps.ai.modules.core.services import AIService
@@ -302,9 +302,9 @@ class TestChatJsonFallbackRetryPolicy:
         sentinel = object()
 
         mock_primary = Mock()
-        mock_primary.chat_json_sync = Mock(side_effect=AIResponseTruncatedError("cut off"))
+        mock_primary.chat_json_with_usage_sync = Mock(side_effect=AIResponseTruncatedError("cut off"))
         mock_fallback = Mock()
-        mock_fallback.chat_json_sync = Mock(return_value=sentinel)
+        mock_fallback.chat_json_with_usage_sync = Mock(return_value=(sentinel, None))
 
         def get_provider(name):
             return mock_primary if name == "mistral" else mock_fallback
@@ -316,7 +316,7 @@ class TestChatJsonFallbackRetryPolicy:
                 )
 
         assert result.data is sentinel
-        assert mock_primary.chat_json_sync.call_count == 1
+        assert mock_primary.chat_json_with_usage_sync.call_count == 1
 
     @pytest.mark.asyncio
     async def test_truncation_on_every_endpoint_never_retries(self):
@@ -326,7 +326,7 @@ class TestChatJsonFallbackRetryPolicy:
         primary_endpoint, _ = self._endpoints()
 
         mock_provider = AsyncMock()
-        mock_provider.chat_json = AsyncMock(side_effect=AIResponseTruncatedError("cut off"))
+        mock_provider.chat_json_with_usage = AsyncMock(side_effect=AIResponseTruncatedError("cut off"))
 
         with self._no_delay():
             with patch.object(AIService, "get_provider", return_value=mock_provider):
@@ -336,7 +336,7 @@ class TestChatJsonFallbackRetryPolicy:
                     )
 
         # One call per endpoint in the chain, no retry on either.
-        assert mock_provider.chat_json.call_count == 2
+        assert mock_provider.chat_json_with_usage.call_count == 2
 
 
 class TestChatJsonWithMetadata:
@@ -359,7 +359,7 @@ class TestChatJsonWithMetadata:
         primary_endpoint, _ = self._endpoints()
         sentinel = object()
         mock_primary = AsyncMock()
-        mock_primary.chat_json = AsyncMock(return_value=sentinel)
+        mock_primary.chat_json_with_usage = AsyncMock(return_value=(sentinel, None))
 
         with patch.object(AIService, "get_provider", return_value=mock_primary):
             result = await AIService.chat_json_with_metadata(
@@ -370,6 +370,20 @@ class TestChatJsonWithMetadata:
         assert (result.provider, result.model) == ("mistral", "primary-model")
 
     @pytest.mark.asyncio
+    async def test_the_tokens_of_the_call_that_answered_come_back(self):
+        from lys.apps.ai.modules.core.services import AIService
+
+        primary_endpoint, _ = self._endpoints()
+        usage = {"prompt_tokens": 12, "completion_tokens": 3}
+        mock_primary = AsyncMock()
+        mock_primary.chat_json_with_usage = AsyncMock(return_value=(object(), usage))
+        with patch.object(AIService, "get_provider", return_value=mock_primary):
+            result = await AIService.chat_json_with_metadata(
+                [{"role": "user", "content": "hi"}], primary_endpoint, Mock
+            )
+        assert result.usage == usage
+
+    @pytest.mark.asyncio
     async def test_fallback_answer_reports_fallback_endpoint(self):
         from lys.apps.ai.modules.core.services import AIService
         from lys.apps.ai.utils.providers.exceptions import AITimeoutError
@@ -377,9 +391,9 @@ class TestChatJsonWithMetadata:
         primary_endpoint, _ = self._endpoints()
         sentinel = object()
         mock_primary = AsyncMock()
-        mock_primary.chat_json = AsyncMock(side_effect=AITimeoutError("too slow"))
+        mock_primary.chat_json_with_usage = AsyncMock(side_effect=AITimeoutError("too slow"))
         mock_fallback = AsyncMock()
-        mock_fallback.chat_json = AsyncMock(return_value=sentinel)
+        mock_fallback.chat_json_with_usage = AsyncMock(return_value=(sentinel, None))
 
         def get_provider(name):
             return mock_primary if name == "mistral" else mock_fallback
@@ -399,9 +413,9 @@ class TestChatJsonWithMetadata:
         primary_endpoint, _ = self._endpoints()
         sentinel = object()
         mock_primary = Mock()
-        mock_primary.chat_json_sync = Mock(side_effect=AITimeoutError("too slow"))
+        mock_primary.chat_json_with_usage_sync = Mock(side_effect=AITimeoutError("too slow"))
         mock_fallback = Mock()
-        mock_fallback.chat_json_sync = Mock(return_value=sentinel)
+        mock_fallback.chat_json_with_usage_sync = Mock(return_value=(sentinel, None))
 
         def get_provider(name):
             return mock_primary if name == "mistral" else mock_fallback
@@ -413,7 +427,7 @@ class TestChatJsonWithMetadata:
 
         assert result.data is sentinel
         assert (result.provider, result.model) == ("fallback", "fb-model")
-        assert mock_primary.chat_json_sync.call_count == 1
+        assert mock_primary.chat_json_with_usage_sync.call_count == 1
 
     def test_sync_chat_json_still_returns_bare_data(self):
         from lys.apps.ai.modules.core.services import AIService
@@ -421,7 +435,7 @@ class TestChatJsonWithMetadata:
         primary_endpoint, _ = self._endpoints()
         sentinel = object()
         mock_primary = Mock()
-        mock_primary.chat_json_sync = Mock(return_value=sentinel)
+        mock_primary.chat_json_with_usage_sync = Mock(return_value=(sentinel, None))
 
         with patch.object(AIService, "get_provider", return_value=mock_primary):
             result = AIService.chat_json_sync(
@@ -438,14 +452,14 @@ class TestChatJsonWithMetadata:
             provider="mistral", model="m", api_key="k", system_prompt="be precise"
         )
         mock_provider = Mock()
-        mock_provider.chat_json_sync = Mock(return_value=object())
+        mock_provider.chat_json_with_usage_sync = Mock(return_value=(object(), None))
 
         with patch.object(AIService, "get_provider", return_value=mock_provider):
             AIService.chat_json_with_metadata_sync(
                 [{"role": "user", "content": "hi"}], endpoint, Mock
             )
 
-        sent_messages = mock_provider.chat_json_sync.call_args[0][0]
+        sent_messages = mock_provider.chat_json_with_usage_sync.call_args[0][0]
         assert sent_messages[0] == {"role": "system", "content": "be precise"}
 
     def test_sync_field_at_max_length_falls_back_without_retrying(self):
@@ -458,9 +472,9 @@ class TestChatJsonWithMetadata:
 
         primary_endpoint, _ = self._endpoints()
         mock_primary = Mock()
-        mock_primary.chat_json_sync = Mock(return_value=Capped(text="abcde"))
+        mock_primary.chat_json_with_usage_sync = Mock(return_value=(Capped(text="abcde"), None))
         mock_fallback = Mock()
-        mock_fallback.chat_json_sync = Mock(return_value=Capped(text="ok"))
+        mock_fallback.chat_json_with_usage_sync = Mock(return_value=(Capped(text="ok"), None))
 
         def get_provider(name):
             return mock_primary if name == "mistral" else mock_fallback
@@ -472,7 +486,7 @@ class TestChatJsonWithMetadata:
 
         assert result.data.text == "ok"
         assert result.model == "fb-model"
-        assert mock_primary.chat_json_sync.call_count == 1
+        assert mock_primary.chat_json_with_usage_sync.call_count == 1
 
     @pytest.mark.asyncio
     async def test_field_at_max_length_on_every_endpoint_raises(self):
@@ -485,7 +499,7 @@ class TestChatJsonWithMetadata:
 
         primary_endpoint, _ = self._endpoints()
         mock_provider = AsyncMock()
-        mock_provider.chat_json = AsyncMock(return_value=Capped(text="abcde"))
+        mock_provider.chat_json_with_usage = AsyncMock(return_value=(Capped(text="abcde"), None))
 
         with patch.object(AIService, "get_provider", return_value=mock_provider):
             with pytest.raises(AIError) as exc_info:
@@ -495,7 +509,7 @@ class TestChatJsonWithMetadata:
 
         assert isinstance(exc_info.value.__cause__, AIResponseTruncatedError)
         assert "text" in str(exc_info.value)
-        assert mock_provider.chat_json.call_count == 2
+        assert mock_provider.chat_json_with_usage.call_count == 2
 
 
 class TestFallbackErrorChaining:
@@ -534,7 +548,7 @@ class TestFallbackErrorChaining:
         cause = AIResponseTruncatedError("cut off at 8192 tokens")
 
         mock_provider = AsyncMock()
-        mock_provider.chat_json = AsyncMock(side_effect=cause)
+        mock_provider.chat_json_with_usage = AsyncMock(side_effect=cause)
 
         with patch.object(AIService, "RETRY_DELAY", 0):
             with patch.object(AIService, "get_provider", return_value=mock_provider):
@@ -555,7 +569,7 @@ class TestFallbackErrorChaining:
         cause = AIValidationError("schema mismatch")
 
         mock_provider = Mock()
-        mock_provider.chat_json_sync = Mock(side_effect=cause)
+        mock_provider.chat_json_with_usage_sync = Mock(side_effect=cause)
 
         with patch.object(AIService, "RETRY_DELAY", 0):
             with patch.object(AIService, "get_provider", return_value=mock_provider):
@@ -662,6 +676,63 @@ class TestAIToolServiceGetAccessibleTools:
             result = await AIToolService.get_accessible_tools(None)
 
             assert len(result) == 0
+        finally:
+            AIToolService._tools = original_tools
+            AIToolService._initialized = original_init
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("is_super_user", [False, True])
+    @pytest.mark.parametrize("consumer, expected", [
+        ("chatbot", {"ws_open", "ws_chatbot_and_agent"}),
+        ("review_agent", {"ws_open", "ws_agent_only", "ws_chatbot_and_agent"}),
+        # A caller that does not say who it is gets the unrestricted tools only
+        (None, {"ws_open"}),
+    ])
+    async def test_a_tool_with_an_audience_is_offered_to_its_consumers_only(self, is_super_user, consumer, expected):
+        from lys.apps.ai.modules.core.services import AIToolService
+
+        original_tools = AIToolService._tools
+        original_init = AIToolService._initialized
+        try:
+            AIToolService._tools = {
+                "ws_open": {"definition": {"type": "function"}, "operation_type": "query", "consumers": None},
+                "ws_agent_only": {"definition": {"type": "function"}, "operation_type": "query",
+                                  "consumers": ["review_agent"]},
+                "ws_chatbot_and_agent": {"definition": {"type": "function"}, "operation_type": "query",
+                                         "consumers": ["chatbot", "review_agent"]},
+            }
+            AIToolService._initialized = True
+            connected_user = {
+                "is_super_user": is_super_user,
+                "webservices": {name: {} for name in AIToolService._tools},
+                "organizations": {},
+            }
+
+            result = await AIToolService.get_accessible_tools(connected_user, consumer=consumer)
+
+            assert {tool["webservice"] for tool in result} == expected
+        finally:
+            AIToolService._tools = original_tools
+            AIToolService._initialized = original_init
+
+    @pytest.mark.asyncio
+    async def test_the_audience_does_not_widen_the_users_rights(self):
+        """Being a tool's consumer gives no access to it: the token still decides."""
+        from lys.apps.ai.modules.core.services import AIToolService
+
+        original_tools = AIToolService._tools
+        original_init = AIToolService._initialized
+        try:
+            AIToolService._tools = {
+                "ws_agent_only": {"definition": {"type": "function"}, "operation_type": "query",
+                                  "consumers": ["review_agent"]},
+            }
+            AIToolService._initialized = True
+            connected_user = {"is_super_user": False, "webservices": {}, "organizations": {}}
+
+            result = await AIToolService.get_accessible_tools(connected_user, consumer="review_agent")
+
+            assert result == []
         finally:
             AIToolService._tools = original_tools
             AIToolService._initialized = original_init

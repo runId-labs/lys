@@ -357,6 +357,12 @@ class TestParsePluginConfig:
 
         assert config.executor.verify_ssl is True
 
+    def test_parse_executor_config_max_parallel_calls(self):
+        """The reads of one round run at once: a default, or the consumer's bound."""
+        assert parse_plugin_config({"_keys": {}}).executor.max_parallel_calls == 8
+        config = parse_plugin_config({"_keys": {}, "executor": {"max_parallel_calls": 3}})
+        assert config.executor.max_parallel_calls == 3
+
     def test_parse_executor_config_empty(self):
         """Test parsing config with no executor section."""
         plugin_config = {

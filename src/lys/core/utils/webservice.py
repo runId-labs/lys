@@ -1,4 +1,4 @@
-from typing import Any, Dict, Literal, List, Optional, Set, Union
+from typing import Any, Dict, Literal, List, Optional, Set, Tuple, Union
 
 from lys.core.consts.webservices import (
     CONNECTED_ACCESS_LEVEL,
@@ -45,6 +45,52 @@ def check_webservice_config(
     return error_message
 
 
+def resolve_tool_consumers(
+        webservice_name: str,
+        generate_tool: Union[bool, List[str], Tuple[str, ...]],
+) -> Tuple[bool, Optional[List[str]]]:
+    """
+    Read a webservice's ``generate_tool`` option: whether it is an AI tool, and for whom.
+
+    ``True`` makes it a tool of every consumer (None: no restriction); a list names the AI
+    endpoint purposes that may call it — the chatbot's, an agent's —, and the others never see it.
+
+    Raises:
+        ValueError: an empty list (a tool nobody may call: say False), or anything but a bool or
+            a list of non-empty strings — a misspelt option must not silently widen the audience.
+    """
+    if isinstance(generate_tool, bool):
+        return generate_tool, None
+    if isinstance(generate_tool, (list, tuple)):
+        consumers = list(dict.fromkeys(generate_tool))
+        if consumers and all(isinstance(consumer, str) and consumer.strip() for consumer in consumers):
+            return True, consumers
+    raise ValueError(
+        f"Webservice '{webservice_name}': generate_tool expects a bool or a non-empty list of AI "
+        f"endpoint purposes, got {generate_tool!r}"
+    )
+
+
+def resolve_tool_timeout(webservice_name: str, tool_timeout: Any) -> Optional[int]:
+    """
+    Read a webservice's ``tool_timeout`` option: how many seconds a tool call of it waits for the
+    API, in place of the executor's timeout (``executor.timeout``). None: the executor's.
+
+    It bounds the caller's wait only — the webservice itself runs unbounded, for every caller.
+
+    Raises:
+        ValueError: anything but a positive integer — a misspelt value must not silently fall back
+            on the default it was meant to replace.
+    """
+    if tool_timeout is None:
+        return None
+    if isinstance(tool_timeout, int) and not isinstance(tool_timeout, bool) and tool_timeout > 0:
+        return tool_timeout
+    raise ValueError(
+        f"Webservice '{webservice_name}': tool_timeout expects a positive number of seconds, got {tool_timeout!r}"
+    )
+
+
 def generate_webservice_fixture(
         webservice_name: str,
         enabled: bool,
@@ -54,6 +100,7 @@ def generate_webservice_fixture(
         operation_type: Optional[str] = None,
         # TODO: Move ai_tool to AI app only (currently in core for testing)
         ai_tool: Optional[Dict[str, Any]] = None,
+        ai_tool_consumers: Optional[List[str]] = None,
 ):
     if access_levels is None:
         _access_levels = set()
@@ -83,6 +130,7 @@ def generate_webservice_fixture(
         is_licenced=is_licenced,
         operation_type=operation_type,
         ai_tool=ai_tool,
+        ai_tool_consumers=ai_tool_consumers,
     )
 
     return WebserviceFixturesModel(

@@ -13,6 +13,10 @@ class WebserviceFixturesModel(ParametricEntityFixturesModel):
         access_levels: List[str]
         operation_type: Optional[str] = Field(default=None, description="GraphQL operation type (query or mutation)")
         ai_tool: Optional[Dict[str, Any]] = Field(default=None, description="AI tool definition for LLM function calling")
+        ai_tool_consumers: Optional[List[str]] = Field(
+            default=None,
+            description="AI endpoint purposes that may call the tool; None: every consumer",
+        )
 
     id: str = Field(..., min_length=1)
     attributes: AttributesModel

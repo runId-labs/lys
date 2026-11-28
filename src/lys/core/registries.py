@@ -14,7 +14,12 @@ from lys.core.interfaces.services import ServiceInterface
 from lys.core.managers.database import Base
 from lys.core.utils.decorators import singleton
 from lys.core.utils.generic import replace_node_in_annotation
-from lys.core.utils.webservice import WebserviceIsPublicType, generate_webservice_fixture
+from lys.core.utils.webservice import (
+    WebserviceIsPublicType,
+    generate_webservice_fixture,
+    resolve_tool_consumers,
+    resolve_tool_timeout,
+)
 from lys.core.utils.tool_generator import extract_tool_from_field
 
 
@@ -396,8 +401,13 @@ class AppRegistry:
             else:
                 webservice_name = field_or_fct.__name__
 
-            # Check if tool generation is requested
-            generate_tool = options.get("generate_tool", False) if options else False
+            # Check if tool generation is requested: True for every consumer, or the list of the
+            # AI endpoint purposes that may call it
+            generate_tool, ai_tool_consumers = resolve_tool_consumers(
+                webservice_name, options.get("generate_tool", False) if options else False
+            )
+            # Read before the generation, whose errors are only logged: a wrong value raises
+            tool_timeout = resolve_tool_timeout(webservice_name, options.get("tool_timeout") if options else None)
 
             # Generate ai_tool for Auth Server DB registration (needed for graphql mode)
             # AIToolService will generate tools from _field for local execution
@@ -428,6 +438,7 @@ class AppRegistry:
                     ai_tool = extract_tool_from_field(
                         field_or_fct, description, node_type, operation_type,
                         on_request=options.get("tool_on_request"),
+                        timeout=tool_timeout,
                     )
                 except Exception as e:
                     logging.warning(f"⚠ Could not generate tool for '{webservice_name}': {e}")
@@ -440,6 +451,8 @@ class AppRegistry:
                 is_licenced,
                 operation_type=operation_type,
                 ai_tool=ai_tool,
+                # No tool, no audience: a definition that failed to generate restricts nothing
+                ai_tool_consumers=ai_tool_consumers if ai_tool is not None else None,
             ).model_dump()
 
             existing = self.webservices.get(webservice_name)

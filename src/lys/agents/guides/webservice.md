@@ -36,7 +36,10 @@ Common parameters: `ensure_type` (the node, positional), `is_public=False`,
   (`create_product`, `all_products`) and never rename without updating front
   references.
 - **R5 — Chatbot tools**: a webservice becomes an LLM tool with
-  `options={"generate_tool": True}` — see `ai.md`.
+  `options={"generate_tool": True}`, or a list of the AI endpoint purposes it is
+  offered to (`["review_agent"]`) — see `ai.md` (TOOL R8). `"tool_timeout": 180` lets a
+  tool call wait longer than the executor's timeout (TOOL R9): it bounds the tool's wait, not
+  the webservice, which has no execution limit of its own.
 - **R5b — After adding/changing a webservice**: regenerate the GraphQL schema
   consumed by the front, using your project's schema-export tooling —
   relay-compiler validates every front operation against it.

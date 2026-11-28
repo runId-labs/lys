@@ -47,6 +47,10 @@ class AIEndpointConfig:
         return dataclass_replace(self, cache_key=cache_key, fallback=fallback)
 
 
+#: Tool calls of one model round an executor runs at the same time, unless configured otherwise
+DEFAULT_MAX_PARALLEL_TOOL_CALLS = 8
+
+
 @dataclass
 class ExecutorConfig:
     """Configuration for GraphQL tool executor."""
@@ -60,6 +64,9 @@ class ExecutorConfig:
     # turn ends; this only bounds one whose turn died before revoking it, so it must
     # exceed the longest turn (tool iterations x model and tool timeouts).
     turn_token_ttl: int = 1800
+    # How many reads of one model round call the API at the same time: a model may ask for dozens
+    # in a round, each a request of its own under the user's token.
+    max_parallel_calls: int = DEFAULT_MAX_PARALLEL_TOOL_CALLS
 
 
 @dataclass
@@ -131,7 +138,8 @@ def parse_plugin_config(plugin_config: Dict[str, Any]) -> AIConfig:
                 "gateway_url": "https://gateway:8000/graphql",
                 "service_name": "my-api",
                 "timeout": 30,
-                "turn_token_ttl": 1800
+                "turn_token_ttl": 1800,
+                "max_parallel_calls": 8
             },
             "chatbot": {
                 "provider": "mistral",
@@ -164,6 +172,7 @@ def parse_plugin_config(plugin_config: Dict[str, Any]) -> AIConfig:
         timeout=executor_cfg.get("timeout", 30),
         verify_ssl=executor_cfg.get("verify_ssl", True),
         turn_token_ttl=executor_cfg.get("turn_token_ttl", 1800),
+        max_parallel_calls=executor_cfg.get("max_parallel_calls", DEFAULT_MAX_PARALLEL_TOOL_CALLS),
     )
 
     for purpose, cfg in plugin_config.items():

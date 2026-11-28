@@ -12,7 +12,11 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from lys.apps.ai_whiteboard.modules.conversation.services import AIConversationService
-from lys.apps.ai_whiteboard.modules.conversation.tools import DRAW_ON_WHITEBOARD_TOOL, READ_WHITEBOARD_TOOL
+from lys.apps.ai_whiteboard.modules.conversation.tools import (
+    DRAFT_ON_WHITEBOARD_TOOL,
+    DRAW_ON_WHITEBOARD_TOOL,
+    READ_WHITEBOARD_TOOL,
+)
 from lys.apps.ai_whiteboard.modules.whiteboard.consts import ADD_ITEM_FIELDS, UPDATE_ITEM_FIELDS
 from lys.core.errors import LysError
 from lys.core.graphql.client import build_global_id
@@ -101,13 +105,27 @@ class TestToolExecutor:
         with patch(
             "lys.apps.ai.modules.conversation.services.AIConversationService._get_tool_executor",
             AsyncMock(return_value=executor),
-        ):
+        ), patch.object(AIConversationService, "_drafts", return_value=False):
             result = await AIConversationService._get_tool_executor(tools, MagicMock())
 
         assert result is executor
         registered = {call.args[0] for call in executor.register_special_tool.call_args_list}
         assert registered == {"draw_on_whiteboard", "read_whiteboard"}
-        assert [t["function"]["name"] for t in tools] == ["draw_on_whiteboard", "read_whiteboard"]
+        assert tools == [DRAW_ON_WHITEBOARD_TOOL, READ_WHITEBOARD_TOOL]
+
+    @pytest.mark.asyncio
+    async def test_a_configured_drafter_draws_in_the_chatbots_place(self):
+        executor = MagicMock()
+        tools = []
+        with patch(
+            "lys.apps.ai.modules.conversation.services.AIConversationService._get_tool_executor",
+            AsyncMock(return_value=executor),
+        ), patch.object(AIConversationService, "_drafts", return_value=True):
+            await AIConversationService._get_tool_executor(tools, MagicMock())
+
+        handlers = {call.args[0]: call.args[1] for call in executor.register_special_tool.call_args_list}
+        assert handlers["draw_on_whiteboard"] == AIConversationService._handle_draft_on_whiteboard
+        assert tools == [DRAFT_ON_WHITEBOARD_TOOL, READ_WHITEBOARD_TOOL]
 
 
 class TestDrawHandler:
@@ -118,7 +136,7 @@ class TestDrawHandler:
         result = await service._handle_draw_on_whiteboard(arguments, context())
 
         kwargs = whiteboard_service.draw.await_args.kwargs
-        assert kwargs["operations"] == {"add": [{"name": "a"}]}
+        assert kwargs["patches"] == [{"add": [{"name": "a"}]}]
         assert result == DRAWN_FOR_MODEL
 
     @pytest.mark.asyncio

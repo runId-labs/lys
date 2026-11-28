@@ -381,6 +381,7 @@ class AppManager:
                         "accessLevels": attrs.get("access_levels", []),
                         "operationType": attrs.get("operation_type"),
                         "aiTool": attrs.get("ai_tool"),
+                        "aiToolConsumers": attrs.get("ai_tool_consumers"),
                     }
                 })
 

@@ -6,8 +6,11 @@ Defines the interface for tool execution strategies.
 
 import logging
 from abc import ABC, abstractmethod
-from typing import Dict, Any, List, Optional
+from typing import Awaitable, Callable, Dict, Any, List, Optional, Sequence
 
+import anyio
+
+from lys.apps.ai.utils.providers.config import DEFAULT_MAX_PARALLEL_TOOL_CALLS
 from lys.core.utils.strings import to_snake_case
 
 logger = logging.getLogger(__name__)
@@ -23,6 +26,38 @@ class ToolExecutor(ABC):
     """
 
     _page_context: Optional[Any] = None
+
+    #: Calls of one model round run at the same time at most (``run_together``)
+    max_parallel_calls: int = DEFAULT_MAX_PARALLEL_TOOL_CALLS
+
+    def runs_alongside(self, tool_name: str) -> bool:
+        """
+        Whether a call of this tool may run at the same time as other calls of its round: it
+        changes nothing and shares no state with them (the turn's session, the client's actions).
+
+        No by default: a strategy says which of its tools are such reads, and every other call
+        runs alone, in the order the model asked.
+        """
+        return False
+
+    async def run_together(self, jobs: Sequence[Callable[[], Awaitable[None]]]) -> None:
+        """
+        Run the calls of one model round at the same time, ``max_parallel_calls`` at once at most:
+        a model may ask for dozens of reads in a round, and each is a request to the API.
+
+        Args:
+            jobs: One coroutine function per call, keeping its own result. A job that raises
+                cancels the others and raises through: a job answers its own failures.
+        """
+        limiter = anyio.CapacityLimiter(self.max_parallel_calls)
+
+        async def bounded(job: Callable[[], Awaitable[None]]) -> None:
+            async with limiter:
+                await job()
+
+        async with anyio.create_task_group() as group:
+            for job in jobs:
+                group.start_soon(bounded, job)
 
     def _inject_page_params(self, arguments: Dict[str, Any], force_ids: bool = True) -> Dict[str, Any]:
         """

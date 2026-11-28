@@ -12,6 +12,7 @@ import httpx
 
 from lys.apps.ai.modules.core.executors.abstracts import ToolExecutor
 from lys.apps.ai.utils.page_params import route_page_params, writable_page_params
+from lys.apps.ai.utils.provenance import from_webservice
 from lys.core.consts.errors import NOT_FOUND_ERROR
 from lys.core.graphql.client import GraphQLClient, decode_global_id
 from lys.core.utils.strings import to_camel_case, to_snake_case
@@ -75,6 +76,7 @@ class GraphQLToolExecutor(ToolExecutor):
         timeout: int = 30,
         verify_ssl: bool = True,
         pin_ids: Optional[bool] = None,
+        max_parallel_calls: Optional[int] = None,
     ):
         """
         Initialize the GraphQL tool executor.
@@ -93,7 +95,13 @@ class GraphQLToolExecutor(ToolExecutor):
                 service auth (with a user bearer the model may roam, the gateway filtering
                 access). True: always — for a caller whose page params ARE the scope, like an
                 agent run on the client and the version its caller checked
+            max_parallel_calls: Reads of one model round run at the same time at most
+                (``run_together``). None: the default of every executor.
         """
+        if max_parallel_calls is not None:
+            if max_parallel_calls < 1:
+                raise ValueError(f"max_parallel_calls must be a positive integer, got {max_parallel_calls!r}")
+            self.max_parallel_calls = max_parallel_calls
         self.gateway_url = gateway_url
         self.timeout = timeout
         # Auth mode flag only (we don't retain the token — the GraphQLClient holds it). A user
@@ -121,6 +129,17 @@ class GraphQLToolExecutor(ToolExecutor):
     def _pins_ids(self) -> bool:
         """Whether the ``*_id`` page params override the model's: as asked, else on service auth only."""
         return self._pin_ids if self._pin_ids is not None else not self._user_authed
+
+    def runs_alongside(self, tool_name: str) -> bool:
+        """
+        Whether a call of this tool may run at the same time as other calls of its round: a GraphQL
+        query, which is a request of its own to the API (its own session there, under the turn's token)
+        and changes nothing. A special tool (the turn's session, the client's actions) and a mutation
+        run alone, in their place; an unknown tool too, so it fails where it was asked.
+        """
+        if tool_name in self._special_tools or tool_name not in self._tools:
+            return False
+        return self._tools[tool_name]["operation_type"] == "query"
 
     async def initialize(self, tools: Optional[List[Dict[str, Any]]] = None, **kwargs):
         """
@@ -336,7 +355,8 @@ class GraphQLToolExecutor(ToolExecutor):
         logger.debug(f"Variables: {variables}")
 
         try:
-            data = await self._client.execute(query, variables)
+            # The webservice's tool_timeout, else the executor's (the client's own)
+            data = await self._client.execute(query, variables, timeout=gql_meta.get("timeout"))
 
             if "errors" in data:
                 errors = data["errors"]
@@ -362,7 +382,8 @@ class GraphQLToolExecutor(ToolExecutor):
                     "message": f"No result returned from {operation_name}",
                 }
 
-            return result
+            # Where the figures shown come from, stated by the node: kept for calculate, never sent
+            return from_webservice(result)
 
         except httpx.HTTPError as e:
             logger.error(f"HTTP error executing tool {tool_name}: {e}")
